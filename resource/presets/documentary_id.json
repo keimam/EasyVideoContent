@@ -1,0 +1,42 @@
+{
+  "id": "documentary_id",
+  "name": "Dokumenter Umum (Bahasa Indonesia)",
+  "schema_version": "1.0.0",
+  "language": "id-ID",
+  "audience": "Penonton umum Indonesia, pembelajar sejarah, sains, dan misteri di YouTube",
+  "narration_style": "Ekspositori, mendalam, naratif, tenang dengan artikulasi jelas",
+  "chapter_structure": [
+    "Pembuka & Pertanyaan Kunci",
+    "Latar Belakang & Kronologi Awal",
+    "Titik Balik & Peristiwa Penting",
+    "Dampak & Refleksi Masa Kini"
+  ],
+  "hook_rules": "Buka dengan fakta mengejutkan atau paradoks dalam 10-15 detik pertama untuk menahan perhatian penonton.",
+  "words_per_minute": 130,
+  "subtitle_style": {
+    "font_name": "Arial",
+    "font_size": 18,
+    "primary_color": "&H0000FFFF",
+    "outline_color": "&H00000000",
+    "outline_width": 2.0,
+    "alignment": 2,
+    "margin_v": 45
+  },
+  "visual_style": "Sinematik realistis, pencahayaan alami, komposisi lanskap 16:9",
+  "image_prompt_template": {
+    "prefix": "cinematic documentary still, realistic 8k photography, dramatic atmospheric lighting, ",
+    "suffix": ", editorial style, high resolution"
+  },
+  "visual_source_mix": {
+    "ai_image": 0.7,
+    "stock_video": 0.3
+  },
+  "default_voice": "id-ID-ArdiNeural",
+  "default_bgm": {
+    "genre": "documentary_ambient",
+    "volume_ducking_db": -16.0,
+    "fade_in_seconds": 2.0,
+    "fade_out_seconds": 3.0
+  },
+  "ken_burns_style": "alternating"
+}

@@ -1,5 +1,6 @@
 # scripts/longform/baseline.ps1
 # Script to measure baseline generation metrics for a ~60s short video using upstream MPT pipeline.
+# Includes recursive process tree RAM tracking (parent, children, grandchildren).
 
 [CmdletBinding()]
 param(
@@ -83,28 +84,71 @@ $proc.BeginErrorReadLine()
 
 $PeakRamBytes = 0
 $ParentPid = $proc.Id
+$RecordedProcessNames = New-Object System.Collections.Generic.HashSet[string]
+[void]$RecordedProcessNames.Add("python.exe")
+
+function Get-ProcessTreeStats {
+    param([int]$RootPid)
+    
+    $allProcesses = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue
+    if (-not $allProcesses) { 
+        return @{ TotalBytes = 0; ProcessNames = @() } 
+    }
+    
+    $pidsToScan = New-Object System.Collections.Generic.Queue[int]
+    $pidsToScan.Enqueue($RootPid)
+    $collectedPids = New-Object System.Collections.Generic.HashSet[int]
+    [void]$collectedPids.Add($RootPid)
+    
+    $totalWorkingSet = 0
+    $processNames = New-Object System.Collections.Generic.HashSet[string]
+    
+    $childrenMap = @{}
+    foreach ($p in $allProcesses) {
+        $ppid = [int]$p.ParentProcessId
+        if (-not $childrenMap.ContainsKey($ppid)) {
+            $childrenMap[$ppid] = New-Object System.Collections.Generic.List[object]
+        }
+        $childrenMap[$ppid].Add($p)
+    }
+    
+    while ($pidsToScan.Count -gt 0) {
+        $curPid = $pidsToScan.Dequeue()
+        $matching = $allProcesses | Where-Object { $_.ProcessId -eq $curPid }
+        if ($matching) {
+            $totalWorkingSet += [int64]$matching.WorkingSetSize
+            [void]$processNames.Add($matching.Name)
+        }
+        if ($childrenMap.ContainsKey($curPid)) {
+            foreach ($child in $childrenMap[$curPid]) {
+                $cid = [int]$child.ProcessId
+                if (-not $collectedPids.Contains($cid)) {
+                    [void]$collectedPids.Add($cid)
+                    $pidsToScan.Enqueue($cid)
+                }
+            }
+        }
+    }
+    
+    return @{
+        TotalBytes = $totalWorkingSet
+        ProcessNames = [string[]]$processNames
+    }
+}
 
 while (-not $proc.HasExited) {
     try {
-        $proc.Refresh()
-        $currentRam = $proc.WorkingSet64
-        if ($currentRam -gt $PeakRamBytes) {
-            $PeakRamBytes = $currentRam
+        $treeStats = Get-ProcessTreeStats -RootPid $ParentPid
+        if ($treeStats.TotalBytes -gt $PeakRamBytes) {
+            $PeakRamBytes = $treeStats.TotalBytes
         }
-        
-        # Also check child processes (ffmpeg, etc.)
-        $childProcs = Get-CimInstance Win32_Process -Filter "ParentProcessId = $ParentPid" -ErrorAction SilentlyContinue
-        if ($childProcs) {
-            $childRam = ($childProcs | Measure-Object -Property WorkingSetSize -Sum).Sum
-            $totalRam = $currentRam + $childRam
-            if ($totalRam -gt $PeakRamBytes) {
-                $PeakRamBytes = $totalRam
-            }
+        foreach ($name in $treeStats.ProcessNames) {
+            [void]$RecordedProcessNames.Add($name)
         }
     } catch {
         # ignore transient query errors
     }
-    Start-Sleep -Milliseconds 150
+    Start-Sleep -Milliseconds 200
 }
 
 $proc.WaitForExit()
@@ -143,7 +187,6 @@ if (-not $FinalVideoPath -or -not (Test-Path $FinalVideoPath)) {
 }
 
 # Parse stages timing from stderr logs
-# Look for log timestamps
 $audioStart = [regex]::Match($StderrText, '(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}).*generate_audio -')
 $subStart = [regex]::Match($StderrText, '(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}).*generating subtitle')
 $matStart = [regex]::Match($StderrText, '(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}).*preprocess local materials')
@@ -156,7 +199,8 @@ Write-Host "=================================================================" -
 Write-Host "                    BASELINE BENCHMARK RESULTS                   " -ForegroundColor Green
 Write-Host "=================================================================" -ForegroundColor Green
 Write-Host ("Total Wall-Clock Time : {0:N2} s ({1:N2} min)" -f $TotalElapsedSeconds, ($TotalElapsedSeconds / 60))
-Write-Host ("Peak RAM Usage        : {0:N2} MB" -f ($PeakRamBytes / 1MB))
+Write-Host ("Peak RAM (Process Tree): {0:N2} MB" -f ($PeakRamBytes / 1MB))
+Write-Host ("Process Tree Recorded : {0}" -f ([string]::Join(", ", $RecordedProcessNames)))
 
 if ($renderStart.Success -and $taskFinished.Success) {
     $t1 = [datetime]::ParseExact($renderStart.Groups[1].Value, "yyyy-MM-dd HH:mm:ss", $null)
