@@ -1,12 +1,12 @@
 # Audit Arsitektur Upstream MoneyPrinterTurbo
 
-Dokumen ini merupakan hasil audit arsitektur menyeluruh terhadap codebase upstream `MoneyPrinterTurbo` (HEAD `c8dbf96`), dievaluasi untuk kebutuhan pengembangan mode **Long Video** (10–20 menit, ~1.500–3.000 kata, 4–6 bab).
+Dokumen ini merupakan hasil audit arsitektur menyeluruh terhadap codebase upstream `MoneyPrinterTurbo` (HEAD `c8dbf96`), dievaluasi untuk kebutuhan pengembangan mode **Long Video** (10–20 menit, ~1.500–3.000 kata, 4–6 bab) untuk channel faceless dengan **niche bebas** (psikologi, sejarah, sains, misteri, bisnis, biografi, edukasi, dll.) yang seluruh karakteristiknya dikendalikan via sistem **Preset**.
 
 ---
 
 ## 1. Peta Alur `_run_pipeline` (`app/services/task.py`)
 
-Alur eksekusi utama berada pada fungsi `_run_pipeline` di [app/services/task.py:1549-1981](file:///F:/MPTLong/app/services/task.py#L1549-L1981).
+Alur eksekusi video pendek bawaan berada pada fungsi `_run_pipeline` di [app/services/task.py:1549-1981](file:///F:/MPTLong/app/services/task.py#L1549-L1981).
 
 ### 1.1 Tahapan Eksekusi, Fungsi, Input/Output, dan Penyimpanan
 
@@ -37,7 +37,7 @@ Alur eksekusi utama berada pada fungsi `_run_pipeline` di [app/services/task.py:
 
 ## 2. Audit Kelayakan Modul untuk Long Video (10–20 Menit)
 
-Berikut evaluasi mendalam per modul upstream untuk kebutuhan video 10–20 menit:
+Berikut evaluasi mendalam per modul upstream untuk kebutuhan video panjang:
 
 ### 2.1 Modul LLM (`app/services/llm.py`)
 
@@ -47,11 +47,11 @@ Berikut evaluasi mendalam per modul upstream untuk kebutuhan video 10–20 menit
 - **Fungsi yang TIDAK Cocok untuk Long Video**:
   - `generate_script` ([app/services/llm.py:911](file:///F:/MPTLong/app/services/llm.py#L911)):
     - **Alasan Berbasis Kode**: Menghasilkan naskah sekali jalan (*one-shot prompt*) tanpa pembagian bab atau segmen.
-    - **Batasan Skema**: `paragraph_number` diatur batas maksimal `le=10` pada skema Pydantic ([app/models/schema.py:167, 224](file:///F:/MPTLong/app/models/schema.py#L167)) serta konstanta `MAX_SCRIPT_PARAGRAPH_NUMBER = 10` di [app/services/llm.py:24](file:///F:/MPTLong/app/services/llm.py#L24) dan fungsi validasi `_normalize_script_paragraph_number` di [app/services/llm.py:860](file:///F:/MPTLong/app/services/llm.py#L860).
-    - Menghasilkan 1.500–3.000 kata dalam satu prompt LLM menyebabkan halusinasi, hilangnya struktur narasi YouTube, pengulangan, dan tidak adanya metadata petunjuk visual per segmen (*visual cues*).
+    - **Batasan Skema**: `paragraph_number` dibatasi maksimal `le=10` pada skema Pydantic ([app/models/schema.py:167, 224](file:///F:/MPTLong/app/models/schema.py#L167)) serta konstanta `MAX_SCRIPT_PARAGRAPH_NUMBER = 10` di [app/services/llm.py:24](file:///F:/MPTLong/app/services/llm.py#L24) dan fungsi validasi `_normalize_script_paragraph_number` di [app/services/llm.py:860](file:///F:/MPTLong/app/services/llm.py#L860).
+    - Menghasilkan 1.500–3.000 kata dalam satu prompt LLM menyebabkan halusinasi, hilangnya struktur narasi YouTube, pengulangan, dan ketiadaan metadata petunjuk visual per segmen (*visual cues*).
   - `generate_terms` ([app/services/llm.py:1040](file:///F:/MPTLong/app/services/llm.py#L1040)):
     - **Alasan Berbasis Kode**: Pada [app/services/task.py:395](file:///F:/MPTLong/app/services/task.py#L395), jumlah kata kunci pencarian dikunci statis: `amount=8 if params.match_materials_to_script else 5`.
-    - Untuk video 15 menit (yang membutuhkan ~150–200 footage/gambar), 5 atau 8 keyword akan menyebabkan visual berulang secara monoton dan tidak relevan dengan narasi detail tiap bab.
+    - Untuk video 15 menit (yang membutuhkan puluhan hingga ratusan footage/gambar), 5 atau 8 keyword akan menyebabkan visual berulang secara monoton dan tidak relevan dengan narasi detail tiap bab.
 
 ### 2.2 Modul Voice & TTS (`app/services/voice.py`)
 
@@ -62,8 +62,8 @@ Berikut evaluasi mendalam per modul upstream untuk kebutuhan video 10–20 menit
 - **Fungsi yang TIDAK Cocok untuk Long Video**:
   - Pola pemanggilan `voice.tts` sekali jalan ([app/services/task.py:608-619](file:///F:/MPTLong/app/services/task.py#L608-L619)):
     - Menyuapkan seluruh teks naskah (1.500–3.000 kata) ke `azure_tts_v1` sekaligus.
-    - **Batasan Edge-TTS**: WebSocket Edge-TTS rentan terhadap timeout koneksi jika durasi sintesis audio melebihi beberapa menit atau payload karakter terlalu besar (~10.000 byte).
-    - Jika koneksi terputus di tengah, sintesis gagal total dan harus diulang dari awal (tanpa checkpointing).
+    - [DUGAAN]: Protokol WebSocket Edge TTS rentan terhadap putus koneksi di tengah jalan bila streaming berlangsung terlalu lama tanpa heartbeat atau payload teks terlalu besar (di atas batas wajar request tunggal Microsoft Cognitive Services).
+    - Jika koneksi terputus di tengah jalan, sintesis gagal total dan harus diulang dari awal (tanpa checkpointing).
     - Tidak ada timing per segmen: sulit menyinkronkan durasi footage/gambar per segmen dengan kalimat narasi spesifik.
 
 ### 2.3 Modul Subtitle (`app/services/subtitle.py` & `app/services/voice.py`)
@@ -75,8 +75,8 @@ Berikut evaluasi mendalam per modul upstream untuk kebutuhan video 10–20 menit
   - Mekanisme pembuatan klip subtitle MoviePy (`TextClip` per entri SRT) di [app/services/video.py:1661-1904](file:///F:/MPTLong/app/services/video.py#L1661-L1904):
     - Untuk video 15 menit, file SRT memiliki sekitar 300–600 baris subtitle (atau ribuan jika word-by-word).
     - Upstream membuat satu instance `TextClip` (Pillow rasterization) untuk setiap entri lalu membungkus semuanya ke dalam `CompositeVideoClip([video_clip, *text_clips])` ([app/services/video.py:1903](file:///F:/MPTLong/app/services/video.py#L1903)).
-    - Ini adalah **penyebab utama konsumsi memori masif dan lambatnya render MoviePy**. Ribuan klip Python dievaluasi di memori pada tiap frame video.
-    - **Solusi Long Video**: Menggunakan format subtitle **ASS (Advanced SubStation Alpha)** yang di-burn langsung oleh filter native FFmpeg (`-vf "ass=subtitles.ass"` via `libass`), menghilangkan ribuan TextClip Python.
+    - Ini adalah **penyebab utama konsumsi memori masif dan lambatnya render MoviePy**. Ratusan hingga ribuan klip Python dievaluasi di memori pada tiap frame video.
+    - **Solusi Long Video**: Menggunakan format subtitle **ASS (Advanced SubStation Alpha)** yang di-burn langsung oleh filter native FFmpeg (`-vf "ass=subtitles.ass"` via `libass`), menghilangkan TextClip Python sepenuhnya.
 
 ### 2.4 Modul Material (`app/services/material.py`)
 
@@ -94,7 +94,7 @@ Berikut evaluasi mendalam per modul upstream untuk kebutuhan video 10–20 menit
 
 - **Fungsi yang BISA Dipakai Ulang**:
   - `concat_video_clips_with_ffmpeg` ([app/services/video.py:626](file:///F:/MPTLong/app/services/video.py#L626)):
-    - Sangat bagus! Menggunakan FFmpeg Concat Demuxer (`-f concat -safe 0 -i manifest.txt`) dengan filter BT.709, penanganan `-nostdin` (commit `c8dbf96`), dan escaping path Windows yang aman ([app/services/video.py:493](file:///F:/MPTLong/app/services/video.py#L493)).
+    - Menggunakan FFmpeg Concat Demuxer (`-f concat -safe 0 -i manifest.txt`) dengan filter BT.709, penanganan `-nostdin` (commit `c8dbf96`), dan escaping path Windows yang aman ([app/services/video.py:493](file:///F:/MPTLong/app/services/video.py#L493)).
   - Resolusi dimensi aspek rasio: `aspect.to_resolution()`.
 - **Fungsi yang TIDAK Cocok untuk Long Video**:
   - `combine_videos` ([app/services/video.py:976](file:///F:/MPTLong/app/services/video.py#L976)):
@@ -105,8 +105,8 @@ Berikut evaluasi mendalam per modul upstream untuk kebutuhan video 10–20 menit
     - Merender seluruh timeline 10–20 menit dalam satu sesi MoviePy tunggal. Jika terjadi crash di menit ke-18, seluruh render 18 menit hilang dan harus dimulai dari nol.
   - `render_image_zoom_video` ([app/services/video.py:1974](file:///F:/MPTLong/app/services/video.py#L1974)):
     - Menggunakan fungsi lambda MoviePy: `clip.resized(lambda t: 1 + (clip_duration * 0.03) * (t / clip.duration))` ([app/services/video.py:1991](file:///F:/MPTLong/app/services/video.py#L1991)).
-    - Tiap frame gambar di-resize ulang via Pillow di CPU Python per-frame pada 30 fps! Ini sangat lambat (membutuhkan ~2,5 detik proses untuk 5 detik video gambar).
-    - FFmpeg memiliki filter native `zoompan` yang mampu merender efek Ken Burns (zoom-in, zoom-out, pan-left, pan-right) puluhan kali lebih cepat tanpa overhead Python GIL.
+    - Tiap frame gambar di-resize ulang via Pillow di CPU Python per-frame pada 30 fps (membutuhkan ~2,4 detik proses untuk 5 detik video gambar).
+    - Filter FFmpeg native `zoompan` mampu merender efek Ken Burns langsung tanpa overhead CPU Python.
 
 ---
 
@@ -148,10 +148,12 @@ Berikut evaluasi mendalam per modul upstream untuk kebutuhan video 10–20 menit
 
 ### 3.3 AI Image Providers (`app/services/material.py`)
 
-| Provider ID | Fungsi Pemanggil | Kebutuhan Config |
-|:---|:---|:---|
-| `openai_image` | `generate_images_openai` | `openai_image_base_url`, `openai_image_model`, `openai_image_api_keys` |
-| `codex_image` | `generate_images_codex` | OAuth credential via `codex_oauth` |
+| Provider ID | Fungsi Pemanggil | Kebutuhan Config | Catatan |
+|:---|:---|:---|:---|
+| `openai_image` | `generate_images_openai` | `openai_image_base_url`, `openai_image_model`, `openai_image_api_keys` | DALL-E / OpenAI-compatible |
+| `codex_image` | `generate_images_codex` | OAuth credential via `codex_oauth` | ChatGPT subscription image tool |
+
+*Catatan*: Repo saat ini hanya memiliki dua provider gambar AI di atas. Tahap 4 akan merancang antarmuka modular agar provider gambar lain (Flux, ComfyUI, dsb.) dapat ditambahkan dengan mudah.
 
 ### 3.4 Video Providers (Stock & AI Video) (`app/services/material.py`)
 
@@ -174,7 +176,7 @@ Berikut evaluasi mendalam per modul upstream untuk kebutuhan video 10–20 menit
 
 ## 4. Lokasi File Temp dan Keamanan Path Berspasi
 
-Pada sistem pengujian, direktori profil user adalah `C:\Users\IT SUPPORT 2` (mengandung spasi). Berikut audit lokasi file temp dan sanitasi path:
+Pada sistem Windows, direktori profil pengguna adalah `C:\Users\IT SUPPORT 2` (mengandung spasi). Berikut audit lokasi file temp dan sanitasi path:
 
 | Komponen | Lokasi File Temp | Mekanisme Pembuatan | Keamanan Spasi Windows | Catatan Evaluasi |
 |:---|:---|:---|:---|:---|
@@ -182,28 +184,31 @@ Pada sistem pengujian, direktori profil user adalah `C:\Users\IT SUPPORT 2` (men
 | **Edge TTS Audio** | Direktori task (`voice_file` dir) | `tempfile.mkstemp(prefix=".edge-tts-", dir=dir)` | **AMAN** | Menggunakan file descriptor OS aman; tidak melewati shell string parsing. |
 | **Material Cache** | `storage/cache/` | `save_video` -> `storage/cache/vid-<md5>.mp4` | **AMAN** | Menggunakan path Python standar. |
 | **FFmpeg Concat List** | Direktori output task | `tempfile.NamedTemporaryFile(..., dir=output_dir)` | **AMAN** | `_format_ffmpeg_concat_path` ([app/services/video.py:493](file:///F:/MPTLong/app/services/video.py#L493)) mengganti backslash `\` menjadi slash `/` dan meng-escape tanda kutip satu `'`. |
-| **FFmpeg Filter Subtitle** | Filter `-vf subtitles=...` atau `ass=...` | *Belum ada di upstream* (MoviePy dipakai) | **KRITIKAL** | **Peringatan untuk Long Video**: Bila menggunakan filter `-vf "ass='path'"` di Windows, FFmpeg menganggap karakter `:` (drive letter seperti `C:`) dan `\` sebagai delimeter filter. Harus di-escape khusus (`C\:/path/with space`). |
+| **FFmpeg Filter Subtitle** | Filter `-vf subtitles=...` atau `ass=...` | *Belum ada di upstream* (MoviePy dipakai) | **KRITIKAL** | **Peringatan untuk Long Video**: Bila menggunakan filter `-vf "ass='path'"` di Windows, FFmpeg menganggap karakter `:` (drive letter seperti `C:`) dan `\` sebagai delimeter filter. Wajib di-escape khusus (`C\:/path/with space`). |
 | **Subprocess Execution** | Seluruh pemanggilan `subprocess.run` | Menggunakan list argumen `[exe, arg1, arg2]` | **AMAN** | Python otomatis mengutip argumen yang mengandung spasi saat membangun command line Windows (`CreateProcessW`). |
 
 ---
 
-## 5. Titik Hook Minimal Upstream (Aturan A1)
+## 5. Arsitektur Entry Point dan Titik Hook Upstream (Aturan A1)
 
-Untuk memenuhi aturan **A1** (menjaga kode upstream tetap mudah di-merge), seluruh modul baru long video diisolasi ke dalam `app/services/longform/`.
+Untuk memenuhi aturan **A1** (menjaga kode upstream tetap mudah di-merge dari upstream `harry0703/MoneyPrinterTurbo`), **mode Long Video memiliki entry point terpisah dan TIDAK memodifikasi pipeline video pendek bawaan**.
 
-Berikut titik integrasi minimal (*hook points*) yang direncanakan:
+### 5.1 Isolasi Entry Point Long Video
+- Long video **TIDAK** menyuntikkan field ke `VideoParams` di [app/models/schema.py](file:///F:/MPTLong/app/models/schema.py).
+- Long video **TIDAK** membajak alur `_run_pipeline` di [app/services/task.py](file:///F:/MPTLong/app/services/task.py).
+- Long video memiliki:
+  - Model data & skema sendiri di `app/services/longform/schema.py`
+  - Pipeline & orchestration sendiri di `app/services/longform/pipeline.py`
+  - CLI mandiri di `cli_longform.py`
+  - API Controller mandiri di `app/controller/longform.py`
+  - Halaman WebUI mandiri di `webui/longform/`
 
-1. **`app/models/schema.py`**:
-   - Menambahkan field opsional `mode: Literal["short", "long"] = "short"` dan `longform_params: Optional[LongVideoParams] = None` ke dalam `VideoParams`.
-2. **`app/services/task.py`**:
-   - Pada baris pertama `_run_pipeline` ([app/services/task.py:1562](file:///F:/MPTLong/app/services/task.py#L1562)):
-     ```python
-     if getattr(params, "video_mode", "short") == "long":
-         from app.services.longform.pipeline import run_longform_pipeline
-         return run_longform_pipeline(task_id, params, stop_at=stop_at)
-     ```
-   - Dengan satu hook sederhana ini, alur video pendek bawaan tidak terganggu sama sekali (100% backward compatible, mematuhi aturan A2).
-3. **`cli.py`**:
-   - Menambahkan opsi `--mode {short,long}` dan opsi manifest long video.
-4. **`LONGFORM_CHANGES.md`**:
-   - Setiap modifikasi pada file upstream dicatat rapi (file, nomor baris, dan alasan).
+### 5.2 Daftar Hook Final ke File Upstream
+Hanya ada 2 titik hook minimal ke file upstream:
+1. **API Router Registration** (`app/controller/__init__.py` atau `main.py`):
+   - Menambahkan satu baris registrasi router API longform (misalnya `app.include_router(longform_router, prefix="/api/v1/longform")`).
+2. **WebUI Navigation Hook** (`webui/Main.py`):
+   - Menambahkan satu baris menu navigasi sidebar untuk membuka tab/halaman "Long Video".
+
+Dengan arsitektur ini, seluruh file pipeline upstream (`task.py`, `video.py`, `voice.py`, `llm.py`, `material.py`, `schema.py`) tetap **100% UNTOUCHED (nol modifikasi)**. Upstream merge dari `harry0703/MoneyPrinterTurbo` di masa depan akan bersih dari konflik merge.
+Semua perubahan hook dicatat secara disiplin di `LONGFORM_CHANGES.md`.
