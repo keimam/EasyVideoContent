@@ -1,5 +1,6 @@
 # scripts/longform/baseline.ps1
 # Script to measure baseline generation metrics for a ~60s short video using upstream MPT pipeline.
+# Includes recursive process tree RAM tracking (parent, children, grandchildren).
 
 [CmdletBinding()]
 param(
@@ -84,27 +85,113 @@ $proc.BeginErrorReadLine()
 $PeakRamBytes = 0
 $ParentPid = $proc.Id
 
-while (-not $proc.HasExited) {
-    try {
-        $proc.Refresh()
-        $currentRam = $proc.WorkingSet64
-        if ($currentRam -gt $PeakRamBytes) {
-            $PeakRamBytes = $currentRam
+# Track detailed stats per process: PID -> @{ Name; StartTime; PeakWorkingSet }
+$ProcessRegistry = @{}
+
+# Capture root process creation date
+$RootProcessCim = Get-CimInstance Win32_Process -Filter "ProcessId = $ParentPid" -ErrorAction SilentlyContinue
+$RootCreationDate = if ($RootProcessCim) { $RootProcessCim.CreationDate } else { Get-Date }
+
+function Get-ProcessTreeStats {
+    param(
+        [int]$RootPid,
+        [datetime]$RootStartTime
+    )
+    
+    $allProcesses = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue
+    if (-not $allProcesses) { 
+        return @{ TotalBytes = 0; ActiveProcesses = @() } 
+    }
+    
+    $pidsToScan = New-Object System.Collections.Generic.Queue[int]
+    $pidsToScan.Enqueue($RootPid)
+    $collectedPids = New-Object System.Collections.Generic.HashSet[int]
+    [void]$collectedPids.Add($RootPid)
+    
+    $totalWorkingSet = 0
+    $activeProcs = @()
+    
+    # Map child processes strictly created AFTER or AT the same time as root process
+    $childrenMap = @{}
+    $processById = @{}
+    foreach ($p in $allProcesses) {
+        $pidVal = [int]$p.ProcessId
+        $processById[$pidVal] = $p
+        
+        # Guard against PID reuse: child creation date must be >= root start time
+        if ($p.CreationDate -and $p.CreationDate -lt $RootStartTime) {
+            continue
         }
         
-        # Also check child processes (ffmpeg, etc.)
-        $childProcs = Get-CimInstance Win32_Process -Filter "ParentProcessId = $ParentPid" -ErrorAction SilentlyContinue
-        if ($childProcs) {
-            $childRam = ($childProcs | Measure-Object -Property WorkingSetSize -Sum).Sum
-            $totalRam = $currentRam + $childRam
-            if ($totalRam -gt $PeakRamBytes) {
-                $PeakRamBytes = $totalRam
+        $ppid = [int]$p.ParentProcessId
+        if (-not $childrenMap.ContainsKey($ppid)) {
+            $childrenMap[$ppid] = New-Object System.Collections.Generic.List[object]
+        }
+        $childrenMap[$ppid].Add($p)
+    }
+    
+    while ($pidsToScan.Count -gt 0) {
+        $curPid = $pidsToScan.Dequeue()
+        if ($processById.ContainsKey($curPid)) {
+            $matching = $processById[$curPid]
+            $ws = [int64]$matching.WorkingSetSize
+            $totalWorkingSet += $ws
+            
+            $activeProcs += @{
+                ProcessId = $curPid
+                Name = $matching.Name
+                CreationDate = $matching.CreationDate
+                WorkingSetSize = $ws
+            }
+        }
+        
+        if ($childrenMap.ContainsKey($curPid)) {
+            $parentProc = if ($processById.ContainsKey($curPid)) { $processById[$curPid] } else { $null }
+            foreach ($child in $childrenMap[$curPid]) {
+                $cid = [int]$child.ProcessId
+                # Double-check child creation date >= parent creation date
+                if ($parentProc -and $child.CreationDate -and $child.CreationDate -lt $parentProc.CreationDate) {
+                    continue
+                }
+                if (-not $collectedPids.Contains($cid)) {
+                    [void]$collectedPids.Add($cid)
+                    $pidsToScan.Enqueue($cid)
+                }
+            }
+        }
+    }
+    
+    return @{
+        TotalBytes = $totalWorkingSet
+        ActiveProcesses = $activeProcs
+    }
+}
+
+while (-not $proc.HasExited) {
+    try {
+        $treeStats = Get-ProcessTreeStats -RootPid $ParentPid -RootStartTime $RootCreationDate
+        if ($treeStats.TotalBytes -gt $PeakRamBytes) {
+            $PeakRamBytes = $treeStats.TotalBytes
+        }
+        foreach ($p in $treeStats.ActiveProcesses) {
+            $pidKey = $p.ProcessId
+            if (-not $ProcessRegistry.ContainsKey($pidKey)) {
+                $ProcessRegistry[$pidKey] = @{
+                    ProcessId = $p.ProcessId
+                    Name = $p.Name
+                    StartTime = $p.CreationDate
+                    PeakWorkingSet = $p.WorkingSetSize
+                }
+            } else {
+                if ($p.WorkingSetSize -gt $ProcessRegistry[$pidKey].PeakWorkingSet) {
+                    $ProcessRegistry[$pidKey].PeakWorkingSet = $p.WorkingSetSize
+                }
             }
         }
     } catch {
         # ignore transient query errors
     }
-    Start-Sleep -Milliseconds 150
+    Start-Sleep -Milliseconds 200
 }
 
 $proc.WaitForExit()
@@ -143,7 +230,6 @@ if (-not $FinalVideoPath -or -not (Test-Path $FinalVideoPath)) {
 }
 
 # Parse stages timing from stderr logs
-# Look for log timestamps
 $audioStart = [regex]::Match($StderrText, '(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}).*generate_audio -')
 $subStart = [regex]::Match($StderrText, '(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}).*generating subtitle')
 $matStart = [regex]::Match($StderrText, '(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}).*preprocess local materials')
@@ -156,7 +242,17 @@ Write-Host "=================================================================" -
 Write-Host "                    BASELINE BENCHMARK RESULTS                   " -ForegroundColor Green
 Write-Host "=================================================================" -ForegroundColor Green
 Write-Host ("Total Wall-Clock Time : {0:N2} s ({1:N2} min)" -f $TotalElapsedSeconds, ($TotalElapsedSeconds / 60))
-Write-Host ("Peak RAM Usage        : {0:N2} MB" -f ($PeakRamBytes / 1MB))
+Write-Host ("Peak RAM (Process Tree): {0:N2} MB" -f ($PeakRamBytes / 1MB))
+Write-Host ""
+Write-Host "Detailed Process Tree (Verified Child Lineage):" -ForegroundColor Cyan
+Write-Host ("{0,-8} | {1,-28} | {2,-22} | {3,14}" -f "PID", "Process Name", "Start Time", "Peak RAM (MB)")
+Write-Host ("-" * 80)
+foreach ($procItem in ($ProcessRegistry.Values | Sort-Object StartTime)) {
+    $timeStr = if ($procItem.StartTime) { $procItem.StartTime.ToString("yyyy-MM-dd HH:mm:ss") } else { "N/A" }
+    $ramMb = $procItem.PeakWorkingSet / 1MB
+    Write-Host ("{0,-8} | {1,-28} | {2,-22} | {3,14:N2}" -f $procItem.ProcessId, $procItem.Name, $timeStr, $ramMb)
+}
+Write-Host ("-" * 80)
 
 if ($renderStart.Success -and $taskFinished.Success) {
     $t1 = [datetime]::ParseExact($renderStart.Groups[1].Value, "yyyy-MM-dd HH:mm:ss", $null)

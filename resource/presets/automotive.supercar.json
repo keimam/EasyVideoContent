@@ -1,0 +1,27 @@
+{
+  "id": "automotive.supercar",
+  "name": "Modern Supercars & Hypercars",
+  "schema_version": "1.0.0",
+  "kind": "sub_niche",
+  "extends": "automotive",
+  "narration_style": "Sleek, futuristic, focused on bleeding-edge carbon engineering, aerodynamic downforce, and Nürburgring records",
+  "hook_rules": "Start with an astronomical top speed figure, extreme G-force rating, or seven-figure price tag in the first 10 seconds.",
+  "words_per_minute": 140,
+  "+topic_keywords": [
+    "carbon fiber monocoque",
+    "active aerodynamics",
+    "hybrid hypercar powertrain",
+    "Nurburgring Nordschleife lap time",
+    "dual clutch transmission",
+    "telemetry data",
+    "downforce kilograms"
+  ],
+  "+visual_keywords": [
+    "wind tunnel smoke stream visualization",
+    "exposed carbon fiber weave",
+    "scissor doors opening upwards",
+    "glowing carbon ceramic brake rotors",
+    "track apex curb clipping"
+  ],
+  "sensitivity_notes": "State clearly whether lap times were verified official factory attempts or independent third-party tests on street-legal tires."
+}

@@ -1,0 +1,27 @@
+{
+  "id": "automotive.muscle_car",
+  "name": "American Muscle Cars",
+  "schema_version": "1.0.0",
+  "kind": "sub_niche",
+  "extends": "automotive",
+  "narration_style": "Punchy, gritty, celebrating raw V8 power, tire smoke, and quarter-mile straight-line speed",
+  "hook_rules": "Open with a roaring big-block V8 exhaust rumble description and a legendary drag strip showdown in the first 10 seconds.",
+  "words_per_minute": 145,
+  "+topic_keywords": [
+    "big block V8",
+    "quarter mile",
+    "drag strip",
+    "Mopar Hemi",
+    "Detroit steel",
+    "supercharger whine",
+    "golden muscle car era"
+  ],
+  "+visual_keywords": [
+    "hood scoop shaker",
+    "burning drag radials",
+    "chrome valve covers",
+    "quarter mile burnout smoke",
+    "fastback silhouette"
+  ],
+  "sensitivity_notes": "Verify whether engines were factory stock or dealer special packages (Yenko, COPO, Royal Bobcat). Do not mix up gross SAE vs net SAE horsepower ratings."
+}
