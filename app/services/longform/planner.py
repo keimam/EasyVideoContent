@@ -48,20 +48,44 @@ class ExecutionPlan:
         return len(self.all_units)
 
     @property
+    def total_units(self) -> int:
+        return len(self.all_units)
+
+    @property
     def pending_units(self) -> List[WorkUnit]:
         return [u for u in self.all_units if u.status == ItemStatus.pending]
+
+    @property
+    def pending_count(self) -> int:
+        return len(self.pending_units)
 
     @property
     def stale_units(self) -> List[WorkUnit]:
         return [u for u in self.all_units if u.status == ItemStatus.stale]
 
     @property
+    def stale_count(self) -> int:
+        return len(self.stale_units)
+
+    @property
     def completed_units(self) -> List[WorkUnit]:
         return [u for u in self.all_units if u.status == ItemStatus.completed]
 
     @property
+    def completed_count(self) -> int:
+        return len(self.completed_units)
+
+    @property
     def is_fully_completed(self) -> bool:
         return self.total_count > 0 and len(self.completed_units) == self.total_count
+
+    @property
+    def has_work_remaining(self) -> bool:
+        return len(self.pending_units) > 0 or len(self.stale_units) > 0
+
+    @property
+    def units(self) -> List[WorkUnit]:
+        return self.all_units
 
     def summary(self) -> str:
         """Return human-readable ASCII summary of plan status."""

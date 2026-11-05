@@ -28,6 +28,7 @@ from app.services.longform.hashing import (
     compute_audio_group_hash,
     compute_chapter_hash,
     compute_visual_segment_hash,
+    compute_preset_snapshot_hash,
     hash_file,
 )
 from app.services.longform.presets import get_preset, get_preset_inheritance_chain
@@ -536,10 +537,15 @@ def refresh_project_preset(project_dir: str | Path) -> Tuple[ProjectManifest, di
 
         save_manifest(manifest, p_dir)
 
+        old_hash = compute_preset_snapshot_hash(old_snapshot)
+        new_hash = compute_preset_snapshot_hash(latest_snapshot)
         details = {
             "preset_id": manifest.preset_id,
             "old_chain": old_chain,
             "new_chain": latest_chain,
+            "preset_inheritance_chain": latest_chain,
+            "old_snapshot_hash": old_hash,
+            "new_snapshot_hash": new_hash,
             "snapshot_updated": (old_snapshot != latest_snapshot),
         }
         return manifest, details

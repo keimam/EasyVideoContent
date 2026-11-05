@@ -1,7 +1,7 @@
 """Script Importer and Markdown Parser for Longform Video Generation.
 
 Converts structured Markdown scripts into Chapters, TtsGroups, and Segments (K3).
-Features an abbreviation-safe sentence tokenizer, visual/motion tag parsing,
+Features an abbreviation-safe sentence tokenizer, visual/motion/search/verify tag parsing,
 and duration estimation with non-blocking length warnings (K6).
 """
 
@@ -40,16 +40,16 @@ KNOWN_ABBREVIATIONS = [
 _CHAR_DOT_PLACEHOLDER = chr(0xE000)
 _CHAR_ELLIPSIS_PLACEHOLDER = chr(0xE001)
 
-# Tag extraction regexes: e.g. [visual: a dark castle on a hill] or [motion: zoom_in]
+# Tag extraction regexes: e.g. [visual: a dark castle] [motion: zoom_in] [source: stock] [search: keywords] [verify: claim]
 TAG_PATTERN = re.compile(
-    r"\[(visual|motion|source|file|voice)\s*[:=]\s*([^\]]+)\]",
+    r"\[(visual|motion|source|file|voice|search|verify)\s*[:=]\s*([^\]]+)\]",
     re.IGNORECASE,
 )
 
 
 def normalize_tag_positions(text: str) -> str:
     """Normalize tags written after sentence-ending punctuation so they stay with their sentence."""
-    pattern = r"([.!?]+)(\s*(?:\[(?:visual|motion|source|file|voice)[^\]]*\]\s*)+)"
+    pattern = r"([.!?]+)(\s*(?:\[(?:visual|motion|source|file|voice|search|verify)[^\]]*\]\s*)+)"
 
     def _swap(m: re.Match) -> str:
         punct = m.group(1)
@@ -213,9 +213,15 @@ def parse_markdown_script(
                         else MotionType.zoom_out
                     )
 
-                # Determine visual source
+                # Determine visual source (supports "stock", "local", "ai_image" aliases)
                 source_str = tags.get("source", "").lower()
-                if source_str in VisualSourceType.__members__:
+                if source_str in ("stock", "stock_video"):
+                    source_type = VisualSourceType.stock_video
+                elif source_str in ("local", "local_file"):
+                    source_type = VisualSourceType.local
+                elif source_str in ("ai_image", "ai"):
+                    source_type = VisualSourceType.ai_image
+                elif source_str in VisualSourceType.__members__:
                     source_type = VisualSourceType(source_str)
                 else:
                     source_type = VisualSourceType.ai_image
@@ -225,6 +231,8 @@ def parse_markdown_script(
                     prompt = clean_text
 
                 source_file = tags.get("file", None)
+                search_keywords = tags.get("search", None)
+                verify_claim = tags.get("verify", None)
 
                 # Estimated rough segment duration (based on words)
                 seg_words = len(clean_text.split())
@@ -242,6 +250,7 @@ def parse_markdown_script(
                     motion=motion,
                     source_file=source_file,
                     visual_hash=visual_hash,
+                    search_keywords=search_keywords,
                 )
 
                 seg = Segment(
@@ -249,6 +258,7 @@ def parse_markdown_script(
                     narration_text=clean_text,
                     duration_seconds=round(est_seg_duration, 2),
                     visual=visual_spec,
+                    verify=verify_claim,
                     status=ItemStatus.pending,
                 )
                 segments.append(seg)
@@ -322,6 +332,10 @@ def parse_markdown_script(
         # Blank line = paragraph break
         if not stripped:
             _flush_para()
+            continue
+
+        # Ignore comments or metadata banners before the first chapter
+        if stripped.startswith("<!--") or (current_chapter_title is None and stripped.startswith(">")):
             continue
 
         raw_para_buffer.append(stripped)
