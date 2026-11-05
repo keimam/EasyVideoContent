@@ -135,15 +135,17 @@ def compute_plan(manifest: ProjectManifest, project_dir: str | Path) -> Executio
 
         for group in ch.tts_groups:
             g_idx = group.group_index
-            target_audio = group.audio.file_path or f"assets/audio/groups/ch{ch_idx}_g{g_idx}.mp3"
+            target_audio = group.audio.file_path or f"assets/audio/groups/ch{ch_idx}_g{g_idx}.wav"
             effective_para = group.get_effective_paragraph_text()
+            effective_voice = ch.voice_override or group.audio.voice_name
             expected_audio_hash = compute_audio_group_hash(
                 paragraph_text=effective_para,
                 tts_provider=group.audio.tts_provider,
                 tts_model=group.audio.tts_model,
-                voice_name=group.audio.voice_name,
+                voice_name=effective_voice,
                 voice_rate=group.audio.voice_rate,
                 text_norm_version=group.audio.text_norm_version,
+                audio_format=group.audio.audio_format,
             )
 
             file_ok, file_reason = _check_file_validity(p_dir, target_audio)

@@ -64,12 +64,14 @@ def compute_audio_group_hash(
     voice_name: str = "",
     voice_rate: float = 1.0,
     text_norm_version: str = "v1",
+    audio_format: str = "wav_48k_pcm",
 ) -> str:
-    """Compute hash for a paragraph-level TTS Group (K3)."""
+    """Compute hash for a paragraph-level TTS Group (K3, 3.5)."""
     norm_text = normalize_text(paragraph_text)
     payload = (
         f"{norm_text}|{tts_provider.strip().lower()}|{tts_model.strip()}|"
-        f"{voice_name.strip()}|{voice_rate:.2f}|{text_norm_version.strip()}"
+        f"{voice_name.strip()}|{voice_rate:.2f}|{text_norm_version.strip()}|"
+        f"{audio_format.strip().lower()}"
     )
     return hash_string(payload)
 

@@ -128,6 +128,8 @@ class Segment(BaseModel):
     start_offset_seconds: Optional[float] = None
     end_offset_seconds: Optional[float] = None
     duration_seconds: Optional[float] = None
+    chapter_start_seconds: Optional[float] = None
+    chapter_end_seconds: Optional[float] = None
     visual: VisualSpec = Field(default_factory=VisualSpec)
     verify: Optional[str] = None
     status: ItemStatus = ItemStatus.pending
@@ -146,6 +148,10 @@ class AudioSpec(BaseModel):
     duration_seconds: Optional[float] = None
     file_path: Optional[str] = None
     audio_hash: Optional[str] = None
+    alignment_method: Optional[str] = None
+    sample_rate: int = 48000
+    channels: int = 1
+    audio_format: str = "wav_48k_pcm"
 
     model_config = {"extra": "forbid"}
 
@@ -188,11 +194,13 @@ class Chapter(BaseModel):
     output_file: Optional[str] = None
     chapter_hash: Optional[str] = None
     voice_override: Optional[str] = None
+    audio_file: Optional[str] = None
+    audio_duration_seconds: Optional[float] = None
     status: ItemStatus = ItemStatus.pending
 
     model_config = {"extra": "forbid"}
 
-    @field_validator("output_file")
+    @field_validator("output_file", "audio_file")
     @classmethod
     def validate_relative_path(cls, value: str | None, info) -> str | None:
         return _assert_relative_path(value, info.field_name)

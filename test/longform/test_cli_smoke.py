@@ -113,12 +113,38 @@ def test_cli_all_subcommands_smoke(temp_project_id: str):
     assert res.returncode == 0, f"project refresh-preset failed: {res.stderr}"
     assert "Preset Snapshot Refreshed" in res.stdout
 
-    # 14. project dev-simulate
+    # 14. voice list (Stage 3)
+    res = run_cli("voice", "list", "--language", "en-US")
+    assert res.returncode == 0, f"voice list failed: {res.stderr}"
+    assert "Available Edge TTS Voices" in res.stdout
+
+    # 15. project set-voice (Stage 3)
+    res = run_cli("project", "set-voice", p_id, "en-US-ChristopherNeural-Male", "--rate", "1.0")
+    assert res.returncode == 0, f"project set-voice failed: {res.stderr}"
+    assert "Narrator Voice Updated" in res.stdout
+
+    # 16. audio synth with fake provider (Stage 3)
+    res = run_cli("audio", "synth", p_id, "--provider", "fake")
+    assert res.returncode == 0, f"audio synth failed: {res.stderr}"
+    assert "Audio Synthesis Completed Successfully" in res.stdout
+
+    # 17. audio status (Stage 3)
+    res = run_cli("audio", "status", p_id)
+    assert res.returncode == 0, f"audio status failed: {res.stderr}"
+    assert "Audio Synthesis Status:" in res.stdout
+    assert "Alignment Methods:" in res.stdout
+
+    # 18. audio preview (Stage 3)
+    res = run_cli("audio", "preview", p_id, "--chapter", "1")
+    assert res.returncode == 0, f"audio preview failed: {res.stderr}"
+    assert "Audio Preview Generated Successfully" in res.stdout
+
+    # 19. project dev-simulate
     res = run_cli("project", "dev-simulate", p_id)
     assert res.returncode == 0, f"project dev-simulate failed: {res.stderr}"
     assert "Pipeline run simulated successfully" in res.stdout
 
-    # 15. project plan (fully completed)
+    # 20. project plan (fully completed)
     res = run_cli("project", "plan", p_id)
     assert res.returncode == 0, f"project plan completed failed: {res.stderr}"
     assert "Project is fully completed and up to date" in res.stdout
