@@ -192,3 +192,4 @@ Konfigurasi long video **TIDAK mencemari `config.toml` upstream**.
 2. **Ken Burns**: Default bergantian otomatis (*alternating*); field opsional di segmen untuk mengunci tipe animasi (`zoom_in`, `zoom_out`, `pan_left`, `pan_right`, `static`).
 3. **Batas Durasi**: Default `min_seconds = 600`, `max_seconds = 1200` (peringatan bila melampaui).
 4. **CapCut Desktop**: Versi terpasang pengguna adalah **8.9.0 (Windows)**, diverifikasi empiris di Tahap 6.
+5. **Ketergantungan Durasi Visual terhadap Audio (Untuk Tahap 3)**: Durasi klip visual per segmen bergantung secara ketat pada durasi audio grup narasi hasil TTS dan perataan waktu (*timestamp alignment*). Jika audio grup dibuat ulang dan durasi segmen berubah, maka visual segmen terkait wajib ditandai *stale* dan dirender ulang agar sinkronisasi visual dan audio tetap presisi. Belum diimplementasikan di Tahap 2.

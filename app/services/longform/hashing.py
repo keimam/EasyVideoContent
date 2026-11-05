@@ -52,6 +52,11 @@ def hash_file(file_path: str | Path, chunk_size: int = 65536) -> str:
     return hasher.hexdigest()
 
 
+def compute_preset_snapshot_hash(preset_snapshot: dict[str, Any]) -> str:
+    """Compute sha256 hash of canonical JSON preset snapshot (K2)."""
+    return hash_string(canonical_json(preset_snapshot))
+
+
 def compute_audio_group_hash(
     paragraph_text: str,
     tts_provider: str = "edge",
@@ -101,7 +106,7 @@ def compute_chapter_hash(
     joined_elements = "\n".join(elements)
 
     # K2: Snapshot canonical hash
-    preset_snapshot_hash = hash_string(canonical_json(preset_snapshot))
+    preset_snapshot_hash = compute_preset_snapshot_hash(preset_snapshot)
     encoder_hash = hash_string(canonical_json(encoder_settings.model_dump()))
     subtitle_hash = hash_string(canonical_json(subtitle_style))
     focus_norm = normalize_text(sub_niche_focus)

@@ -4,8 +4,14 @@
   "schema_version": "1.0.0",
   "kind": "sub_niche",
   "extends": "automotive",
-  "narration_style": "Enthusiastic, fast-paced, reverent of 90s Japanese engineering, touge street racing, and tuner subculture",
-  "hook_rules": "Hook the audience with midnight touge downhill drift battles or the infamous 276-horsepower gentlemens agreement in the opening 10 seconds.",
+  "narration_style": "Enthusiastic, fast-paced, reverent of 90s Japanese engineering, touge street racing, and underground tuner subculture",
+  "hook_rules": "Hook the audience with midnight touge downhill drift battles or the infamous 276-horsepower gentleman's agreement in the opening 10 seconds.",
+  "chapter_structure": [
+    "The Midnight Express & Touge Mythos",
+    "The Golden 90s Era of Japanese Engineering",
+    "The 276-Horsepower Gentleman's Agreement & Tuning Revolution",
+    "The Global Legend & Modern Auction Frenzy"
+  ],
   "words_per_minute": 145,
   "+topic_keywords": [
     "twin turbo inline six",
@@ -24,5 +30,10 @@
     "flame shooting exhaust on decel",
     "mountain touge hairpin drift"
   ],
-  "sensitivity_notes": "Distinguish strictly between genuine Japanese Domestic Market VIN specifications and USDM export models."
+  "sensitivity_notes": "Distinguish strictly between genuine Japanese Domestic Market right-hand drive VIN specifications and USDM export models. Attach [verify: ...] to turbo boost levels and factory production numbers.",
+  "recommended_visual_sources": {
+    "stock": 0.65,
+    "local": 0.20,
+    "ai_image": 0.15
+  }
 }

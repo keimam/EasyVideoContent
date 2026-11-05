@@ -4,8 +4,14 @@
   "schema_version": "1.0.0",
   "kind": "sub_niche",
   "extends": "automotive",
-  "narration_style": "Punchy, gritty, celebrating raw V8 power, tire smoke, and quarter-mile straight-line speed",
-  "hook_rules": "Open with a roaring big-block V8 exhaust rumble description and a legendary drag strip showdown in the first 10 seconds.",
+  "narration_style": "Punchy, gritty, celebrating raw V8 horsepower, burning rubber, tire smoke, and drag strip battles",
+  "hook_rules": "Open immediately with a roaring big-block V8 exhaust rumble and a legendary drag strip showdown in the first 10 seconds. No channel intros.",
+  "chapter_structure": [
+    "The Detroit Street Legend & Raw V8 Hook",
+    "NASCAR & NHRA Homologation Battles",
+    "Under the Hood: Iron, Carbs & Four-Speeds",
+    "The Muscle Car Collapse & Modern Resurrection"
+  ],
   "words_per_minute": 145,
   "+topic_keywords": [
     "big block V8",
@@ -23,5 +29,10 @@
     "quarter mile burnout smoke",
     "fastback silhouette"
   ],
-  "sensitivity_notes": "Verify whether engines were factory stock or dealer special packages (Yenko, COPO, Royal Bobcat). Do not mix up gross SAE vs net SAE horsepower ratings."
+  "sensitivity_notes": "Verify whether engines were factory stock or dealer special packages (Yenko, COPO, Royal Bobcat). Do not mix up gross SAE vs net SAE horsepower ratings. Attach [verify: ...] to dyno ratings and production counts.",
+  "recommended_visual_sources": {
+    "stock": 0.60,
+    "local": 0.25,
+    "ai_image": 0.15
+  }
 }

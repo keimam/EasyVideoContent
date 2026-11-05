@@ -5,14 +5,14 @@
   "kind": "niche",
   "language": "en-US",
   "audience": "Car enthusiasts, automotive history buffs, gearheads, YouTube automotive documentary viewers",
-  "narration_style": "Passionate, authoritative, vivid descriptions of mechanical engineering and exhaust notes",
+  "narration_style": "Passionate, authoritative, vivid descriptions of mechanical engineering, aerodynamics, and exhaust notes",
   "chapter_structure": [
     "The Hook & Machine Overview",
     "Origin, Design & Engineering Genesis",
     "On the Road & Track Performance",
     "The Legacy & Cultural Icon Status"
   ],
-  "hook_rules": "Capture the essence of speed, sound, or historical rivalry within the first 10-15 seconds. Never start with generic pleasantries.",
+  "hook_rules": "Capture the essence of speed, sound, or historical rivalry within the first 10-15 seconds. Never start with generic pleasantries or 'welcome back'.",
   "words_per_minute": 140,
   "subtitle_style": {
     "font_name": "Impact",
@@ -23,14 +23,14 @@
     "alignment": 2,
     "margin_v": 45
   },
-  "visual_style": "Cinematic automotive realism, dynamic camera panning, detailed engine bay closeups, high contrast dramatic lighting",
+  "visual_style": "Cinematic automotive realism, dynamic camera tracking, detailed engine bay closeups, high contrast dramatic lighting",
   "image_prompt_template": {
     "prefix": "cinematic car documentary photograph, 8k resolution, dramatic golden hour lighting, asphalt reflections, ",
     "suffix": ", automotive magazine editorial photography, ultra sharp focus"
   },
   "visual_source_mix": {
-    "stock_video": 0.6,
-    "ai_image": 0.4
+    "stock_video": 0.65,
+    "ai_image": 0.35
   },
   "default_voice": "en-US-ChristopherNeural",
   "default_bgm": {
@@ -55,9 +55,9 @@
     "exhaust tips glow",
     "wet asphalt reflections"
   ],
-  "sensitivity_notes": "Do not hallucinate technical specifications, horsepower or torque ratings, 0-60 mph times, production numbers, or pricing without verified manufacturer or period sources.",
+  "sensitivity_notes": "Do not hallucinate technical specifications, horsepower or torque ratings, 0-60 mph times, production numbers, or pricing without verified manufacturer or period sources. Always attach [verify: ...] to performance and production claims.",
   "recommended_visual_sources": {
-    "stock_video": 0.65,
+    "stock": 0.65,
     "local": 0.2,
     "ai_image": 0.15
   }

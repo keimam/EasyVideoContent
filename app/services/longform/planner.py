@@ -63,6 +63,10 @@ class ExecutionPlan:
     def is_fully_completed(self) -> bool:
         return self.total_count > 0 and len(self.completed_units) == self.total_count
 
+    @property
+    def units(self) -> List[WorkUnit]:
+        return self.all_units
+
     def summary(self) -> str:
         """Return human-readable ASCII summary of plan status."""
         lines = [
