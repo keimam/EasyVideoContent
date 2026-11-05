@@ -579,6 +579,188 @@ def cmd_script_quality(args: argparse.Namespace) -> int:
     return 0
 
 
+
+# =========================================================================
+# STAGE 3 CLI COMMANDS: AUDIO SYNTHESIS, TIMELINE, PREVIEW, & VOICE
+# =========================================================================
+
+def cmd_audio_synth(args: argparse.Namespace) -> int:
+    """Synthesize audio groups into 48kHz PCM WAVs and align sentence segments (3.1-3.3, 3.7)."""
+    project_dir = get_project_dir(args.project_id)
+    if not project_dir.is_dir():
+        print(f"Error: Project '{args.project_id}' not found at {project_dir}", file=sys.stderr)
+        return 1
+
+    from app.services.longform.voice_service import VoiceService
+    from app.services.longform.tts_adapter import TTSConfigurationError, TTSAdapterError
+    service = VoiceService(project_dir=project_dir)
+
+    print(f"Starting audio synthesis for project: {args.project_id}")
+    sys.stdout.flush()
+
+    try:
+        manifest = service.synthesize_all(
+            provider=args.provider,
+            concurrency=args.concurrency,
+            fake_delay=args.fake_delay,
+            fail_at_group=getattr(args, "fail_at", None),
+        )
+    except TTSConfigurationError as exc:
+        print(f"\n[CONFIGURATION ERROR] {exc}\n", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("\n[AUDIO SYNTH INTERRUPTED] KeyboardInterrupt received. Safely halting. Incomplete groups remain pending for next resume.\n", file=sys.stderr)
+        return 130
+    except Exception as exc:
+        print(f"Error synthesizing audio: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"\nAudio Synthesis Completed Successfully for Project: {args.project_id}")
+    print("-" * 65)
+    status = service.get_audio_status()
+    fake_note = " [FAKE MOCK AUDIO]" if status.get("is_fake") else ""
+    print(f"  Status:                  {status['completed_groups']}/{status['total_groups']} groups completed{fake_note}")
+    print(f"  Total Audio Duration:    {status['total_duration_seconds']:.1f}s ({status['total_duration_seconds']/60:.1f} min)")
+    print(f"  Alignment Breakdown:     {status['alignment_method_counts']}")
+    print("-" * 65)
+    print(f"Run 'python cli_longform.py audio preview {args.project_id} --chapter 1' to verify synchronization in VLC.\n")
+    return 0
+
+
+def cmd_audio_status(args: argparse.Namespace) -> int:
+    """Show detailed audio group completion and alignment method diagnostics (3.7)."""
+    project_dir = get_project_dir(args.project_id)
+    if not project_dir.is_dir():
+        print(f"Error: Project '{args.project_id}' not found at {project_dir}", file=sys.stderr)
+        return 1
+
+    from app.services.longform.voice_service import VoiceService
+    service = VoiceService(project_dir=project_dir)
+    status = service.get_audio_status()
+
+    fake_badge = " [FAKE MOCK AUDIO]" if status.get("is_fake") else ""
+    print(f"\nAudio Synthesis Status: {args.project_id}{fake_badge}")
+    print("=" * 65)
+    print(f"  Total Groups:       {status['total_groups']}")
+    print(f"  Completed Groups:   {status['completed_groups']}/{status['total_groups']}")
+    print(f"  Total Duration:     {status['total_duration_seconds']:.1f} seconds ({status['total_duration_seconds']/60:.1f} minutes)")
+    m_counts = status['alignment_method_counts']
+    print(f"  Alignment Methods:  word_cue={m_counts.get('word_cue', 0)}, whisper={m_counts.get('whisper', 0)}, proportional={m_counts.get('proportional', 0)}")
+    print("  Chapters:")
+    if status["chapters"]:
+        for ch in status["chapters"]:
+            ch_methods = ", ".join(f"{k}:{v}" for k, v in ch["alignment_methods"].items() if v > 0) or "none"
+            print(f"    - Ch {ch['chapter_index']}: {ch['chapter_title']}")
+            print(f"      Groups: {ch['completed_groups']}/{ch['total_groups']} | Duration: {ch['duration_seconds']:.1f}s | Alignments: [{ch_methods}]")
+    else:
+        print("    No chapters found.")
+    print("=" * 65 + "\n")
+    return 0
+
+
+def cmd_audio_preview(args: argparse.Namespace) -> int:
+    """Generate chapter_NN_preview.wav and chapter_NN_preview.srt in export/preview/ (3.6)."""
+    project_dir = get_project_dir(args.project_id)
+    if not project_dir.is_dir():
+        print(f"Error: Project '{args.project_id}' not found at {project_dir}", file=sys.stderr)
+        return 1
+
+    from app.services.longform.voice_service import VoiceService
+    service = VoiceService(project_dir=project_dir)
+    try:
+        wav_path, srt_path = service.generate_preview(chapter_index=args.chapter)
+    except Exception as exc:
+        print(f"Error generating preview: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"\nAudio Preview Generated Successfully for Chapter {args.chapter}:")
+    print("-" * 65)
+    print(f"  Preview WAV:  {wav_path}")
+    print(f"  Preview SRT:  {srt_path}")
+    print("-" * 65)
+    print("Open the WAV audio along with the SRT subtitle file in VLC to verify start, middle, and end sync.\n")
+    return 0
+
+
+def cmd_project_set_voice(args: argparse.Namespace) -> int:
+    """Change project narrator voice, invalidating existing audio groups (3.5, 3.7)."""
+    voice_name = args.voice_name or getattr(args, "voice_flag", None)
+    if not voice_name:
+        print("Error: Voice name must be specified (e.g. 'python cli_longform.py project set-voice my_proj en-US-ChristopherNeural-Male')", file=sys.stderr)
+        return 1
+
+    project_dir = get_project_dir(args.project_id)
+    if not project_dir.is_dir():
+        print(f"Error: Project '{args.project_id}' not found at {project_dir}", file=sys.stderr)
+        return 1
+
+    from app.services.longform.voice_service import VoiceService
+    service = VoiceService(project_dir=project_dir)
+    try:
+        manifest = service.set_voice(voice_name=voice_name, voice_rate=args.rate)
+    except Exception as exc:
+        print(f"Error setting voice: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"\nNarrator Voice Updated for Project: {args.project_id}")
+    print("-" * 65)
+    print(f"  New Voice:   {voice_name}")
+    print(f"  Speech Rate: {args.rate}")
+    print("  Note: All existing audio groups and chapter renders have been marked STALE.")
+    print("-" * 65)
+    print(f"Run 'python cli_longform.py audio synth {args.project_id}' to synthesize audio with the new voice.\n")
+    return 0
+
+
+def cmd_voice_list(args: argparse.Namespace) -> int:
+    """List available Edge TTS voices from the local catalog (3.6)."""
+    from app.services.longform.voice_service import list_available_voices
+    voices = list_available_voices(language_prefix=args.language)
+    lang_hint = f" matching '{args.language}'" if args.language else ""
+    print(f"\nAvailable Edge TTS Voices{lang_hint} ({len(voices)} voices):")
+    print("-" * 65)
+    for v in voices:
+        print(f"  - {v}")
+    print("-" * 65 + "\n")
+    return 0
+
+
+def cmd_voice_test(args: argparse.Namespace) -> int:
+    """Synthesize a short sample phrase to test a voice (3.6)."""
+    import tempfile
+    from app.services import voice as upstream_voice
+    from app.services.longform.audio_util import convert_to_pcm_wav
+
+    clean_text = args.text.strip()
+    if not clean_text:
+        print("Error: --text cannot be empty", file=sys.stderr)
+        return 1
+
+    tmp_mp3 = Path(tempfile.mktemp(suffix=".mp3"))
+    tmp_wav = Path(tempfile.mktemp(suffix=".wav"))
+    print(f"Testing voice '{args.voice}' with text: \"{clean_text}\"...")
+    try:
+        sub = upstream_voice.tts(
+            text=clean_text,
+            voice_name=args.voice,
+            voice_rate=1.0,
+            voice_file=str(tmp_mp3),
+        )
+        if not tmp_mp3.is_file() or tmp_mp3.stat().st_size == 0:
+            print("Error: Upstream TTS produced no audio.", file=sys.stderr)
+            return 1
+
+        convert_to_pcm_wav(tmp_mp3, tmp_wav)
+        print(f"SUCCESS: Voice sample synthesized to: {tmp_wav}")
+    except Exception as exc:
+        print(f"Error testing voice: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        if tmp_mp3.exists():
+            tmp_mp3.unlink(missing_ok=True)
+    return 0
+
+
 def re_slugify(text: str) -> str:
     """Create a URL/folder-safe slug from title."""
     import re
@@ -633,6 +815,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_ref = proj_subs.add_parser("refresh-preset", help="Refresh preset snapshot from disk")
     p_ref.add_argument("project_id", help="Project ID")
 
+    # project set-voice (3.5, 3.7)
+    p_set_voice = proj_subs.add_parser("set-voice", help="Change project default voice (marks audio stale)")
+    p_set_voice.add_argument("project_id", help="Project ID")
+    p_set_voice.add_argument("voice_name", nargs="?", default=None, help="New voice name (e.g. 'en-US-ChristopherNeural-Male')")
+    p_set_voice.add_argument("--voice", dest="voice_flag", default=None, help="New voice name (flag form)")
+    p_set_voice.add_argument("--rate", type=float, default=1.0, help="Speech rate multiplier (default 1.0)")
+
     # project dev-simulate
     p_sim = proj_subs.add_parser("dev-simulate", help="Simulate pipeline execution for testing")
     p_sim.add_argument("project_id", help="Project ID")
@@ -667,6 +856,40 @@ def build_parser() -> argparse.ArgumentParser:
     p_s_quality = script_subs.add_parser("quality", help="Run script quality and fact-checking inspection")
     p_s_quality.add_argument("project_id", help="Project ID")
 
+    # 4. audio (Stage 3)
+    p_audio = subparsers.add_parser("audio", help="Manage TTS voice synthesis, alignment, and chapter audio")
+    audio_subs = p_audio.add_subparsers(dest="audio_command", required=True)
+
+    # audio synth
+    p_a_synth = audio_subs.add_parser("synth", help="Synthesize paragraph audio into 48kHz PCM WAVs with alignment")
+    p_a_synth.add_argument("project_id", help="Project ID")
+    p_a_synth.add_argument("--provider", default=None, help="TTS provider ('edge' or 'fake')")
+    p_a_synth.add_argument("--concurrency", type=int, default=2, help="Parallel worker threads (default: 2)")
+    p_a_synth.add_argument("--fake-delay", type=float, default=0.0, help="Simulate artificial delay per group in seconds (for Ctrl+C test)")
+    p_a_synth.add_argument("--fail-at", help="Simulate failure at unit ID (e.g. 'ch1_g2_audio')")
+
+    # audio status
+    p_a_status = audio_subs.add_parser("status", help="Show audio synthesis completion and alignment diagnostics")
+    p_a_status.add_argument("project_id", help="Project ID")
+
+    # audio preview
+    p_a_preview = audio_subs.add_parser("preview", help="Generate preview WAV and SRT subtitle for VLC verification")
+    p_a_preview.add_argument("project_id", help="Project ID")
+    p_a_preview.add_argument("--chapter", type=int, required=True, help="Chapter index to preview")
+
+    # 5. voice (Stage 3)
+    p_voice = subparsers.add_parser("voice", help="Query available voices and test samples")
+    voice_subs = p_voice.add_subparsers(dest="voice_command", required=True)
+
+    # voice list
+    p_v_list = voice_subs.add_parser("list", help="List available Edge TTS voices from catalog")
+    p_v_list.add_argument("--language", help="Optional language code filter (e.g. 'en-US', 'id-ID')")
+
+    # voice test
+    p_v_test = voice_subs.add_parser("test", help="Test a voice with a sample text phrase")
+    p_v_test.add_argument("--voice", required=True, help="Voice name to test")
+    p_v_test.add_argument("--text", default="Hello! This is a test of Edge TTS voice synthesis for long video production.", help="Sample phrase to speak")
+
     return parser
 
 
@@ -692,6 +915,8 @@ def main() -> int:
             return cmd_project_refresh_preset(args)
         elif args.project_command == "dev-simulate":
             return cmd_project_dev_simulate(args)
+        elif args.project_command == "set-voice":
+            return cmd_project_set_voice(args)
     elif args.command == "script":
         if args.script_command == "outline":
             return cmd_script_outline(args)
@@ -701,6 +926,18 @@ def main() -> int:
             return cmd_script_status(args)
         elif args.script_command == "quality":
             return cmd_script_quality(args)
+    elif args.command == "audio":
+        if args.audio_command == "synth":
+            return cmd_audio_synth(args)
+        elif args.audio_command == "status":
+            return cmd_audio_status(args)
+        elif args.audio_command == "preview":
+            return cmd_audio_preview(args)
+    elif args.command == "voice":
+        if args.voice_command == "list":
+            return cmd_voice_list(args)
+        elif args.voice_command == "test":
+            return cmd_voice_test(args)
 
     parser.print_help()
     return 1
