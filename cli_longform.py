@@ -222,15 +222,15 @@ def cmd_project_plan(args: argparse.Namespace) -> int:
     plan = compute_plan(manifest, project_dir)
 
     print(f"\nExecution Plan for Project: {manifest.project_id}")
-    print(f"Total Work Units: {plan.total_units}")
-    print(f"  - Completed: {plan.completed_units}")
-    print(f"  - Stale:     {plan.stale_units}")
-    print(f"  - Pending:   {plan.pending_units}")
+    print(f"Total Work Units: {plan.total_count}")
+    print(f"  - Completed: {plan.completed_count}")
+    print(f"  - Stale:     {plan.stale_count}")
+    print(f"  - Pending:   {plan.pending_count}")
 
     if plan.is_fully_completed:
         print("Status: Project is fully completed and up to date.")
     elif plan.has_work_remaining:
-        print(f"Status: Incremental update required ({plan.stale_units} stale, {plan.pending_units} pending)")
+        print(f"Status: Incremental update required ({plan.stale_count} stale, {plan.pending_count} pending)")
 
     print("\n" + "-" * 90)
     print(f"{'Unit ID':<22} | {'Type':<16} | {'Status':<10} | {'Reason'}")
@@ -429,14 +429,25 @@ def cmd_script_outline(args: argparse.Namespace) -> int:
         print(f"Error: Project '{args.project_id}' not found at {project_dir}", file=sys.stderr)
         return 1
 
+    from app.services.longform.llm_adapter import LLMConfigurationError
     from app.services.longform.script_generator import ScriptGenerator
     generator = ScriptGenerator(project_dir=project_dir, provider=args.provider, model=args.model)
+
+    prov_str = f"{generator.adapter.provider} [FAKE TEST MOCK]" if generator.adapter.is_fake else generator.adapter.provider
+    print(f"\n[LLM Configuration] Provider: {prov_str} | Model: {generator.adapter.model or '(default)'}")
+    sys.stdout.flush()
 
     try:
         outline = generator.generate_outline(
             topic=args.topic,
             target_duration_minutes=args.minutes,
         )
+    except LLMConfigurationError as exc:
+        print(f"\n[CONFIGURATION ERROR] {exc}\n", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("\n[SCRIPT OUTLINE INTERRUPTED] KeyboardInterrupt received. Safely exiting.\n", file=sys.stderr)
+        return 130
     except Exception as exc:
         print(f"Error generating outline: {exc}", file=sys.stderr)
         return 1
@@ -466,13 +477,29 @@ def cmd_script_write(args: argparse.Namespace) -> int:
         print(f"Error: Project '{args.project_id}' not found at {project_dir}", file=sys.stderr)
         return 1
 
+    from app.services.longform.llm_adapter import LLMConfigurationError
     from app.services.longform.script_generator import ScriptGenerator
-    generator = ScriptGenerator(project_dir=project_dir, provider=args.provider, model=args.model)
+    generator = ScriptGenerator(
+        project_dir=project_dir,
+        provider=args.provider,
+        model=args.model,
+        fake_delay=getattr(args, "fake_delay", 0.0),
+    )
+
+    prov_str = f"{generator.adapter.provider} [FAKE TEST MOCK]" if generator.adapter.is_fake else generator.adapter.provider
+    print(f"\n[LLM Configuration] Provider: {prov_str} | Model: {generator.adapter.model or '(default)'}")
+    sys.stdout.flush()
 
     try:
         full_script = generator.write_chapters(
             fail_at_chapter=args.fail_at,
         )
+    except LLMConfigurationError as exc:
+        print(f"\n[CONFIGURATION ERROR] {exc}\n", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("\n[SCRIPT WRITE INTERRUPTED] KeyboardInterrupt received. Safely exiting without saving incomplete chapter.\n", file=sys.stderr)
+        return 130
     except Exception as exc:
         print(f"Error writing script chapters: {exc}", file=sys.stderr)
         return 1
@@ -480,9 +507,10 @@ def cmd_script_write(args: argparse.Namespace) -> int:
     print(f"\nScript Writing Completed Successfully for Project: {args.project_id}")
     print("-" * 65)
     print(f"  Saved Full Script: {full_script}")
+    print(f"  Quality Report:    {project_dir / 'script' / 'quality_report.md'}")
     print("  Manifest chapters and groups updated successfully via single pipeline path.")
     print("-" * 65)
-    print(f"Run 'python cli_longform.py script quality {args.project_id}' to inspect script quality and facts.\n")
+    print(f"Run 'python cli_longform.py script quality {args.project_id}' to re-inspect quality anytime.\n")
     return 0
 
 
@@ -497,16 +525,22 @@ def cmd_script_status(args: argparse.Namespace) -> int:
     generator = ScriptGenerator(project_dir=project_dir)
     status = generator.get_status()
 
-    print(f"\nScript Generation Status: {args.project_id}")
+    fake_badge = " [FAKE MOCK CONTENT]" if status.get("is_fake") else ""
+    print(f"\nScript Generation Status: {args.project_id}{fake_badge}")
     print("=" * 65)
     print(f"  Outline Created:     {'Yes' if status['has_outline'] else 'No'}")
+    if status['has_outline']:
+        print(f"  Outline Provider:    {status.get('outline_provider')} (Model: {status.get('outline_model')})")
     print(f"  Full Script Created: {'Yes' if status['full_script_exists'] else 'No'}")
+    print(f"  Quality Report:      {'Yes' if status.get('quality_report_exists') else 'No'}")
     print(f"  LLM Cache Entries:   {status['cache_entries']}")
     print(f"  Chapters:")
     if status["chapters"]:
         for ch in status["chapters"]:
             rev_tag = " (revised for length)" if ch["revised"] else ""
-            print(f"    - Ch {ch['chapter_index']}: {ch['title']} [{ch['status']}] - {ch['word_count']}/{ch['target_words']} words{rev_tag}")
+            fake_tag = " [FAKE]" if ch.get("is_fake") else ""
+            print(f"    - Ch {ch['chapter_index']}: {ch['title']} [{ch['status']}{fake_tag}] - {ch['word_count']}/{ch['target_words']} words{rev_tag}")
+            print(f"      (Provider: {ch.get('provider')} | Model: {ch.get('model')})")
     else:
         print(f"    No chapters generated yet.")
     print("=" * 65 + "\n")
@@ -614,14 +648,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_s_outline.add_argument("project_id", help="Project ID")
     p_s_outline.add_argument("--topic", required=True, help="Video topic")
     p_s_outline.add_argument("--minutes", type=float, default=12.0, help="Target duration in minutes (default: 12)")
-    p_s_outline.add_argument("--provider", default="fake", help="LLM provider ('fake' or upstream provider)")
+    p_s_outline.add_argument("--provider", default=None, help="LLM provider (defaults to upstream config.toml; pass 'fake' for offline test mock)")
     p_s_outline.add_argument("--model", help="Optional model name override")
 
     # script write
     p_s_write = script_subs.add_parser("write", help="Draft chapters sequentially with context and length control")
     p_s_write.add_argument("project_id", help="Project ID")
-    p_s_write.add_argument("--provider", default="fake", help="LLM provider ('fake' or upstream provider)")
+    p_s_write.add_argument("--provider", default=None, help="LLM provider (defaults to upstream config.toml; pass 'fake' for offline test mock)")
     p_s_write.add_argument("--model", help="Optional model name override")
+    p_s_write.add_argument("--fake-delay", type=float, default=0.0, help="Artificial delay per chapter generation step in seconds (useful for testing Ctrl+C)")
     p_s_write.add_argument("--fail-at", type=int, help="Simulate failure at chapter index for resume testing")
 
     # script status

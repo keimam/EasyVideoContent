@@ -110,6 +110,32 @@ class ScriptQualityChecker:
 
         is_first_chapter = True
 
+        # Check if project was generated with fake provider
+        is_fake = False
+        state_file = self.script_dir / "state.json"
+        if state_file.is_file():
+            try:
+                import json
+                s_data = json.loads(state_file.read_text(encoding="utf-8"))
+                if s_data.get("outline_provider") == "fake":
+                    is_fake = True
+                for ch_info in s_data.get("chapters", {}).values():
+                    if ch_info.get("provider") == "fake":
+                        is_fake = True
+            except Exception:
+                pass
+        outline_file = self.script_dir / "outline.json"
+        if not is_fake and outline_file.is_file():
+            try:
+                import json
+                o_data = json.loads(outline_file.read_text(encoding="utf-8"))
+                if o_data.get("provider") == "fake":
+                    is_fake = True
+            except Exception:
+                pass
+        if not is_fake and "[FAKE]" in manifest.title:
+            is_fake = True
+
         for ch in manifest.chapters:
             ch_tokens: List[str] = []
 
@@ -198,6 +224,7 @@ class ScriptQualityChecker:
             "title": manifest.title,
             "project_id": manifest.project_id,
             "preset_id": manifest.preset_id,
+            "is_fake": is_fake,
             "duration_info": duration_info,
             "cliche_matches": cliche_matches,
             "hook_violations": hook_violations,
@@ -225,11 +252,23 @@ class ScriptQualityChecker:
             f"- **Preset**: `{data['preset_id']}`",
             f"- **Total Word Count**: **{total_w} words**",
             f"- **Estimated Video Duration**: **{dur_m:.1f} minutes** ({dur_s:.1f} seconds)",
+        ]
+
+        if data.get("is_fake"):
+            lines.extend([
+                "",
+                "> [!WARNING]",
+                "> **LLM PROVIDER: FAKE (TESTING MOCK ONLY)**",
+                "> This script was generated using the deterministic offline test provider ('fake').",
+                "> It is intended exclusively for workflow simulation and automated unit testing, not for production release.",
+            ])
+
+        lines.extend([
             "",
             "---",
             "",
             "## 1. Duration & Length Summary",
-        ]
+        ])
 
         if d["warnings"]:
             for w in d["warnings"]:

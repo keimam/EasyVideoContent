@@ -57,6 +57,11 @@ class LLMAdapterError(Exception):
     pass
 
 
+class LLMConfigurationError(LLMAdapterError):
+    """Raised when an LLM provider lacks required configuration (e.g. missing API key)."""
+    pass
+
+
 class LLMAdapter:
     """Adapter mediating LLM calls with caching, retries, and fake provider support."""
 
@@ -68,16 +73,63 @@ class LLMAdapter:
         timeout: float = 120.0,
         max_retries: int = 3,
         retry_delay: float = 1.0,
+        fake_delay: float = 0.0,
     ) -> None:
         self.provider = (provider or config.app.get("llm_provider") or DEFAULT_LLM_PROVIDER_ID).lower().strip()
-        self.model = model or ""
+        self.fake_delay = float(fake_delay)
         self.cache_dir = Path(cache_dir).resolve() if cache_dir else None
         self.timeout = timeout
         self.max_retries = max(1, max_retries)
         self.retry_delay = max(0.1, retry_delay)
 
+        # Resolve model name
+        if model:
+            self.model = model.strip()
+        elif self.provider == "fake":
+            self.model = "deterministic-fake-v1"
+        else:
+            prov_def = get_llm_provider(self.provider)
+            if prov_def:
+                raw_model = config.app.get(prov_def.config_key("model_name"), "")
+                self.model = prov_def.resolve_model_name(raw_model)
+            else:
+                self.model = ""
+
         if self.cache_dir:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def is_fake(self) -> bool:
+        """Return True if this adapter is running against the local fake test mock."""
+        return self.provider == "fake"
+
+    def validate_configuration(self) -> None:
+        """Verify that provider has required credentials before execution."""
+        if self.is_fake:
+            return
+
+        prov_def = get_llm_provider(self.provider)
+        if prov_def:
+            if prov_def.requires_api_key:
+                key_name = prov_def.config_key("api_key")
+                key_val = (config.app.get(key_name) or "").strip()
+                if not key_val:
+                    url_hint = f" ({prov_def.api_key_url})" if prov_def.api_key_url else ""
+                    raise LLMConfigurationError(
+                        f"LLM Provider '{self.provider}' is selected, but '{key_name}' is not configured or empty.\n"
+                        f"To configure this provider:\n"
+                        f"  1. Open WebUI -> 'Basic Settings' -> 'LLM Settings' (or edit config.toml)\n"
+                        f"  2. Select Provider '{prov_def.default_label}' and enter your API Key{url_hint}\n"
+                        f"  3. Save settings, OR pass '--provider fake' if you wish to run in offline testing/simulation mode."
+                    )
+        else:
+            key_name = f"{self.provider}_api_key"
+            key_val = (config.app.get(key_name) or "").strip()
+            if not key_val:
+                raise LLMConfigurationError(
+                    f"LLM Provider '{self.provider}' is selected, but '{key_name}' is not configured or empty.\n"
+                    f"Please configure '{key_name}' in config.toml or pass '--provider fake' for offline testing."
+                )
 
     def _compute_cache_key(self, prompt: str) -> str:
         """Compute sha256 hash representing prompt and call configuration."""
@@ -135,11 +187,14 @@ class LLMAdapter:
     def generate(
         self,
         prompt: str,
-        fake_kind: Optional[str] = None,  # "outline" | "chapter" | "revise_length"
+        fake_kind: Optional[str] = None,  # "outline" | "chapter" | "revise_length" | "summary"
         fake_kwargs: Optional[Dict[str, Any]] = None,
         force_refresh: bool = False,
     ) -> LLMResponse:
         """Execute prompt against configured provider or fake mock, checking cache first."""
+        # Fail fast if real provider credentials are missing
+        self.validate_configuration()
+
         cache_key = self._compute_cache_key(prompt)
 
         # 1. Check cache
@@ -156,7 +211,7 @@ class LLMAdapter:
             resp = LLMResponse(
                 content=content,
                 provider="fake",
-                model="deterministic-fake-v1",
+                model=self.model or "deterministic-fake-v1",
                 duration_seconds=round(duration, 4),
                 tokens=None,
                 cache_hit=False,
@@ -227,17 +282,39 @@ class LLMAdapter:
         if kwargs.get("fake_raw_content"):
             return kwargs["fake_raw_content"]
 
+        if self.fake_delay > 0:
+            time.sleep(self.fake_delay)
+
         kind = fake_kind
         if not kind:
             # Infer from prompt
-            if "Required JSON Output Structure:" in prompt or "candidate_titles" in prompt:
+            if "narrative_summary" in prompt or "editorial assistant for documentary video productions" in prompt:
+                kind = "summary"
+            elif "Required JSON Output Structure:" in prompt or "candidate_titles" in prompt:
                 kind = "outline"
             elif "Required Action:" in prompt or "Current Chapter Status:" in prompt:
                 kind = "revise_length"
             else:
                 kind = "chapter"
 
-        if kind == "outline":
+        if kind == "summary":
+            ch_title = kwargs.get("chapter_title", "Chapter Title")
+            ch_index = kwargs.get("chapter_index", 1)
+            topic = kwargs.get("topic", "the subject")
+            summary_dict = {
+                "narrative_summary": (
+                    f"Chapter {ch_index} ({ch_title}) established the core narrative developments and historical context. "
+                    f"Key mechanical milestones were reached under competitive conditions in the evolution of {topic}. "
+                    "The momentum set the stage for subsequent technical and competitive challenges."
+                ),
+                "key_facts": [
+                    f"Milestone engineering benchmark established in Chapter {ch_index}",
+                    f"Primary competition dynamics and records set for {topic} in Chapter {ch_index}",
+                ],
+            }
+            return json.dumps(summary_dict, indent=2)
+
+        elif kind == "outline":
             topic = kwargs.get("topic", "The 1969 Dodge Charger Legend")
             target_min = float(kwargs.get("target_duration_minutes", 12.0))
             wpm = int(kwargs.get("words_per_minute", 140))

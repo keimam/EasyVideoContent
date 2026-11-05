@@ -187,6 +187,7 @@ class Chapter(BaseModel):
     tts_groups: List[TtsGroup] = Field(default_factory=list)
     output_file: Optional[str] = None
     chapter_hash: Optional[str] = None
+    voice_override: Optional[str] = None
     status: ItemStatus = ItemStatus.pending
 
     model_config = {"extra": "forbid"}
@@ -219,6 +220,8 @@ class ScriptOutline(BaseModel):
     candidate_titles: List[str] = Field(default_factory=list)
     opening_hook: str
     chapters: List[OutlineChapter] = Field(default_factory=list)
+    provider: Optional[str] = None
+    model: Optional[str] = None
 
     model_config = {"extra": "forbid"}
 

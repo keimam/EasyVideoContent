@@ -334,6 +334,10 @@ def parse_markdown_script(
             _flush_para()
             continue
 
+        # Ignore comments or metadata banners before the first chapter
+        if stripped.startswith("<!--") or (current_chapter_title is None and stripped.startswith(">")):
+            continue
+
         raw_para_buffer.append(stripped)
 
     # Flush final trailing items

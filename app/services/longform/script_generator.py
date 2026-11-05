@@ -94,8 +94,9 @@ class ScriptGenerator:
     def __init__(
         self,
         project_dir: str | Path,
-        provider: str = "fake",
+        provider: Optional[str] = None,
         model: Optional[str] = None,
+        fake_delay: float = 0.0,
     ) -> None:
         self.project_dir = Path(project_dir).resolve()
         self.script_dir = self.project_dir / "script"
@@ -111,6 +112,7 @@ class ScriptGenerator:
             provider=provider,
             model=model,
             cache_dir=self.cache_dir,
+            fake_delay=fake_delay,
         )
 
     def _read_state(self) -> Dict[str, Any]:
@@ -130,6 +132,44 @@ class ScriptGenerator:
             os.fsync(fp.fileno())
         os.replace(tmp_file, self.state_file)
 
+    def _generate_chapter_summary(
+        self,
+        chapter_index: int,
+        chapter_title: str,
+        chapter_text: str,
+        topic: str,
+        force_refresh: bool = False,
+    ) -> Tuple[str, List[str]]:
+        """Generate narrative summary and key facts using summary.md template."""
+        context = {
+            "topic": topic,
+            "chapter_index": chapter_index,
+            "chapter_title": chapter_title,
+            "chapter_text": chapter_text,
+        }
+        prompt = render_prompt("summary", context)
+        resp = self.adapter.generate(
+            prompt=prompt,
+            fake_kind="summary",
+            fake_kwargs={
+                "topic": topic,
+                "chapter_index": chapter_index,
+                "chapter_title": chapter_title,
+            },
+            force_refresh=force_refresh,
+        )
+        json_str = extract_json_payload(resp.content)
+        try:
+            data = json.loads(json_str)
+            summary = data.get("narrative_summary", "").strip()
+            facts = data.get("key_facts", [])
+            if not summary:
+                summary = f"Chapter {chapter_index} narrative developments."
+            return summary, [str(f).strip() for f in facts if f]
+        except Exception as exc:
+            logger.warning(f"Failed to parse chapter summary JSON: {exc}. Falling back to default.")
+            return f"Chapter {chapter_index} ({chapter_title}) established core story points.", []
+
     def generate_outline(
         self,
         topic: str,
@@ -138,6 +178,9 @@ class ScriptGenerator:
         force_refresh: bool = False,
     ) -> ScriptOutline:
         """Generate outline (JSON) and save to script/outline.json (2.3 Step 1)."""
+        # Fail fast if provider is not configured
+        self.adapter.validate_configuration()
+
         manifest = load_manifest(self.project_dir)
         preset = Preset.model_validate(manifest.preset_snapshot)
 
@@ -184,6 +227,8 @@ class ScriptGenerator:
 
         # Validate with Pydantic
         outline = ScriptOutline.model_validate(outline_dict)
+        outline.provider = self.adapter.provider
+        outline.model = self.adapter.model
 
         # Atomically save outline.json
         tmp_outline = self.script_dir / f"outline.json.tmp.{uuid.uuid4().hex}"
@@ -193,10 +238,12 @@ class ScriptGenerator:
             os.fsync(fp.fileno())
         os.replace(tmp_outline, self.outline_file)
 
-        # Update state outline hash
+        # Update state outline hash and provider metadata
         outline_hash = hashlib.sha256(self.outline_file.read_bytes()).hexdigest()
         state = self._read_state()
         state["outline_hash"] = outline_hash
+        state["outline_provider"] = self.adapter.provider
+        state["outline_model"] = self.adapter.model
         self._write_state(state)
 
         # Update project manifest title if not already set specifically
@@ -212,6 +259,9 @@ class ScriptGenerator:
         fail_at_chapter: Optional[int] = None,
     ) -> Path:
         """Write all chapters sequentially with previous context, resume, and length control (2.3 Steps 2-4)."""
+        # Fail fast if provider is not configured
+        self.adapter.validate_configuration()
+
         if not self.outline_file.is_file():
             raise FileNotFoundError(
                 f"Outline file not found at '{self.outline_file}'. Run 'script outline' first."
@@ -246,10 +296,11 @@ class ScriptGenerator:
             idx_str = str(ch.chapter_index)
             ch_file = self.script_dir / f"chapter_{ch.chapter_index:02d}.md"
 
-            # Compute input hash for this chapter
+            # Compute input hash for this chapter (MUST include provider and model!)
             ch_canonical = ch.model_dump_json()
             input_hash_material = (
-                f"{ch_canonical}|{preset_hash}|{manifest.sub_niche_focus or ''}|"
+                f"{self.adapter.provider}:{self.adapter.model or ''}|{ch_canonical}|"
+                f"{preset_hash}|{manifest.sub_niche_focus or ''}|"
                 f"{';'.join(previous_summaries_list)}"
             )
             expected_input_hash = hashlib.sha256(input_hash_material.encode("utf-8")).hexdigest()
@@ -264,8 +315,20 @@ class ScriptGenerator:
 
             if already_done:
                 logger.info(f"Chapter {ch.chapter_index} up-to-date. Reusing cached output.")
-                ch_content = ch_file.read_text(encoding="utf-8")
-                summary, facts = extract_chapter_summary_and_facts(ch_content)
+                summary = ch_state.get("summary")
+                facts = ch_state.get("key_facts", [])
+                if not summary:
+                    # Generate summary if missing from legacy state
+                    ch_content = ch_file.read_text(encoding="utf-8")
+                    summary, facts = self._generate_chapter_summary(
+                        chapter_index=ch.chapter_index,
+                        chapter_title=ch.title,
+                        chapter_text=ch_content,
+                        topic=outline.topic,
+                    )
+                    ch_state["summary"] = summary
+                    ch_state["key_facts"] = facts
+                    self._write_state(state)
                 previous_summaries_list.append(f"Chapter {ch.chapter_index} ({ch.title}): {summary}")
                 cumulative_facts_list.extend(facts)
                 continue
@@ -276,113 +339,142 @@ class ScriptGenerator:
 
             logger.info(f"Writing Chapter {ch.chapter_index}: {ch.title} (target: ~{ch.target_words} words)...")
 
-            # Prepare chapter prompt context
-            context = {
-                "topic": outline.topic,
-                "sub_niche_focus": manifest.sub_niche_focus or "",
-                "language": preset.language,
-                "audience": preset.audience,
-                "narration_style": preset.narration_style,
-                "hook_rules": preset.hook_rules,
-                "topic_keywords": ", ".join(preset.topic_keywords),
-                "visual_keywords": ", ".join(preset.visual_keywords),
-                "sensitivity_notes": preset.sensitivity_notes or "",
-                "recommended_visual_sources": json.dumps(preset.recommended_visual_sources),
-                "outline_summary": outline_summary,
-                "previous_summaries": (
-                    "\n".join(f"- {s}" for s in previous_summaries_list)
-                    if previous_summaries_list
-                    else "None (This is Chapter 1, the opening chapter)."
-                ),
-                "used_facts": (
-                    "\n".join(f"- {f}" for f in cumulative_facts_list)
-                    if cumulative_facts_list
-                    else "None yet."
-                ),
-                "chapter_index": ch.chapter_index,
-                "chapter_title": ch.title,
-                "chapter_purpose": ch.purpose,
-                "chapter_key_points": ", ".join(ch.key_points),
-                "target_words": ch.target_words,
-            }
-
-            prompt = render_prompt("chapter", context)
-            resp = self.adapter.generate(
-                prompt=prompt,
-                fake_kind="chapter",
-                fake_kwargs={
-                    "chapter_title": ch.title,
-                    "chapter_index": ch.chapter_index,
-                    "target_words": ch.target_words,
-                },
-                force_refresh=force_refresh,
-            )
-
-            chapter_content = resp.content.strip()
-
-            # Word count check and length revision (2.3 Step 3)
-            words = count_narration_words(chapter_content)
-            target = max(1, ch.target_words)
-            deviation = abs(words - target) / target
-            revised = False
-
-            if deviation > 0.15:
-                logger.info(
-                    f"Chapter {ch.chapter_index} word count ({words}) deviates >15% from target ({target}). "
-                    "Running automatic length revision..."
-                )
-                action = (
-                    "Expand narrative depth, technical details, and descriptions"
-                    if words < target
-                    else "Condense phrasing, eliminate passive voice, and tighten narrative"
-                )
-                rev_context = {
-                    "chapter_title": ch.title,
-                    "target_words": ch.target_words,
-                    "current_words": words,
-                    "action": action,
+            tmp_ch = self.script_dir / f"chapter_{ch.chapter_index:02d}.md.tmp.{uuid.uuid4().hex}"
+            try:
+                # Prepare chapter prompt context
+                context = {
+                    "topic": outline.topic,
+                    "sub_niche_focus": manifest.sub_niche_focus or "",
+                    "language": preset.language,
+                    "audience": preset.audience,
+                    "narration_style": preset.narration_style,
+                    "hook_rules": preset.hook_rules,
+                    "topic_keywords": ", ".join(preset.topic_keywords),
+                    "visual_keywords": ", ".join(preset.visual_keywords),
                     "sensitivity_notes": preset.sensitivity_notes or "",
-                    "chapter_text": chapter_content,
+                    "recommended_visual_sources": json.dumps(preset.recommended_visual_sources),
+                    "outline_summary": outline_summary,
+                    "previous_summaries": (
+                        "\n".join(f"- {s}" for s in previous_summaries_list)
+                        if previous_summaries_list
+                        else "None (This is Chapter 1, the opening chapter)."
+                    ),
+                    "used_facts": (
+                        "\n".join(f"- {f}" for f in cumulative_facts_list)
+                        if cumulative_facts_list
+                        else "None yet."
+                    ),
+                    "chapter_index": ch.chapter_index,
+                    "chapter_title": ch.title,
+                    "chapter_purpose": ch.purpose,
+                    "chapter_key_points": ", ".join(ch.key_points),
+                    "target_words": ch.target_words,
                 }
-                rev_prompt = render_prompt("revise_length", rev_context)
-                rev_resp = self.adapter.generate(
-                    prompt=rev_prompt,
-                    fake_kind="revise_length",
+
+                prompt = render_prompt("chapter", context)
+                resp = self.adapter.generate(
+                    prompt=prompt,
+                    fake_kind="chapter",
                     fake_kwargs={
                         "chapter_title": ch.title,
+                        "chapter_index": ch.chapter_index,
                         "target_words": ch.target_words,
                     },
-                    force_refresh=True,  # Fresh revision
+                    force_refresh=force_refresh,
                 )
-                chapter_content = rev_resp.content.strip()
+
+                chapter_content = resp.content.strip()
+
+                # Word count check and length revision (2.3 Step 3)
                 words = count_narration_words(chapter_content)
-                revised = True
+                target = max(1, ch.target_words)
+                deviation = abs(words - target) / target
+                revised = False
 
-            # Save chapter file atomically
-            tmp_ch = self.script_dir / f"chapter_{ch.chapter_index:02d}.md.tmp.{uuid.uuid4().hex}"
-            with open(tmp_ch, "w", encoding="utf-8") as fp:
-                fp.write(chapter_content)
-                fp.flush()
-                os.fsync(fp.fileno())
-            os.replace(tmp_ch, ch_file)
+                if deviation > 0.15:
+                    logger.info(
+                        f"Chapter {ch.chapter_index} word count ({words}) deviates >15% from target ({target}). "
+                        "Running automatic length revision..."
+                    )
+                    action = (
+                        "Expand narrative depth, technical details, and descriptions"
+                        if words < target
+                        else "Condense phrasing, eliminate passive voice, and tighten narrative"
+                    )
+                    rev_context = {
+                        "chapter_title": ch.title,
+                        "target_words": ch.target_words,
+                        "current_words": words,
+                        "action": action,
+                        "sensitivity_notes": preset.sensitivity_notes or "",
+                        "chapter_text": chapter_content,
+                    }
+                    rev_prompt = render_prompt("revise_length", rev_context)
+                    rev_resp = self.adapter.generate(
+                        prompt=rev_prompt,
+                        fake_kind="revise_length",
+                        fake_kwargs={
+                            "chapter_title": ch.title,
+                            "target_words": ch.target_words,
+                        },
+                        force_refresh=True,  # Fresh revision
+                    )
+                    chapter_content = rev_resp.content.strip()
+                    words = count_narration_words(chapter_content)
+                    revised = True
 
-            # Extract summary and facts for next chapters
-            summary, facts = extract_chapter_summary_and_facts(chapter_content)
-            previous_summaries_list.append(f"Chapter {ch.chapter_index} ({ch.title}): {summary}")
-            cumulative_facts_list.extend(facts)
+                # Generate chapter summary via LLM summary prompt (F4)
+                summary, facts = self._generate_chapter_summary(
+                    chapter_index=ch.chapter_index,
+                    chapter_title=ch.title,
+                    chapter_text=chapter_content,
+                    topic=outline.topic,
+                    force_refresh=force_refresh,
+                )
 
-            # Record in state
-            chapters_state[idx_str] = {
-                "status": "completed",
-                "input_hash": expected_input_hash,
-                "word_count": words,
-                "target_words": ch.target_words,
-                "revised": revised,
-            }
-            self._write_state(state)
+                # Save chapter file atomically
+                with open(tmp_ch, "w", encoding="utf-8") as fp:
+                    fp.write(chapter_content)
+                    fp.flush()
+                    os.fsync(fp.fileno())
+                os.replace(tmp_ch, ch_file)
+
+                # Record in state
+                chapters_state[idx_str] = {
+                    "status": "completed",
+                    "provider": self.adapter.provider,
+                    "model": self.adapter.model,
+                    "input_hash": expected_input_hash,
+                    "word_count": words,
+                    "target_words": ch.target_words,
+                    "revised": revised,
+                    "summary": summary,
+                    "key_facts": facts,
+                }
+                self._write_state(state)
+
+                previous_summaries_list.append(f"Chapter {ch.chapter_index} ({ch.title}): {summary}")
+                cumulative_facts_list.extend(facts)
+
+            except (KeyboardInterrupt, Exception):
+                if tmp_ch.exists():
+                    tmp_ch.unlink(missing_ok=True)
+                raise
 
         # Step 4: Combine all chapters into script/full_script.md
-        combined_lines = [f"# {manifest.title}\n"]
+        is_any_fake = self.adapter.is_fake or any(
+            c.get("provider") == "fake" for c in chapters_state.values()
+        )
+        if state.get("outline_provider") == "fake":
+            is_any_fake = True
+
+        combined_lines = []
+        if is_any_fake:
+            combined_lines.append("<!-- GENERATED BY FAKE PROVIDER (TESTING ONLY) -->")
+            combined_lines.append(f"# [FAKE] {manifest.title}\n")
+        else:
+            combined_lines.append(f"# {manifest.title}\n")
+
         for ch in outline.chapters:
             ch_path = self.script_dir / f"chapter_{ch.chapter_index:02d}.md"
             if ch_path.is_file():
@@ -401,30 +493,66 @@ class ScriptGenerator:
         # Import into manifest via update_project_script (single source of truth)
         update_project_script(self.project_dir, full_content)
 
+        # Step 5: Automatically generate quality report (F3)
+        from app.services.longform.quality_checker import ScriptQualityChecker
+        checker = ScriptQualityChecker(self.project_dir)
+        checker.inspect()
+
         return self.full_script_file
 
     def get_status(self) -> Dict[str, Any]:
         """Return status of outline and each chapter (2.6)."""
         state = self._read_state()
         has_outline = self.outline_file.is_file()
+        cache_files = list(self.cache_dir.glob("*.json")) if self.cache_dir.is_dir() else []
+        outline_provider = state.get("outline_provider", "")
+        outline_model = state.get("outline_model", "")
         chapters_info = []
+
+        if has_outline and not outline_provider and cache_files:
+            for cf in cache_files:
+                try:
+                    cdata = json.loads(cf.read_text(encoding="utf-8"))
+                    if cdata.get("provider"):
+                        outline_provider = cdata["provider"]
+                        outline_model = cdata.get("model", "")
+                        break
+                except Exception:
+                    pass
+
+        is_fake_project = (outline_provider == "fake") or self.adapter.is_fake
 
         if has_outline:
             try:
                 outline_dict = json.loads(self.outline_file.read_text(encoding="utf-8"))
+                if not outline_provider:
+                    outline_provider = outline_dict.get("provider", "")
+                    outline_model = outline_dict.get("model", "")
+                if outline_provider == "fake":
+                    is_fake_project = True
+
                 for ch in outline_dict.get("chapters", []):
                     idx = ch["chapter_index"]
                     idx_str = str(idx)
                     ch_file = self.script_dir / f"chapter_{idx:02d}.md"
                     c_state = state.get("chapters", {}).get(idx_str, {})
+                    ch_prov = c_state.get("provider", outline_provider or self.adapter.provider)
+                    ch_mod = c_state.get("model", outline_model or self.adapter.model)
+                    if ch_prov == "fake":
+                        is_fake_project = True
+
                     chapters_info.append(
                         {
                             "chapter_index": idx,
                             "title": ch.get("title", f"Chapter {idx}"),
                             "target_words": ch.get("target_words", 0),
                             "status": c_state.get("status", "pending" if not ch_file.is_file() else "completed"),
+                            "provider": ch_prov,
+                            "model": ch_mod,
+                            "is_fake": (ch_prov == "fake"),
                             "word_count": c_state.get("word_count", count_narration_words(ch_file.read_text(encoding="utf-8")) if ch_file.is_file() else 0),
                             "revised": c_state.get("revised", False),
+                            "has_summary": bool(c_state.get("summary")),
                         }
                     )
             except Exception:
@@ -434,7 +562,11 @@ class ScriptGenerator:
 
         return {
             "has_outline": has_outline,
+            "outline_provider": outline_provider or self.adapter.provider,
+            "outline_model": outline_model or self.adapter.model,
+            "is_fake": is_fake_project,
             "chapters": chapters_info,
             "cache_entries": len(cache_files),
             "full_script_exists": self.full_script_file.is_file(),
+            "quality_report_exists": (self.script_dir / "quality_report.md").is_file(),
         }
