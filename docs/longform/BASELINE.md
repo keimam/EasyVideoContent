@@ -83,30 +83,27 @@ function Get-ProcessTreeStats {
 ```
 
 > [!IMPORTANT]
-> **Koreksi Data RAM Tahap 0**:
-> Angka awal pada Tahap 0 (383,90 MB) **keliru/kurang** karena kueri awal hanya membaca direct child 1 level. Dengan pelacakan rekursif penuh seluruh pohon proses pada pengujian ulang, terdeteksi proses MoviePy `imageio-ffmpeg` memanggil binary internal `ffmpeg-win-x86_64-v7.1.exe` dan `conhost.exe` yang aktif bersamaan dengan proses Python dan system FFmpeg.
-> **Puncak RAM riil seluruh pohon proses adalah 1.068,62 MB (~1,07 GB)**.
+> **Koreksi Data RAM Tahap 0 & Pembersihan Pencemaran PID**:
+> Angka awal pada Tahap 0 (383,90 MB) **keliru/kurang** karena kueri awal hanya membaca direct child 1 level. Dengan pelacakan rekursif penuh seluruh pohon proses, terdeteksi proses MoviePy `imageio-ffmpeg` memanggil binary internal `ffmpeg-win-x86_64-v7.1.exe` dan `conhost.exe` yang aktif bersamaan dengan proses Python dan system FFmpeg.
+> Pada revisi Tahap 1.1, algoritma pelacakan pohon proses disempurnakan dengan validasi `CreationDate >= RootProcess.CreationDate` untuk mencegah pencemaran PID reuse (seperti AnyDesk.exe).
+> **Puncak RAM riil pohon proses terverifikasi adalah 1.061,80 MB (~1,06 GB)** dengan wall-clock time **397,10 detik** (dibandingkan baseline awal Tahap 0: 393,94 detik).
 
-### 2.2 Ringkasan Metrik Terukur (Pengujian Ulang Lengkap)
+### 2.2 Ringkasan Metrik Terukur (Pengujian Ulang Lengkap & Terverifikasi)
 
 | Metrik | Nilai Terukur | Keterangan |
 |:---|:---|:---|
-| **Total Wall-Clock Time** | **410,82 detik** (6,85 menit) | Dari start skrip hingga video terbit |
-| **Puncak RAM (Pohon Proses Lengkap)** | **1.068,62 MB** (~1,07 GB) | **Hasil ukur rekursif riil** (Python + MoviePy FFmpeg + System FFmpeg + Conhost) |
+| **Total Wall-Clock Time** | **397,10 detik** (6,62 menit) | Dari start skrip hingga video terbit (baseline awal Tahap 0: 393,94 s) |
+| **Puncak RAM (Pohon Proses Lengkap)** | **1.061,80 MB** (~1,06 GB) | **Hasil ukur rekursif riil bebas kontaminasi PID** (Python + MoviePy FFmpeg + System FFmpeg + Conhost) |
 | *Puncak RAM Proses Python saja (lama)* | *383,90 MB* | *[KELIRU - hanya proses direct child, tidak mencakup sub-binary MoviePy]* |
-| **Daftar Proses yang Terhitung** | `python.exe`, `ffmpeg-win-x86_64-v7.1.exe`, `conhost.exe`, `ffmpeg.exe` | Pohon proses lengkap terdeteksi |
-| **MoviePy Render Time** | **226,00 detik** (3,77 menit) | Tahap `video.generate_video` (komposisi TextClip & encode) |
-| **Video Combining Time** | **128,00 detik** (2,13 menit) | Tahap `video.combine_videos` (resize, transisi, concat) |
-| **Materials Prep Time** | **22,00 detik** | Preprocessing 9 gambar menjadi mp4 zoom (efek Ken Burns CPU) |
-| **Audio (Edge TTS) Time** | **2,00 detik** | Sintesis audio 144 kata |
-| **Subtitle Generation Time** | **< 1,00 detik** | Pembuatan subtitle SRT dari cue TTS |
-| **Ukuran File Video Final** | **4,06 MB** (4.253.999 bytes) | File output MP4 |
+| **Daftar Proses yang Terhitung** | `python.exe`, `ffmpeg-win-x86_64-v7.1.exe`, `conhost.exe`, `ffmpeg.exe` | Pohon proses terverifikasi berdasarkan silsilah waktu pembuatan |
+| **MoviePy Render Time** | **231,00 detik** (3,85 menit) | Tahap `video.generate_video` (komposisi TextClip & encode) |
+| **Ukuran File Video Final** | **4,07 MB** (4.266.379 bytes) | File output MP4 |
 | **Durasi Video Final (ffprobe)** | **58,166667 detik** | ~58,17 detik |
 | **Resolusi Video** | **1920 x 1080** | 16:9 Full HD |
 | **Video Codec & Format** | **H.264** (`yuv420p`) | 30 fps |
 | **Audio Codec & Format** | **AAC** | Stereo, 44.100 Hz |
-| **Bitrate Rata-rata** | **585,08 kbps** | Video + Audio |
-| **Path File Output** | `F:\MPTLong\storage\tasks\395454e7-e59e-4d03-9874-5709b990a8ff\final-1.mp4` | Terverifikasi utuh |
+| **Bitrate Rata-rata** | **586,78 kbps** | Video + Audio |
+| **Path File Output** | `F:\MPTLong\storage\tasks\7861c3e3-1183-4bd3-8dc9-62d2cf72bced\final-1.mp4` | Terverifikasi utuh |
 
 ### 2.3 Verifikasi `ffprobe` Asli
 
@@ -118,8 +115,8 @@ r_frame_rate=30/1
 codec_name=aac
 r_frame_rate=0/0
 duration=58.166667
-size=4253999
-bit_rate=585077
+size=4266379
+bit_rate=586779
 ```
 
 ---

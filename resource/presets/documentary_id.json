@@ -2,6 +2,7 @@
   "id": "documentary_id",
   "name": "Dokumenter Umum (Bahasa Indonesia)",
   "schema_version": "1.0.0",
+  "kind": "niche",
   "language": "id-ID",
   "audience": "Penonton umum Indonesia, pembelajar sejarah, sains, dan misteri di YouTube",
   "narration_style": "Ekspositori, mendalam, naratif, tenang dengan artikulasi jelas",

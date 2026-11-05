@@ -1,8 +1,8 @@
 #!/usr/bin/env python
-"""CLI for Longform Video Generation (Stage 1).
+"""CLI for Longform Video Generation (Stage 1 & Addendum 1.5).
 
-A standalone CLI providing preset management, project scaffolding,
-planning, and simulated pipeline execution (K5, K6).
+A standalone CLI providing multi-tier preset management (B1), project scaffolding,
+planning, resume validation, script updates (A4), and simulated pipeline execution.
 Zero modifications to upstream files.
 """
 
@@ -12,7 +12,16 @@ import argparse
 import os
 import sys
 import time
+import uuid
 from pathlib import Path
+
+# Reconfigure stdout/stderr for UTF-8 on Windows console
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
 
 # Ensure repo root is on sys.path
 REPO_ROOT = Path(__file__).resolve().parent
@@ -28,8 +37,10 @@ from app.services.longform.hashing import (
 )
 from app.services.longform.planner import compute_plan
 from app.services.longform.presets import (
+    format_preset_tree,
     get_preset,
     get_preset_directories,
+    get_preset_inheritance_chain,
     list_presets,
     load_preset_file,
     validate_preset_file,
@@ -42,37 +53,21 @@ from app.services.longform.store import (
     create_project,
     get_project_dir,
     load_manifest,
+    refresh_project_preset,
     save_manifest,
+    update_project_script,
 )
 
 
 def cmd_presets_list(args: argparse.Namespace) -> int:
-    """List all available presets."""
-    resource_dir, storage_dir = get_preset_directories()
+    """List all available presets in a visual hierarchy (B1)."""
     presets = list_presets()
-
-    if not presets:
-        print("No presets found.")
-        return 0
-
-    print(f"\nAvailable Presets ({len(presets)}):")
-    print("-" * 75)
-    print(f"{'ID':<18} | {'Language':<8} | {'WPM':<5} | {'Source':<10} | {'Name'}")
-    print("-" * 75)
-
-    for pid, p in sorted(presets.items()):
-        # Check if in storage or resource
-        source = "builtin"
-        if (storage_dir / f"{pid}.json").is_file():
-            source = "custom"
-
-        print(f"{p.id:<18} | {p.language:<8} | {p.words_per_minute:<5} | {source:<10} | {p.name}")
-    print("-" * 75 + "\n")
+    print("\n" + format_preset_tree(presets) + "\n")
     return 0
 
 
 def cmd_presets_validate(args: argparse.Namespace) -> int:
-    """Validate a preset JSON file."""
+    """Validate a preset JSON file and resolve its inheritance."""
     path = Path(args.file)
     if not path.is_file():
         print(f"Error: File not found: {path}", file=sys.stderr)
@@ -81,11 +76,17 @@ def cmd_presets_validate(args: argparse.Namespace) -> int:
     is_valid, err = validate_preset_file(path)
     if is_valid:
         preset = load_preset_file(path)
+        chain = get_preset_inheritance_chain(preset.id)
         print(f"SUCCESS: Preset '{path.name}' is valid.")
-        print(f"  - ID:       {preset.id}")
-        print(f"  - Name:     {preset.name}")
-        print(f"  - Language: {preset.language}")
-        print(f"  - WPM:      {preset.words_per_minute}")
+        print(f"  - ID:          {preset.id}")
+        print(f"  - Name:        {preset.name}")
+        print(f"  - Kind:        {preset.kind}")
+        print(f"  - Extends:     {preset.extends or 'None (Root Niche)'}")
+        print(f"  - Chain:       {' -> '.join(chain)}")
+        print(f"  - Language:    {preset.language}")
+        print(f"  - WPM:         {preset.words_per_minute}")
+        if preset.topic_keywords:
+            print(f"  - Keywords:    {len(preset.topic_keywords)} topic, {len(preset.visual_keywords)} visual")
         return 0
     else:
         print(f"VALIDATION ERROR in '{path}':\n{err}", file=sys.stderr)
@@ -93,7 +94,7 @@ def cmd_presets_validate(args: argparse.Namespace) -> int:
 
 
 def cmd_project_create(args: argparse.Namespace) -> int:
-    """Create a new longform project from a script file."""
+    """Create a new longform project from a script file with optional focus (B3)."""
     script_path = Path(args.script)
     if not script_path.is_file():
         print(f"Error: Script file not found: {script_path}", file=sys.stderr)
@@ -115,6 +116,7 @@ def cmd_project_create(args: argparse.Namespace) -> int:
             preset_id=args.preset,
             script_markdown=script_markdown,
             aspect_ratio=args.aspect_ratio or "16:9",
+            sub_niche_focus=args.focus,
         )
     except Exception as exc:
         print(f"Error creating project: {exc}", file=sys.stderr)
@@ -128,6 +130,10 @@ def cmd_project_create(args: argparse.Namespace) -> int:
     print(f"  - Title:              {manifest.title}")
     print(f"  - Directory:          {project_dir}")
     print(f"  - Preset:             {manifest.preset_id} ({preset.name})")
+    if manifest.preset_inheritance_chain:
+        print(f"  - Preset Chain:       {' -> '.join(manifest.preset_inheritance_chain)}")
+    if manifest.sub_niche_focus:
+        print(f"  - Sub-Niche Focus:    \"{manifest.sub_niche_focus}\"")
     print(f"  - Chapters:           {len(manifest.chapters)}")
     total_groups = sum(len(c.tts_groups) for c in manifest.chapters)
     total_segments = sum(len(g.segments) for c in manifest.chapters for g in c.tts_groups)
@@ -157,10 +163,14 @@ def cmd_project_show(args: argparse.Namespace) -> int:
     duration_stats = estimate_script_duration(manifest.chapters, wpm)
 
     print(f"\nProject Overview: {manifest.project_id}")
-    print("=" * 60)
+    print("=" * 65)
     print(f"  Title:          {manifest.title}")
     print(f"  Status:         {manifest.status.value}")
     print(f"  Preset:         {manifest.preset_id}")
+    if manifest.preset_inheritance_chain:
+        print(f"  Preset Chain:   {' -> '.join(manifest.preset_inheritance_chain)}")
+    if manifest.sub_niche_focus:
+        print(f"  Sub-Niche Focus:\"{manifest.sub_niche_focus}\"")
     print(f"  Aspect Ratio:   {manifest.aspect_ratio}")
     print(f"  Pipeline Ver:   {manifest.pipeline_version}")
     print(f"  Schema Ver:     {manifest.schema_version}")
@@ -172,7 +182,7 @@ def cmd_project_show(args: argparse.Namespace) -> int:
         segs_cnt = sum(len(g.segments) for g in ch.tts_groups)
         ch_status = ch.status.value
         print(f"    - Ch {ch.chapter_index}: {ch.chapter_title} [{ch_status}] ({groups_cnt} groups, {segs_cnt} segs)")
-    print("=" * 60 + "\n")
+    print("=" * 65 + "\n")
     return 0
 
 
@@ -197,8 +207,59 @@ def cmd_project_plan(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_project_update_script(args: argparse.Namespace) -> int:
+    """Re-import an edited script into existing project with diff summary (A4)."""
+    project_dir = get_project_dir(args.project_id)
+    script_path = Path(args.script)
+    if not script_path.is_file():
+        print(f"Error: Script file not found: {script_path}", file=sys.stderr)
+        return 1
+
+    try:
+        with open(script_path, "r", encoding="utf-8-sig") as fp:
+            script_text = fp.read()
+    except Exception as exc:
+        print(f"Error reading script: {exc}", file=sys.stderr)
+        return 1
+
+    try:
+        stats = update_project_script(project_dir, script_text)
+    except Exception as exc:
+        print(f"Error updating script: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"\nScript Update Summary for Project: {args.project_id}")
+    print("-" * 60)
+    print(f"  Chapters:    {stats['chapters_unchanged']} unchanged, {stats['chapters_modified']} modified, {stats['chapters_added']} added, {stats['chapters_removed']} removed")
+    print(f"  TTS Groups:  {stats['groups_unchanged']} unchanged, {stats['groups_modified']} modified, {stats['groups_added']} added, {stats['groups_removed']} removed")
+    print(f"  Segments:    {stats['segments_unchanged']} unchanged, {stats['segments_modified']} modified, {stats['segments_added']} added, {stats['segments_removed']} removed")
+    print("-" * 60)
+    print("Status: Manifest updated successfully.")
+    print(f"Run 'python cli_longform.py project plan {args.project_id}' to inspect invalidated units.\n")
+    return 0
+
+
+def cmd_project_refresh_preset(args: argparse.Namespace) -> int:
+    """Refresh project preset snapshot from latest disk definitions (B2)."""
+    project_dir = get_project_dir(args.project_id)
+    try:
+        manifest, details = refresh_project_preset(project_dir)
+    except Exception as exc:
+        print(f"Error refreshing preset: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"\nPreset Refreshed for Project: {args.project_id}")
+    print("-" * 60)
+    print(f"  Preset ID:       {details['preset_id']}")
+    print(f"  New Chain:       {' -> '.join(details['new_chain'])}")
+    print(f"  Snapshot Change: {'YES (Updated)' if details['snapshot_updated'] else 'NO (Identical)'}")
+    print("-" * 60)
+    print(f"Run 'python cli_longform.py project plan {args.project_id}' to inspect affected units.\n")
+    return 0
+
+
 def cmd_project_dev_simulate(args: argparse.Namespace) -> int:
-    """Simulate pipeline execution for testing resume, invalidation, and atomicity."""
+    """Simulate pipeline execution with interruption handling (A3)."""
     project_dir = get_project_dir(args.project_id)
     try:
         manifest = load_manifest(project_dir)
@@ -236,11 +297,21 @@ def cmd_project_dev_simulate(args: argparse.Namespace) -> int:
                 if delay > 0:
                     time.sleep(delay)
 
-                # Process unit: create dummy 1-byte file and update manifest
+                # Process unit: write dummy asset to temp file first, then atomic rename (A3)
                 target_path = project_dir / unit.target_file
                 target_path.parent.mkdir(parents=True, exist_ok=True)
-                with open(target_path, "wb") as fp:
-                    fp.write(b"SIMULATED_ASSET_CONTENT\n")
+                temp_asset_path = target_path.parent / f"{target_path.name}.tmp.{uuid.uuid4().hex}"
+
+                try:
+                    with open(temp_asset_path, "wb") as fp:
+                        fp.write(b"SIMULATED_ASSET_CONTENT\n")
+                        fp.flush()
+                        os.fsync(fp.fileno())
+                    os.replace(temp_asset_path, target_path)
+                except Exception as exc:
+                    if temp_asset_path.exists():
+                        temp_asset_path.unlink(missing_ok=True)
+                    raise exc
 
                 # Update in-memory manifest data structures
                 if unit.unit_type == "tts_group_audio":
@@ -269,6 +340,7 @@ def cmd_project_dev_simulate(args: argparse.Namespace) -> int:
                                 subtitle_style=manifest.preset_snapshot.get("subtitle_style", {}),
                                 preset_snapshot=manifest.preset_snapshot,
                                 pipeline_version=manifest.pipeline_version,
+                                sub_niche_focus=manifest.sub_niche_focus or "",
                             )
                             ch.output_file = unit.target_file
                             ch.chapter_hash = latest_hash
@@ -297,6 +369,9 @@ def cmd_project_dev_simulate(args: argparse.Namespace) -> int:
             else:
                 print("\n[SIMULATION FINISHED] Run ended with partial completion.\n")
 
+    except KeyboardInterrupt:
+        print("\n[SIMULATION INTERRUPTED] KeyboardInterrupt received. Safely exiting and releasing project lock.\n", file=sys.stderr)
+        return 130
     except ProjectLockedError as exc:
         print(f"\n[ERROR] Project lock conflict: {exc}\n", file=sys.stderr)
         return 2
@@ -323,7 +398,7 @@ def build_parser() -> argparse.ArgumentParser:
     # presets
     p_presets = subparsers.add_parser("presets", help="Manage and validate presets")
     preset_subs = p_presets.add_subparsers(dest="preset_command", required=True)
-    p_p_list = preset_subs.add_parser("list", help="List available presets")
+    p_p_list = preset_subs.add_parser("list", help="List available presets in hierarchy tree")
     p_p_validate = preset_subs.add_parser("validate", help="Validate a preset JSON file")
     p_p_validate.add_argument("file", help="Path to preset JSON file")
 
@@ -338,6 +413,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_create.add_argument("--script", required=True, help="Path to Markdown script file")
     p_create.add_argument("--id", help="Optional custom project ID")
     p_create.add_argument("--aspect-ratio", default="16:9", help="Aspect ratio (default 16:9)")
+    p_create.add_argument("--focus", help="Sub-niche specific focus text (e.g. '1960s American drag racing')")
 
     # project show
     p_show = proj_subs.add_parser("show", help="Show project summary")
@@ -346,6 +422,15 @@ def build_parser() -> argparse.ArgumentParser:
     # project plan
     p_plan = proj_subs.add_parser("plan", help="Compute execution plan")
     p_plan.add_argument("project_id", help="Project ID")
+
+    # project update-script
+    p_upd = proj_subs.add_parser("update-script", help="Re-import script into project and calculate diff")
+    p_upd.add_argument("project_id", help="Project ID")
+    p_upd.add_argument("--script", required=True, help="Path to new Markdown script file")
+
+    # project refresh-preset
+    p_ref = proj_subs.add_parser("refresh-preset", help="Refresh preset snapshot from disk")
+    p_ref.add_argument("project_id", help="Project ID")
 
     # project dev-simulate
     p_sim = proj_subs.add_parser("dev-simulate", help="Simulate pipeline execution for testing")
@@ -372,6 +457,10 @@ def main() -> int:
             return cmd_project_show(args)
         elif args.project_command == "plan":
             return cmd_project_plan(args)
+        elif args.project_command == "update-script":
+            return cmd_project_update_script(args)
+        elif args.project_command == "refresh-preset":
+            return cmd_project_refresh_preset(args)
         elif args.project_command == "dev-simulate":
             return cmd_project_dev_simulate(args)
 

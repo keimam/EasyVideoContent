@@ -1,0 +1,28 @@
+{
+  "id": "automotive.classic_restoration",
+  "name": "Classic Car Restoration & Preservation",
+  "schema_version": "1.0.0",
+  "kind": "sub_niche",
+  "extends": "automotive",
+  "narration_style": "Patient, meticulous, appreciative of vintage craftsmanship, historical patina, and mechanical archaeology",
+  "hook_rules": "Introduce an ultra-rare barn find decaying under decades of dust or an impossible one-of-a-kind chassis discovery in the first 10-15 seconds.",
+  "words_per_minute": 135,
+  "+topic_keywords": [
+    "barn find discovery",
+    "frame off restoration",
+    "metal fabrication",
+    "preservation vs restoration",
+    "matching numbers provenance",
+    "lead wiping",
+    "rust remediation",
+    "period correct parts"
+  ],
+  "+visual_keywords": [
+    "dusty abandoned barn beams",
+    "rusty classic fender patina",
+    "english wheel metal shaping process",
+    "hand sanding body filler",
+    "gleaming multi-stage lacquer finish"
+  ],
+  "sensitivity_notes": "Distinguish between concourse-level original preservation (survivor) and modern resto-mod builds with modern powertrains."
+}

@@ -79,20 +79,50 @@ uv run python cli_longform.py project create `
   --script docs/longform/examples/sample_script.md `
   --id roanoke_project
 ```
+Membuat proyek sub-niche dengan fokus spesifik (Addendum 1.5):
+```powershell
+uv run python cli_longform.py project create `
+  --title "1969 Dodge Charger R/T Legend" `
+  --preset automotive.muscle_car `
+  --focus "1960s NASCAR homologation and 426 Hemi engine development" `
+  --script docs/longform/examples/sample_script.md `
+  --id dodge_charger_1969
+```
 Output akan menampilkan rincian jumlah bab, TTS group, segmen visual, estimasi durasi, dan peringatan durasi (jika naskah < 10 menit atau > 20 menit).
 
 ### 3.3 Melihat Ringkasan Proyek
 ```powershell
 uv run python cli_longform.py project show roanoke_project
 ```
+Perintah ini menampilkan status proyek, snapshot preset kanonik, rantai pewarisan preset (inheritance chain), serta fokus sub-niche (jika ada).
 
-### 3.4 Memeriksa Rencana Kerja (Planning & Status)
+### 3.4 Memperbarui Naskah Proyek (`update-script`)
+Jika naskah mengalami revisi setelah proyek dibuat atau diproses sebagian:
+```powershell
+uv run python cli_longform.py project update-script roanoke_project --script docs/longform/examples/revised_script.md
+```
+Perintah ini akan melakukan pencocokan bertingkat berdasarkan posisi (hierarchical position-based matching):
+- Bab, grup TTS, dan segmen visual yang isinya tidak berubah akan mempertahankan status `completed` dan file asetnya.
+- Elemen yang diubah ditandai `stale` (atau `pending` bila belum pernah dirender) dan mempertahankan hash lama sehingga modul perencana (`planner`) mendeteksi kebutuhan render ulang.
+- Menampilkan ringkasan tabel diff (bab, grup, dan segmen yang ditambahkan, dihapus, dimodifikasi, atau tidak berubah).
+
+> [!NOTE]
+> **Keterbatasan Hierarchical Position Matching**: Pencocokan dilakukan berbasis indeks posisi (Bab $i$, Grup $j$, Segmen $k$). Jika pengguna menyisipkan bab baru di posisi tengah (misal di Bab 2), bab-bab berikutnya akan bergeser indeksnya dan terdeteksi sebagai modifikasi. Untuk perubahan konten narasi atau visual tanpa mengubah struktur urutan bab/paragraf, seluruh unit lain yang tidak berubah tetap utuh 100%.
+
+### 3.5 Memperbarui Snapshot Preset Proyek (`refresh-preset`)
+Jika preset induk atau sub-niche di disk telah diperbarui dan proyek ingin menyinkronkan snapshot terbarunya:
+```powershell
+uv run python cli_longform.py project refresh-preset dodge_charger_1969
+```
+Ini akan memuat ulang preset yang telah di-merge, memperbarui `preset_snapshot` dan `preset_snapshot_hash`, serta memicu status `stale` pada bab yang terpengaruh.
+
+### 3.6 Memeriksa Rencana Kerja (Planning & Status)
 Menampilkan status tiap unit kerja (`tts_group_audio`, `visual_segment`, `chapter_render`, `final_concat`):
 ```powershell
 uv run python cli_longform.py project plan roanoke_project
 ```
 
-### 3.5 Simulasi Eksekusi & Uji Resume (`dev-simulate`)
+### 3.7 Simulasi Eksekusi & Uji Resume (`dev-simulate`)
 Menjalankan simulasi transisi status pipa data tanpa memanggil Edge-TTS, AI Image, atau FFmpeg nyata:
 ```powershell
 # Menjalankan simulasi penuh
@@ -105,3 +135,50 @@ uv run python cli_longform.py project dev-simulate roanoke_project --delay 0.2
 uv run python cli_longform.py project dev-simulate roanoke_project --fail-at ch2_g1_audio
 ```
 Setelah kegagalan terjadi, periksa `project plan roanoke_project` untuk melihat bab 1 tetap `completed` dan bab 2 `pending`. Jalankan kembali tanpa `--fail-at` untuk melanjutkan (resume) hingga selesai.
+
+---
+
+## 4. Panduan Pembuatan Sub-Niche Preset (Addendum 1.5)
+
+Sistem preset bertingkat memungkinkan pengguna membuat turunan preset spesifik tanpa menduplikasi konfigurasi umum dari preset induk.
+
+### 4.1 Prinsip Pewarisan Preset
+1. **Atribut `kind` dan `extends`**:
+   - Preset induk bertipe `"kind": "niche"`.
+   - Preset turunan bertipe `"kind": "sub_niche"` dan mencantumkan `"extends": "<parent_id>"`.
+2. **Aturan Penamaan ID**:
+   - Preset sub-niche disarankan menggunakan notasi titik (*dot notation*), misalnya `automotive.muscle_car`, `automotive.jdm`, `automotive.supercar`.
+3. **Aturan Penggabungan Nilai (Deep Merge)**:
+   - **Nilai Primitif / String**: Nilai sub-niche menimpa (*override*) nilai induk.
+   - **Dictionary**: Digabung secara rekursif (*deep merge*).
+   - **List / Array**:
+     - Standar: List di sub-niche menggantikan seluruh list induk.
+     - Penambahan Elemen (`+`): Jika nama properti di-prefix dengan karakter `+` (misal `"+topic_keywords"` atau `"+visual_keywords"`), elemen list sub-niche akan ditambahkan (*append*) ke ujung list induk.
+
+### 4.2 Contoh File Sub-Niche Preset JSON
+Berikut adalah contoh minimal sub-niche preset `resource/presets/automotive.muscle_car.json`:
+
+```json
+{
+  "id": "automotive.muscle_car",
+  "name": "Automotive - American Muscle Cars",
+  "kind": "sub_niche",
+  "extends": "automotive",
+  "schema_version": "1.0.0",
+  "+topic_keywords": ["american muscle", "v8 engine", "quarter mile", "muscle car era"],
+  "+visual_keywords": ["chrome bumpers", "blower scoop", "burnout smoke", "dragstrip"],
+  "narration_style": "Dramatic, gritty, and reverent of raw mechanical horsepower and torque",
+  "default_voice": "en-US-GuyNeural"
+}
+```
+
+### 4.3 Menambahkan Preset Baru
+1. Buat file JSON baru di folder `resource/presets/` (bawaan) atau `storage/presets/` (kustom pengguna).
+2. Validasi formatnya menggunakan CLI:
+   ```powershell
+   uv run python cli_longform.py presets validate storage/presets/my_custom_niche.json
+   ```
+3. Periksa tampilan pohon hierarkinya:
+   ```powershell
+   uv run python cli_longform.py presets list
+   ```

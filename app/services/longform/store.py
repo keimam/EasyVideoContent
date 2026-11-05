@@ -21,10 +21,17 @@ from typing import Any, Optional, Tuple
 
 from loguru import logger
 
+from pydantic import ValidationError
+
 from app.services.longform.config import load_longform_config
-from app.services.longform.hashing import hash_file
-from app.services.longform.presets import get_preset
-from app.services.longform.schema import Chapter, ItemStatus, ProjectManifest
+from app.services.longform.hashing import (
+    compute_audio_group_hash,
+    compute_chapter_hash,
+    compute_visual_segment_hash,
+    hash_file,
+)
+from app.services.longform.presets import get_preset, get_preset_inheritance_chain
+from app.services.longform.schema import Chapter, ItemStatus, ProjectManifest, Segment, TtsGroup
 
 
 class ProjectStoreError(Exception):
@@ -209,7 +216,9 @@ def save_manifest(manifest: ProjectManifest, project_dir: str | Path) -> Path:
 def load_manifest(project_dir: str | Path) -> ProjectManifest:
     """Load and validate manifest.json from project directory.
 
-    BOM-safe (utf-8-sig). Raises ProjectNotFoundError or ProjectStoreError.
+    BOM-safe (utf-8-sig). Detailed line/column on JSON syntax error (A2).
+    Field-level validation error reporting. Keeps paragraph_text synchronized (A1).
+    Does NOT overwrite file on error.
     """
     p_dir = Path(project_dir).resolve()
     manifest_path = p_dir / "manifest.json"
@@ -220,14 +229,33 @@ def load_manifest(project_dir: str | Path) -> ProjectManifest:
     try:
         with open(manifest_path, "r", encoding="utf-8-sig") as fp:
             data = json.load(fp)
+    except json.JSONDecodeError as exc:
+        raise ProjectStoreError(
+            f"Invalid JSON syntax in manifest '{manifest_path}' at line {exc.lineno}, column {exc.colno}: {exc.msg}"
+        ) from exc
     except Exception as exc:
-        raise ProjectStoreError(f"Failed to parse manifest JSON at '{manifest_path}': {exc}") from exc
+        raise ProjectStoreError(f"Failed to read manifest JSON at '{manifest_path}': {exc}") from exc
+
+    if not isinstance(data, dict):
+        raise ProjectStoreError(
+            f"Manifest file '{manifest_path}' must contain a JSON object at root, got {type(data).__name__}"
+        )
 
     try:
         manifest = ProjectManifest.model_validate(data)
+        # Synchronize paragraph_text with segments if present (A1)
+        for ch in manifest.chapters:
+            for g in ch.tts_groups:
+                if g.segments:
+                    g.paragraph_text = g.get_effective_paragraph_text()
         return manifest
-    except Exception as exc:
-        raise ProjectStoreError(f"Manifest validation failed for '{manifest_path}': {exc}") from exc
+    except ValidationError as exc:
+        errors = [
+            f"Field '{' -> '.join(str(p) for p in err.get('loc', []))}': {err.get('msg')}"
+            for err in exc.errors()
+        ]
+        details = "\n  - " + "\n  - ".join(errors)
+        raise ProjectStoreError(f"Manifest validation failed for '{manifest_path}':{details}") from exc
 
 
 def create_project(
@@ -236,10 +264,12 @@ def create_project(
     preset_id: str,
     script_markdown: Optional[str] = None,
     aspect_ratio: str = "16:9",
+    sub_niche_focus: Optional[str] = None,
+    projects_root: Optional[Path] = None,
 ) -> Tuple[ProjectManifest, Path]:
     """Create a new longform project folder with directory structure and manifest.
 
-    Copies preset snapshot into manifest (K2).
+    Copies preset snapshot and inheritance chain into manifest (K2, B2, B3).
     """
     clean_id = project_id.strip()
     if not clean_id or not clean_id.replace("_", "").replace("-", "").isalnum():
@@ -247,7 +277,8 @@ def create_project(
             f"Invalid project_id '{project_id}'. Must contain alphanumeric, underscore, or hyphen."
         )
 
-    project_dir = get_project_dir(clean_id)
+    base_root = Path(projects_root).resolve() if projects_root else get_projects_root()
+    project_dir = base_root / clean_id
     if project_dir.exists() and (project_dir / "manifest.json").exists():
         raise FileExistsError(f"Project '{clean_id}' already exists at {project_dir}")
 
@@ -265,6 +296,7 @@ def create_project(
     # Fetch preset & snapshot
     preset = get_preset(preset_id)
     preset_snapshot = preset.model_dump()
+    preset_chain = get_preset_inheritance_chain(preset_id)
 
     # Create chapters from script if provided
     chapters: list[Chapter] = []
@@ -279,7 +311,9 @@ def create_project(
         title=title,
         aspect_ratio=aspect_ratio,
         preset_id=preset_id,
+        preset_inheritance_chain=preset_chain,
         preset_snapshot=preset_snapshot,
+        sub_niche_focus=sub_niche_focus.strip() if sub_niche_focus else None,
         chapters=chapters,
         status=ItemStatus.pending,
     )
@@ -288,6 +322,227 @@ def create_project(
         save_manifest(manifest, project_dir)
 
     return manifest, project_dir
+
+
+def update_project_script(
+    project_dir: str | Path,
+    new_script_markdown: str,
+) -> dict[str, Any]:
+    """Re-import script into an existing project, preserving unaffected units (A4).
+
+    Hierarchical position-based matching:
+    - Matches chapters by chapter_index (1-based).
+    - Matches TTS groups by group_index (1-based).
+    - Matches segments by segment_index within group (1-based).
+    - Unchanged segments preserve rendered_clip, visual_hash, and completed status.
+    - Unchanged groups preserve audio file_path, audio_hash, and completed status.
+    - Modified items are marked as stale (or pending if not yet rendered).
+    - Returns structured summary of modifications.
+    """
+    p_dir = Path(project_dir).resolve()
+
+    with ProjectLock(p_dir):
+        manifest = load_manifest(p_dir)
+        preset = get_preset(manifest.preset_id)
+
+        from app.services.longform.script_import import parse_markdown_script
+        new_chapters, _ = parse_markdown_script(new_script_markdown, preset)
+
+        stats = {
+            "chapters_unchanged": 0,
+            "chapters_modified": 0,
+            "chapters_added": 0,
+            "chapters_removed": 0,
+            "groups_unchanged": 0,
+            "groups_modified": 0,
+            "groups_added": 0,
+            "groups_removed": 0,
+            "segments_unchanged": 0,
+            "segments_modified": 0,
+            "segments_added": 0,
+            "segments_removed": 0,
+        }
+
+        old_chapters_map = {c.chapter_index: c for c in manifest.chapters}
+        new_chapters_map = {c.chapter_index: c for c in new_chapters}
+        all_ch_indices = sorted(set(old_chapters_map.keys()) | set(new_chapters_map.keys()))
+
+        updated_chapters: list[Chapter] = []
+
+        for ch_idx in all_ch_indices:
+            if ch_idx in old_chapters_map and ch_idx not in new_chapters_map:
+                # Chapter removed
+                old_ch = old_chapters_map[ch_idx]
+                stats["chapters_removed"] += 1
+                stats["groups_removed"] += len(old_ch.tts_groups)
+                stats["segments_removed"] += sum(len(g.segments) for g in old_ch.tts_groups)
+                continue
+
+            if ch_idx not in old_chapters_map and ch_idx in new_chapters_map:
+                # Chapter added
+                new_ch = new_chapters_map[ch_idx]
+                stats["chapters_added"] += 1
+                stats["groups_added"] += len(new_ch.tts_groups)
+                stats["segments_added"] += sum(len(g.segments) for g in new_ch.tts_groups)
+                updated_chapters.append(new_ch)
+                continue
+
+            # Chapter exists in both old and new
+            old_ch = old_chapters_map[ch_idx]
+            new_ch = new_chapters_map[ch_idx]
+
+            ch_modified = (old_ch.chapter_title.strip() != new_ch.chapter_title.strip())
+
+            old_groups_map = {g.group_index: g for g in old_ch.tts_groups}
+            new_groups_map = {g.group_index: g for g in new_ch.tts_groups}
+            all_g_indices = sorted(set(old_groups_map.keys()) | set(new_groups_map.keys()))
+
+            updated_groups: list[TtsGroup] = []
+
+            for g_idx in all_g_indices:
+                if g_idx in old_groups_map and g_idx not in new_groups_map:
+                    # Group removed
+                    old_g = old_groups_map[g_idx]
+                    stats["groups_removed"] += 1
+                    stats["segments_removed"] += len(old_g.segments)
+                    ch_modified = True
+                    continue
+
+                if g_idx not in old_groups_map and g_idx in new_groups_map:
+                    # Group added
+                    new_g = new_groups_map[g_idx]
+                    stats["groups_added"] += 1
+                    stats["segments_added"] += len(new_g.segments)
+                    updated_groups.append(new_g)
+                    ch_modified = True
+                    continue
+
+                # Group exists in both
+                old_g = old_groups_map[g_idx]
+                new_g = new_groups_map[g_idx]
+
+                g_modified = False
+
+                old_segs_map = {s.segment_index: s for s in old_g.segments}
+                new_segs_map = {s.segment_index: s for s in new_g.segments}
+                all_s_indices = sorted(set(old_segs_map.keys()) | set(new_segs_map.keys()))
+
+                updated_segments: list[Segment] = []
+
+                for s_idx in all_s_indices:
+                    if s_idx in old_segs_map and s_idx not in new_segs_map:
+                        stats["segments_removed"] += 1
+                        g_modified = True
+                        continue
+
+                    if s_idx not in old_segs_map and s_idx in new_segs_map:
+                        new_s = new_segs_map[s_idx]
+                        stats["segments_added"] += 1
+                        updated_segments.append(new_s)
+                        g_modified = True
+                        continue
+
+                    # Segment exists in both
+                    old_s = old_segs_map[s_idx]
+                    new_s = new_segs_map[s_idx]
+
+                    text_same = (old_s.narration_text.strip() == new_s.narration_text.strip())
+                    prompt_same = (old_s.visual.prompt.strip() == new_s.visual.prompt.strip())
+                    motion_same = (old_s.visual.motion == new_s.visual.motion)
+                    source_same = (old_s.visual.type == new_s.visual.type)
+
+                    if text_same and prompt_same and motion_same and source_same:
+                        stats["segments_unchanged"] += 1
+                        # Preserve existing rendered asset and status
+                        new_s.visual.rendered_clip = old_s.visual.rendered_clip
+                        new_s.visual.visual_hash = old_s.visual.visual_hash
+                        new_s.visual.source_file = old_s.visual.source_file
+                        new_s.visual.source_content_hash = old_s.visual.source_content_hash
+                        new_s.duration_seconds = old_s.duration_seconds
+                        new_s.status = old_s.status
+                    else:
+                        stats["segments_modified"] += 1
+                        g_modified = True
+                        # Preserve old hash so planner detects mismatch with new expected hash
+                        new_s.visual.rendered_clip = old_s.visual.rendered_clip
+                        new_s.visual.visual_hash = old_s.visual.visual_hash
+                        new_s.status = ItemStatus.stale if old_s.visual.rendered_clip else ItemStatus.pending
+
+                    updated_segments.append(new_s)
+
+                new_g.segments = updated_segments
+                new_g.paragraph_text = new_g.get_effective_paragraph_text()
+
+                if not g_modified:
+                    stats["groups_unchanged"] += 1
+                    new_g.audio.file_path = old_g.audio.file_path
+                    new_g.audio.audio_hash = old_g.audio.audio_hash
+                    new_g.status = old_g.status
+                else:
+                    stats["groups_modified"] += 1
+                    ch_modified = True
+                    new_g.audio.file_path = old_g.audio.file_path
+                    # Preserve old audio hash so planner detects mismatch with new expected text
+                    new_g.audio.audio_hash = old_g.audio.audio_hash
+                    new_g.status = ItemStatus.stale if old_g.audio.file_path else ItemStatus.pending
+
+                updated_groups.append(new_g)
+
+            new_ch.tts_groups = updated_groups
+
+            if not ch_modified:
+                stats["chapters_unchanged"] += 1
+                new_ch.output_file = old_ch.output_file
+                new_ch.chapter_hash = old_ch.chapter_hash
+                new_ch.status = old_ch.status
+            else:
+                stats["chapters_modified"] += 1
+                new_ch.output_file = old_ch.output_file
+                new_ch.status = ItemStatus.stale if old_ch.output_file else ItemStatus.pending
+
+            updated_chapters.append(new_ch)
+
+        manifest.chapters = updated_chapters
+        if stats["chapters_modified"] > 0 or stats["chapters_added"] > 0 or stats["chapters_removed"] > 0:
+            manifest.status = ItemStatus.stale if manifest.final_video_file else ItemStatus.pending
+
+        save_manifest(manifest, p_dir)
+
+    return stats
+
+
+def refresh_project_preset(project_dir: str | Path) -> Tuple[ProjectManifest, dict[str, Any]]:
+    """Refresh project preset snapshot from current preset definitions on disk (B2).
+
+    Updates preset_snapshot and preset_inheritance_chain.
+    Affected chapters will be flagged as stale by compute_plan.
+    """
+    p_dir = Path(project_dir).resolve()
+
+    with ProjectLock(p_dir):
+        manifest = load_manifest(p_dir)
+        old_chain = list(manifest.preset_inheritance_chain)
+        old_snapshot = dict(manifest.preset_snapshot)
+
+        latest_preset = get_preset(manifest.preset_id)
+        latest_chain = get_preset_inheritance_chain(manifest.preset_id)
+        latest_snapshot = latest_preset.model_dump()
+
+        manifest.preset_snapshot = latest_snapshot
+        manifest.preset_inheritance_chain = latest_chain
+        # Reset completed status to stale if render exists
+        if manifest.final_video_file:
+            manifest.status = ItemStatus.stale
+
+        save_manifest(manifest, p_dir)
+
+        details = {
+            "preset_id": manifest.preset_id,
+            "old_chain": old_chain,
+            "new_chain": latest_chain,
+            "snapshot_updated": (old_snapshot != latest_snapshot),
+        }
+        return manifest, details
 
 
 def stage_local_visual_file(project_dir: str | Path, source_path: str | Path) -> Tuple[str, str]:

@@ -61,6 +61,8 @@ class Preset(BaseModel):
     id: str
     name: str
     schema_version: str = "1.0.0"
+    kind: str = "niche"  # "niche" | "sub_niche"
+    extends: Optional[str] = None
     language: str = "en-US"
     audience: str
     narration_style: str
@@ -74,6 +76,10 @@ class Preset(BaseModel):
     default_voice: str
     default_bgm: dict[str, Any] = Field(default_factory=dict)
     ken_burns_style: str = "alternating"
+    topic_keywords: List[str] = Field(default_factory=list)
+    visual_keywords: List[str] = Field(default_factory=list)
+    sensitivity_notes: str = ""
+    recommended_visual_sources: dict[str, float] = Field(default_factory=dict)
 
     model_config = {"extra": "forbid"}
 
@@ -158,6 +164,18 @@ class TtsGroup(BaseModel):
 
     model_config = {"extra": "forbid"}
 
+    def get_effective_paragraph_text(self) -> str:
+        """Return paragraph text reconstructed from segments if present, or self.paragraph_text."""
+        if self.segments:
+            texts = [
+                s.narration_text.strip()
+                for s in self.segments
+                if s.narration_text and s.narration_text.strip()
+            ]
+            if texts:
+                return " ".join(texts)
+        return self.paragraph_text
+
 
 class Chapter(BaseModel):
     """A major narrative chapter, serving as the unit of partial rendering and resume."""
@@ -186,7 +204,9 @@ class ProjectManifest(BaseModel):
     title: str
     aspect_ratio: str = "16:9"
     preset_id: str
+    preset_inheritance_chain: List[str] = Field(default_factory=list)
     preset_snapshot: dict[str, Any]
+    sub_niche_focus: Optional[str] = None
     encoder_settings: EncoderSettings = Field(default_factory=EncoderSettings)
     chapters: List[Chapter] = Field(default_factory=list)
     status: ItemStatus = ItemStatus.pending

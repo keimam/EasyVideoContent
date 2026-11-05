@@ -89,8 +89,9 @@ def compute_chapter_hash(
     subtitle_style: dict[str, Any],
     preset_snapshot: dict[str, Any],
     pipeline_version: str = "1.0.0",
+    sub_niche_focus: str = "",
 ) -> str:
-    """Compute canonical hash for a chapter based on sequential elements (K1, K2)."""
+    """Compute canonical hash for a chapter based on sequential elements (K1, K2, B3)."""
     # K1: Sequential concatenation of element hashes with newline delimiter
     elements = []
     for group in chapter.tts_groups:
@@ -103,10 +104,12 @@ def compute_chapter_hash(
     preset_snapshot_hash = hash_string(canonical_json(preset_snapshot))
     encoder_hash = hash_string(canonical_json(encoder_settings.model_dump()))
     subtitle_hash = hash_string(canonical_json(subtitle_style))
+    focus_norm = normalize_text(sub_niche_focus)
 
+    focus_part = f"|{focus_norm}" if focus_norm else ""
     payload = (
         f"{joined_elements}|{encoder_hash}|{subtitle_hash}|"
-        f"{preset_snapshot_hash}|{pipeline_version}"
+        f"{preset_snapshot_hash}{focus_part}|{pipeline_version}"
     )
     return hash_string(payload)
 

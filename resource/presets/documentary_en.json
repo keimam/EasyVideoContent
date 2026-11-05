@@ -2,6 +2,7 @@
   "id": "documentary_en",
   "name": "General Documentary (English)",
   "schema_version": "1.0.0",
+  "kind": "niche",
   "language": "en-US",
   "audience": "Broad general audience, curious learners, YouTube faceless viewers",
   "narration_style": "Expository, engaging, authoritative yet accessible, measured pacing",

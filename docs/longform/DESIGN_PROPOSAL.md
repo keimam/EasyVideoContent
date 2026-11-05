@@ -19,31 +19,47 @@ Preset disimpan dalam format JSON mandiri. Pengguna dapat menambah preset baru s
 1. **Preset Bawaan Sistem**: `resource/presets/*.json`
 2. **Preset Pengguna**: `storage/presets/*.json` (diprioritaskan menimpa preset bawaan bila memiliki `id` yang sama).
 
-### 2.2 Spesifikasi Field Skema Preset (Bahasa Inggris, K4)
+### 2.2 Spesifikasi Field Skema Preset (Bahasa Inggris K4, Niche & Sub-Niche B1, B4)
 
 | Field | Tipe | Deskripsi & Contoh |
 |:---|:---|:---|
-| `id` | `str` (slug) | Identifier unik preset (misal: `documentary_en`, `documentary_id`). |
-| `name` | `str` | Nama tampilan di UI/CLI (misal: "Documentary - Universal English"). |
+| `id` | `str` (slug) | Identifier unik preset (misal: `"automotive"` untuk niche, `"automotive.muscle_car"` untuk sub-niche). |
+| `name` | `str` | Nama tampilan di UI/CLI (misal: `"American Muscle Cars"`). |
 | `schema_version` | `str` | Versi skema preset (misal: `"1.0.0"`). |
+| `kind` | `str` | Jenis tingkatan preset: `"niche"` (induk) atau `"sub_niche"` (anak turunan). |
+| `extends` | `str?` | ID preset induk yang diwarisi (opsional, misal: `"automotive"`). |
 | `language` | `str` | Kode bahasa narasi (misal: `"en-US"`, `"id-ID"`). |
-| `audience` | `str` | Profil audiens target (misal: "Global audience interested in documentary topics"). |
-| `narration_style` | `str` | Nada & gaya bahasa naskah (misal: "informative, balanced, engaging, clear pacing"). |
-| `chapter_structure` | `list[str]` | Alur baku bab (misal: `["Hook & Overview", "Context & Details", "Key Insights", "Conclusion"]`). |
-| `hook_rules` | `str` | Aturan 15 detik pertama (misal: "Engage immediately with a central question; no greetings"). |
+| `audience` | `str` | Profil audiens target (misal: `"Car enthusiasts, gearheads, YouTube automotive viewers"`). |
+| `narration_style` | `str` | Nada & gaya bahasa naskah (misal: `"Punchy, gritty, celebrating raw V8 power and tire smoke"`). |
+| `chapter_structure` | `list[str]` | Alur baku bab (misal: `["Hook & Overview", "Origin & Context", "Key Climax", "Legacy"]`). |
+| `hook_rules` | `str` | Aturan 15 detik pertama (misal: `"Open with a roaring engine sound description in first 10s"`). |
 | `words_per_minute` | `int` | Kecepatan bicara acuan (misal: `145` WPM). |
-| `subtitle_style` | `dict` | Styling ASS subtitle: font_name, font_size, bottom_margin, fore_color, outline_color, outline_width, rounded_background, display_mode. |
-| `visual_style` | `str` | Arahan visual utama (misal: "cinematic realism, archival footage, high detail"). |
+| `subtitle_style` | `dict` | Styling ASS subtitle: font_name, font_size, bottom_margin, primary_color, outline_color, outline_width. |
+| `visual_style` | `str` | Arahan visual utama (misal: `"Cinematic realism, high contrast lighting, mechanical closeups"`). |
 | `image_prompt_template` | `dict` | Template prompt AI image: `prefix` dan `suffix`. |
-| `visual_source_mix` | `dict[str, float]` | Rasio campuran visual (misal: `{"ai_image": 0.6, "stock_video": 0.3, "local": 0.1}`). |
-| `default_voice` | `str` | Suara TTS bawaan (misal: `"en-US-ChristopherNeural-Male"`). |
-| `default_bgm` | `dict` | Kategori BGM, volume bawaan, dan parameter ducking (misal: category `"ambient"`, volume `0.15`, ducking_attenuation_db `-16.0`). |
+| `visual_source_mix` | `dict[str, float]` | Rasio campuran visual (misal: `{"ai_image": 0.4, "stock_video": 0.6}`). |
+| `default_voice` | `str` | Suara TTS bawaan (misal: `"en-US-ChristopherNeural"`). |
+| `default_bgm` | `dict` | Kategori BGM, volume bawaan, dan parameter ducking (misal: category `"ambient"`, volume `0.15`, ducking `-16.0dB`). |
 | `ken_burns_style` | `str` | Pola animasi gambar bawaan: `"alternating"`, `"zoom_in"`, `"zoom_out"`, `"pan_left"`, `"pan_right"`. |
+| `topic_keywords` | `list[str]` | Kata kunci topik utama untuk penulisan naskah dan metadata. |
+| `visual_keywords` | `list[str]` | Kata kunci visual khusus untuk pemandu footage/gambar. |
+| `sensitivity_notes` | `str` | Panduan kepatuhan/fakta (misal: dilarang mengarang spesifikasi atau angka tanpa rujukan). |
+| `recommended_visual_sources` | `dict` | Prioritas urutan sumber footage untuk entitas nyata vs suasana. |
 
-### 2.3 Validasi & Snapshot Immutability (K2)
-- **Validasi**: Menggunakan Pydantic `Preset` dengan pelaporan galat yang menyebutkan nama file dan field bermasalah. Pembacaan file mendukung UTF-8 dan tahan terhadap BOM UTF-8 (`utf-8-sig`).
-- **Snapshot Immutability**: `project_manifest.json` menyimpan salinan penuh `preset_snapshot` saat proyek dibuat.
-- **Hash Snapshot (K2)**: Perubahan preset dihitung melalui `preset_snapshot_hash = sha256(canonical_json(preset_snapshot))`.
+### 2.3 Pewarisan Bertingkat Niche -> Sub-Niche (Addendum 1.5 B1, B2)
+- **Aturan Penggabungan (Merge)**:
+  - Preset anak (`sub_niche`) mewarisi semua field dari preset induk (`niche`).
+  - **Field Nilai Tunggal / Teks**: Nilai di anak menimpa (*override*) nilai di induk.
+  - **Field Dictionary**: Digabung secara rekursif per key. Key baru di anak ditambahkan, key yang sama ditimpa.
+  - **Field List**:
+    - Default: List di anak mengganti (*replace*) seluruh isi list di induk.
+    - Penanda Append (`+`): Jika nama key di file JSON diawali tanda `+` (misal `"+topic_keywords": ["hemi", "mopar"]`), elemen list anak akan ditambahkan (*append*) ke ujung list induk.
+- **Rantai Pewarisan & Pencegahan Siklus**: Rantai multi-level (A -> B -> C) didukung. Siklus pewarisan dan referensi induk yang hilang ditolak dengan pesan galat eksplisit.
+- **Validasi & Snapshot Immutability (K2, B2)**:
+  - Menggunakan Pydantic `Preset` dengan pelaporan galat yang menyebutkan nama file dan field bermasalah. Pembacaan file mendukung UTF-8 dan tahan terhadap BOM UTF-8 (`utf-8-sig`).
+  - `manifest.json` menyimpan salinan snapshot tergabung (*resolved snapshot*) dan rantai pewarisan saat proyek dibuat.
+  - Proyek lama tetap stabil menggunakan snapshot miliknya walau file preset diubah, kecuali jika diperbarui eksplisit via `project refresh-preset`.
+  - **Hash Snapshot (K2)**: `preset_snapshot_hash = sha256(canonical_json(preset_snapshot))`.
 
 ---
 
@@ -56,7 +72,7 @@ Semua proyek long video disimpan terstruktur di bawah `storage/longform_projects
 ```text
 storage/longform_projects/<project_id>/
 ├── .lock                          # File lock proyek (PID + timestamp ISO)
-├── project_manifest.json          # SATU-SATUNYA sumber kebenaran (manifest + state)
+├── manifest.json                  # SATU-SATUNYA sumber kebenaran (manifest + state)
 ├── assets/
 │   ├── audio/
 │   │   ├── chapter_01/
@@ -87,10 +103,10 @@ storage/longform_projects/<project_id>/
 ```
 
 ### 3.2 Satu Sumber Kebenaran, Atomic Write & Project Lock (K5, K7)
-- **Satu Sumber Kebenaran**: `project_manifest.json` adalah satu-satunya penyimpan data dan status proyek.
+- **Satu Sumber Kebenaran**: `manifest.json` adalah satu-satunya penyimpan data dan status proyek.
 - **Path Relatif Murni (K7)**: Seluruh path file di dalam manifest WAJIB berupa path relatif terhadap folder proyek (misal: `assets/visual/raw/image_01.png`). Path absolut ditolak saat validasi Pydantic. File visual lokal pengguna selalu disalin ke `assets/visual/raw/`.
 - **Penulisan Atomik (K5)**:
-  1. Manifest ditulis ke file sementara `project_manifest.json.tmp.<uuid>`.
+  1. Manifest ditulis ke file sementara `manifest.json.tmp.<uuid>`.
   2. Dilakukan `file.flush()` dan `os.fsync(file.fileno())`.
   3. Mengganti file via `os.replace` dengan mekanisme retry hingga 5 kali dengan backoff bertahap (0.05s, 0.1s, 0.2s, 0.4s, 0.8s) untuk mengatasi `PermissionError` sesaat akibat file locking Windows.
 - **Lock Proyek (K5)**:

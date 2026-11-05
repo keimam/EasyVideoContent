@@ -1,15 +1,19 @@
-"""Preset Loader and Validation for Longform Video Generation.
+"""Preset Loader, Inheritance Resolution, and Validation for Longform Video Generation.
 
 Loads presets from built-in 'resource/presets/*.json' and user-defined
-'storage/presets/*.json'. User presets override built-in presets sharing the same ID.
-All reads are BOM-safe (utf-8-sig) and provide detailed errors citing file and field.
+'storage/presets/*.json'. Supports multi-tier inheritance (Addendum 1.5 B1):
+- child overrides parent fields
+- dicts merged recursively per key
+- lists replaced entirely by default, or appended if key starts with '+' (e.g. '+topic_keywords')
+- cycle detection and missing parent validation with explicit errors (citing file + id)
+- tree formatting for CLI
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import ValidationError
 
@@ -27,7 +31,7 @@ class PresetNotFoundError(PresetError):
 
 
 class PresetValidationError(PresetError):
-    """Raised when a preset fails schema or JSON validation."""
+    """Raised when a preset fails schema or JSON validation or inheritance checks."""
     pass
 
 
@@ -39,36 +43,139 @@ def get_preset_directories() -> Tuple[Path, Path]:
     return resource_dir, storage_dir
 
 
-def load_preset_file(file_path: str | Path) -> Preset:
-    """Load and validate a single preset JSON file.
+def deep_merge_dicts(parent: dict[str, Any], child: dict[str, Any]) -> dict[str, Any]:
+    """Merge child dict into parent dict recursively with '+' list append support (B1).
 
-    BOM-safe (utf-8-sig). Raises PresetValidationError on JSON decode error
-    or Pydantic validation failure with explicit file path and field names.
+    - Keys starting with '+' (e.g. '+topic_keywords') append child list to parent list.
+    - Dicts are merged recursively per key.
+    - Other values in child override parent.
     """
-    path = Path(file_path)
-    if not path.is_file():
-        raise FileNotFoundError(f"Preset file not found: {path}")
+    merged = dict(parent)
+
+    for k, v in child.items():
+        if k.startswith("+"):
+            base_k = k[1:]
+            parent_val = merged.get(base_k, [])
+            if not isinstance(parent_val, list):
+                parent_val = [parent_val] if parent_val is not None else []
+            if not isinstance(v, list):
+                raise PresetValidationError(
+                    f"Append prefix '+' can only be used on list fields, got {type(v).__name__} for key '{k}'"
+                )
+            merged[base_k] = list(parent_val) + list(v)
+        elif isinstance(v, dict) and isinstance(merged.get(k), dict):
+            merged[k] = deep_merge_dicts(merged[k], v)
+        else:
+            merged[k] = v
+
+    # Strip any remaining '+' keys from the resulting dict
+    return {k: v for k, v in merged.items() if not k.startswith("+")}
+
+
+def _load_raw_preset_file(file_path: Path) -> dict[str, Any]:
+    """Load JSON content from file safely handling UTF-8 BOM."""
+    if not file_path.is_file():
+        raise FileNotFoundError(f"Preset file not found: {file_path}")
 
     try:
-        # BOM-safe read
-        with open(path, "r", encoding="utf-8-sig") as fp:
+        with open(file_path, "r", encoding="utf-8-sig") as fp:
             data = json.load(fp)
     except json.JSONDecodeError as exc:
         raise PresetValidationError(
-            f"Invalid JSON syntax in preset file '{path}' at line {exc.lineno}, column {exc.colno}: {exc.msg}"
+            f"Invalid JSON syntax in preset file '{file_path}' at line {exc.lineno}, column {exc.colno}: {exc.msg}"
         ) from exc
     except Exception as exc:
         raise PresetValidationError(
-            f"Failed to read preset file '{path}': {exc}"
+            f"Failed to read preset file '{file_path}': {exc}"
         ) from exc
 
     if not isinstance(data, dict):
         raise PresetValidationError(
-            f"Preset file '{path}' must contain a JSON object at root, got {type(data).__name__}"
+            f"Preset file '{file_path}' must contain a JSON object at root, got {type(data).__name__}"
         )
 
+    return data
+
+
+def _collect_raw_presets() -> dict[str, Tuple[dict[str, Any], Path]]:
+    """Scan resource/presets and storage/presets to collect raw dictionary data.
+
+    Presets in storage/presets override presets in resource/presets with the same ID.
+    """
+    resource_dir, storage_dir = get_preset_directories()
+    raw_presets: dict[str, Tuple[dict[str, Any], Path]] = {}
+
+    # 1. Built-in presets
+    if resource_dir.is_dir():
+        for f in sorted(resource_dir.glob("*.json")):
+            data = _load_raw_preset_file(f)
+            pid = data.get("id")
+            if not pid:
+                raise PresetValidationError(f"Preset file '{f}' is missing required root 'id' field.")
+            raw_presets[pid] = (data, f)
+
+    # 2. User storage presets (override by id)
+    if storage_dir.is_dir():
+        for f in sorted(storage_dir.glob("*.json")):
+            data = _load_raw_preset_file(f)
+            pid = data.get("id")
+            if not pid:
+                raise PresetValidationError(f"Preset file '{f}' is missing required root 'id' field.")
+            raw_presets[pid] = (data, f)
+
+    return raw_presets
+
+
+def _resolve_preset(
+    preset_id: str,
+    raw_presets: dict[str, Tuple[dict[str, Any], Path]],
+    visited: list[str],
+) -> Tuple[dict[str, Any], list[str]]:
+    """Recursively resolve preset inheritance with cycle detection (B1).
+
+    Returns (resolved_dict, inheritance_chain_list).
+    """
+    if preset_id in visited:
+        cycle_chain = " -> ".join(visited + [preset_id])
+        raise PresetValidationError(f"Preset inheritance cycle detected: {cycle_chain}")
+
+    if preset_id not in raw_presets:
+        caller_id = visited[-1] if visited else "unknown"
+        caller_file = raw_presets[caller_id][1] if caller_id in raw_presets else "unknown"
+        raise PresetValidationError(
+            f"Preset '{caller_id}' (in '{caller_file}') extends unknown parent preset '{preset_id}'"
+        )
+
+    raw_data, file_path = raw_presets[preset_id]
+    parent_id = raw_data.get("extends")
+
+    if not parent_id:
+        # Base preset (root niche)
+        cleaned = {k: v for k, v in raw_data.items() if not k.startswith("+")}
+        return cleaned, [preset_id]
+
+    parent_resolved, parent_chain = _resolve_preset(parent_id, raw_presets, visited + [preset_id])
+    merged = deep_merge_dicts(parent_resolved, raw_data)
+    chain = parent_chain + [preset_id]
+    return merged, chain
+
+
+def load_preset_file(file_path: str | Path) -> Preset:
+    """Load and validate a single preset file, resolving its inheritance if it extends a parent."""
+    path = Path(file_path).resolve()
+    raw_presets = _collect_raw_presets()
+    raw_data = _load_raw_preset_file(path)
+    pid = raw_data.get("id")
+    if not pid:
+        raise PresetValidationError(f"Preset file '{path}' is missing required 'id' field.")
+
+    # Put this file in raw_presets map so resolution can use it
+    raw_presets[pid] = (raw_data, path)
+
+    resolved_dict, _ = _resolve_preset(pid, raw_presets, [])
+
     try:
-        preset = Preset.model_validate(data)
+        preset = Preset.model_validate(resolved_dict)
         return preset
     except ValidationError as exc:
         errors_summary = []
@@ -92,40 +199,31 @@ def validate_preset_file(file_path: str | Path) -> Tuple[bool, Optional[str]]:
 
 
 def list_presets() -> Dict[str, Preset]:
-    """Scan and load all presets from resource/presets and storage/presets.
+    """Scan, resolve inheritance, and validate all presets."""
+    raw_presets = _collect_raw_presets()
+    resolved_presets: Dict[str, Preset] = {}
 
-    Presets in storage/presets override presets in resource/presets with the same ID.
-    """
-    resource_dir, storage_dir = get_preset_directories()
-    presets: Dict[str, Preset] = {}
+    for pid in raw_presets:
+        resolved_dict, _ = _resolve_preset(pid, raw_presets, [])
+        file_path = raw_presets[pid][1]
+        try:
+            preset = Preset.model_validate(resolved_dict)
+            resolved_presets[pid] = preset
+        except ValidationError as exc:
+            errors_summary = [
+                f"Field '{' -> '.join(str(p) for p in err.get('loc', []))}': {err.get('msg')}"
+                for err in exc.errors()
+            ]
+            details = "\n  - " + "\n  - ".join(errors_summary)
+            raise PresetValidationError(
+                f"Validation failed for preset '{file_path}':{details}"
+            ) from exc
 
-    # 1. Load built-in resource presets
-    if resource_dir.is_dir():
-        for file in sorted(resource_dir.glob("*.json")):
-            try:
-                preset = load_preset_file(file)
-                presets[preset.id] = preset
-            except Exception as exc:
-                # Log or re-raise; for robust listing we raise PresetValidationError
-                raise PresetValidationError(f"Error loading built-in preset {file}: {exc}") from exc
-
-    # 2. Load user storage presets (overriding existing)
-    if storage_dir.is_dir():
-        for file in sorted(storage_dir.glob("*.json")):
-            try:
-                preset = load_preset_file(file)
-                presets[preset.id] = preset
-            except Exception as exc:
-                raise PresetValidationError(f"Error loading user preset {file}: {exc}") from exc
-
-    return presets
+    return resolved_presets
 
 
 def get_preset(preset_id: str) -> Preset:
-    """Retrieve a preset by its ID.
-
-    Raises PresetNotFoundError if the preset ID does not exist.
-    """
+    """Retrieve a fully resolved preset by its ID."""
     all_presets = list_presets()
     if preset_id not in all_presets:
         available = ", ".join(sorted(all_presets.keys())) or "None"
@@ -133,3 +231,58 @@ def get_preset(preset_id: str) -> Preset:
             f"Preset with id '{preset_id}' not found. Available presets: {available}"
         )
     return all_presets[preset_id]
+
+
+def get_preset_inheritance_chain(preset_id: str) -> List[str]:
+    """Return the ordered list of preset IDs in the inheritance hierarchy for preset_id."""
+    raw_presets = _collect_raw_presets()
+    if preset_id not in raw_presets:
+        raise PresetNotFoundError(f"Preset with id '{preset_id}' not found.")
+    _, chain = _resolve_preset(preset_id, raw_presets, [])
+    return chain
+
+
+def format_preset_tree(presets: Dict[str, Preset] | None = None) -> str:
+    """Render a visual ASCII tree of presets showing niches and their sub-niches (B1)."""
+    if presets is None:
+        presets = list_presets()
+
+    if not presets:
+        return "No presets found."
+
+    # Identify roots (niche or no extends) and build children map
+    roots: List[str] = []
+    children_map: Dict[str, List[str]] = {}
+
+    for pid, p in sorted(presets.items()):
+        parent = p.extends
+        if parent and parent in presets:
+            if parent not in children_map:
+                children_map[parent] = []
+            children_map[parent].append(pid)
+        else:
+            roots.append(pid)
+
+    lines: List[str] = []
+    lines.append(f"Available Presets ({len(presets)}):")
+    lines.append("-" * 85)
+
+    def _render_node(pid: str, prefix: str = "", is_last: bool = True, is_root: bool = False):
+        p = presets[pid]
+        info = f"{p.id} ({p.kind}, {p.language}, {p.words_per_minute} WPM) - {p.name}"
+        if is_root:
+            lines.append(info)
+        else:
+            branch = "└── " if is_last else "├── "
+            lines.append(f"{prefix}{branch}{info}")
+
+        child_prefix = prefix + ("    " if is_last else "│   ") if not is_root else "  "
+        sub_kids = sorted(children_map.get(pid, []))
+        for idx, kid_id in enumerate(sub_kids):
+            _render_node(kid_id, child_prefix, is_last=(idx == len(sub_kids) - 1), is_root=False)
+
+    for r_idx, root_id in enumerate(sorted(roots)):
+        _render_node(root_id, "", is_last=(r_idx == len(roots) - 1), is_root=True)
+
+    lines.append("-" * 85)
+    return "\n".join(lines)

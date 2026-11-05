@@ -1,0 +1,28 @@
+{
+  "id": "automotive.jdm",
+  "name": "Japanese Domestic Market (JDM) Icons",
+  "schema_version": "1.0.0",
+  "kind": "sub_niche",
+  "extends": "automotive",
+  "narration_style": "Enthusiastic, fast-paced, reverent of 90s Japanese engineering, touge street racing, and tuner subculture",
+  "hook_rules": "Hook the audience with midnight touge downhill drift battles or the infamous 276-horsepower gentlemens agreement in the opening 10 seconds.",
+  "words_per_minute": 145,
+  "+topic_keywords": [
+    "twin turbo inline six",
+    "rotary engine",
+    "touge downhill",
+    "Midnight Club",
+    "tuner culture",
+    "RB26DETT",
+    "2JZ-GTE",
+    "gentlemens agreement"
+  ],
+  "+visual_keywords": [
+    "rain-slicked neon Tokyo streets",
+    "underglow reflections",
+    "widebody aerodynamic fenders",
+    "flame shooting exhaust on decel",
+    "mountain touge hairpin drift"
+  ],
+  "sensitivity_notes": "Distinguish strictly between genuine Japanese Domestic Market VIN specifications and USDM export models."
+}
