@@ -153,6 +153,10 @@ def compute_plan(manifest: ProjectManifest, project_dir: str | Path) -> Executio
                 audio_status = ItemStatus.pending
                 reason = file_reason
                 ch_elements_ready = False
+            elif group.status == ItemStatus.stale:
+                audio_status = ItemStatus.stale
+                reason = "Audio group marked stale"
+                ch_elements_ready = False
             elif group.audio.audio_hash != expected_audio_hash:
                 audio_status = ItemStatus.stale
                 reason = f"Audio hash mismatch (manifest: {group.audio.audio_hash}, expected: {expected_audio_hash})"

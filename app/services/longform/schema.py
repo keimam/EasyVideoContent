@@ -149,13 +149,16 @@ class AudioSpec(BaseModel):
     file_path: Optional[str] = None
     audio_hash: Optional[str] = None
     alignment_method: Optional[str] = None
+    word_match_ratio: Optional[float] = None
+    fallback_reason: Optional[str] = None
+    word_timings_file: Optional[str] = None
     sample_rate: int = 48000
     channels: int = 1
     audio_format: str = "wav_48k_pcm"
 
     model_config = {"extra": "forbid"}
 
-    @field_validator("file_path")
+    @field_validator("file_path", "word_timings_file")
     @classmethod
     def validate_relative_path(cls, value: str | None, info) -> str | None:
         return _assert_relative_path(value, info.field_name)
@@ -196,11 +199,14 @@ class Chapter(BaseModel):
     voice_override: Optional[str] = None
     audio_file: Optional[str] = None
     audio_duration_seconds: Optional[float] = None
+    preview_video_file: Optional[str] = None
+    min_word_match_ratio: Optional[float] = None
+    avg_word_match_ratio: Optional[float] = None
     status: ItemStatus = ItemStatus.pending
 
     model_config = {"extra": "forbid"}
 
-    @field_validator("output_file", "audio_file")
+    @field_validator("output_file", "audio_file", "preview_video_file")
     @classmethod
     def validate_relative_path(cls, value: str | None, info) -> str | None:
         return _assert_relative_path(value, info.field_name)

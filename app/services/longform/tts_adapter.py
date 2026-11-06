@@ -1,4 +1,4 @@
-"""Unified TTS Adapter for Longform Video Generation (3.1).
+"""Unified TTS Adapter for Longform Video Generation (3.1, R2, R3).
 
 Coordinates speech synthesis across paragraph-level TTS groups:
 - Calls upstream TTS: app.services.voice.tts (voice.py:1159)
@@ -7,16 +7,19 @@ Coordinates speech synthesis across paragraph-level TTS groups:
 - Immediate conversion of raw MP3 to standard uncompressed WAV PCM 48 kHz mono (3.2)
 - High-precision duration measurement from exact WAV sample frames
 - Sentence-level timing alignment with boundary invariants (3.3)
+- Word match ratio tracking and fallback recording (R2)
+- Word-level timing serialization to JSON sidecars (R3)
 - Bounded retries with exponential backoff and configurable concurrency
 """
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -68,15 +71,16 @@ class TTSResult:
     voice_name: str
     voice_rate: float
     updated_segments: List[Segment]
+    word_match_ratio: float = 1.0
+    fallback_reason: Optional[str] = None
+    word_timings_file: Optional[str] = None
+    word_timings: List[Dict[str, Any]] = field(default_factory=list)
 
 
 def clean_narration_text(raw_text: str) -> str:
     """Strip all longform bracket directives ([visual], [motion], [source], [search], [verify]) (3.2)."""
-    # Remove bracket tags
     clean = re.sub(r"\[(?:visual|motion|source|file|voice|search|verify)\s*[:=][^\]]*\]", "", raw_text, flags=re.IGNORECASE)
-    # Remove leftover orphan brackets
     clean = re.sub(r"\[[^\]]+\]", "", clean)
-    # Collapse whitespace
     clean = re.sub(r"\s+", " ", clean).strip()
     return clean
 
@@ -94,6 +98,7 @@ class TTSAdapter:
         retry_delay: float = 1.5,
         fake_delay: float = 0.0,
         words_per_minute: int = 145,
+        word_cue_threshold: float = 0.85,
     ) -> None:
         self.provider = provider.strip().lower() if provider else "edge"
         self.voice_name = voice_name.strip()
@@ -103,12 +108,15 @@ class TTSAdapter:
         self.retry_delay = max(0.2, float(retry_delay))
         self.fake_delay = max(0.0, float(fake_delay))
         self.words_per_minute = max(60, int(words_per_minute))
+        self.word_cue_threshold = max(0.0, min(1.0, float(word_cue_threshold)))
 
         self.raw_mp3_dir = self.output_dir / "assets" / "audio" / "raw_mp3"
         self.groups_wav_dir = self.output_dir / "assets" / "audio" / "groups"
+        self.words_dir = self.output_dir / "assets" / "audio" / "words"
 
         self.raw_mp3_dir.mkdir(parents=True, exist_ok=True)
         self.groups_wav_dir.mkdir(parents=True, exist_ok=True)
+        self.words_dir.mkdir(parents=True, exist_ok=True)
 
     @property
     def is_fake(self) -> bool:
@@ -120,14 +128,11 @@ class TTSAdapter:
         if self.is_fake:
             return
 
-        # Edge TTS requires no API key, but requires a voice name
         if self.provider == "edge":
             if not self.voice_name:
                 raise TTSConfigurationError("Edge TTS requires a valid voice_name (e.g. 'en-US-ChristopherNeural-Male').")
             return
 
-        # Upstream provider validation
-        # If another provider is requested (e.g. 'openai', 'gemini', 'azure'), check upstream config
         from app.config import config
         if self.provider == "openai":
             key = config.app.get("openai_api_key", "").strip()
@@ -138,11 +143,34 @@ class TTSAdapter:
             if not key:
                 raise TTSConfigurationError("Gemini TTS selected, but 'gemini_api_key' is empty in config.toml.")
         else:
-            # Other unsupported providers
             raise TTSConfigurationError(
                 f"TTS provider '{self.provider}' is not supported for longform synthesis. "
                 "Supported providers: 'edge' (primary) or 'fake' (testing)."
             )
+
+    def _write_word_timings_sidecar(
+        self,
+        chapter_index: int,
+        group_index: int,
+        match_ratio: float,
+        fallback_reason: Optional[str],
+        alignment_method: str,
+        word_timings: List[Dict[str, Any]],
+    ) -> Path:
+        """Serialize per-word timings to atomic JSON sidecar file (R3)."""
+        target_file = self.words_dir / f"ch{chapter_index}_g{group_index}_words.json"
+        tmp_file = self.words_dir / f"{target_file.name}.tmp.{uuid.uuid4().hex}.json"
+        sidecar_data = {
+            "chapter_index": chapter_index,
+            "group_index": group_index,
+            "word_match_ratio": round(match_ratio, 3),
+            "fallback_reason": fallback_reason,
+            "alignment_method": alignment_method,
+            "words": word_timings,
+        }
+        tmp_file.write_text(json.dumps(sidecar_data, indent=2, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp_file, target_file)
+        return target_file
 
     def synthesize_group(
         self,
@@ -151,7 +179,7 @@ class TTSAdapter:
         voice_override: Optional[str] = None,
         force_refresh: bool = False,
     ) -> TTSResult:
-        """Synthesize audio for a single TtsGroup, convert to WAV 48k PCM, and align segments (3.1-3.3)."""
+        """Synthesize audio for a single TtsGroup, convert to WAV 48k PCM, and align segments (3.1-3.3, R2, R3)."""
         self.validate_configuration()
 
         g_idx = group.group_index
@@ -163,14 +191,22 @@ class TTSAdapter:
 
         target_wav = self.groups_wav_dir / f"ch{chapter_index}_g{g_idx}.wav"
         target_raw_mp3 = self.raw_mp3_dir / f"ch{chapter_index}_g{g_idx}.mp3"
+        target_words_file = self.words_dir / f"ch{chapter_index}_g{g_idx}_words.json"
 
         # Check existing cached WAV
         if not force_refresh and target_wav.is_file() and target_wav.stat().st_size > 44:
             try:
                 dur, frames, rate = measure_wav_duration_and_samples(target_wav)
                 if dur > 0.05 and group.audio.duration_seconds is not None:
-                    # Re-use existing valid audio
                     logger.debug(f"Reusing cached WAV audio for Ch {chapter_index} Group {g_idx}")
+                    cached_timings: List[Dict[str, Any]] = []
+                    if target_words_file.is_file():
+                        try:
+                            sidecar = json.loads(target_words_file.read_text(encoding="utf-8"))
+                            cached_timings = sidecar.get("words", [])
+                        except Exception:
+                            pass
+
                     return TTSResult(
                         group_index=g_idx,
                         wav_file=target_wav,
@@ -184,11 +220,14 @@ class TTSAdapter:
                         voice_name=effective_voice,
                         voice_rate=self.voice_rate,
                         updated_segments=group.segments,
+                        word_match_ratio=group.audio.word_match_ratio if group.audio.word_match_ratio is not None else 1.0,
+                        fallback_reason=group.audio.fallback_reason,
+                        word_timings_file=f"assets/audio/words/ch{chapter_index}_g{g_idx}_words.json",
+                        word_timings=cached_timings,
                     )
             except Exception as exc:
                 logger.warning(f"Failed to read existing WAV '{target_wav}': {exc}. Re-synthesizing.")
 
-        # Execute synthesis via fake mock or upstream Edge TTS
         if self.is_fake:
             return self._synthesize_fake(
                 group=group,
@@ -220,10 +259,8 @@ class TTSAdapter:
         words = [w for w in clean_text.split() if w]
         num_words = max(1, len(words))
 
-        # Duration derived from words / words_per_minute formula
         duration = max(0.5, round((num_words / float(self.words_per_minute)) * 60.0, 3))
 
-        # Generate 440 Hz tone WAV
         generate_synthetic_tone_wav(
             output_wav_path=target_wav,
             duration_seconds=duration,
@@ -233,7 +270,6 @@ class TTSAdapter:
 
         dur_measured, frames, rate = measure_wav_duration_and_samples(target_wav)
 
-        # Generate synthetic word cues
         cue_duration = dur_measured / float(num_words)
         cues = [
             WordCue(
@@ -244,12 +280,21 @@ class TTSAdapter:
             for i, w in enumerate(words)
         ]
 
-        # Align segments
-        updated_segments, alignment_method = align_group_segments(
+        align_res = align_group_segments(
             segments=group.segments,
             group_duration=dur_measured,
             word_cues=cues,
             wav_path=target_wav,
+            word_cue_threshold=self.word_cue_threshold,
+        )
+
+        self._write_word_timings_sidecar(
+            chapter_index=chapter_index,
+            group_index=group.group_index,
+            match_ratio=align_res.match_ratio,
+            fallback_reason=align_res.fallback_reason,
+            alignment_method=align_res.method,
+            word_timings=align_res.word_timings,
         )
 
         return TTSResult(
@@ -259,12 +304,16 @@ class TTSAdapter:
             duration_seconds=dur_measured,
             total_samples=frames,
             sample_rate=rate,
-            alignment_method=alignment_method,
+            alignment_method=align_res.method,
             is_fake=True,
             provider="fake",
             voice_name=self.voice_name,
             voice_rate=self.voice_rate,
-            updated_segments=updated_segments,
+            updated_segments=align_res.segments,
+            word_match_ratio=align_res.match_ratio,
+            fallback_reason=align_res.fallback_reason,
+            word_timings_file=f"assets/audio/words/ch{chapter_index}_g{group.group_index}_words.json",
+            word_timings=align_res.word_timings,
         )
 
     def _synthesize_upstream(
@@ -283,7 +332,6 @@ class TTSAdapter:
 
         for attempt in range(1, self.max_retries + 1):
             try:
-                # Calls upstream app/services/voice.py:1159 (def tts)
                 sub_maker = upstream_voice.tts(
                     text=clean_text,
                     voice_name=effective_voice,
@@ -296,10 +344,8 @@ class TTSAdapter:
                         f"Upstream TTS returned empty audio or None for Ch {chapter_index} Group {group.group_index}"
                     )
 
-                # Atomically preserve raw mp3
                 os.replace(tmp_raw_mp3, target_raw_mp3)
 
-                # Immediately convert to WAV PCM 48kHz mono (3.2)
                 convert_to_pcm_wav(
                     input_audio_path=target_raw_mp3,
                     output_wav_path=target_wav,
@@ -307,10 +353,8 @@ class TTSAdapter:
                     channels=1,
                 )
 
-                # Measure exact duration from WAV samples
                 dur_measured, frames, rate = measure_wav_duration_and_samples(target_wav)
 
-                # Extract word cues from SubMaker
                 cues: List[WordCue] = []
                 if hasattr(sub_maker, "cues") and sub_maker.cues:
                     for c in sub_maker.cues:
@@ -322,12 +366,21 @@ class TTSAdapter:
                             )
                         )
 
-                # Align group segments
-                updated_segments, alignment_method = align_group_segments(
+                align_res = align_group_segments(
                     segments=group.segments,
                     group_duration=dur_measured,
                     word_cues=cues,
                     wav_path=target_wav,
+                    word_cue_threshold=self.word_cue_threshold,
+                )
+
+                self._write_word_timings_sidecar(
+                    chapter_index=chapter_index,
+                    group_index=group.group_index,
+                    match_ratio=align_res.match_ratio,
+                    fallback_reason=align_res.fallback_reason,
+                    alignment_method=align_res.method,
+                    word_timings=align_res.word_timings,
                 )
 
                 return TTSResult(
@@ -337,12 +390,16 @@ class TTSAdapter:
                     duration_seconds=dur_measured,
                     total_samples=frames,
                     sample_rate=rate,
-                    alignment_method=alignment_method,
+                    alignment_method=align_res.method,
                     is_fake=False,
                     provider="edge",
                     voice_name=effective_voice,
                     voice_rate=self.voice_rate,
-                    updated_segments=updated_segments,
+                    updated_segments=align_res.segments,
+                    word_match_ratio=align_res.match_ratio,
+                    fallback_reason=align_res.fallback_reason,
+                    word_timings_file=f"assets/audio/words/ch{chapter_index}_g{group.group_index}_words.json",
+                    word_timings=align_res.word_timings,
                 )
 
             except Exception as exc:

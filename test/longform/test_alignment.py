@@ -34,7 +34,7 @@ def test_align_single_sentence():
         WordCue(word="1964", start=0.35, end=0.8),
         WordCue(word="gto", start=0.85, end=1.5),
     ]
-    boundaries, method = align_word_cues_to_segments(sentences, cues, group_duration=3.5)
+    boundaries, method = align_word_cues_to_segments(sentences, cues, group_duration=3.5, word_cue_threshold=0.25)
     assert method == "word_cue"
     assert len(boundaries) == 1
     assert boundaries[0] == (0.0, 3.5)
@@ -71,7 +71,7 @@ def test_align_multi_sentence_zero_gap_midpoint():
         WordCue(word="expectations", start=7.0, end=7.6),
     ]
 
-    boundaries, method = align_word_cues_to_segments(sentences, cues, group_duration=8.0)
+    boundaries, method = align_word_cues_to_segments(sentences, cues, group_duration=8.0, word_cue_threshold=0.50)
     assert method == "word_cue"
     assert len(boundaries) == 3
 

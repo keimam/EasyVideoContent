@@ -628,7 +628,7 @@ def cmd_audio_synth(args: argparse.Namespace) -> int:
 
 
 def cmd_audio_status(args: argparse.Namespace) -> int:
-    """Show detailed audio group completion and alignment method diagnostics (3.7)."""
+    """Show detailed audio group completion and alignment method diagnostics (3.7, R2)."""
     project_dir = get_project_dir(args.project_id)
     if not project_dir.is_dir():
         print(f"Error: Project '{args.project_id}' not found at {project_dir}", file=sys.stderr)
@@ -644,6 +644,7 @@ def cmd_audio_status(args: argparse.Namespace) -> int:
     print(f"  Total Groups:       {status['total_groups']}")
     print(f"  Completed Groups:   {status['completed_groups']}/{status['total_groups']}")
     print(f"  Total Duration:     {status['total_duration_seconds']:.1f} seconds ({status['total_duration_seconds']/60:.1f} minutes)")
+    print(f"  Word Match Ratio:   min={status.get('word_match_min', 0.0):.1%}, avg={status.get('word_match_avg', 0.0):.1%}")
     m_counts = status['alignment_method_counts']
     print(f"  Alignment Methods:  word_cue={m_counts.get('word_cue', 0)}, whisper={m_counts.get('whisper', 0)}, proportional={m_counts.get('proportional', 0)}")
     print("  Chapters:")
@@ -651,7 +652,7 @@ def cmd_audio_status(args: argparse.Namespace) -> int:
         for ch in status["chapters"]:
             ch_methods = ", ".join(f"{k}:{v}" for k, v in ch["alignment_methods"].items() if v > 0) or "none"
             print(f"    - Ch {ch['chapter_index']}: {ch['chapter_title']}")
-            print(f"      Groups: {ch['completed_groups']}/{ch['total_groups']} | Duration: {ch['duration_seconds']:.1f}s | Alignments: [{ch_methods}]")
+            print(f"      Groups: {ch['completed_groups']}/{ch['total_groups']} | Duration: {ch['duration_seconds']:.1f}s | Match: min={ch.get('word_match_min', 0.0):.1%}, avg={ch.get('word_match_avg', 0.0):.1%} | Alignments: [{ch_methods}]")
     else:
         print("    No chapters found.")
     print("=" * 65 + "\n")
@@ -659,7 +660,7 @@ def cmd_audio_status(args: argparse.Namespace) -> int:
 
 
 def cmd_audio_preview(args: argparse.Namespace) -> int:
-    """Generate chapter_NN_preview.wav and chapter_NN_preview.srt in export/preview/ (3.6)."""
+    """Generate chapter_NN_preview.wav, .srt, and .mp4 with burned subtitles in export/preview/ (3.6, R1)."""
     project_dir = get_project_dir(args.project_id)
     if not project_dir.is_dir():
         print(f"Error: Project '{args.project_id}' not found at {project_dir}", file=sys.stderr)
@@ -668,7 +669,12 @@ def cmd_audio_preview(args: argparse.Namespace) -> int:
     from app.services.longform.voice_service import VoiceService
     service = VoiceService(project_dir=project_dir)
     try:
-        wav_path, srt_path = service.generate_preview(chapter_index=args.chapter)
+        preview_res = service.generate_preview(chapter_index=args.chapter)
+        if isinstance(preview_res, (list, tuple)) and len(preview_res) >= 3:
+            wav_path, srt_path, mp4_path = preview_res[0], preview_res[1], preview_res[2]
+        else:
+            wav_path, srt_path = preview_res[0], preview_res[1]
+            mp4_path = None
     except Exception as exc:
         print(f"Error generating preview: {exc}", file=sys.stderr)
         return 1
@@ -677,8 +683,10 @@ def cmd_audio_preview(args: argparse.Namespace) -> int:
     print("-" * 65)
     print(f"  Preview WAV:  {wav_path}")
     print(f"  Preview SRT:  {srt_path}")
+    if mp4_path:
+        print(f"  Preview MP4:  {mp4_path}")
     print("-" * 65)
-    print("Open the WAV audio along with the SRT subtitle file in VLC to verify start, middle, and end sync.\n")
+    print("Open the MP4 or WAV along with the SRT subtitle file to verify audio and subtitle sync.\n")
     return 0
 
 
