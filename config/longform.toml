@@ -1,0 +1,8 @@
+# Longform video generation global configuration (Stage 4.2)
+
+[cache]
+# Maximum cache size in gigabytes before automatic LRU eviction occurs (default 10 GB)
+max_size_gb = 10.0
+
+# Default age in days for cache pruning (default 30 days)
+max_age_days = 30

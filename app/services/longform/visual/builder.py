@@ -100,6 +100,51 @@ def verify_clip_stream_parameters(
     }
 
 
+def trim_source_video_asset(
+    asset_path: Path,
+    needed_duration_seconds: float,
+) -> bool:
+    """Trim source video file to needed duration (+ margin) to save project disk space (S2)."""
+    p = Path(asset_path).resolve()
+    if not p.is_file():
+        return False
+    raw_dur = _get_video_duration(p)
+    if raw_dur <= (needed_duration_seconds + 1.0):
+        return False
+
+    tmp_trim = p.parent / f"{p.stem}.trim_tmp.{uuid.uuid4().hex}.mp4"
+    # Fast stream copy first
+    cmd = [
+        "ffmpeg", "-y",
+        "-ss", "0",
+        "-i", str(p),
+        "-t", str(needed_duration_seconds),
+        "-c", "copy",
+        str(tmp_trim),
+    ]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    if res.returncode != 0 or not tmp_trim.is_file() or tmp_trim.stat().st_size == 0:
+        # Fallback to fast re-encode
+        cmd2 = [
+            "ffmpeg", "-y",
+            "-ss", "0",
+            "-i", str(p),
+            "-t", str(needed_duration_seconds),
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+            "-c:a", "copy",
+            str(tmp_trim),
+        ]
+        res2 = subprocess.run(cmd2, capture_output=True, text=True)
+        if res2.returncode != 0 or not tmp_trim.is_file() or tmp_trim.stat().st_size == 0:
+            if tmp_trim.exists():
+                tmp_trim.unlink(missing_ok=True)
+            return False
+
+    os.replace(tmp_trim, p)
+    logger.debug(f"Trimmed source asset {p.name} from {raw_dur:.1f}s to {needed_duration_seconds:.1f}s")
+    return True
+
+
 class ShotClipBuilder:
     """Builds rendered shot video clips with FFmpeg (4.3)."""
 
@@ -217,6 +262,9 @@ class ShotClipBuilder:
         tmp_out = out.parent / f"{out.stem}.tmp.{uuid.uuid4().hex}.mp4"
 
         target_duration = target_frames / self.fps
+        # S2: Trim source video asset if longer than target duration + 1.5s margin
+        trim_source_video_asset(video_path, target_duration + 1.5)
+
         raw_dur = _get_video_duration(video_path)
         usable_dur = max(raw_dur - 0.5, 0.5)
 

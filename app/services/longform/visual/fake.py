@@ -21,13 +21,24 @@ from app.services.longform.visual.base import (
     VisualCandidate,
     compute_file_content_hash,
 )
+from app.services.longform.visual.stock import (
+    extract_query_keywords,
+    score_candidate_relevance,
+)
 
 
 class FakeVisualProvider(BaseVisualProvider):
-    """Generates synthetic labeled test images and video clips (4.1)."""
+    """Generates synthetic labeled test images and video clips (4.1, S1)."""
 
-    def __init__(self, mode: str = "ai_image") -> None:
+    def __init__(
+        self,
+        mode: str = "ai_image",
+        mock_candidates: Optional[List[VisualCandidate]] = None,
+        mock_tags_pool: Optional[List[List[str]]] = None,
+    ) -> None:
         self.mode = mode.lower()  # "ai_image" or "stock_video"
+        self.mock_candidates = mock_candidates
+        self.mock_tags_pool = mock_tags_pool
 
     @property
     def name(self) -> str:
@@ -47,18 +58,58 @@ class FakeVisualProvider(BaseVisualProvider):
         target_duration: float,
         limit: int = 3,
         excluded_ids: Optional[set[str]] = None,
+        required_subject_terms: Optional[List[str]] = None,
+        blocked_terms: Optional[List[str]] = None,
+        visual_keywords: Optional[List[str]] = None,
     ) -> List[VisualCandidate]:
-        """Generate deterministic fake candidates for a query."""
+        """Generate deterministic fake candidates for a query, applying S1 relevance rules."""
         excluded = excluded_ids or set()
         candidates: List[VisualCandidate] = []
         source_type = "stock_video" if "stock" in self.mode or "video" in self.mode else "ai_image"
 
+        if self.mock_candidates:
+            raw_cands = [c for c in self.mock_candidates if c.candidate_id not in excluded]
+            for c in raw_cands:
+                is_valid, score, _ = score_candidate_relevance(
+                    candidate_tags=c.tags,
+                    search_query=query,
+                    visual_keywords=visual_keywords,
+                    required_subject_terms=required_subject_terms,
+                    blocked_terms=blocked_terms,
+                )
+                if is_valid:
+                    c.relevance_score = score
+                    candidates.append(c)
+            candidates.sort(key=lambda c: c.relevance_score, reverse=True)
+            return candidates[:limit]
+
         i = 1
         base_hash = abs(hash(query)) % 100000
+        pool_idx = 0
         while len(candidates) < limit and i <= 50:
             cand_id = f"fake_{source_type}_{base_hash}_{i}"
             i += 1
             if cand_id in excluded:
+                continue
+
+            # Assign tags: from pool if available, otherwise from query
+            if self.mock_tags_pool:
+                tags = list(self.mock_tags_pool[pool_idx % len(self.mock_tags_pool)])
+                pool_idx += 1
+            else:
+                tags = extract_query_keywords(query)
+                if not tags:
+                    tags = ["scenic", "nature"]
+
+            # Filter & score
+            is_valid, score, _ = score_candidate_relevance(
+                candidate_tags=tags,
+                search_query=query,
+                visual_keywords=visual_keywords,
+                required_subject_terms=required_subject_terms,
+                blocked_terms=blocked_terms,
+            )
+            if not is_valid:
                 continue
 
             candidates.append(
@@ -76,31 +127,14 @@ class FakeVisualProvider(BaseVisualProvider):
                     height=1080,
                     duration_seconds=max(target_duration, 5.0) if source_type == "stock_video" else 0.0,
                     source_info={"query": query, "candidate_num": i},
+                    tags=tags,
+                    relevance_score=score,
+                    rendition_name="fake_1080p (1920x1080)",
                 )
             )
 
-        # Fallback to UUID if all 50 indices somehow exhausted
-        while len(candidates) < limit:
-            cand_id = f"fake_{source_type}_{uuid.uuid4().hex[:8]}"
-            candidates.append(
-                VisualCandidate(
-                    candidate_id=cand_id,
-                    provider="fake",
-                    source_type=source_type,
-                    url=None,
-                    local_path=None,
-                    author="Fake Test Generator",
-                    author_url="https://local.test/synthetic",
-                    source_url=f"https://local.test/synthetic/{cand_id}",
-                    license="Synthetic Test License",
-                    width=1920,
-                    height=1080,
-                    duration_seconds=max(target_duration, 5.0) if source_type == "stock_video" else 0.0,
-                    source_info={"query": query},
-                )
-            )
-
-        return candidates
+        candidates.sort(key=lambda c: c.relevance_score, reverse=True)
+        return candidates[:limit]
 
     def create_synthetic_image(
         self,

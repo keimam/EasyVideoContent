@@ -43,6 +43,9 @@ class VisualCandidate:
     height: int = 1080
     duration_seconds: float = 0.0
     source_info: Dict[str, Any] = field(default_factory=dict)
+    tags: List[str] = field(default_factory=list)
+    relevance_score: float = 0.0
+    rendition_name: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -59,6 +62,9 @@ class VisualCandidate:
             "height": self.height,
             "duration_seconds": round(self.duration_seconds, 2),
             "source_info": self.source_info,
+            "tags": self.tags,
+            "relevance_score": round(self.relevance_score, 3),
+            "rendition_name": self.rendition_name,
         }
 
     @classmethod
@@ -77,6 +83,9 @@ class VisualCandidate:
             height=data.get("height", 1080),
             duration_seconds=data.get("duration_seconds", 0.0),
             source_info=data.get("source_info", {}),
+            tags=data.get("tags") or [],
+            relevance_score=float(data.get("relevance_score") or 0.0),
+            rendition_name=data.get("rendition_name"),
         )
 
 

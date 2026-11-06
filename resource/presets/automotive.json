@@ -60,5 +60,14 @@
     "stock": 0.65,
     "local": 0.2,
     "ai_image": 0.15
-  }
+  },
+  "required_subject_terms": [
+    "car",
+    "automobile",
+    "vehicle",
+    "muscle car",
+    "hot rod",
+    "race car"
+  ],
+  "blocked_terms": []
 }

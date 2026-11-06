@@ -80,6 +80,8 @@ class Preset(BaseModel):
     visual_keywords: List[str] = Field(default_factory=list)
     sensitivity_notes: str = ""
     recommended_visual_sources: dict[str, float] = Field(default_factory=dict)
+    required_subject_terms: List[str] = Field(default_factory=list)
+    blocked_terms: List[str] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
 
@@ -150,6 +152,10 @@ class Shot(BaseModel):
     locked: bool = False
     is_fake: bool = False
     candidates: List[dict[str, Any]] = Field(default_factory=list)
+    tags: List[str] = Field(default_factory=list)
+    relevance_score: Optional[float] = None
+    needs_review: bool = False
+    chosen_rendition: Optional[str] = None
     status: ItemStatus = ItemStatus.pending
 
     model_config = {"extra": "forbid"}

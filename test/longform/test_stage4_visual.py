@@ -730,3 +730,287 @@ def test_v6_local_provider_real_source_and_credits(tmp_path: Path):
     credits_text = credits_file.read_text(encoding="utf-8")
     assert "[LOCAL]" in credits_text
     assert "Local User Library" in credits_text
+
+
+# ---------------------------------------------------------------------------
+# Stage 4.2 Tests (S1, S2, S3)
+# ---------------------------------------------------------------------------
+
+def test_s1_relevance_scoring_and_terms_filtering():
+    """S1: Candidates without required subject terms or containing blocked terms are rejected."""
+    from app.services.longform.visual.stock import score_candidate_relevance
+
+    req_terms = ["car", "automobile", "vehicle", "muscle car"]
+    blocked_terms = ["accident", "crash", "wreck"]
+    query = "classic muscle car rumbling highway"
+    visual_kws = ["panning car tracking shot", "engine bay closeup"]
+
+    # 1. Irrelevant candidate: highway only, no car
+    valid, score, reason = score_candidate_relevance(
+        candidate_tags=["highway", "road", "asphalt", "driving", "sky"],
+        search_query=query,
+        visual_keywords=visual_kws,
+        required_subject_terms=req_terms,
+        blocked_terms=blocked_terms,
+    )
+    assert valid is False
+    assert score == 0.0
+    assert "lacks required subject terms" in reason
+
+    # 2. Blocked term present
+    valid, score, reason = score_candidate_relevance(
+        candidate_tags=["car", "muscle car", "highway", "crash"],
+        search_query=query,
+        visual_keywords=visual_kws,
+        required_subject_terms=req_terms,
+        blocked_terms=blocked_terms,
+    )
+    assert valid is False
+    assert score == 0.0
+    assert "Blocked term" in reason
+
+    # 3. Relevant candidate with high keyword match
+    valid, score, reason = score_candidate_relevance(
+        candidate_tags=["classic", "muscle car", "car", "highway", "rumbling"],
+        search_query=query,
+        visual_keywords=visual_kws,
+        required_subject_terms=req_terms,
+        blocked_terms=blocked_terms,
+    )
+    assert valid is True
+    assert score >= 0.70
+    assert reason == "Accepted"
+
+    # 4. Relevant candidate with lower keyword match
+    valid2, score2, _ = score_candidate_relevance(
+        candidate_tags=["vehicle", "outdoors", "transportation"],
+        search_query=query,
+        visual_keywords=visual_kws,
+        required_subject_terms=req_terms,
+        blocked_terms=blocked_terms,
+    )
+    assert valid2 is True
+    assert score2 < score  # Exact match scores higher than generic vehicle
+
+
+def test_s1_search_candidates_highest_score_chosen(tmp_path: Path):
+    """S1: Candidates are ranked and chosen by highest relevance score, not first hit."""
+    cand_low = VisualCandidate(
+        candidate_id="cand_low",
+        provider="fake",
+        source_type="ai_image",
+        tags=["vehicle", "transportation"],
+        width=1920,
+        height=1080,
+    )
+    cand_high = VisualCandidate(
+        candidate_id="cand_high",
+        provider="fake",
+        source_type="ai_image",
+        tags=["classic", "muscle car", "highway", "car"],
+        width=1920,
+        height=1080,
+    )
+    cand_irrelevant = VisualCandidate(
+        candidate_id="cand_irrelevant",
+        provider="fake",
+        source_type="ai_image",
+        tags=["mountains", "clouds", "sky"],
+        width=1920,
+        height=1080,
+    )
+
+    fake_prov = FakeVisualProvider(mock_candidates=[cand_low, cand_high, cand_irrelevant])
+    results = fake_prov.search_candidates(
+        query="classic muscle car rumbling highway",
+        target_duration=4.0,
+        limit=3,
+        required_subject_terms=["car", "muscle car", "vehicle"],
+    )
+
+    # Cand irrelevant must be excluded
+    assert all(c.candidate_id != "cand_irrelevant" for c in results)
+    # Cand high must be top (rank 0) despite being listed after cand_low in mock list
+    assert len(results) >= 2
+    assert results[0].candidate_id == "cand_high"
+    assert results[0].relevance_score > results[1].relevance_score
+
+
+def test_s1_all_candidates_rejected_marks_shot_needs_review(tmp_path: Path):
+    """S1: When all candidates fail relevance checks, shot is marked needs_review (no silent irrelevant clips)."""
+    proj_dir = tmp_path / "s1_review_proj"
+    proj_dir.mkdir(parents=True, exist_ok=True)
+
+    shot = Shot(
+        shot_id="ch01_shot001",
+        chapter_index=1,
+        shot_index=1,
+        duration_seconds=4.0,
+        target_frames=100,
+        visual_prompt="vintage muscle car racing on asphalt",
+        search_query="muscle car race",
+    )
+    ch = Chapter(chapter_index=1, chapter_title="Ch1", shots=[shot])
+    manifest = ProjectManifest(
+        project_id="s1_review",
+        title="S1 Review Test",
+        preset_id="automotive",
+        preset_snapshot={
+            "required_subject_terms": ["car", "automobile", "muscle car"],
+            "blocked_terms": [],
+            "visual_keywords": ["panning car tracking shot"],
+        },
+        chapters=[ch],
+    )
+    save_manifest(manifest, proj_dir)
+
+    service = VisualService(proj_dir)
+
+    # Use FakeVisualProvider with mock pool containing only irrelevant tags
+    irrelevant_pool = [["forest", "trees", "river"], ["sky", "clouds", "sunshine"]]
+    fake_prov = FakeVisualProvider(mode="stock_video", mock_tags_pool=irrelevant_pool)
+
+    # Monkeypatch get_provider to return fake_prov
+    service.get_provider = lambda p, m: fake_prov  # type: ignore
+
+    manifest = service.fetch_all(manifest, provider_name="fake", allow_fallback=False)
+    updated_shot = manifest.chapters[0].shots[0]
+
+    # Verify shot is marked needs_review and NOT completed with an irrelevant asset
+    assert updated_shot.needs_review is True
+    assert updated_shot.status == ItemStatus.pending
+    assert updated_shot.relevance_score == 0.0
+
+
+def test_s2_source_video_trimming(tmp_path: Path):
+    """S2: Source video asset longer than needed duration is trimmed during build to save project storage."""
+    from app.services.longform.visual.builder import trim_source_video_asset, _get_video_duration
+
+    # Create a 10-second test video
+    src_video = tmp_path / "source_long.mp4"
+    cmd = [
+        "ffmpeg", "-y",
+        "-f", "lavfi",
+        "-i", "testsrc=duration=10:size=640x360:rate=25",
+        "-c:v", "libx264",
+        "-pix_fmt", "yuv420p",
+        str(src_video),
+    ]
+    subprocess.run(cmd, capture_output=True, check=True)
+    initial_dur = _get_video_duration(src_video)
+    assert initial_dur >= 9.9
+
+    # Trim to 4.0 seconds needed duration
+    trimmed = trim_source_video_asset(src_video, needed_duration_seconds=4.0)
+    assert trimmed is True
+    final_dur = _get_video_duration(src_video)
+    assert 3.8 <= final_dur <= 4.5
+
+
+def test_s2_cache_lru_pruning_protects_locked_assets(tmp_path: Path):
+    """S2: LRU cache pruning evicts old unlocked files while strictly protecting locked shot assets."""
+    import time
+    from app.services.longform.visual.cache import prune_cache, get_cache_status
+
+    cache_dir = tmp_path / "test_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    proj_dir = tmp_path / "storage" / "longform_projects" / "test_proj"
+    proj_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create dummy cached files:
+    # 1. Locked file: matches locked candidate url
+    test_url = "https://example.com/locked_video_clip_123"
+    import hashlib
+    url_hash = hashlib.sha256(test_url.encode("utf-8")).hexdigest()[:24]
+    file_locked = cache_dir / f"cache_{url_hash}.mp4"
+    file_locked.write_bytes(b"L" * 1024 * 1024)  # 1 MB
+    # Set old access time
+    now = time.time()
+    os.utime(file_locked, (now - 86400 * 60, now - 86400 * 60))  # 60 days old
+
+    # 2. Old unlocked file (60 days old, 2 MB)
+    file_old = cache_dir / "cache_oldunlocked123456789012.mp4"
+    file_old.write_bytes(b"O" * (2 * 1024 * 1024))
+    os.utime(file_old, (now - 86400 * 60, now - 86400 * 60))
+
+    # 3. Recent unlocked file (1 day old, 2 MB)
+    file_recent = cache_dir / "cache_recentunlocked1234567.mp4"
+    file_recent.write_bytes(b"R" * (2 * 1024 * 1024))
+    os.utime(file_recent, (now - 86400 * 1, now - 86400 * 1))
+
+    # Save manifest with locked shot referencing test_url
+    locked_shot = Shot(
+        shot_id="ch01_shot001",
+        chapter_index=1,
+        shot_index=1,
+        locked=True,
+        candidates=[{"url": test_url}],
+        asset_path="assets/visual/shots/ch01_shot001_asset.mp4",
+    )
+    ch = Chapter(chapter_index=1, chapter_title="Ch1", shots=[locked_shot])
+    manifest = ProjectManifest(
+        project_id="test_proj",
+        title="Test",
+        preset_id="documentary_en",
+        preset_snapshot={},
+        chapters=[ch],
+    )
+    save_manifest(manifest, proj_dir)
+
+    # Prune files older than 30 days, pointing locked references scan to proj_dir.parent
+    import app.services.longform.visual.cache as c_mod
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(c_mod, "get_repo_root", lambda: tmp_path)
+
+    res = prune_cache(older_than_days=30, cache_dir=cache_dir)
+
+    # File 2 (old unlocked) must be removed
+    assert not file_old.exists()
+    # File 1 (locked) must NOT be removed despite being 60 days old!
+    assert file_locked.exists()
+    # File 3 (recent unlocked) must be preserved
+    assert file_recent.exists()
+    assert res["files_removed"] == 1
+
+
+def test_s3_set_voice_cli_accurate_summary(tmp_path: Path):
+    """S3: set_voice CLI calculates and reports exact stale vs retained valid counts."""
+    from app.services.longform.voice_service import VoiceService
+    from app.services.longform.schema import TtsGroup, AudioSpec
+
+    proj_dir = tmp_path / "s3_voice_proj"
+    proj_dir.mkdir(parents=True, exist_ok=True)
+
+    g1 = TtsGroup(
+        group_index=1,
+        paragraph_text="First group test.",
+        audio=AudioSpec(voice_name="en-US-ChristopherNeural", audio_hash="hash1"),
+        status=ItemStatus.completed,
+    )
+    g2 = TtsGroup(
+        group_index=2,
+        paragraph_text="Second group test.",
+        audio=AudioSpec(voice_name="en-US-ChristopherNeural", audio_hash="hash2"),
+        status=ItemStatus.completed,
+    )
+    ch = Chapter(chapter_index=1, chapter_title="Ch1", tts_groups=[g1, g2])
+    manifest = ProjectManifest(
+        project_id="s3_proj",
+        title="S3 Project",
+        preset_id="documentary_en",
+        preset_snapshot={"default_voice": "en-US-ChristopherNeural", "voice_rate": 1.0},
+        chapters=[ch],
+    )
+    save_manifest(manifest, proj_dir)
+
+    service = VoiceService(proj_dir)
+    # Switch to a new voice (which has no matching audio on disk) -> all 2 become stale
+    manifest = service.set_voice("en-US-EricNeural", voice_rate=1.0)
+
+    total_groups = sum(len(c.tts_groups) for c in manifest.chapters)
+    stale_groups = sum(sum(1 for g in c.tts_groups if g.status == ItemStatus.stale) for c in manifest.chapters)
+    valid_groups = total_groups - stale_groups
+
+    assert total_groups == 2
+    assert stale_groups == 2
+    assert valid_groups == 0

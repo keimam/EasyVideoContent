@@ -710,13 +710,21 @@ def cmd_project_set_voice(args: argparse.Namespace) -> int:
         print(f"Error setting voice: {exc}", file=sys.stderr)
         return 1
 
+    from app.services.longform.schema import ItemStatus
+    total_groups = sum(len(c.tts_groups) for c in manifest.chapters)
+    stale_groups = sum(sum(1 for g in c.tts_groups if g.status == ItemStatus.stale) for c in manifest.chapters)
+    valid_groups = total_groups - stale_groups
+
     print(f"\nNarrator Voice Updated for Project: {args.project_id}")
     print("-" * 65)
     print(f"  New Voice:   {voice_name}")
     print(f"  Speech Rate: {args.rate}")
-    print("  Note: All existing audio groups and chapter renders have been marked STALE.")
+    print(f"  Summary:     {stale_groups} stale, {valid_groups} retained valid (out of {total_groups} total audio groups)")
     print("-" * 65)
-    print(f"Run 'python cli_longform.py audio synth {args.project_id}' to synthesize audio with the new voice.\n")
+    if stale_groups > 0:
+        print(f"Run 'python cli_longform.py audio synth {args.project_id}' to synthesize audio with the new voice.\n")
+    else:
+        print("All audio groups are already up-to-date with this voice. No re-synthesis needed.\n")
     return 0
 
 
@@ -894,14 +902,15 @@ def cmd_visual_status(args: argparse.Namespace) -> int:
     service = VisualService(proj_dir)
 
     print(f"\nVisual Status for Project: {manifest.project_id} ({manifest.title})")
-    print("=" * 88)
-    print(f"{'Ch':<4} {'Shots':<7} {'Done':<6} {'Pend':<6} {'Stale':<6} {'VisDur':<10} {'AudDur':<10} {'Frames(actual)':<16} {'Drift'}")
-    print("-" * 88)
+    print("=" * 96)
+    print(f"{'Ch':<4} {'Shots':<7} {'Done':<6} {'Pend':<6} {'Stale':<6} {'Review':<7} {'VisDur':<10} {'AudDur':<10} {'Frames(actual)':<16} {'Drift'}")
+    print("-" * 96)
 
     total_shots = 0
     total_completed = 0
     total_pending = 0
     total_stale = 0
+    total_review = 0
     total_frames = 0
     total_fake = 0
     any_probed = False
@@ -911,6 +920,7 @@ def cmd_visual_status(args: argparse.Namespace) -> int:
         c_done = sum(1 for s in ch.shots if s.status == ItemStatus.completed)
         c_pend = sum(1 for s in ch.shots if s.status == ItemStatus.pending)
         c_stale = sum(1 for s in ch.shots if s.status == ItemStatus.stale)
+        c_review = sum(1 for s in ch.shots if getattr(s, "needs_review", False))
         c_fake = sum(1 for s in ch.shots if s.is_fake)
         v_dur = ch.visual_duration_seconds or 0.0
         a_dur = ch.audio_duration_seconds or 0.0
@@ -933,18 +943,19 @@ def cmd_visual_status(args: argparse.Namespace) -> int:
         total_completed += c_done
         total_pending += c_pend
         total_stale += c_stale
+        total_review += c_review
         total_frames += ch_frames
         total_fake += c_fake
 
         frame_display = f"{ch_frames} ({frame_source})"
         print(
-            f"{ch.chapter_index:<4} {num_shots:<7} {c_done:<6} {c_pend:<6} {c_stale:<6} "
+            f"{ch.chapter_index:<4} {num_shots:<7} {c_done:<6} {c_pend:<6} {c_stale:<6} {c_review:<7} "
             f"{v_dur:>7.2f}s   {a_dur:>7.2f}s   {frame_display:<16} {drift_str}"
         )
 
-    print("-" * 88)
+    print("-" * 96)
     print(
-        f"TOTAL: {total_shots} shots ({total_completed} done, {total_pending} pending, {total_stale} stale) "
+        f"TOTAL: {total_shots} shots ({total_completed} done, {total_pending} pending, {total_stale} stale, {total_review} needs_review) "
         f"| Frames: {total_frames} | Synthetic Fake: {total_fake}"
     )
     if any_probed:
@@ -953,6 +964,8 @@ def cmd_visual_status(args: argparse.Namespace) -> int:
         print("Note: Frames column uses manifest target_frames (run 'visual build' to enable ffprobe counts).")
     if total_fake > 0:
         print("Note: [FAKE] watermark badges are embedded in synthetic test clips.")
+    if total_review > 0:
+        print(f"Warning: {total_review} shot(s) marked 'needs_review'. Run 'python cli_longform.py visual review {args.project_id}' to inspect.")
 
     # V2: Explain the gap between visual_duration_seconds and audio_duration_seconds
     gap_note_shown = False
@@ -967,7 +980,134 @@ def cmd_visual_status(args: argparse.Namespace) -> int:
                 print("  The frame count (from ffprobe/manifest) accounts for the full audio length via carry-over.")
                 gap_note_shown = True
 
-    print("=" * 88 + "\n")
+    print("=" * 96 + "\n")
+    return 0
+
+
+def cmd_visual_review(args: argparse.Namespace) -> int:
+    """List shots marked needs_review with alternative candidate options (S1)."""
+    proj_dir = get_project_dir(args.project_id)
+    if not proj_dir.is_dir():
+        print(f"Error: Project '{args.project_id}' not found at {proj_dir}", file=sys.stderr)
+        return 1
+
+    manifest = load_manifest(proj_dir)
+    target_ch = getattr(args, "chapter", None)
+
+    review_shots = []
+    for ch in manifest.chapters:
+        if target_ch is not None and ch.chapter_index != target_ch:
+            continue
+        for s in ch.shots:
+            if getattr(s, "needs_review", False) or getattr(args, "all", False):
+                review_shots.append((ch, s))
+
+    if not review_shots:
+        all_flag_msg = "" if getattr(args, "all", False) else " (use --all to inspect all shots)"
+        print(f"\nNo shots in project '{manifest.project_id}' require review{all_flag_msg}.\n")
+        return 0
+
+    print(f"\nVisual Review for Project: {manifest.project_id} ({len(review_shots)} shots)")
+    print("=" * 88)
+
+    for ch, shot in review_shots:
+        status_badge = "[NEEDS REVIEW]" if getattr(shot, "needs_review", False) else f"[{shot.status.value.upper()}]"
+        print(f"\nShot: {shot.shot_id} (Chapter {ch.chapter_index}: {ch.chapter_title}) {status_badge}")
+        print(f"  Duration:     {shot.duration_seconds:.2f}s ({shot.target_frames} frames at 25 fps)")
+        print(f"  Visual Prompt:{shot.visual_prompt}")
+        print(f"  Search Query: {shot.search_query}")
+        print(f"  Source:       requested={shot.requested_source}, actual={shot.actual_source}")
+        if shot.fallback_reason:
+            print(f"  Reason:       {shot.fallback_reason}")
+
+        print("  Candidate Options:")
+        if not shot.candidates:
+            print("    (No candidates recorded. Run 'visual fetch' with --allow-fallback or add local assets.)")
+        else:
+            for idx, cand in enumerate(shot.candidates):
+                c_id = cand.get("candidate_id", "unknown")
+                c_prov = cand.get("provider", "unknown")
+                c_score = cand.get("relevance_score", 0.0)
+                c_rend = cand.get("rendition_name", "standard")
+                c_tags = cand.get("tags", [])
+                tag_preview = ", ".join(c_tags[:5]) if c_tags else "none"
+                print(f"    [{idx}] {c_prov.upper()} ID={c_id} | score: {c_score:.2f} | rend: {c_rend}")
+                print(f"        tags: [{tag_preview}]")
+
+        print("  Resolution Commands:")
+        print(f"    - Replace with candidate: python cli_longform.py visual replace {manifest.project_id} --shot {shot.shot_id} --candidate <index>")
+        print(f"    - Replace with custom query: python cli_longform.py visual replace {manifest.project_id} --shot {shot.shot_id} --prompt \"<search_query>\"")
+        print(f"    - Replace with local file:   python cli_longform.py visual replace {manifest.project_id} --shot {shot.shot_id} --file <path/to/media.mp4>")
+
+    print("\n" + "=" * 88 + "\n")
+    return 0
+
+
+def cmd_cache_status(args: argparse.Namespace) -> int:
+    """Show global media cache size, file counts, and protected locked assets (S2)."""
+    import datetime
+    from app.services.longform.visual.cache import get_cache_status
+
+    status = get_cache_status()
+
+    def fmt_ts(ts):
+        if not ts:
+            return "N/A"
+        return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+
+    print(f"\nGlobal Media Cache Status ({status['cache_dir']}):")
+    print("=" * 65)
+    print(f"  Total Files:      {status['total_files']} files")
+    print(f"  Total Size:       {status['total_mb']:.2f} MB ({status['total_gb']:.3f} GB)")
+    print(f"  Configured Limit: {status['max_size_gb']:.1f} GB (from config/longform.toml)")
+    print(f"  Default Age Limit:{status['max_age_days']} days")
+    print(f"  Locked/Protected: {status['locked_files_count']} files (referenced by locked shots)")
+    print(f"  Oldest Access:    {fmt_ts(status['oldest_timestamp'])}")
+    print(f"  Newest Access:    {fmt_ts(status['newest_timestamp'])}")
+    print("=" * 65 + "\n")
+    return 0
+
+
+def cmd_cache_prune(args: argparse.Namespace) -> int:
+    """Prune global media cache using age limits and LRU order, protecting locked assets (S2)."""
+    from app.services.longform.visual.cache import prune_cache
+
+    older_than_days = None
+    if getattr(args, "older_than", None):
+        raw_age = str(args.older_than).strip().lower()
+        if raw_age.endswith("d"):
+            older_than_days = float(raw_age[:-1])
+        elif raw_age.endswith("h"):
+            older_than_days = float(raw_age[:-1]) / 24.0
+        else:
+            older_than_days = float(raw_age)
+
+    max_size_bytes = None
+    if getattr(args, "max_size", None):
+        raw_size = str(args.max_size).strip().upper()
+        if raw_size.endswith("GB") or raw_size.endswith("G"):
+            val = float(raw_size.rstrip("GB").rstrip("G"))
+            max_size_bytes = int(val * (1024 ** 3))
+        elif raw_size.endswith("MB") or raw_size.endswith("M"):
+            val = float(raw_size.rstrip("MB").rstrip("M"))
+            max_size_bytes = int(val * (1024 * 1024))
+        else:
+            max_size_bytes = int(float(raw_size) * (1024 ** 3))
+
+    print("\nPruning Global Media Cache...")
+    if older_than_days:
+        print(f"  Age Filter:  older than {older_than_days:.1f} days")
+    if max_size_bytes:
+        print(f"  Size Target: <= {max_size_bytes / (1024**3):.2f} GB")
+
+    res = prune_cache(max_size_bytes=max_size_bytes, older_than_days=older_than_days)
+    print("-" * 65)
+    print(f"  Files Removed:        {res['files_removed']}")
+    print(f"  Storage Freed:        {res['mb_freed']:.2f} MB")
+    print(f"  Files Remaining:      {res['files_remaining']}")
+    print(f"  Remaining Cache Size: {res['total_size_mb']:.2f} MB")
+    print(f"  Locked Files Skipped: {res['locked_files_skipped']} (protected)")
+    print("-" * 65 + "\n")
     return 0
 
 
@@ -1308,10 +1448,28 @@ def build_parser() -> argparse.ArgumentParser:
     p_v_lock.add_argument("project_id", help="Project ID")
     p_v_lock.add_argument("--shot", required=True, help="Shot ID to lock")
 
+    # visual review
+    p_v_review = visual_subs.add_parser("review", help="List shots marked needs_review with candidate alternatives")
+    p_v_review.add_argument("project_id", help="Project ID")
+    p_v_review.add_argument("--chapter", type=int, help="Optional chapter index filter")
+    p_v_review.add_argument("--all", action="store_true", help="List all shots, not just those needing review")
+
     # visual unlock
     p_v_unlock = visual_subs.add_parser("unlock", help="Unlock a shot to allow re-fetch and updates")
     p_v_unlock.add_argument("project_id", help="Project ID")
     p_v_unlock.add_argument("--shot", required=True, help="Shot ID to unlock")
+
+    # 7. cache (Stage 4.2, S2)
+    p_cache = subparsers.add_parser("cache", help="Manage global media cache and LRU pruning")
+    cache_subs = p_cache.add_subparsers(dest="cache_command", required=True)
+
+    # cache status
+    cache_subs.add_parser("status", help="Show global cache size, file counts, and protected locked assets")
+
+    # cache prune
+    p_c_prune = cache_subs.add_parser("prune", help="Prune cache using age or size target, protecting locked files")
+    p_c_prune.add_argument("--older-than", help="Age limit to prune (e.g. '30d' or '24h')")
+    p_c_prune.add_argument("--max-size", help="Target maximum size (e.g. '5GB' or '5000MB')")
 
     return parser
 
@@ -1387,6 +1545,13 @@ def main() -> int:
                 return cmd_visual_lock(args)
             elif args.visual_command == "unlock":
                 return cmd_visual_unlock(args)
+            elif args.visual_command == "review":
+                return cmd_visual_review(args)
+        elif args.command == "cache":
+            if args.cache_command == "status":
+                return cmd_cache_status(args)
+            elif args.cache_command == "prune":
+                return cmd_cache_prune(args)
 
         parser.print_help()
         return 1

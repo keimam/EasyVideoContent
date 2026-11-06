@@ -317,26 +317,99 @@ class VisualService:
                     logger.warning(f"Shot {shot.shot_id}: {fallback_reason}")
                     active_provider = FakeVisualProvider(mode=target_provider_name)
 
-                # Search candidates
-                query = shot.search_query or shot.visual_prompt or "cinematic scene"
-                candidates = active_provider.search_candidates(
-                    query=query,
-                    target_duration=shot.duration_seconds,
-                    limit=3,
-                    excluded_ids=used_candidate_ids,
-                )
+                # S1: Get preset filtering and scoring rules from snapshot
+                preset_snap = manifest.preset_snapshot or {}
+                req_terms = preset_snap.get("required_subject_terms") or []
+                block_terms = preset_snap.get("blocked_terms") or []
+                visual_kws = preset_snap.get("visual_keywords") or []
 
+                # S1: Escalation search (initial -> narrower -> visual keywords)
+                from app.services.longform.visual.stock import extract_narrower_query
+
+                query = shot.search_query or shot.visual_prompt or "cinematic scene"
+                candidates = []
+
+                # Step 1: Initial query
+                search_kwargs = {
+                    "query": query,
+                    "target_duration": shot.duration_seconds,
+                    "limit": 3,
+                    "excluded_ids": used_candidate_ids,
+                }
+                # Pass S1 metadata if provider supports it
+                try:
+                    candidates = active_provider.search_candidates(
+                        required_subject_terms=req_terms,
+                        blocked_terms=block_terms,
+                        visual_keywords=visual_kws,
+                        **search_kwargs,
+                    )
+                except TypeError:
+                    candidates = active_provider.search_candidates(**search_kwargs)
+
+                # Step 2: Retry with narrower query if rejected
+                if not candidates and req_terms:
+                    narrow_q = extract_narrower_query(query, req_terms)
+                    if narrow_q and narrow_q.lower() != query.lower():
+                        logger.info(f"Shot {shot.shot_id}: retrying with narrower query '{narrow_q}'...")
+                        search_kwargs["query"] = narrow_q
+                        try:
+                            candidates = active_provider.search_candidates(
+                                required_subject_terms=req_terms,
+                                blocked_terms=block_terms,
+                                visual_keywords=visual_kws,
+                                **search_kwargs,
+                            )
+                        except TypeError:
+                            candidates = active_provider.search_candidates(**search_kwargs)
+
+                # Step 3: Retry with preset visual keywords
+                if not candidates and visual_kws:
+                    for vk in visual_kws[:3]:
+                        logger.info(f"Shot {shot.shot_id}: retrying with visual keyword '{vk}'...")
+                        search_kwargs["query"] = vk
+                        try:
+                            candidates = active_provider.search_candidates(
+                                required_subject_terms=req_terms,
+                                blocked_terms=block_terms,
+                                visual_keywords=visual_kws,
+                                **search_kwargs,
+                            )
+                        except TypeError:
+                            candidates = active_provider.search_candidates(**search_kwargs)
+                        if candidates:
+                            break
+
+                # Step 4: Fallback to next provider or mark needs_review
                 if not candidates:
                     if allow_fallback and not active_provider.is_fake:
-                        fallback_reason = f"Provider '{active_provider.name}' found 0 candidates for query; fell back to fake"
+                        fallback_reason = f"Provider '{active_provider.name}' found 0 valid candidates for query; fell back to fake"
                         active_provider = FakeVisualProvider(mode=target_provider_name)
-                        candidates = active_provider.search_candidates(
-                            query=query,
-                            target_duration=shot.duration_seconds,
-                            limit=3,
-                        )
-                    else:
-                        raise VisualError(f"No candidates found for shot {shot.shot_id} with query '{query}'")
+                        try:
+                            candidates = active_provider.search_candidates(
+                                query=query,
+                                target_duration=shot.duration_seconds,
+                                limit=3,
+                                required_subject_terms=req_terms,
+                                blocked_terms=block_terms,
+                                visual_keywords=visual_kws,
+                            )
+                        except TypeError:
+                            candidates = active_provider.search_candidates(
+                                query=query,
+                                target_duration=shot.duration_seconds,
+                                limit=3,
+                            )
+
+                    if not candidates:
+                        # S1: Mark shot needs_review rather than silently using an irrelevant clip
+                        logger.warning(f"Shot {shot.shot_id}: no acceptable candidates found. Marked needs_review.")
+                        shot.needs_review = True
+                        shot.status = ItemStatus.pending
+                        shot.relevance_score = 0.0
+                        shot.tags = []
+                        shot.fallback_reason = "No candidates matched required subject terms or query"
+                        continue
 
                 # Store candidate options
                 shot.candidates = [c.to_dict() for c in candidates]
@@ -348,7 +421,7 @@ class VisualService:
                 rel_dest = f"assets/visual/shots/{shot.shot_id}_asset{ext}"
                 dest_file = self.project_dir / rel_dest
 
-                logger.info(f"Fetching asset for {shot.shot_id} via {active_provider.name}...")
+                logger.info(f"Fetching asset for {shot.shot_id} via {active_provider.name} (score: {selected_candidate.relevance_score:.2f}, {selected_candidate.rendition_name or 'std'})...")
                 asset = active_provider.fetch_asset(selected_candidate, dest_file)
 
                 # Update shot metadata
@@ -358,6 +431,10 @@ class VisualService:
                 shot.actual_source = active_provider.name
                 shot.is_fake = active_provider.is_fake
                 shot.fallback_reason = fallback_reason
+                shot.tags = selected_candidate.tags
+                shot.relevance_score = selected_candidate.relevance_score
+                shot.chosen_rendition = selected_candidate.rendition_name
+                shot.needs_review = False
                 shot.status = ItemStatus.pending
 
         return manifest
@@ -416,8 +493,20 @@ class VisualService:
                 built_count += 1
                 total_time += elapsed
 
+                # S2: In case source trimming modified asset_file, update asset content hash & shot hash
+                updated_content_hash = compute_file_content_hash(asset_file)
+                shot.asset_content_hash = updated_content_hash
+                shot.shot_hash = compute_shot_hash(
+                    shot_id=shot.shot_id,
+                    duration_seconds=shot.duration_seconds,
+                    target_frames=shot.target_frames,
+                    motion=shot.motion.value,
+                    asset_content_hash=shot.asset_content_hash,
+                    fps=fps,
+                    requested_provider=shot.requested_source or "",
+                    actual_provider=shot.actual_source or "",
+                )
                 shot.rendered_clip = clip_rel
-                shot.shot_hash = expected_hash
                 shot.status = ItemStatus.completed
 
             # Update chapter duration & frames

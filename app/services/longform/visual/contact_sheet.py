@@ -89,7 +89,7 @@ def generate_chapter_contact_sheet(
     thumb_w = 420
     thumb_h = 236
     cell_padding = 16
-    footer_h = 70
+    footer_h = 82
     cell_w = thumb_w + cell_padding * 2
     cell_h = thumb_h + footer_h + cell_padding * 2
 
@@ -129,9 +129,18 @@ def generate_chapter_contact_sheet(
         badge_color = (255, 100, 100) if shot.is_fake else ((100, 220, 120) if "stock" in shot.actual_source else (120, 180, 255))
         if shot.locked:
             source_badge += " [LOCKED]"
+        if shot.needs_review:
+            source_badge += " [NEEDS REVIEW]"
+            badge_color = (255, 140, 40)
+
+        # Score snippet (S1)
+        score_str = f"score: {shot.relevance_score:.2f}" if shot.relevance_score is not None else ""
 
         ty = y0 + thumb_h + 8
-        draw.text((x0, ty), f"{shot.shot_id}  {source_badge}", fill=badge_color)
+        header_line = f"{shot.shot_id}  {source_badge}"
+        if score_str:
+            header_line += f"  ({score_str})"
+        draw.text((x0, ty), header_line, fill=badge_color)
         draw.text((x0 + thumb_w - 90, ty), f"{shot.duration_seconds:.2f}s ({shot.target_frames}f)", fill=(220, 220, 100))
 
         # Prompt snippet
@@ -139,7 +148,8 @@ def generate_chapter_contact_sheet(
         if len(prompt_txt) > 55:
             prompt_txt = prompt_txt[:52] + "..."
         draw.text((x0, ty + 24), prompt_txt, fill=(180, 190, 200))
-        draw.text((x0, ty + 42), f"Motion: {shot.motion.value}", fill=(140, 150, 160))
+        rend_info = f" | {shot.chosen_rendition}" if shot.chosen_rendition else ""
+        draw.text((x0, ty + 42), f"Motion: {shot.motion.value}{rend_info}", fill=(140, 150, 160))
 
     sheet.save(out, format="JPEG", quality=92)
     return out
