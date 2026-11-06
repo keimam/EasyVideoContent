@@ -72,7 +72,7 @@ def test_cli_all_subcommands_smoke(temp_project_id: str):
     assert "Total Work Units:" in res.stdout
 
     # 6. script outline (using explicit fake provider)
-    res = run_cli("script", "outline", p_id, "--topic", "1969 Shelby GT500", "--minutes", "8", "--provider", "fake")
+    res = run_cli("script", "outline", p_id, "--topic", "1969 Shelby GT500", "--minutes", "2", "--provider", "fake")
     assert res.returncode == 0, f"script outline failed: {res.stderr}"
     assert "Script Outline Generated Successfully" in res.stdout
 
@@ -139,12 +139,54 @@ def test_cli_all_subcommands_smoke(temp_project_id: str):
     assert res.returncode == 0, f"audio preview failed: {res.stderr}"
     assert "Audio Preview Generated Successfully" in res.stdout
 
-    # 19. project dev-simulate
+    # 19. visual fetch (Stage 4)
+    res = run_cli("visual", "fetch", p_id, "--provider", "fake")
+    assert res.returncode == 0, f"visual fetch failed: {res.stderr}"
+    assert "Visual assets acquired" in res.stdout
+
+    # 20. visual build (Stage 4)
+    res = run_cli("visual", "build", p_id)
+    assert res.returncode == 0, f"visual build failed: {res.stderr}"
+    assert "Shot clips built:" in res.stdout
+
+    # 21. visual status (Stage 4)
+    res = run_cli("visual", "status", p_id)
+    assert res.returncode == 0, f"visual status failed: {res.stderr}"
+    assert "Visual Status for Project:" in res.stdout
+
+    # 22. visual contact-sheet (Stage 4)
+    res = run_cli("visual", "contact-sheet", p_id, "--chapter", "1")
+    assert res.returncode == 0, f"visual contact-sheet failed: {res.stderr}"
+    assert "contact_sheet.jpg" in res.stdout
+
+    # 23. visual preview (Stage 4)
+    res = run_cli("visual", "preview", p_id, "--chapter", "1")
+    assert res.returncode == 0, f"visual preview failed: {res.stderr}"
+    assert "chapter_01_visual.mp4" in res.stdout
+
+    # 24. visual lock & unlock (Stage 4)
+    res = run_cli("visual", "lock", p_id, "--shot", "ch01_shot001")
+    assert res.returncode == 0, f"visual lock failed: {res.stderr}"
+    assert "LOCKED" in res.stdout
+
+    res = run_cli("visual", "unlock", p_id, "--shot", "ch01_shot001")
+    assert res.returncode == 0, f"visual unlock failed: {res.stderr}"
+    assert "UNLOCKED" in res.stdout
+
+    # 25. visual library add (Stage 4)
+    dummy_lib_dir = REPO_ROOT / "storage" / "longform_projects" / p_id / "tmp_lib_source"
+    dummy_lib_dir.mkdir(parents=True, exist_ok=True)
+    (dummy_lib_dir / "sample_img.jpg").write_bytes(b"fake_jpg_content")
+    res = run_cli("visual", "library", "add", p_id, "--folder", str(dummy_lib_dir))
+    assert res.returncode == 0, f"visual library add failed: {res.stderr}"
+    assert "Copied 1 files" in res.stdout
+
+    # 26. project dev-simulate
     res = run_cli("project", "dev-simulate", p_id)
     assert res.returncode == 0, f"project dev-simulate failed: {res.stderr}"
     assert "Pipeline run simulated successfully" in res.stdout
 
-    # 20. project plan (fully completed)
+    # 27. project plan (fully completed)
     res = run_cli("project", "plan", p_id)
     assert res.returncode == 0, f"project plan completed failed: {res.stderr}"
     assert "Project is fully completed and up to date" in res.stdout

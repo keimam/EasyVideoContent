@@ -111,10 +111,50 @@ class VisualSpec(BaseModel):
     rendered_clip: Optional[str] = None
     visual_hash: Optional[str] = None
     search_keywords: Optional[str] = None
+    shot_id: Optional[str] = None
+    locked: bool = False
+    requested_source: Optional[str] = None
+    actual_source: Optional[str] = None
+    fallback_reason: Optional[str] = None
+    candidates: List[dict[str, Any]] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
 
     @field_validator("source_file", "rendered_clip")
+    @classmethod
+    def validate_relative_paths(cls, value: str | None, info) -> str | None:
+        return _assert_relative_path(value, info.field_name)
+
+
+class Shot(BaseModel):
+    """A visual shot unit (4.2), formed by 1 or more sentence segments."""
+
+    shot_id: str
+    chapter_index: int
+    shot_index: int
+    segment_indices: List[int] = Field(default_factory=list)
+    start_seconds: float = 0.0
+    end_seconds: float = 0.0
+    duration_seconds: float = 0.0
+    target_frames: int = 0
+    requested_source: str = "ai_image"
+    actual_source: str = "ai_image"
+    fallback_reason: Optional[str] = None
+    visual_prompt: str = ""
+    search_query: str = ""
+    motion: MotionType = MotionType.zoom_in
+    asset_path: Optional[str] = None
+    asset_content_hash: Optional[str] = None
+    rendered_clip: Optional[str] = None
+    shot_hash: Optional[str] = None
+    locked: bool = False
+    is_fake: bool = False
+    candidates: List[dict[str, Any]] = Field(default_factory=list)
+    status: ItemStatus = ItemStatus.pending
+
+    model_config = {"extra": "forbid"}
+
+    @field_validator("asset_path", "rendered_clip")
     @classmethod
     def validate_relative_paths(cls, value: str | None, info) -> str | None:
         return _assert_relative_path(value, info.field_name)
@@ -194,11 +234,14 @@ class Chapter(BaseModel):
     chapter_index: int
     chapter_title: str
     tts_groups: List[TtsGroup] = Field(default_factory=list)
+    shots: List[Shot] = Field(default_factory=list)
     output_file: Optional[str] = None
     chapter_hash: Optional[str] = None
     voice_override: Optional[str] = None
     audio_file: Optional[str] = None
     audio_duration_seconds: Optional[float] = None
+    visual_duration_seconds: Optional[float] = None
+    visual_frames: Optional[int] = None
     preview_video_file: Optional[str] = None
     min_word_match_ratio: Optional[float] = None
     avg_word_match_ratio: Optional[float] = None
