@@ -231,6 +231,8 @@ def compute_plan(manifest: ProjectManifest, project_dir: str | Path) -> Executio
                     motion=shot.motion.value,
                     asset_content_hash=shot.asset_content_hash,
                     fps=fps,
+                    requested_provider=shot.requested_source or "",
+                    actual_provider=shot.actual_source or "",
                 )
 
                 clip_ok, clip_reason = _check_file_validity(p_dir, target_clip)

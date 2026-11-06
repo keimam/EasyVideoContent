@@ -774,7 +774,14 @@ def cmd_voice_test(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 def cmd_visual_fetch(args: argparse.Namespace) -> int:
-    """Acquire visual assets for project shots (4.1, 4.5)."""
+    """Acquire visual assets for project shots (4.1, 4.5, V1).
+
+    V1 fixes:
+    - No --provider defaults to real provider (pixabay → pexels → ai_image), never fake.
+    - Fake assets from previous run are stale when real provider requested.
+    - Fail-fast with clear key/config guidance if credentials missing.
+    - '--provider fake' remains valid for explicit keyless offline testing.
+    """
     from app.services.longform.visual.base import VisualConfigurationError, VisualError
     from app.services.longform.visual.service import VisualService
 
@@ -788,8 +795,15 @@ def cmd_visual_fetch(args: argparse.Namespace) -> int:
             manifest = load_manifest(proj_dir)
             service = VisualService(proj_dir)
 
-            prov_display = args.provider or "preset/default"
-            print(f"\n[Visual Fetch] Project: {args.project_id} | Provider: {prov_display} | Fallback Allowed: {args.allow_fallback}")
+            # V1: resolve the effective provider before display so user sees what will be used
+            if args.provider:
+                effective_prov_display = args.provider
+            else:
+                effective_prov_display = service._resolve_default_provider(manifest)
+
+            print(f"\n[Visual Fetch] Project: {args.project_id} | Provider: {effective_prov_display} | Fallback Allowed: {args.allow_fallback}")
+            if not args.provider:
+                print(f"  (No --provider specified; resolved default: '{effective_prov_display}')")
             print("-" * 70)
 
             manifest = service.fetch_all(
@@ -802,26 +816,30 @@ def cmd_visual_fetch(args: argparse.Namespace) -> int:
             # Summarize fetched assets
             total_shots = sum(len(ch.shots) for ch in manifest.chapters)
             fake_count = sum(1 for ch in manifest.chapters for s in ch.shots if s.is_fake)
+            real_count = total_shots - fake_count
             print("-" * 70)
-            print(f"SUCCESS: Visual assets acquired for {total_shots} shots (Fake: {fake_count})")
+            print(f"SUCCESS: Visual assets acquired for {total_shots} shots (Real: {real_count}, Fake: {fake_count})")
             if fake_count > 0:
                 print("Notice: [FAKE] visual assets were generated for offline development/testing.")
+                print("        To use real assets: run 'visual fetch <id> --provider pixabay' (or pexels/local/ai_image).")
             return 0
 
     except VisualConfigurationError as conf_err:
         print(f"\nCONFIGURATION ERROR: {conf_err}", file=sys.stderr)
-        print("Tip: pass '--provider fake' or '--allow-fallback' for keyless testing.", file=sys.stderr)
         return 1
     except ProjectLockedError:
         print(f"Error: Project '{args.project_id}' is locked by another process.", file=sys.stderr)
         return 1
+    except KeyboardInterrupt:
+        print("\n[VISUAL FETCH INTERRUPTED] KeyboardInterrupt received. Fetched assets up to this point are preserved.\n", file=sys.stderr)
+        return 130
     except Exception as exc:
         print(f"Error during visual fetch: {exc}", file=sys.stderr)
         return 1
 
 
 def cmd_visual_build(args: argparse.Namespace) -> int:
-    """Render shot clips with uniform encoding parameters (4.3, 4.5)."""
+    """Render shot clips with uniform encoding parameters (4.3, 4.5, V4)."""
     from app.services.longform.visual.service import VisualService
 
     proj_dir = get_project_dir(args.project_id)
@@ -849,13 +867,23 @@ def cmd_visual_build(args: argparse.Namespace) -> int:
     except ProjectLockedError:
         print(f"Error: Project '{args.project_id}' is locked by another process.", file=sys.stderr)
         return 1
+    except KeyboardInterrupt:
+        print("\n[VISUAL BUILD INTERRUPTED] KeyboardInterrupt received. Completed clips are saved; partial clip discarded.\n", file=sys.stderr)
+        return 130
     except Exception as exc:
         print(f"Error during visual build: {exc}", file=sys.stderr)
         return 1
 
 
 def cmd_visual_status(args: argparse.Namespace) -> int:
-    """Show detailed visual status and frame drift analysis (4.5)."""
+    """Show detailed visual status and frame drift analysis (4.5, V2).
+
+    V2: Drift is computed from actual nb_frames read from each clip via ffprobe,
+    not from manifest target_frames. Falls back to manifest if probing fails.
+    Explicitly notes whether frames are from actual files or manifest estimate.
+    """
+    from app.services.longform.visual.service import VisualService
+
     proj_dir = get_project_dir(args.project_id)
     if not proj_dir.is_dir():
         print(f"Error: Project '{args.project_id}' not found at {proj_dir}", file=sys.stderr)
@@ -863,11 +891,12 @@ def cmd_visual_status(args: argparse.Namespace) -> int:
 
     manifest = load_manifest(proj_dir)
     fps = getattr(getattr(manifest, "encoder_settings", None), "fps", 25) or 25
+    service = VisualService(proj_dir)
 
     print(f"\nVisual Status for Project: {manifest.project_id} ({manifest.title})")
-    print("=" * 80)
-    print(f"{'Ch':<4} {'Shots':<7} {'Completed':<10} {'Pending':<8} {'Stale':<7} {'Visual Dur':<12} {'Audio Dur':<12} {'Frames':<8} {'Drift'}")
-    print("-" * 80)
+    print("=" * 88)
+    print(f"{'Ch':<4} {'Shots':<7} {'Done':<6} {'Pend':<6} {'Stale':<6} {'VisDur':<10} {'AudDur':<10} {'Frames(actual)':<16} {'Drift'}")
+    print("-" * 88)
 
     total_shots = 0
     total_completed = 0
@@ -875,6 +904,7 @@ def cmd_visual_status(args: argparse.Namespace) -> int:
     total_stale = 0
     total_frames = 0
     total_fake = 0
+    any_probed = False
 
     for ch in manifest.chapters:
         num_shots = len(ch.shots)
@@ -882,12 +912,21 @@ def cmd_visual_status(args: argparse.Namespace) -> int:
         c_pend = sum(1 for s in ch.shots if s.status == ItemStatus.pending)
         c_stale = sum(1 for s in ch.shots if s.status == ItemStatus.stale)
         c_fake = sum(1 for s in ch.shots if s.is_fake)
-        ch_frames = sum(s.target_frames for s in ch.shots)
         v_dur = ch.visual_duration_seconds or 0.0
         a_dur = ch.audio_duration_seconds or 0.0
 
-        expected_frames = int(round(a_dur * fps))
-        drift_frames = ch_frames - expected_frames if a_dur > 0 else 0
+        # V2: Try to read actual frame count from clip files
+        actual_frames = service.get_chapter_actual_frames(ch) if c_done > 0 else None
+        if actual_frames is not None:
+            ch_frames = actual_frames
+            frame_source = "ffprobe"
+            any_probed = True
+        else:
+            ch_frames = sum(s.target_frames for s in ch.shots)
+            frame_source = "manifest"
+
+        expected_frames = int(round(a_dur * fps)) if a_dur > 0 else 0
+        drift_frames = (ch_frames - expected_frames) if a_dur > 0 else 0
         drift_str = f"{drift_frames:+d}f" if a_dur > 0 else "N/A"
 
         total_shots += num_shots
@@ -897,19 +936,38 @@ def cmd_visual_status(args: argparse.Namespace) -> int:
         total_frames += ch_frames
         total_fake += c_fake
 
+        frame_display = f"{ch_frames} ({frame_source})"
         print(
-            f"{ch.chapter_index:<4} {num_shots:<7} {c_done:<10} {c_pend:<8} {c_stale:<7} "
-            f"{v_dur:>8.2f}s    {a_dur:>8.2f}s    {ch_frames:<8} {drift_str}"
+            f"{ch.chapter_index:<4} {num_shots:<7} {c_done:<6} {c_pend:<6} {c_stale:<6} "
+            f"{v_dur:>7.2f}s   {a_dur:>7.2f}s   {frame_display:<16} {drift_str}"
         )
 
-    print("-" * 80)
+    print("-" * 88)
     print(
         f"TOTAL: {total_shots} shots ({total_completed} done, {total_pending} pending, {total_stale} stale) "
         f"| Frames: {total_frames} | Synthetic Fake: {total_fake}"
     )
+    if any_probed:
+        print("Note: Frames column reads actual nb_frames from clip files via ffprobe.")
+    else:
+        print("Note: Frames column uses manifest target_frames (run 'visual build' to enable ffprobe counts).")
     if total_fake > 0:
         print("Note: [FAKE] watermark badges are embedded in synthetic test clips.")
-    print("=" * 80 + "\n")
+
+    # V2: Explain the gap between visual_duration_seconds and audio_duration_seconds
+    gap_note_shown = False
+    for ch in manifest.chapters:
+        a_dur = ch.audio_duration_seconds or 0.0
+        v_dur = ch.visual_duration_seconds or 0.0
+        if a_dur > 0 and abs(a_dur - v_dur) > 0.1:
+            if not gap_note_shown:
+                print()
+                print("Note on duration gap: visual_duration_seconds sums shot durations (segment boundaries only).")
+                print("  Inter-group pauses are part of the chapter WAV but not counted in shot durations.")
+                print("  The frame count (from ffprobe/manifest) accounts for the full audio length via carry-over.")
+                gap_note_shown = True
+
+    print("=" * 88 + "\n")
     return 0
 
 
@@ -938,7 +996,7 @@ def cmd_visual_library_add(args: argparse.Namespace) -> int:
 
 
 def cmd_visual_contact_sheet(args: argparse.Namespace) -> int:
-    """Generate visual contact sheet image (4.4, 4.5)."""
+    """Generate visual contact sheet image (4.4, 4.5, V4)."""
     from app.services.longform.visual.contact_sheet import generate_chapter_contact_sheet
 
     proj_dir = get_project_dir(args.project_id)
@@ -961,13 +1019,16 @@ def cmd_visual_contact_sheet(args: argparse.Namespace) -> int:
         )
         print(f"SUCCESS: Contact sheet saved to: {out_img}\n")
         return 0
+    except KeyboardInterrupt:
+        print("\n[CONTACT SHEET INTERRUPTED] KeyboardInterrupt received.\n", file=sys.stderr)
+        return 130
     except Exception as exc:
         print(f"Error generating contact sheet: {exc}", file=sys.stderr)
         return 1
 
 
 def cmd_visual_preview(args: argparse.Namespace) -> int:
-    """Concatenate chapter shot clips with chapter audio into preview MP4 (4.4, 4.5)."""
+    """Concatenate chapter shot clips with chapter audio into preview MP4 (4.4, 4.5, V4)."""
     from app.services.longform.visual.service import VisualService
 
     proj_dir = get_project_dir(args.project_id)
@@ -983,6 +1044,9 @@ def cmd_visual_preview(args: argparse.Namespace) -> int:
         out_mp4 = service.generate_preview(manifest, args.chapter)
         print(f"SUCCESS: Chapter visual preview created at: {out_mp4}\n")
         return 0
+    except KeyboardInterrupt:
+        print("\n[VISUAL PREVIEW INTERRUPTED] KeyboardInterrupt received. Partial file removed.\n", file=sys.stderr)
+        return 130
     except Exception as exc:
         print(f"Error generating visual preview: {exc}", file=sys.stderr)
         return 1
@@ -1253,73 +1317,85 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    """Main entry point with global KeyboardInterrupt handler (V4).
+
+    V4: KeyboardInterrupt at the top level prints a clean message without traceback.
+    Individual command handlers may also catch KeyboardInterrupt for per-command cleanup.
+    """
     parser = build_parser()
     args = parser.parse_args()
 
-    if args.command == "presets":
-        if args.preset_command == "list":
-            return cmd_presets_list(args)
-        elif args.preset_command == "validate":
-            return cmd_presets_validate(args)
-    elif args.command == "project":
-        if args.project_command == "create":
-            return cmd_project_create(args)
-        elif args.project_command == "show":
-            return cmd_project_show(args)
-        elif args.project_command == "plan":
-            return cmd_project_plan(args)
-        elif args.project_command == "update-script":
-            return cmd_project_update_script(args)
-        elif args.project_command == "refresh-preset":
-            return cmd_project_refresh_preset(args)
-        elif args.project_command == "dev-simulate":
-            return cmd_project_dev_simulate(args)
-        elif args.project_command == "set-voice":
-            return cmd_project_set_voice(args)
-    elif args.command == "script":
-        if args.script_command == "outline":
-            return cmd_script_outline(args)
-        elif args.script_command == "write":
-            return cmd_script_write(args)
-        elif args.script_command == "status":
-            return cmd_script_status(args)
-        elif args.script_command == "quality":
-            return cmd_script_quality(args)
-    elif args.command == "audio":
-        if args.audio_command == "synth":
-            return cmd_audio_synth(args)
-        elif args.audio_command == "status":
-            return cmd_audio_status(args)
-        elif args.audio_command == "preview":
-            return cmd_audio_preview(args)
-    elif args.command == "voice":
-        if args.voice_command == "list":
-            return cmd_voice_list(args)
-        elif args.voice_command == "test":
-            return cmd_voice_test(args)
-    elif args.command == "visual":
-        if args.visual_command == "fetch":
-            return cmd_visual_fetch(args)
-        elif args.visual_command == "build":
-            return cmd_visual_build(args)
-        elif args.visual_command == "status":
-            return cmd_visual_status(args)
-        elif args.visual_command == "library":
-            if args.library_command == "add":
-                return cmd_visual_library_add(args)
-        elif args.visual_command == "contact-sheet":
-            return cmd_visual_contact_sheet(args)
-        elif args.visual_command == "preview":
-            return cmd_visual_preview(args)
-        elif args.visual_command == "replace":
-            return cmd_visual_replace(args)
-        elif args.visual_command == "lock":
-            return cmd_visual_lock(args)
-        elif args.visual_command == "unlock":
-            return cmd_visual_unlock(args)
+    try:
+        if args.command == "presets":
+            if args.preset_command == "list":
+                return cmd_presets_list(args)
+            elif args.preset_command == "validate":
+                return cmd_presets_validate(args)
+        elif args.command == "project":
+            if args.project_command == "create":
+                return cmd_project_create(args)
+            elif args.project_command == "show":
+                return cmd_project_show(args)
+            elif args.project_command == "plan":
+                return cmd_project_plan(args)
+            elif args.project_command == "update-script":
+                return cmd_project_update_script(args)
+            elif args.project_command == "refresh-preset":
+                return cmd_project_refresh_preset(args)
+            elif args.project_command == "dev-simulate":
+                return cmd_project_dev_simulate(args)
+            elif args.project_command == "set-voice":
+                return cmd_project_set_voice(args)
+        elif args.command == "script":
+            if args.script_command == "outline":
+                return cmd_script_outline(args)
+            elif args.script_command == "write":
+                return cmd_script_write(args)
+            elif args.script_command == "status":
+                return cmd_script_status(args)
+            elif args.script_command == "quality":
+                return cmd_script_quality(args)
+        elif args.command == "audio":
+            if args.audio_command == "synth":
+                return cmd_audio_synth(args)
+            elif args.audio_command == "status":
+                return cmd_audio_status(args)
+            elif args.audio_command == "preview":
+                return cmd_audio_preview(args)
+        elif args.command == "voice":
+            if args.voice_command == "list":
+                return cmd_voice_list(args)
+            elif args.voice_command == "test":
+                return cmd_voice_test(args)
+        elif args.command == "visual":
+            if args.visual_command == "fetch":
+                return cmd_visual_fetch(args)
+            elif args.visual_command == "build":
+                return cmd_visual_build(args)
+            elif args.visual_command == "status":
+                return cmd_visual_status(args)
+            elif args.visual_command == "library":
+                if args.library_command == "add":
+                    return cmd_visual_library_add(args)
+            elif args.visual_command == "contact-sheet":
+                return cmd_visual_contact_sheet(args)
+            elif args.visual_command == "preview":
+                return cmd_visual_preview(args)
+            elif args.visual_command == "replace":
+                return cmd_visual_replace(args)
+            elif args.visual_command == "lock":
+                return cmd_visual_lock(args)
+            elif args.visual_command == "unlock":
+                return cmd_visual_unlock(args)
 
-    parser.print_help()
-    return 1
+        parser.print_help()
+        return 1
+
+    except KeyboardInterrupt:
+        # V4: Global fallback — no traceback, clean exit message
+        cmd_name = getattr(args, "command", "unknown")
+        print(f"\n[INTERRUPTED] KeyboardInterrupt received during '{cmd_name}'. Exiting cleanly.\n", file=sys.stderr)
+        return 130
 
 
 if __name__ == "__main__":

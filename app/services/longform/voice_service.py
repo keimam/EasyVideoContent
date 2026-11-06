@@ -282,7 +282,14 @@ class VoiceService:
     get_audio_status = get_status
 
     def set_voice(self, voice_name: str, voice_rate: float = 1.0) -> ProjectManifest:
-        """Set project default narrator voice, marking all audio groups stale (3.5, 3.7, R4)."""
+        """Set project default narrator voice using hash-based invalidation (3.5, 3.7, R4, V3).
+
+        V3 fix: Instead of clearing audio_hash and marking all groups stale unconditionally,
+        we recompute the expected audio_hash for each group with the new voice+rate. If the
+        new hash matches the stored hash (meaning the group was previously synthesized with
+        this exact voice+rate and the file is still present), the group stays 'completed'
+        without re-synthesis. This makes A→B→A a no-op for synthesis.
+        """
         clean_voice = voice_name.strip()
         with ProjectLock(self.project_dir):
             manifest = load_manifest(self.project_dir)
@@ -290,17 +297,44 @@ class VoiceService:
             manifest.preset_snapshot["default_voice"] = clean_voice
             manifest.preset_snapshot["voice_rate"] = float(voice_rate)
 
-            # Invalidate all groups by clearing audio_hash and setting status to stale
             for ch in manifest.chapters:
+                ch_needs_stale = False
                 for g in ch.tts_groups:
+                    # Compute what the hash would be for the new voice
+                    new_hash = compute_audio_group_hash(
+                        paragraph_text=g.get_effective_paragraph_text(),
+                        tts_provider=g.audio.tts_provider or "edge",
+                        tts_model=g.audio.tts_model or "",
+                        voice_name=clean_voice,
+                        voice_rate=float(voice_rate),
+                        text_norm_version=g.audio.text_norm_version or "v1",
+                        audio_format=g.audio.audio_format or "wav_48k_pcm",
+                    )
+
+                    # Update voice metadata unconditionally
                     g.audio.voice_name = clean_voice
                     g.audio.voice_rate = float(voice_rate)
-                    g.audio.audio_hash = None
-                    g.status = ItemStatus.stale
 
-                ch.status = ItemStatus.stale
+                    # V3: Hash-based staleness — if hash matches, group is still valid
+                    target_wav = self.project_dir / (g.audio.file_path or f"assets/audio/groups/ch{ch.chapter_index}_g{g.group_index}.wav")
+                    if g.audio.audio_hash == new_hash and target_wav.is_file() and target_wav.stat().st_size > 44:
+                        # Audio on disk was synthesized with this voice/rate: keep/restore completed!
+                        g.status = ItemStatus.completed
+                        logger.debug(f"Group ch{ch.chapter_index}_g{g.group_index}: hash matches new voice, keeping completed")
+                    else:
+                        # Setting does not match audio on disk: mark stale
+                        # (Preserve g.audio.audio_hash so switching back restores completed without synth)
+                        g.status = ItemStatus.stale
+                        ch_needs_stale = True
 
-            manifest.status = ItemStatus.stale
+                if ch_needs_stale:
+                    ch.status = ItemStatus.stale
+                elif all(grp.status == ItemStatus.completed for grp in ch.tts_groups):
+                    ch.status = ItemStatus.completed
+
+            if any(c.status == ItemStatus.stale for c in manifest.chapters):
+                manifest.status = ItemStatus.stale
+
             save_manifest(manifest, self.project_dir)
             return manifest
 

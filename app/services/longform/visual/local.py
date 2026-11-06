@@ -79,11 +79,16 @@ class LocalLibraryManager:
 
 
 class LocalVisualProvider(BaseVisualProvider):
-    """Local media provider selecting from project-local library (4.1)."""
+    """Local media provider selecting from project-local library (4.1, V6)."""
 
-    def __init__(self, project_dir: Path | str) -> None:
+    def __init__(
+        self,
+        project_dir: Path | str,
+        credits_manager: Optional["CreditsManager"] = None,
+    ) -> None:
         self.project_dir = Path(project_dir).resolve()
         self.manager = LocalLibraryManager(self.project_dir)
+        self.credits_manager = credits_manager
 
     @property
     def name(self) -> str:
@@ -94,8 +99,13 @@ class LocalVisualProvider(BaseVisualProvider):
         return False
 
     def validate_credentials(self) -> None:
-        """Local provider never needs remote credentials, but library must exist."""
-        pass
+        """Local provider never needs remote credentials, but library must exist and have files."""
+        available = self.manager.list_assets()
+        if not available:
+            raise VisualError(
+                "Local visual library is empty. Please add media files first via:\n"
+                f"  python cli_longform.py visual library add <project_id> --folder <path_to_images_or_videos>"
+            )
 
     def search_candidates(
         self,
@@ -154,7 +164,31 @@ class LocalVisualProvider(BaseVisualProvider):
                 )
             )
 
-        return candidates
+        # 3. Third pass: if no candidates found because all library files were already used, cycle available files
+        if not candidates and available:
+            for idx, p in enumerate(available[:limit]):
+                cand_id = f"local_{p.stem}_{abs(hash(query + str(idx))) % 100000}"
+                ext = p.suffix.lower()
+                source_type = "stock_video" if ext in SUPPORTED_VIDEO_EXTS else "stock_image"
+                candidates.append(
+                    VisualCandidate(
+                        candidate_id=cand_id,
+                        provider="local",
+                        source_type=source_type,
+                        url=None,
+                        local_path=str(p.relative_to(self.project_dir)).replace("\\", "/"),
+                        author="Local User Library",
+                        author_url=None,
+                        source_url=None,
+                        license="Local User Media",
+                        width=1920,
+                        height=1080,
+                        duration_seconds=target_duration,
+                        source_info={"filename": p.name},
+                    )
+                )
+
+        return candidates[:limit]
 
     def fetch_asset(
         self,
@@ -175,6 +209,11 @@ class LocalVisualProvider(BaseVisualProvider):
             shutil.copyfile(src_path, dest)
 
         c_hash = compute_file_content_hash(dest)
+
+        # Record credit for local asset (V6)
+        if self.credits_manager:
+            self.credits_manager.record_asset_credit(candidate)
+
         return VisualAsset(
             asset_id=candidate.candidate_id,
             provider="local",

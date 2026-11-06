@@ -5,7 +5,8 @@ Rules:
 - Merge: If segment duration < min_shot_seconds (2.0s), merge with adjacent segment.
 - Split: If segment duration > max_shot_seconds (8.0s), split into multiple shots.
 - Frame carry-over: Total chapter visual frames strictly equal round(chapter_audio_duration * fps) ± 1.
-- Shot hash: SHA-256 over asset hash, motion, duration, target_frames, resolution, fps, encoder parameters.
+- Shot hash: SHA-256 over asset hash, motion, duration, target_frames, resolution, fps, encoder parameters,
+  AND requested_provider so that changing provider forces re-fetch (V1).
 """
 
 from __future__ import annotations
@@ -40,8 +41,15 @@ def compute_shot_hash(
     codec: str = "libx264",
     profile: str = "high",
     pix_fmt: str = "yuv420p",
+    requested_provider: str = "",
+    actual_provider: str = "",
 ) -> str:
-    """Compute deterministic SHA-256 hash for a visual shot work unit."""
+    """Compute deterministic SHA-256 hash for a visual shot work unit.
+
+    V1 fix: requested_provider and actual_provider are included so that:
+    - Switching from 'fake' to 'pixabay' invalidates the shot (hash changes).
+    - Switching back to 'fake' (if requested) restores original hash without re-build.
+    """
     canonical_dict = {
         "shot_id": shot_id,
         "duration_seconds": round(duration_seconds, 3),
@@ -54,6 +62,8 @@ def compute_shot_hash(
         "codec": codec,
         "profile": profile,
         "pix_fmt": pix_fmt,
+        "requested_provider": requested_provider.strip().lower(),
+        "actual_provider": actual_provider.strip().lower(),
     }
     dumped = json.dumps(canonical_dict, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(dumped.encode("utf-8")).hexdigest()

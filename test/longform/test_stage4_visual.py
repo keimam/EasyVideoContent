@@ -320,6 +320,8 @@ def test_audio_duration_change_invalidates_shot_in_planner(tmp_path: Path):
         motion=MotionType.zoom_in.value,
         asset_content_hash=asset_hash,
         fps=25,
+        requested_provider="ai_image",
+        actual_provider="ai_image",
     )
 
     shot = Shot(
@@ -493,3 +495,238 @@ def test_visual_contact_sheet_and_preview_in_spaced_path(tmp_path: Path):
     preview_mp4 = service.generate_preview(manifest, chapter_index=1)
     assert preview_mp4.is_file()
     assert preview_mp4.stat().st_size > 0
+
+
+def test_v1_fail_fast_without_keys_and_assets_preserved(tmp_path: Path, monkeypatch):
+    """V1: Without API keys, fetch fails fast with clear error and preserves existing assets."""
+    monkeypatch.setitem(config.app, "pixabay_api_keys", "")
+    monkeypatch.setitem(config.app, "pexels_api_keys", "")
+    monkeypatch.setitem(config.app, "coverr_api_keys", "")
+    monkeypatch.setitem(config.app, "openai_image_base_url", "")
+
+    proj_dir = tmp_path / "v1_failfast_proj"
+    proj_dir.mkdir(parents=True, exist_ok=True)
+
+    # Place an existing asset file
+    asset_dir = proj_dir / "assets" / "visual" / "shots"
+    asset_dir.mkdir(parents=True, exist_ok=True)
+    existing_file = asset_dir / "ch01_shot001_asset.jpg"
+    existing_file.write_bytes(b"EXISTING_ASSET_BYTES_12345")
+    existing_hash = compute_file_content_hash(existing_file)
+
+    shot = Shot(
+        shot_id="ch01_shot001",
+        chapter_index=1,
+        shot_index=1,
+        duration_seconds=3.0,
+        target_frames=75,
+        requested_source="pixabay",
+        actual_source="fake",
+        is_fake=True,
+        asset_path="assets/visual/shots/ch01_shot001_asset.jpg",
+        asset_content_hash=existing_hash,
+        status=ItemStatus.completed,
+    )
+    ch = Chapter(chapter_index=1, chapter_title="Ch1", shots=[shot])
+    manifest = ProjectManifest(project_id="v1_test", title="V1 Test", preset_id="documentary_en", preset_snapshot={}, chapters=[ch])
+    save_manifest(manifest, proj_dir)
+
+    service = VisualService(proj_dir)
+
+    # Calling fetch without provider (resolves to pixabay/pexels) must raise VisualConfigurationError
+    with pytest.raises(VisualConfigurationError) as exc_info:
+        service.fetch_all(manifest, provider_name=None, allow_fallback=False)
+
+    err_msg = str(exc_info.value)
+    assert "not properly configured" in err_msg or "API key is not configured" in err_msg
+    # Ensure error guidance mentions alternatives
+    assert "Pixabay" in err_msg or "Pexels" in err_msg or "Coverr" in err_msg
+
+    # Verify existing asset was not modified or deleted
+    assert existing_file.is_file()
+    assert existing_file.read_bytes() == b"EXISTING_ASSET_BYTES_12345"
+
+
+def test_v1_fake_assets_stale_when_real_provider_requested(tmp_path: Path):
+    """V1: Fake assets are considered stale when a real provider is requested."""
+    proj_dir = tmp_path / "v1_stale_proj"
+    proj_dir.mkdir(parents=True, exist_ok=True)
+
+    asset_dir = proj_dir / "assets" / "visual" / "shots"
+    asset_dir.mkdir(parents=True, exist_ok=True)
+    fake_asset = asset_dir / "ch01_shot001_asset.jpg"
+    fake_asset.write_bytes(b"FAKE_IMAGE_DATA")
+    fake_hash = compute_file_content_hash(fake_asset)
+
+    shot = Shot(
+        shot_id="ch01_shot001",
+        chapter_index=1,
+        shot_index=1,
+        duration_seconds=3.0,
+        target_frames=75,
+        requested_source="fake",
+        actual_source="fake",
+        is_fake=True,
+        asset_path="assets/visual/shots/ch01_shot001_asset.jpg",
+        asset_content_hash=fake_hash,
+        status=ItemStatus.completed,
+    )
+
+    service = VisualService(proj_dir)
+
+    # Real provider requested -> fake asset is NOT valid (stale)
+    assert not service._is_shot_asset_valid_for_provider(shot, "pixabay")
+    assert not service._is_shot_asset_valid_for_provider(shot, "pexels")
+    assert not service._is_shot_asset_valid_for_provider(shot, "local")
+
+    # Fake provider requested -> fake asset IS valid
+    assert service._is_shot_asset_valid_for_provider(shot, "fake")
+
+    # Switching real providers: asset fetched from pexels is stale if pixabay is requested
+    shot.is_fake = False
+    shot.actual_source = "pexels"
+    assert not service._is_shot_asset_valid_for_provider(shot, "pixabay")
+    assert service._is_shot_asset_valid_for_provider(shot, "pexels")
+
+
+def test_v2_actual_frame_count_probed_from_clips(tmp_path: Path):
+    """V2: Chapter actual frames are probed from real clip files using ffprobe."""
+    proj_dir = tmp_path / "v2_frame_proj"
+    proj_dir.mkdir(parents=True, exist_ok=True)
+
+    builder = ShotClipBuilder(fps=25)
+    img_path = proj_dir / "base.jpg"
+    Image.new("RGB", (1920, 1080), color=(50, 60, 70)).save(img_path)
+
+    clip1 = proj_dir / "assets" / "visual" / "shots" / "ch01_shot001.mp4"
+    clip2 = proj_dir / "assets" / "visual" / "shots" / "ch01_shot002.mp4"
+    clip1.parent.mkdir(parents=True, exist_ok=True)
+
+    # Build clip 1 with 25 frames, clip 2 with 50 frames
+    builder.build_image_clip(img_path, clip1, MotionType.static, target_frames=25)
+    builder.build_image_clip(img_path, clip2, MotionType.static, target_frames=50)
+
+    shot1 = Shot(
+        shot_id="ch01_shot001", chapter_index=1, shot_index=1,
+        duration_seconds=1.0, target_frames=25,
+        rendered_clip="assets/visual/shots/ch01_shot001.mp4",
+        status=ItemStatus.completed,
+    )
+    shot2 = Shot(
+        shot_id="ch01_shot002", chapter_index=1, shot_index=2,
+        duration_seconds=2.0, target_frames=50,
+        rendered_clip="assets/visual/shots/ch01_shot002.mp4",
+        status=ItemStatus.completed,
+    )
+    ch = Chapter(chapter_index=1, chapter_title="Ch1", shots=[shot1, shot2])
+
+    service = VisualService(proj_dir)
+    total_probed = service.get_chapter_actual_frames(ch)
+    assert total_probed == 75
+
+
+def test_v3_set_voice_hash_based_invalidation_roundtrip(tmp_path: Path):
+    """V3: Changing voice A -> B -> A restores completed status without re-synthesis."""
+    from app.services.longform.voice_service import VoiceService
+
+    proj_dir = tmp_path / "v3_voice_proj"
+    proj_dir.mkdir(parents=True, exist_ok=True)
+
+    group_audio_dir = proj_dir / "assets" / "audio" / "groups"
+    group_audio_dir.mkdir(parents=True, exist_ok=True)
+    wav_file = group_audio_dir / "ch1_g1.wav"
+    wav_file.write_bytes(b"RIFF" + b"\x00" * 100)  # dummy wav > 44 bytes
+
+    voice_a = "en-US-ChristopherNeural"
+    voice_b = "en-US-GuyNeural"
+
+    # Compute expected hash for voice A
+    from app.services.longform.hashing import compute_audio_group_hash
+    hash_a = compute_audio_group_hash(
+        paragraph_text="This is a test paragraph.",
+        tts_provider="edge",
+        voice_name=voice_a,
+        voice_rate=1.0,
+    )
+
+    group = TtsGroup(
+        group_index=1,
+        paragraph_text="This is a test paragraph.",
+        audio=AudioSpec(
+            file_path="assets/audio/groups/ch1_g1.wav",
+            audio_hash=hash_a,
+            voice_name=voice_a,
+            voice_rate=1.0,
+            duration_seconds=2.5,
+        ),
+        status=ItemStatus.completed,
+    )
+    ch = Chapter(chapter_index=1, chapter_title="Ch1", tts_groups=[group], status=ItemStatus.completed)
+    manifest = ProjectManifest(
+        project_id="v3_test",
+        title="V3 Test",
+        preset_id="documentary_en",
+        preset_snapshot={"default_voice": voice_a, "voice_rate": 1.0},
+        chapters=[ch],
+    )
+    save_manifest(manifest, proj_dir)
+
+    v_service = VoiceService(proj_dir)
+
+    # 1. Switch voice A -> B: group should become stale
+    v_service.set_voice(voice_b, voice_rate=1.0)
+    m_after_b = load_manifest(proj_dir)
+    assert m_after_b.chapters[0].tts_groups[0].status == ItemStatus.stale
+    assert m_after_b.chapters[0].tts_groups[0].audio.voice_name == voice_b
+
+    # 2. Switch voice B -> A: group hash matches again, should become completed without synth!
+    v_service.set_voice(voice_a, voice_rate=1.0)
+    m_after_a = load_manifest(proj_dir)
+    assert m_after_a.chapters[0].tts_groups[0].status == ItemStatus.completed
+    assert m_after_a.chapters[0].tts_groups[0].audio.voice_name == voice_a
+    assert m_after_a.chapters[0].tts_groups[0].audio.audio_hash == hash_a
+
+
+def test_v6_local_provider_real_source_and_credits(tmp_path: Path):
+    """V6: Local files added to library work as real non-fake source with credits recorded."""
+    proj_dir = tmp_path / "v6_local_proj"
+    proj_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create local source media folder
+    media_folder = tmp_path / "user_footage"
+    media_folder.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (1920, 1080), color=(100, 150, 200)).save(media_folder / "nature_scene.jpg")
+
+    # Add to library
+    mgr = LocalLibraryManager(proj_dir)
+    mgr.add_from_folder(media_folder)
+
+    shot = Shot(
+        shot_id="ch01_shot001",
+        chapter_index=1,
+        shot_index=1,
+        duration_seconds=3.0,
+        target_frames=75,
+        visual_prompt="nature scene outdoors",
+        search_query="nature scene",
+    )
+    ch = Chapter(chapter_index=1, chapter_title="Ch1", shots=[shot])
+    manifest = ProjectManifest(project_id="v6_test", title="V6 Test", preset_id="documentary_en", preset_snapshot={}, chapters=[ch])
+    save_manifest(manifest, proj_dir)
+
+    service = VisualService(proj_dir)
+    manifest = service.fetch_all(manifest, provider_name="local")
+
+    updated_shot = manifest.chapters[0].shots[0]
+    # Must NOT be fake
+    assert updated_shot.is_fake is False
+    assert updated_shot.actual_source == "local"
+    assert updated_shot.asset_path is not None
+    assert (proj_dir / updated_shot.asset_path).is_file()
+
+    # Verify credits recorded for local asset
+    credits_file = proj_dir / "export" / "credits.txt"
+    assert credits_file.is_file()
+    credits_text = credits_file.read_text(encoding="utf-8")
+    assert "[LOCAL]" in credits_text
+    assert "Local User Library" in credits_text
