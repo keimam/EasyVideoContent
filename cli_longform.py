@@ -1558,6 +1558,69 @@ def cmd_render_subtitle_preview(args: argparse.Namespace) -> int:
         return 1
 
 
+def cmd_capcut_doctor(args: argparse.Namespace) -> int:
+    """Inspect CapCut Desktop installation, version, draft directory, and process status (6A.6)."""
+    from app.services.longform.capcut.detector import get_capcut_doctor_report
+
+    report = get_capcut_doctor_report()
+    print("\n" + "=" * 65)
+    print("           CAPCUT DESKTOP DIAGNOSTIC REPORT (DOCTOR)")
+    print("=" * 65)
+    print(f"  Installation Status: {'INSTALLED' if report['installed'] else 'NOT FOUND'}")
+    if report["installed"]:
+        print(f"  Installed Version:   {report['installed_version']} (Build {report['full_version']})")
+    print(f"  Template Version:    {report['template_version']}")
+    print(f"  Version Match:       {'YES (Verified Compatible)' if report['version_match'] else 'WARNING (Mismatch/Untested)'}")
+    print(f"  Process Running:     {'YES (CapCut.exe is active)' if report['is_running'] else 'NO (Closed)'}")
+    print(f"  Drafts Folder:       {report['draft_folder'] or 'None (Not Detected)'}")
+    if report.get("apps_dir"):
+        print(f"  Apps Directory:      {report['apps_dir']}")
+
+    if report["warnings"]:
+        print("-" * 65)
+        print("  WARNINGS / ADVISORIES:")
+        for w in report["warnings"]:
+            print(f"   [!] {w}")
+    print("=" * 65 + "\n")
+    return 0
+
+
+def cmd_capcut_smoke(args: argparse.Namespace) -> int:
+    """Generate a small smoke test draft (3 shots, trimmed audio, 2 subtitles) (6A.5)."""
+    from app.services.longform.capcut.service import build_smoke_draft
+
+    proj_dir = get_project_dir(args.project_id)
+    if not proj_dir.is_dir():
+        print(f"Error: Project directory not found: {proj_dir}", file=sys.stderr)
+        return 1
+
+    try:
+        print(f"\nBuilding CapCut smoke draft for project '{args.project_id}'...")
+        if args.install:
+            print("Mode: Export and Install directly into CapCut draft folder")
+        else:
+            print("Mode: Export to project directory (use --install to install to CapCut)")
+
+        result = build_smoke_draft(args.project_id, install=args.install)
+        print("\n" + "=" * 65)
+        print(f"SUCCESS: CapCut smoke draft created: {result['draft_name']}")
+        print("=" * 65)
+        print(f"  Export Path:     {result['export_path']}")
+        print(f"  Shots Count:     {result['shots_count']} video clips")
+        print(f"  Total Duration:  {result['total_duration_seconds']:.3f} s")
+        print(f"  Subtitles Count: {result['subtitles_count']} lines")
+        if result["installed"]:
+            print(f"  Installed Path:  {result['installed_path']}")
+            print("  Status:          Safely installed to CapCut drafts (other drafts untouched).")
+        else:
+            print("  Tip:             Run with --install to copy directly into CapCut draft folder.")
+        print("=" * 65 + "\n")
+        return 0
+    except Exception as exc:
+        print(f"Error creating CapCut smoke draft: {exc}", file=sys.stderr)
+        return 1
+
+
 def re_slugify(text: str) -> str:
     """Create a URL/folder-safe slug from title."""
     import re
@@ -1796,6 +1859,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_r_sub_prev.add_argument("--font-size", type=int, default=None, help="Temporary font size override (e.g. 64)")
     p_r_sub_prev.add_argument("--margin-v", type=int, default=None, help="Temporary vertical margin override (e.g. 80)")
 
+    # 9. capcut (Stage 6A)
+    p_capcut = subparsers.add_parser("capcut", help="CapCut Desktop draft export, diagnosis, and management")
+    capcut_subs = p_capcut.add_subparsers(dest="capcut_command", required=True)
+
+    # capcut doctor
+    capcut_subs.add_parser("doctor", help="Inspect CapCut installation, version, draft directory, and process status")
+
+    # capcut smoke <id> [--install]
+    p_c_smoke = capcut_subs.add_parser("smoke", help="Generate a small smoke test draft (3 shots, trimmed audio, 2 subtitles)")
+    p_c_smoke.add_argument("project_id", help="Project ID (e.g. uji_nokey)")
+    p_c_smoke.add_argument("--install", action="store_true", help="Install draft directly into CapCut draft folder (CapCut must be closed)")
+
     return parser
 
 
@@ -1888,6 +1963,11 @@ def main() -> int:
                 return cmd_render_final(args)
             elif args.render_command == "subtitle-preview":
                 return cmd_render_subtitle_preview(args)
+        elif args.command == "capcut":
+            if args.capcut_command == "doctor":
+                return cmd_capcut_doctor(args)
+            elif args.capcut_command == "smoke":
+                return cmd_capcut_smoke(args)
 
         parser.print_help()
         return 1

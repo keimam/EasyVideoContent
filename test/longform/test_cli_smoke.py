@@ -190,3 +190,13 @@ def test_cli_all_subcommands_smoke(temp_project_id: str):
     res = run_cli("project", "plan", p_id)
     assert res.returncode == 0, f"project plan completed failed: {res.stderr}"
     assert "Project is fully completed and up to date" in res.stdout
+
+    # 28. capcut doctor (Stage 6A)
+    res = run_cli("capcut", "doctor")
+    assert res.returncode == 0, f"capcut doctor failed: {res.stderr}"
+    assert "CAPCUT DESKTOP DIAGNOSTIC REPORT (DOCTOR)" in res.stdout
+
+    # 29. capcut smoke (Stage 6A)
+    res = run_cli("capcut", "smoke", p_id)
+    assert res.returncode == 0, f"capcut smoke failed: {res.stderr}"
+    assert "SUCCESS: CapCut smoke draft created:" in res.stdout
