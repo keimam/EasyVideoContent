@@ -80,6 +80,11 @@ class Preset(BaseModel):
     visual_keywords: List[str] = Field(default_factory=list)
     sensitivity_notes: str = ""
     recommended_visual_sources: dict[str, float] = Field(default_factory=dict)
+    required_subject_terms: List[str] = Field(default_factory=list)
+    blocked_terms: List[str] = Field(default_factory=list)
+    negative_terms: List[str] = Field(default_factory=list)
+    min_relevance_score: float = 0.35
+    stock_category: Optional[str] = None
 
     model_config = {"extra": "forbid"}
 
@@ -111,10 +116,56 @@ class VisualSpec(BaseModel):
     rendered_clip: Optional[str] = None
     visual_hash: Optional[str] = None
     search_keywords: Optional[str] = None
+    shot_id: Optional[str] = None
+    locked: bool = False
+    requested_source: Optional[str] = None
+    actual_source: Optional[str] = None
+    fallback_reason: Optional[str] = None
+    candidates: List[dict[str, Any]] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
 
     @field_validator("source_file", "rendered_clip")
+    @classmethod
+    def validate_relative_paths(cls, value: str | None, info) -> str | None:
+        return _assert_relative_path(value, info.field_name)
+
+
+class Shot(BaseModel):
+    """A visual shot unit (4.2), formed by 1 or more sentence segments."""
+
+    shot_id: str
+    chapter_index: int
+    shot_index: int
+    segment_indices: List[int] = Field(default_factory=list)
+    start_seconds: float = 0.0
+    end_seconds: float = 0.0
+    duration_seconds: float = 0.0
+    target_frames: int = 0
+    requested_source: str = "ai_image"
+    actual_source: str = "ai_image"
+    fallback_reason: Optional[str] = None
+    visual_prompt: str = ""
+    search_query: str = ""
+    motion: MotionType = MotionType.zoom_in
+    asset_path: Optional[str] = None
+    asset_content_hash: Optional[str] = None
+    rendered_clip: Optional[str] = None
+    shot_hash: Optional[str] = None
+    locked: bool = False
+    is_fake: bool = False
+    candidates: List[dict[str, Any]] = Field(default_factory=list)
+    tags: List[str] = Field(default_factory=list)
+    relevance_score: Optional[float] = None
+    needs_review: bool = False
+    chosen_rendition: Optional[str] = None
+    is_low_res: bool = False
+    effective_query: Optional[str] = None
+    status: ItemStatus = ItemStatus.pending
+
+    model_config = {"extra": "forbid"}
+
+    @field_validator("asset_path", "rendered_clip")
     @classmethod
     def validate_relative_paths(cls, value: str | None, info) -> str | None:
         return _assert_relative_path(value, info.field_name)
@@ -149,13 +200,16 @@ class AudioSpec(BaseModel):
     file_path: Optional[str] = None
     audio_hash: Optional[str] = None
     alignment_method: Optional[str] = None
+    word_match_ratio: Optional[float] = None
+    fallback_reason: Optional[str] = None
+    word_timings_file: Optional[str] = None
     sample_rate: int = 48000
     channels: int = 1
     audio_format: str = "wav_48k_pcm"
 
     model_config = {"extra": "forbid"}
 
-    @field_validator("file_path")
+    @field_validator("file_path", "word_timings_file")
     @classmethod
     def validate_relative_path(cls, value: str | None, info) -> str | None:
         return _assert_relative_path(value, info.field_name)
@@ -191,16 +245,22 @@ class Chapter(BaseModel):
     chapter_index: int
     chapter_title: str
     tts_groups: List[TtsGroup] = Field(default_factory=list)
+    shots: List[Shot] = Field(default_factory=list)
     output_file: Optional[str] = None
     chapter_hash: Optional[str] = None
     voice_override: Optional[str] = None
     audio_file: Optional[str] = None
     audio_duration_seconds: Optional[float] = None
+    visual_duration_seconds: Optional[float] = None
+    visual_frames: Optional[int] = None
+    preview_video_file: Optional[str] = None
+    min_word_match_ratio: Optional[float] = None
+    avg_word_match_ratio: Optional[float] = None
     status: ItemStatus = ItemStatus.pending
 
     model_config = {"extra": "forbid"}
 
-    @field_validator("output_file", "audio_file")
+    @field_validator("output_file", "audio_file", "preview_video_file")
     @classmethod
     def validate_relative_path(cls, value: str | None, info) -> str | None:
         return _assert_relative_path(value, info.field_name)

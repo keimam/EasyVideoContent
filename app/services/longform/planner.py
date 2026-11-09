@@ -18,6 +18,7 @@ from app.services.longform.hashing import (
     compute_visual_segment_hash,
 )
 from app.services.longform.schema import ItemStatus, ProjectManifest
+from app.services.longform.shot import compute_shot_hash
 
 
 @dataclass
@@ -153,6 +154,10 @@ def compute_plan(manifest: ProjectManifest, project_dir: str | Path) -> Executio
                 audio_status = ItemStatus.pending
                 reason = file_reason
                 ch_elements_ready = False
+            elif group.status == ItemStatus.stale:
+                audio_status = ItemStatus.stale
+                reason = "Audio group marked stale"
+                ch_elements_ready = False
             elif group.audio.audio_hash != expected_audio_hash:
                 audio_status = ItemStatus.stale
                 reason = f"Audio hash mismatch (manifest: {group.audio.audio_hash}, expected: {expected_audio_hash})"
@@ -175,41 +180,88 @@ def compute_plan(manifest: ProjectManifest, project_dir: str | Path) -> Executio
                 )
             )
 
-            # Check segments inside this group
-            for seg in group.segments:
-                s_idx = seg.segment_index
-                target_clip = seg.visual.rendered_clip or f"assets/visual/clips/ch{ch_idx}_s{s_idx}.mp4"
-                expected_visual_hash = compute_visual_segment_hash(
-                    source_content_hash=seg.visual.source_content_hash or "",
-                    motion=seg.visual.motion.value,
-                    duration=seg.duration_seconds or 5.0,
+            # Check visual units: If ch.shots are defined, use visual_shot; else fallback to legacy segment units
+            if not ch.shots:
+                for seg in group.segments:
+                    s_idx = seg.segment_index
+                    target_clip = seg.visual.rendered_clip or f"assets/visual/clips/ch{ch_idx}_s{s_idx}.mp4"
+                    expected_visual_hash = compute_visual_segment_hash(
+                        source_content_hash=seg.visual.source_content_hash or "",
+                        motion=seg.visual.motion.value,
+                        duration=seg.duration_seconds or 5.0,
+                    )
+
+                    clip_ok, clip_reason = _check_file_validity(p_dir, target_clip)
+                    if not clip_ok:
+                        visual_status = ItemStatus.pending
+                        reason = clip_reason
+                        ch_elements_ready = False
+                    elif seg.visual.visual_hash != expected_visual_hash:
+                        visual_status = ItemStatus.stale
+                        reason = f"Visual hash mismatch (manifest: {seg.visual.visual_hash}, expected: {expected_visual_hash})"
+                        ch_elements_ready = False
+                    else:
+                        visual_status = ItemStatus.completed
+                        reason = "Visual clip exists and hash is valid"
+
+                    units.append(
+                        WorkUnit(
+                            unit_id=f"ch{ch_idx}_s{s_idx}_visual",
+                            unit_type="visual_segment",
+                            chapter_index=ch_idx,
+                            group_index=g_idx,
+                            segment_index=s_idx,
+                            status=visual_status,
+                            reason=reason,
+                            target_file=target_clip,
+                            expected_hash=expected_visual_hash,
+                            current_hash=seg.visual.visual_hash,
+                        )
+                    )
+
+        # If chapter has shots formed, check each visual_shot work unit
+        if ch.shots:
+            fps = int(round(getattr(getattr(manifest, "encoder_settings", None), "fps", 25) or 25))
+            for shot in ch.shots:
+                target_clip = shot.rendered_clip or f"assets/visual/shots/{shot.shot_id}.mp4"
+                expected_shot_hash = compute_shot_hash(
+                    shot_id=shot.shot_id,
+                    duration_seconds=shot.duration_seconds,
+                    target_frames=shot.target_frames,
+                    motion=shot.motion.value,
+                    asset_content_hash=shot.asset_content_hash,
+                    fps=fps,
+                    requested_provider=shot.requested_source or "",
+                    actual_provider=shot.actual_source or "",
                 )
 
                 clip_ok, clip_reason = _check_file_validity(p_dir, target_clip)
                 if not clip_ok:
-                    visual_status = ItemStatus.pending
+                    shot_status = ItemStatus.pending
                     reason = clip_reason
                     ch_elements_ready = False
-                elif seg.visual.visual_hash != expected_visual_hash:
-                    visual_status = ItemStatus.stale
-                    reason = f"Visual hash mismatch (manifest: {seg.visual.visual_hash}, expected: {expected_visual_hash})"
+                elif shot.status == ItemStatus.stale:
+                    shot_status = ItemStatus.stale
+                    reason = "Visual shot marked stale"
+                    ch_elements_ready = False
+                elif shot.shot_hash != expected_shot_hash:
+                    shot_status = ItemStatus.stale
+                    reason = f"Shot hash mismatch (manifest: {shot.shot_hash}, expected: {expected_shot_hash})"
                     ch_elements_ready = False
                 else:
-                    visual_status = ItemStatus.completed
-                    reason = "Visual clip exists and hash is valid"
+                    shot_status = ItemStatus.completed
+                    reason = "Shot clip exists and hash is valid"
 
                 units.append(
                     WorkUnit(
-                        unit_id=f"ch{ch_idx}_s{s_idx}_visual",
-                        unit_type="visual_segment",
+                        unit_id=shot.shot_id,
+                        unit_type="visual_shot",
                         chapter_index=ch_idx,
-                        group_index=g_idx,
-                        segment_index=s_idx,
-                        status=visual_status,
+                        status=shot_status,
                         reason=reason,
                         target_file=target_clip,
-                        expected_hash=expected_visual_hash,
-                        current_hash=seg.visual.visual_hash,
+                        expected_hash=expected_shot_hash,
+                        current_hash=shot.shot_hash,
                     )
                 )
 

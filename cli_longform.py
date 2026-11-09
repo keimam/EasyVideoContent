@@ -628,7 +628,7 @@ def cmd_audio_synth(args: argparse.Namespace) -> int:
 
 
 def cmd_audio_status(args: argparse.Namespace) -> int:
-    """Show detailed audio group completion and alignment method diagnostics (3.7)."""
+    """Show detailed audio group completion and alignment method diagnostics (3.7, R2)."""
     project_dir = get_project_dir(args.project_id)
     if not project_dir.is_dir():
         print(f"Error: Project '{args.project_id}' not found at {project_dir}", file=sys.stderr)
@@ -644,6 +644,7 @@ def cmd_audio_status(args: argparse.Namespace) -> int:
     print(f"  Total Groups:       {status['total_groups']}")
     print(f"  Completed Groups:   {status['completed_groups']}/{status['total_groups']}")
     print(f"  Total Duration:     {status['total_duration_seconds']:.1f} seconds ({status['total_duration_seconds']/60:.1f} minutes)")
+    print(f"  Word Match Ratio:   min={status.get('word_match_min', 0.0):.1%}, avg={status.get('word_match_avg', 0.0):.1%}")
     m_counts = status['alignment_method_counts']
     print(f"  Alignment Methods:  word_cue={m_counts.get('word_cue', 0)}, whisper={m_counts.get('whisper', 0)}, proportional={m_counts.get('proportional', 0)}")
     print("  Chapters:")
@@ -651,7 +652,7 @@ def cmd_audio_status(args: argparse.Namespace) -> int:
         for ch in status["chapters"]:
             ch_methods = ", ".join(f"{k}:{v}" for k, v in ch["alignment_methods"].items() if v > 0) or "none"
             print(f"    - Ch {ch['chapter_index']}: {ch['chapter_title']}")
-            print(f"      Groups: {ch['completed_groups']}/{ch['total_groups']} | Duration: {ch['duration_seconds']:.1f}s | Alignments: [{ch_methods}]")
+            print(f"      Groups: {ch['completed_groups']}/{ch['total_groups']} | Duration: {ch['duration_seconds']:.1f}s | Match: min={ch.get('word_match_min', 0.0):.1%}, avg={ch.get('word_match_avg', 0.0):.1%} | Alignments: [{ch_methods}]")
     else:
         print("    No chapters found.")
     print("=" * 65 + "\n")
@@ -659,7 +660,7 @@ def cmd_audio_status(args: argparse.Namespace) -> int:
 
 
 def cmd_audio_preview(args: argparse.Namespace) -> int:
-    """Generate chapter_NN_preview.wav and chapter_NN_preview.srt in export/preview/ (3.6)."""
+    """Generate chapter_NN_preview.wav, .srt, and .mp4 with burned subtitles in export/preview/ (3.6, R1)."""
     project_dir = get_project_dir(args.project_id)
     if not project_dir.is_dir():
         print(f"Error: Project '{args.project_id}' not found at {project_dir}", file=sys.stderr)
@@ -668,7 +669,12 @@ def cmd_audio_preview(args: argparse.Namespace) -> int:
     from app.services.longform.voice_service import VoiceService
     service = VoiceService(project_dir=project_dir)
     try:
-        wav_path, srt_path = service.generate_preview(chapter_index=args.chapter)
+        preview_res = service.generate_preview(chapter_index=args.chapter)
+        if isinstance(preview_res, (list, tuple)) and len(preview_res) >= 3:
+            wav_path, srt_path, mp4_path = preview_res[0], preview_res[1], preview_res[2]
+        else:
+            wav_path, srt_path = preview_res[0], preview_res[1]
+            mp4_path = None
     except Exception as exc:
         print(f"Error generating preview: {exc}", file=sys.stderr)
         return 1
@@ -677,8 +683,10 @@ def cmd_audio_preview(args: argparse.Namespace) -> int:
     print("-" * 65)
     print(f"  Preview WAV:  {wav_path}")
     print(f"  Preview SRT:  {srt_path}")
+    if mp4_path:
+        print(f"  Preview MP4:  {mp4_path}")
     print("-" * 65)
-    print("Open the WAV audio along with the SRT subtitle file in VLC to verify start, middle, and end sync.\n")
+    print("Open the MP4 or WAV along with the SRT subtitle file to verify audio and subtitle sync.\n")
     return 0
 
 
@@ -702,13 +710,21 @@ def cmd_project_set_voice(args: argparse.Namespace) -> int:
         print(f"Error setting voice: {exc}", file=sys.stderr)
         return 1
 
+    from app.services.longform.schema import ItemStatus
+    total_groups = sum(len(c.tts_groups) for c in manifest.chapters)
+    stale_groups = sum(sum(1 for g in c.tts_groups if g.status == ItemStatus.stale) for c in manifest.chapters)
+    valid_groups = total_groups - stale_groups
+
     print(f"\nNarrator Voice Updated for Project: {args.project_id}")
     print("-" * 65)
     print(f"  New Voice:   {voice_name}")
     print(f"  Speech Rate: {args.rate}")
-    print("  Note: All existing audio groups and chapter renders have been marked STALE.")
+    print(f"  Summary:     {stale_groups} stale, {valid_groups} retained valid (out of {total_groups} total audio groups)")
     print("-" * 65)
-    print(f"Run 'python cli_longform.py audio synth {args.project_id}' to synthesize audio with the new voice.\n")
+    if stale_groups > 0:
+        print(f"Run 'python cli_longform.py audio synth {args.project_id}' to synthesize audio with the new voice.\n")
+    else:
+        print("All audio groups are already up-to-date with this voice. No re-synthesis needed.\n")
     return 0
 
 
@@ -759,6 +775,539 @@ def cmd_voice_test(args: argparse.Namespace) -> int:
         if tmp_mp3.exists():
             tmp_mp3.unlink(missing_ok=True)
     return 0
+
+
+# ---------------------------------------------------------------------------
+# Visual Commands (Stage 4)
+# ---------------------------------------------------------------------------
+
+def cmd_visual_fetch(args: argparse.Namespace) -> int:
+    """Acquire visual assets for project shots (4.1, 4.5, V1).
+
+    V1 fixes:
+    - No --provider defaults to real provider (pixabay → pexels → ai_image), never fake.
+    - Fake assets from previous run are stale when real provider requested.
+    - Fail-fast with clear key/config guidance if credentials missing.
+    - '--provider fake' remains valid for explicit keyless offline testing.
+    """
+    from app.services.longform.visual.base import VisualConfigurationError, VisualError
+    from app.services.longform.visual.service import VisualService
+
+    proj_dir = get_project_dir(args.project_id)
+    if not proj_dir.is_dir():
+        print(f"Error: Project '{args.project_id}' not found at {proj_dir}", file=sys.stderr)
+        return 1
+
+    try:
+        with ProjectLock(proj_dir):
+            manifest = load_manifest(proj_dir)
+            service = VisualService(proj_dir)
+
+            # V1: resolve the effective provider before display so user sees what will be used
+            if args.provider:
+                effective_prov_display = args.provider
+            else:
+                effective_prov_display = service._resolve_default_provider(manifest)
+
+            print(f"\n[Visual Fetch] Project: {args.project_id} | Provider: {effective_prov_display} | Fallback Allowed: {args.allow_fallback}")
+            if not args.provider:
+                print(f"  (No --provider specified; resolved default: '{effective_prov_display}')")
+            print("-" * 70)
+
+            manifest = service.fetch_all(
+                manifest=manifest,
+                provider_name=args.provider,
+                allow_fallback=args.allow_fallback,
+            )
+            save_manifest(manifest, proj_dir)
+
+            # Summarize fetched assets
+            total_shots = sum(len(ch.shots) for ch in manifest.chapters)
+            fake_count = sum(1 for ch in manifest.chapters for s in ch.shots if s.is_fake)
+            real_count = total_shots - fake_count
+            print("-" * 70)
+            print(f"SUCCESS: Visual assets acquired for {total_shots} shots (Real: {real_count}, Fake: {fake_count})")
+            if fake_count > 0:
+                print("Notice: [FAKE] visual assets were generated for offline development/testing.")
+                print("        To use real assets: run 'visual fetch <id> --provider pixabay' (or pexels/local/ai_image).")
+            return 0
+
+    except VisualConfigurationError as conf_err:
+        print(f"\nCONFIGURATION ERROR: {conf_err}", file=sys.stderr)
+        return 1
+    except ProjectLockedError:
+        print(f"Error: Project '{args.project_id}' is locked by another process.", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("\n[VISUAL FETCH INTERRUPTED] KeyboardInterrupt received. Fetched assets up to this point are preserved.\n", file=sys.stderr)
+        return 130
+    except Exception as exc:
+        print(f"Error during visual fetch: {exc}", file=sys.stderr)
+        return 1
+
+
+def cmd_visual_build(args: argparse.Namespace) -> int:
+    """Render shot clips with uniform encoding parameters (4.3, 4.5, V4)."""
+    from app.services.longform.visual.service import VisualService
+
+    proj_dir = get_project_dir(args.project_id)
+    if not proj_dir.is_dir():
+        print(f"Error: Project '{args.project_id}' not found at {proj_dir}", file=sys.stderr)
+        return 1
+
+    try:
+        with ProjectLock(proj_dir):
+            manifest = load_manifest(proj_dir)
+            service = VisualService(proj_dir)
+
+            print(f"\n[Visual Build] Rendering shot clips for project '{args.project_id}'...")
+            print("-" * 70)
+            t0 = time.perf_counter()
+            manifest, stats = service.build_all(manifest)
+            save_manifest(manifest, proj_dir)
+            elapsed = time.perf_counter() - t0
+
+            print("-" * 70)
+            print(f"SUCCESS: Shot clips built: {stats['built_count']} | Skipped: {stats['skipped_count']}")
+            print(f"Total Time: {elapsed:.2f}s | Average Speed: {stats['average_seconds_per_clip']:.2f}s/clip\n")
+            return 0
+
+    except ProjectLockedError:
+        print(f"Error: Project '{args.project_id}' is locked by another process.", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("\n[VISUAL BUILD INTERRUPTED] KeyboardInterrupt received. Completed clips are saved; partial clip discarded.\n", file=sys.stderr)
+        return 130
+    except Exception as exc:
+        print(f"Error during visual build: {exc}", file=sys.stderr)
+        return 1
+
+
+def cmd_visual_status(args: argparse.Namespace) -> int:
+    """Show detailed visual status and frame drift analysis (4.5, V2).
+
+    V2: Drift is computed from actual nb_frames read from each clip via ffprobe,
+    not from manifest target_frames. Falls back to manifest if probing fails.
+    Explicitly notes whether frames are from actual files or manifest estimate.
+    """
+    from app.services.longform.visual.service import VisualService
+
+    proj_dir = get_project_dir(args.project_id)
+    if not proj_dir.is_dir():
+        print(f"Error: Project '{args.project_id}' not found at {proj_dir}", file=sys.stderr)
+        return 1
+
+    manifest = load_manifest(proj_dir)
+    fps = getattr(getattr(manifest, "encoder_settings", None), "fps", 25) or 25
+    service = VisualService(proj_dir)
+
+    print(f"\nVisual Status for Project: {manifest.project_id} ({manifest.title})")
+    print("=" * 96)
+    print(f"{'Ch':<4} {'Shots':<7} {'Done':<6} {'Pend':<6} {'Stale':<6} {'Review':<7} {'VisDur':<10} {'AudDur':<10} {'Frames(actual)':<16} {'Drift'}")
+    print("-" * 96)
+
+    total_shots = 0
+    total_completed = 0
+    total_pending = 0
+    total_stale = 0
+    total_review = 0
+    total_frames = 0
+    total_fake = 0
+    any_probed = False
+
+    for ch in manifest.chapters:
+        num_shots = len(ch.shots)
+        c_done = sum(1 for s in ch.shots if s.status == ItemStatus.completed)
+        c_pend = sum(1 for s in ch.shots if s.status == ItemStatus.pending)
+        c_stale = sum(1 for s in ch.shots if s.status == ItemStatus.stale)
+        c_review = sum(1 for s in ch.shots if getattr(s, "needs_review", False))
+        c_fake = sum(1 for s in ch.shots if s.is_fake)
+        v_dur = ch.visual_duration_seconds or 0.0
+        a_dur = ch.audio_duration_seconds or 0.0
+
+        # V2: Try to read actual frame count from clip files
+        actual_frames = service.get_chapter_actual_frames(ch) if c_done > 0 else None
+        if actual_frames is not None:
+            ch_frames = actual_frames
+            frame_source = "ffprobe"
+            any_probed = True
+        else:
+            ch_frames = sum(s.target_frames for s in ch.shots)
+            frame_source = "manifest"
+
+        expected_frames = int(round(a_dur * fps)) if a_dur > 0 else 0
+        drift_frames = (ch_frames - expected_frames) if a_dur > 0 else 0
+        drift_str = f"{drift_frames:+d}f" if a_dur > 0 else "N/A"
+
+        total_shots += num_shots
+        total_completed += c_done
+        total_pending += c_pend
+        total_stale += c_stale
+        total_review += c_review
+        total_frames += ch_frames
+        total_fake += c_fake
+
+        frame_display = f"{ch_frames} ({frame_source})"
+        print(
+            f"{ch.chapter_index:<4} {num_shots:<7} {c_done:<6} {c_pend:<6} {c_stale:<6} {c_review:<7} "
+            f"{v_dur:>7.2f}s   {a_dur:>7.2f}s   {frame_display:<16} {drift_str}"
+        )
+
+    print("-" * 96)
+    print(
+        f"TOTAL: {total_shots} shots ({total_completed} done, {total_pending} pending, {total_stale} stale, {total_review} needs_review) "
+        f"| Frames: {total_frames} | Synthetic Fake: {total_fake}"
+    )
+    if any_probed:
+        print("Note: Frames column reads actual nb_frames from clip files via ffprobe.")
+    else:
+        print("Note: Frames column uses manifest target_frames (run 'visual build' to enable ffprobe counts).")
+    if total_fake > 0:
+        print("Note: [FAKE] watermark badges are embedded in synthetic test clips.")
+    if total_review > 0:
+        print(f"Warning: {total_review} shot(s) marked 'needs_review'. Run 'python cli_longform.py visual review {args.project_id}' to inspect.")
+
+    # V2: Explain the gap between visual_duration_seconds and audio_duration_seconds
+    gap_note_shown = False
+    for ch in manifest.chapters:
+        a_dur = ch.audio_duration_seconds or 0.0
+        v_dur = ch.visual_duration_seconds or 0.0
+        if a_dur > 0 and abs(a_dur - v_dur) > 0.1:
+            if not gap_note_shown:
+                print()
+                print("Note on duration gap: visual_duration_seconds sums shot durations (segment boundaries only).")
+                print("  Inter-group pauses are part of the chapter WAV but not counted in shot durations.")
+                print("  The frame count (from ffprobe/manifest) accounts for the full audio length via carry-over.")
+                gap_note_shown = True
+
+    print("=" * 96 + "\n")
+    return 0
+
+
+def cmd_visual_review(args: argparse.Namespace) -> int:
+    """List shots marked needs_review with alternative candidate options (S1)."""
+    proj_dir = get_project_dir(args.project_id)
+    if not proj_dir.is_dir():
+        print(f"Error: Project '{args.project_id}' not found at {proj_dir}", file=sys.stderr)
+        return 1
+
+    manifest = load_manifest(proj_dir)
+    target_ch = getattr(args, "chapter", None)
+
+    review_shots = []
+    for ch in manifest.chapters:
+        if target_ch is not None and ch.chapter_index != target_ch:
+            continue
+        for s in ch.shots:
+            if getattr(s, "needs_review", False) or getattr(args, "all", False):
+                review_shots.append((ch, s))
+
+    if not review_shots:
+        all_flag_msg = "" if getattr(args, "all", False) else " (use --all to inspect all shots)"
+        print(f"\nNo shots in project '{manifest.project_id}' require review{all_flag_msg}.\n")
+        return 0
+
+    print(f"\nVisual Review for Project: {manifest.project_id} ({len(review_shots)} shots)")
+    print("=" * 88)
+
+    for ch, shot in review_shots:
+        status_badge = "[NEEDS REVIEW]" if getattr(shot, "needs_review", False) else f"[{shot.status.value.upper()}]"
+        print(f"\nShot: {shot.shot_id} (Chapter {ch.chapter_index}: {ch.chapter_title}) {status_badge}")
+        print(f"  Duration:     {shot.duration_seconds:.2f}s ({shot.target_frames} frames at 25 fps)")
+        print(f"  Visual Prompt:{shot.visual_prompt}")
+        print(f"  Search Query: {shot.search_query}")
+        print(f"  Source:       requested={shot.requested_source}, actual={shot.actual_source}")
+        if shot.fallback_reason:
+            print(f"  Reason:       {shot.fallback_reason}")
+
+        print("  Candidate Options:")
+        if not shot.candidates:
+            print("    (No candidates recorded. Run 'visual fetch' with --allow-fallback or add local assets.)")
+        else:
+            for idx, cand in enumerate(shot.candidates):
+                c_id = cand.get("candidate_id", "unknown")
+                c_prov = cand.get("provider", "unknown")
+                c_score = cand.get("relevance_score", 0.0)
+                c_rend = cand.get("rendition_name", "standard")
+                c_tags = cand.get("tags", [])
+                tag_preview = ", ".join(c_tags[:5]) if c_tags else "none"
+                print(f"    [{idx}] {c_prov.upper()} ID={c_id} | score: {c_score:.2f} | rend: {c_rend}")
+                print(f"        tags: [{tag_preview}]")
+
+        print("  Resolution Commands:")
+        print(f"    - Replace with candidate: python cli_longform.py visual replace {manifest.project_id} --shot {shot.shot_id} --candidate <index>")
+        print(f"    - Replace with custom query: python cli_longform.py visual replace {manifest.project_id} --shot {shot.shot_id} --prompt \"<search_query>\"")
+        print(f"    - Replace with local file:   python cli_longform.py visual replace {manifest.project_id} --shot {shot.shot_id} --file <path/to/media.mp4>")
+
+    print("\n" + "=" * 88 + "\n")
+    return 0
+
+
+def cmd_cache_status(args: argparse.Namespace) -> int:
+    """Show global media cache size, file counts, and protected locked assets (S2)."""
+    import datetime
+    from app.services.longform.visual.cache import get_cache_status
+
+    status = get_cache_status()
+
+    def fmt_ts(ts):
+        if not ts:
+            return "N/A"
+        return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+
+    print(f"\nGlobal Media Cache Status ({status['cache_dir']}):")
+    print("=" * 65)
+    print(f"  Total Files:      {status['total_files']} files")
+    print(f"  Total Size:       {status['total_mb']:.2f} MB ({status['total_gb']:.3f} GB)")
+    print(f"  Configured Limit: {status['max_size_gb']:.1f} GB (from config/longform.toml)")
+    print(f"  Default Age Limit:{status['max_age_days']} days")
+    print(f"  Locked/Protected: {status['locked_files_count']} files (referenced by locked shots)")
+    print(f"  Oldest Access:    {fmt_ts(status['oldest_timestamp'])}")
+    print(f"  Newest Access:    {fmt_ts(status['newest_timestamp'])}")
+    print("=" * 65 + "\n")
+    return 0
+
+
+def cmd_cache_prune(args: argparse.Namespace) -> int:
+    """Prune global media cache using age limits and LRU order, protecting locked assets (S2)."""
+    from app.services.longform.visual.cache import prune_cache
+
+    older_than_days = None
+    if getattr(args, "older_than", None):
+        raw_age = str(args.older_than).strip().lower()
+        if raw_age.endswith("d"):
+            older_than_days = float(raw_age[:-1])
+        elif raw_age.endswith("h"):
+            older_than_days = float(raw_age[:-1]) / 24.0
+        else:
+            older_than_days = float(raw_age)
+
+    max_size_bytes = None
+    if getattr(args, "max_size", None):
+        raw_size = str(args.max_size).strip().upper()
+        if raw_size.endswith("GB") or raw_size.endswith("G"):
+            val = float(raw_size.rstrip("GB").rstrip("G"))
+            max_size_bytes = int(val * (1024 ** 3))
+        elif raw_size.endswith("MB") or raw_size.endswith("M"):
+            val = float(raw_size.rstrip("MB").rstrip("M"))
+            max_size_bytes = int(val * (1024 * 1024))
+        else:
+            max_size_bytes = int(float(raw_size) * (1024 ** 3))
+
+    print("\nPruning Global Media Cache...")
+    if older_than_days:
+        print(f"  Age Filter:  older than {older_than_days:.1f} days")
+    if max_size_bytes:
+        print(f"  Size Target: <= {max_size_bytes / (1024**3):.2f} GB")
+
+    res = prune_cache(max_size_bytes=max_size_bytes, older_than_days=older_than_days)
+    print("-" * 65)
+    print(f"  Files Removed:        {res['files_removed']}")
+    print(f"  Storage Freed:        {res['mb_freed']:.2f} MB")
+    print(f"  Files Remaining:      {res['files_remaining']}")
+    print(f"  Remaining Cache Size: {res['total_size_mb']:.2f} MB")
+    print(f"  Locked Files Skipped: {res['locked_files_skipped']} (protected)")
+    print("-" * 65 + "\n")
+    return 0
+
+
+def cmd_visual_library_add(args: argparse.Namespace) -> int:
+    """Add external folder assets into local media library (4.1, 4.5)."""
+    from app.services.longform.visual.local import LocalLibraryManager
+
+    proj_dir = get_project_dir(args.project_id)
+    if not proj_dir.is_dir():
+        print(f"Error: Project '{args.project_id}' not found at {proj_dir}", file=sys.stderr)
+        return 1
+
+    try:
+        with ProjectLock(proj_dir):
+            mgr = LocalLibraryManager(proj_dir)
+            print(f"\nAdding media from '{args.folder}' into project library...")
+            added = mgr.add_from_folder(args.folder)
+            print(f"SUCCESS: Copied {len(added)} files into assets/visual/library/ (Rule K7 compliant):")
+            for item in added:
+                print(f"  - {item['filename']} [{item['asset_type']}] ({item['size_bytes']} bytes, sha256: {item['content_hash'][:8]}...)")
+            print()
+            return 0
+    except Exception as exc:
+        print(f"Error adding to visual library: {exc}", file=sys.stderr)
+        return 1
+
+
+def cmd_visual_contact_sheet(args: argparse.Namespace) -> int:
+    """Generate visual contact sheet image (4.4, 4.5, V4)."""
+    from app.services.longform.visual.contact_sheet import generate_chapter_contact_sheet
+
+    proj_dir = get_project_dir(args.project_id)
+    if not proj_dir.is_dir():
+        print(f"Error: Project '{args.project_id}' not found at {proj_dir}", file=sys.stderr)
+        return 1
+
+    manifest = load_manifest(proj_dir)
+    ch = next((c for c in manifest.chapters if c.chapter_index == args.chapter), None)
+    if not ch:
+        print(f"Error: Chapter {args.chapter} not found in project.", file=sys.stderr)
+        return 1
+
+    try:
+        print(f"\nGenerating contact sheet for Chapter {args.chapter}...")
+        out_img = generate_chapter_contact_sheet(
+            chapter=ch,
+            project_dir=proj_dir,
+            columns=args.columns,
+        )
+        print(f"SUCCESS: Contact sheet saved to: {out_img}\n")
+        return 0
+    except KeyboardInterrupt:
+        print("\n[CONTACT SHEET INTERRUPTED] KeyboardInterrupt received.\n", file=sys.stderr)
+        return 130
+    except Exception as exc:
+        print(f"Error generating contact sheet: {exc}", file=sys.stderr)
+        return 1
+
+
+def cmd_visual_preview(args: argparse.Namespace) -> int:
+    """Concatenate chapter shot clips with chapter audio into preview MP4 (4.4, 4.5, V4)."""
+    from app.services.longform.visual.service import VisualService
+
+    proj_dir = get_project_dir(args.project_id)
+    if not proj_dir.is_dir():
+        print(f"Error: Project '{args.project_id}' not found at {proj_dir}", file=sys.stderr)
+        return 1
+
+    manifest = load_manifest(proj_dir)
+    service = VisualService(proj_dir)
+
+    try:
+        print(f"\nGenerating visual preview for Chapter {args.chapter}...")
+        out_mp4 = service.generate_preview(manifest, args.chapter)
+        print(f"SUCCESS: Chapter visual preview created at: {out_mp4}\n")
+        return 0
+    except KeyboardInterrupt:
+        print("\n[VISUAL PREVIEW INTERRUPTED] KeyboardInterrupt received. Partial file removed.\n", file=sys.stderr)
+        return 130
+    except Exception as exc:
+        print(f"Error generating visual preview: {exc}", file=sys.stderr)
+        return 1
+
+
+def cmd_visual_replace(args: argparse.Namespace) -> int:
+    """Replace asset for a specific shot (4.4, 4.5, T4)."""
+    from app.services.longform.visual.service import VisualService
+
+    proj_dir = get_project_dir(args.project_id)
+    if not proj_dir.is_dir():
+        print(f"Error: Project '{args.project_id}' not found at {proj_dir}", file=sys.stderr)
+        return 1
+
+    shot_id = args.shot or getattr(args, "opt_shot", None)
+    if not shot_id:
+        print("Error: Must specify shot ID (e.g. python cli_longform.py visual replace <project_id> <shot_id>)", file=sys.stderr)
+        return 1
+
+    search_query = getattr(args, "search", None) or getattr(args, "prompt", None)
+
+    try:
+        with ProjectLock(proj_dir):
+            manifest = load_manifest(proj_dir)
+            service = VisualService(proj_dir)
+
+            # If --list, or (no candidate and no file): show candidate options + preview grid (T4)
+            if getattr(args, "list_candidates", False) or (args.candidate is None and not args.file):
+                cands, grid_path = service.search_and_preview_candidates(
+                    manifest=manifest,
+                    shot_id=shot_id,
+                    search_query=search_query,
+                    provider_name=args.provider,
+                    limit=5,
+                )
+                save_manifest(manifest, proj_dir)
+
+                header_label = f"Search Results for Shot '{shot_id}' with query '{search_query}':" if search_query else f"Top {len(cands)} Candidates for Shot '{shot_id}':"
+                print(f"\n[Visual Replace] {header_label}")
+                print("-" * 75)
+                for i, c in enumerate(cands, 1):
+                    score_str = f"Score: {c.relevance_score:.2f}"
+                    low_res_str = " [LOW RES]" if c.is_low_res else ""
+                    tags_str = ", ".join(c.tags[:6])
+                    print(f"  [{i}] ID: {c.candidate_id} | {score_str}{low_res_str} | Res: {c.width}x{c.height}")
+                    print(f"      Tags: {tags_str}")
+                print("-" * 75)
+                print(f"Temporary candidate preview grid: {grid_path}")
+                print(f"To select a candidate, run:")
+                print(f"  python cli_longform.py visual replace {args.project_id} {shot_id} --candidate <N>")
+                if not search_query:
+                    print(f"To search with custom keywords, run:")
+                    print(f"  python cli_longform.py visual replace {args.project_id} {shot_id} --search \"<query>\" [--list]\n")
+                else:
+                    print()
+                return 0
+
+            # Execute replacement with candidate or file (T4 auto-lock & auto-rebuild)
+            shot = service.replace_shot(
+                manifest=manifest,
+                shot_id=shot_id,
+                file_path=args.file,
+                candidate_index=args.candidate,
+                provider_name=args.provider,
+                prompt=search_query,
+                rebuild=True,
+            )
+            save_manifest(manifest, proj_dir)
+            print(f"\nSUCCESS: Shot '{shot_id}' asset replaced, locked, and re-built.")
+            print(f"Clips built: 1")
+            print(f"New asset path: {shot.asset_path}")
+            print(f"Rendered clip:  {shot.rendered_clip}")
+            print(f"Source: {shot.actual_source} | Status: {shot.status.value} | Locked: {shot.locked}\n")
+            return 0
+    except Exception as exc:
+        print(f"Error replacing shot: {exc}", file=sys.stderr)
+        return 1
+
+
+def cmd_visual_lock(args: argparse.Namespace) -> int:
+    """Lock shot against automated re-fetch (4.4, 4.5)."""
+    from app.services.longform.visual.service import VisualService
+
+    proj_dir = get_project_dir(args.project_id)
+    if not proj_dir.is_dir():
+        print(f"Error: Project '{args.project_id}' not found at {proj_dir}", file=sys.stderr)
+        return 1
+
+    try:
+        with ProjectLock(proj_dir):
+            manifest = load_manifest(proj_dir)
+            service = VisualService(proj_dir)
+            shot = service.set_lock(manifest, args.shot, locked=True)
+            save_manifest(manifest, proj_dir)
+            print(f"\nSUCCESS: Shot '{shot.shot_id}' is now LOCKED [protected from re-fetch].\n")
+            return 0
+    except Exception as exc:
+        print(f"Error locking shot: {exc}", file=sys.stderr)
+        return 1
+
+
+def cmd_visual_unlock(args: argparse.Namespace) -> int:
+    """Unlock shot to allow automated re-fetch (4.4, 4.5)."""
+    from app.services.longform.visual.service import VisualService
+
+    proj_dir = get_project_dir(args.project_id)
+    if not proj_dir.is_dir():
+        print(f"Error: Project '{args.project_id}' not found at {proj_dir}", file=sys.stderr)
+        return 1
+
+    try:
+        with ProjectLock(proj_dir):
+            manifest = load_manifest(proj_dir)
+            service = VisualService(proj_dir)
+            shot = service.set_lock(manifest, args.shot, locked=False)
+            save_manifest(manifest, proj_dir)
+            print(f"\nSUCCESS: Shot '{shot.shot_id}' is now UNLOCKED.\n")
+            return 0
+    except Exception as exc:
+        print(f"Error unlocking shot: {exc}", file=sys.stderr)
+        return 1
 
 
 def re_slugify(text: str) -> str:
@@ -890,57 +1439,172 @@ def build_parser() -> argparse.ArgumentParser:
     p_v_test.add_argument("--voice", required=True, help="Voice name to test")
     p_v_test.add_argument("--text", default="Hello! This is a test of Edge TTS voice synthesis for long video production.", help="Sample phrase to speak")
 
+    # 6. visual (Stage 4)
+    p_visual = subparsers.add_parser("visual", help="Manage visual assets, stock footage, AI images, Ken Burns clips, and inspection")
+    visual_subs = p_visual.add_subparsers(dest="visual_command", required=True)
+
+    # visual fetch
+    p_v_fetch = visual_subs.add_parser("fetch", help="Search and acquire visual assets (stock, AI, local, fake)")
+    p_v_fetch.add_argument("project_id", help="Project ID")
+    p_v_fetch.add_argument("--provider", default=None, help="Visual provider ('fake', 'pexels', 'pixabay', 'ai_image', 'local')")
+    p_v_fetch.add_argument("--allow-fallback", action="store_true", help="Allow fallback to fake provider if credentials missing")
+
+    # visual build
+    p_v_build = visual_subs.add_parser("build", help="Render shot clips (Ken Burns or trimmed stock video) with uniform parameters")
+    p_v_build.add_argument("project_id", help="Project ID")
+
+    # visual status
+    p_v_status = visual_subs.add_parser("status", help="Show visual asset acquisition and render status across all chapters")
+    p_v_status.add_argument("project_id", help="Project ID")
+
+    # visual library
+    p_v_lib = visual_subs.add_parser("library", help="Local media library operations")
+    lib_subs = p_v_lib.add_subparsers(dest="library_command", required=True)
+    p_lib_add = lib_subs.add_parser("add", help="Add external media folder to project local library (Rule K7)")
+    p_lib_add.add_argument("project_id", help="Project ID")
+    p_lib_add.add_argument("--folder", required=True, help="Folder containing images or videos to copy into library")
+
+    # visual contact-sheet
+    p_v_cs = visual_subs.add_parser("contact-sheet", help="Generate grid image contact sheet for chapter visual review")
+    p_v_cs.add_argument("project_id", help="Project ID")
+    p_v_cs.add_argument("--chapter", type=int, required=True, help="Chapter index")
+    p_v_cs.add_argument("--columns", type=int, default=4, help="Number of thumbnail columns (default: 4)")
+
+    # visual preview
+    p_v_prev = visual_subs.add_parser("preview", help="Render chapter visual preview video combining shots with audio")
+    p_v_prev.add_argument("project_id", help="Project ID")
+    p_v_prev.add_argument("--chapter", type=int, required=True, help="Chapter index")
+
+    # visual replace (T4)
+    p_v_replace = visual_subs.add_parser("replace", help="Replace visual asset for a specific shot")
+    p_v_replace.add_argument("project_id", help="Project ID")
+    p_v_replace.add_argument("shot", nargs="?", help="Shot ID to replace (e.g. 'ch01_shot002')")
+    p_v_replace.add_argument("--shot", dest="opt_shot", help="Shot ID to replace (alternative to positional)")
+    p_v_replace.add_argument("--file", help="Path to local replacement image or video file")
+    p_v_replace.add_argument("--candidate", type=int, help="Candidate index (1 to 5) to activate")
+    p_v_replace.add_argument("--list", dest="list_candidates", action="store_true", help="List top 5 candidate alternatives with temporary preview grid")
+    p_v_replace.add_argument("--search", dest="search", help="Custom search query to search new candidates")
+    p_v_replace.add_argument("--prompt", dest="prompt", help="Alternative for --search")
+    p_v_replace.add_argument("--provider", help="Provider to re-fetch with")
+
+    # visual lock
+    p_v_lock = visual_subs.add_parser("lock", help="Lock a shot to prevent automated re-fetch or replacement")
+    p_v_lock.add_argument("project_id", help="Project ID")
+    p_v_lock.add_argument("--shot", required=True, help="Shot ID to lock")
+
+    # visual review
+    p_v_review = visual_subs.add_parser("review", help="List shots marked needs_review with candidate alternatives")
+    p_v_review.add_argument("project_id", help="Project ID")
+    p_v_review.add_argument("--chapter", type=int, help="Optional chapter index filter")
+    p_v_review.add_argument("--all", action="store_true", help="List all shots, not just those needing review")
+
+    # visual unlock
+    p_v_unlock = visual_subs.add_parser("unlock", help="Unlock a shot to allow re-fetch and updates")
+    p_v_unlock.add_argument("project_id", help="Project ID")
+    p_v_unlock.add_argument("--shot", required=True, help="Shot ID to unlock")
+
+    # 7. cache (Stage 4.2, S2)
+    p_cache = subparsers.add_parser("cache", help="Manage global media cache and LRU pruning")
+    cache_subs = p_cache.add_subparsers(dest="cache_command", required=True)
+
+    # cache status
+    cache_subs.add_parser("status", help="Show global cache size, file counts, and protected locked assets")
+
+    # cache prune
+    p_c_prune = cache_subs.add_parser("prune", help="Prune cache using age or size target, protecting locked files")
+    p_c_prune.add_argument("--older-than", help="Age limit to prune (e.g. '30d' or '24h')")
+    p_c_prune.add_argument("--max-size", help="Target maximum size (e.g. '5GB' or '5000MB')")
+
     return parser
 
 
 def main() -> int:
+    """Main entry point with global KeyboardInterrupt handler (V4).
+
+    V4: KeyboardInterrupt at the top level prints a clean message without traceback.
+    Individual command handlers may also catch KeyboardInterrupt for per-command cleanup.
+    """
     parser = build_parser()
     args = parser.parse_args()
 
-    if args.command == "presets":
-        if args.preset_command == "list":
-            return cmd_presets_list(args)
-        elif args.preset_command == "validate":
-            return cmd_presets_validate(args)
-    elif args.command == "project":
-        if args.project_command == "create":
-            return cmd_project_create(args)
-        elif args.project_command == "show":
-            return cmd_project_show(args)
-        elif args.project_command == "plan":
-            return cmd_project_plan(args)
-        elif args.project_command == "update-script":
-            return cmd_project_update_script(args)
-        elif args.project_command == "refresh-preset":
-            return cmd_project_refresh_preset(args)
-        elif args.project_command == "dev-simulate":
-            return cmd_project_dev_simulate(args)
-        elif args.project_command == "set-voice":
-            return cmd_project_set_voice(args)
-    elif args.command == "script":
-        if args.script_command == "outline":
-            return cmd_script_outline(args)
-        elif args.script_command == "write":
-            return cmd_script_write(args)
-        elif args.script_command == "status":
-            return cmd_script_status(args)
-        elif args.script_command == "quality":
-            return cmd_script_quality(args)
-    elif args.command == "audio":
-        if args.audio_command == "synth":
-            return cmd_audio_synth(args)
-        elif args.audio_command == "status":
-            return cmd_audio_status(args)
-        elif args.audio_command == "preview":
-            return cmd_audio_preview(args)
-    elif args.command == "voice":
-        if args.voice_command == "list":
-            return cmd_voice_list(args)
-        elif args.voice_command == "test":
-            return cmd_voice_test(args)
+    try:
+        if args.command == "presets":
+            if args.preset_command == "list":
+                return cmd_presets_list(args)
+            elif args.preset_command == "validate":
+                return cmd_presets_validate(args)
+        elif args.command == "project":
+            if args.project_command == "create":
+                return cmd_project_create(args)
+            elif args.project_command == "show":
+                return cmd_project_show(args)
+            elif args.project_command == "plan":
+                return cmd_project_plan(args)
+            elif args.project_command == "update-script":
+                return cmd_project_update_script(args)
+            elif args.project_command == "refresh-preset":
+                return cmd_project_refresh_preset(args)
+            elif args.project_command == "dev-simulate":
+                return cmd_project_dev_simulate(args)
+            elif args.project_command == "set-voice":
+                return cmd_project_set_voice(args)
+        elif args.command == "script":
+            if args.script_command == "outline":
+                return cmd_script_outline(args)
+            elif args.script_command == "write":
+                return cmd_script_write(args)
+            elif args.script_command == "status":
+                return cmd_script_status(args)
+            elif args.script_command == "quality":
+                return cmd_script_quality(args)
+        elif args.command == "audio":
+            if args.audio_command == "synth":
+                return cmd_audio_synth(args)
+            elif args.audio_command == "status":
+                return cmd_audio_status(args)
+            elif args.audio_command == "preview":
+                return cmd_audio_preview(args)
+        elif args.command == "voice":
+            if args.voice_command == "list":
+                return cmd_voice_list(args)
+            elif args.voice_command == "test":
+                return cmd_voice_test(args)
+        elif args.command == "visual":
+            if args.visual_command == "fetch":
+                return cmd_visual_fetch(args)
+            elif args.visual_command == "build":
+                return cmd_visual_build(args)
+            elif args.visual_command == "status":
+                return cmd_visual_status(args)
+            elif args.visual_command == "library":
+                if args.library_command == "add":
+                    return cmd_visual_library_add(args)
+            elif args.visual_command == "contact-sheet":
+                return cmd_visual_contact_sheet(args)
+            elif args.visual_command == "preview":
+                return cmd_visual_preview(args)
+            elif args.visual_command == "replace":
+                return cmd_visual_replace(args)
+            elif args.visual_command == "lock":
+                return cmd_visual_lock(args)
+            elif args.visual_command == "unlock":
+                return cmd_visual_unlock(args)
+            elif args.visual_command == "review":
+                return cmd_visual_review(args)
+        elif args.command == "cache":
+            if args.cache_command == "status":
+                return cmd_cache_status(args)
+            elif args.cache_command == "prune":
+                return cmd_cache_prune(args)
 
-    parser.print_help()
-    return 1
+        parser.print_help()
+        return 1
+
+    except KeyboardInterrupt:
+        # V4: Global fallback — no traceback, clean exit message
+        cmd_name = getattr(args, "command", "unknown")
+        print(f"\n[INTERRUPTED] KeyboardInterrupt received during '{cmd_name}'. Exiting cleanly.\n", file=sys.stderr)
+        return 130
 
 
 if __name__ == "__main__":

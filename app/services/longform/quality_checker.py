@@ -107,6 +107,8 @@ class ScriptQualityChecker:
         verify_claims: List[Dict[str, Any]] = []
         # 7. Unverified technical specifications
         unverified_specs: List[Dict[str, Any]] = []
+        # 8. Excessive search keywords (> 4 words, S7)
+        excessive_search_queries: List[Dict[str, Any]] = []
 
         is_first_chapter = True
 
@@ -164,6 +166,18 @@ class ScriptQualityChecker:
                                 hook_violations.append(
                                     f"Chapter 1 Segment {seg.segment_index}: '{text}' violates hook rules."
                                 )
+
+                    # Check stock search query length (S7: strictly 2-4 words)
+                    search_kw = getattr(seg.visual, "search_keywords", None) if seg.visual else None
+                    if search_kw:
+                        words_in_search = search_kw.strip().split()
+                        if len(words_in_search) > 4:
+                            excessive_search_queries.append({
+                                "chapter": ch.chapter_index,
+                                "segment": seg.segment_index,
+                                "query": search_kw.strip(),
+                                "word_count": len(words_in_search),
+                            })
 
                     # Check missing visuals
                     if not seg.visual or not seg.visual.prompt:
@@ -232,6 +246,7 @@ class ScriptQualityChecker:
             "missing_visuals": missing_visuals,
             "verify_claims": verify_claims,
             "unverified_specs": unverified_specs,
+            "excessive_search_queries": excessive_search_queries,
         }
 
         # Render markdown report
@@ -370,6 +385,21 @@ class ScriptQualityChecker:
                 )
         else:
             lines.append("✓ All technical specifications and numbers carry appropriate verification tags.")
+
+        excessive_searches = data.get("excessive_search_queries", [])
+        lines.extend([
+            "",
+            "---",
+            "",
+            f"## 8. Stock Search Query Quality ({len(excessive_searches)} Queries > 4 Words, S7)",
+            "",
+        ])
+        if excessive_searches:
+            lines.append(f"> [!WARNING] Found {len(excessive_searches)} stock search queries exceeding 4 words (target: 2-4 words, subject-first, concrete):")
+            for item in excessive_searches:
+                lines.append(f"- Ch {item['chapter']} Seg {item['segment']}: `[search: {item['query']}]` ({item['word_count']} words)")
+        else:
+            lines.append("✓ All stock search queries comply with length guidelines (<= 4 words).")
 
         lines.append("")
         return "\n".join(lines)

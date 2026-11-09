@@ -137,9 +137,10 @@ def test_preview_generation_and_srt(tmp_path: Path):
     service = VoiceService(project_dir=tmp_path)
     service.synthesize_all(provider="fake")
 
-    wav_preview, srt_preview = service.generate_preview(chapter_index=1)
+    wav_preview, srt_preview, mp4_preview = service.generate_preview(chapter_index=1)
     assert wav_preview.is_file()
     assert srt_preview.is_file()
+    assert mp4_preview.is_file()
 
     srt_content = srt_preview.read_text(encoding="utf-8")
     assert "-->" in srt_content
