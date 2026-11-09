@@ -1472,7 +1472,7 @@ def cmd_render_final(args: argparse.Namespace) -> int:
 
 
 def cmd_render_status(args: argparse.Namespace) -> int:
-    """Show render completion and hash status for chapters and final video (5.5)."""
+    """Show render completion and hash status for chapters and final video (5.5, R2)."""
     from app.services.longform.render.service import RenderService
 
     proj_dir = get_project_dir(args.project_id)
@@ -1495,8 +1495,67 @@ def cmd_render_status(args: argparse.Namespace) -> int:
     print(f"Final Video Status: {st['final_status'].upper()} ({st['final_reason']})")
     if st["final_video_file"]:
         print(f"Final Video File:   {st['final_video_file']}")
+
+    font_st = st.get("font_status", {})
+    if font_st and not font_st.get("available", True):
+        f_name = font_st.get("font_name", "Unknown")
+        print(f"\nWARNING: Font '{f_name}' specified in preset is NOT found in 'resource/fonts'. Subtitles will fall back to system font.")
+
     print("=" * 85 + "\n")
     return 0
+
+
+def cmd_render_subtitle_preview(args: argparse.Namespace) -> int:
+    """Generate burned subtitle PNG preview frames at given timestamps without full chapter re-render (R1)."""
+    from app.services.longform.render.service import RenderService
+
+    proj_dir = get_project_dir(args.project_id)
+    if not proj_dir.is_dir():
+        print(f"Error: Project '{args.project_id}' not found at {proj_dir}", file=sys.stderr)
+        return 1
+
+    try:
+        manifest = load_manifest(proj_dir)
+        service = RenderService(proj_dir)
+
+        # Parse timestamps
+        ts_list = []
+        for part in str(args.at).split(","):
+            part_str = part.strip()
+            if part_str:
+                try:
+                    ts_list.append(float(part_str))
+                except ValueError:
+                    print(f"Warning: Skipping invalid timestamp '{part_str}'", file=sys.stderr)
+
+        if not ts_list:
+            ts_list = [10.0, 60.0, 150.0]
+
+        print(f"\n[Subtitle Preview] Generating preview frames for project '{args.project_id}', Chapter {args.chapter}...")
+        print(f"Timestamps:    {ts_list} seconds")
+        if args.font_size:
+            print(f"FontSize Over: {args.font_size}")
+        if args.margin_v:
+            print(f"MarginV Over:  {args.margin_v}")
+        print("-" * 75)
+
+        pngs = service.preview_subtitles(
+            manifest=manifest,
+            chapter_index=args.chapter,
+            timestamps_seconds=ts_list,
+            font_size=args.font_size,
+            margin_v=args.margin_v,
+        )
+
+        print("-" * 75)
+        print(f"SUCCESS: Generated {len(pngs)} subtitle preview frame(s):")
+        for p in pngs:
+            print(f"  - {p.resolve()}")
+        print()
+        return 0
+    except Exception as exc:
+        print(f"Error generating subtitle preview: {exc}", file=sys.stderr)
+        return 1
 
 
 def re_slugify(text: str) -> str:
@@ -1729,6 +1788,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_r_final.add_argument("project_id", help="Project ID")
     p_r_final.add_argument("--no-bgm", action="store_true", help="Disable background music mixing")
 
+    # render subtitle-preview <id> [--chapter N] [--at 10,60,150] [--font-size <N>] [--margin-v <N>] (R1)
+    p_r_sub_prev = render_subs.add_parser("subtitle-preview", help="Generate burned subtitle PNG preview frames without full chapter render (R1)")
+    p_r_sub_prev.add_argument("project_id", help="Project ID")
+    p_r_sub_prev.add_argument("--chapter", type=int, default=1, help="Chapter index to preview (default: 1)")
+    p_r_sub_prev.add_argument("--at", default="10,60,150", help="Comma-separated timestamps in seconds (e.g. '10,60,150')")
+    p_r_sub_prev.add_argument("--font-size", type=int, default=None, help="Temporary font size override (e.g. 64)")
+    p_r_sub_prev.add_argument("--margin-v", type=int, default=None, help="Temporary vertical margin override (e.g. 80)")
+
     return parser
 
 
@@ -1819,6 +1886,8 @@ def main() -> int:
                 return cmd_render_status(args)
             elif args.render_command == "final":
                 return cmd_render_final(args)
+            elif args.render_command == "subtitle-preview":
+                return cmd_render_subtitle_preview(args)
 
         parser.print_help()
         return 1

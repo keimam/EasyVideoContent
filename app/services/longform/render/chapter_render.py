@@ -198,7 +198,6 @@ class ChapterRenderer:
             "-b:a", "192k",
             "-ar", "44100",
             "-ac", "2",
-            "-shortest",
             str(tmp_mp4_path),
         ])
 

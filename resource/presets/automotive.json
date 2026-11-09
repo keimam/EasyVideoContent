@@ -15,13 +15,16 @@
   "hook_rules": "Capture the essence of speed, sound, or historical rivalry within the first 10-15 seconds. Never start with generic pleasantries or 'welcome back'.",
   "words_per_minute": 140,
   "subtitle_style": {
-    "font_name": "Impact",
-    "font_size": 20,
+    "font_name": "BeVietnamPro-Bold",
+    "font_size": 64,
+    "bold": true,
     "primary_color": "&H00FFFFFF",
     "outline_color": "&H00000000",
-    "outline_width": 2.5,
+    "outline_width": 3.5,
+    "shadow_depth": 1.0,
+    "border_style": 1,
     "alignment": 2,
-    "margin_v": 45
+    "margin_v": 80
   },
   "visual_style": "Cinematic automotive realism, dynamic camera tracking, detailed engine bay closeups, high contrast dramatic lighting",
   "image_prompt_template": {

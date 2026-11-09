@@ -251,7 +251,7 @@ def generate_ass_header(
     fonts_dir: Optional[Path] = None,
 ) -> str:
     """Generate ASS script info and style definition with strict PlayRes matching (5.2)."""
-    font_name = subtitle_style.get("font_name", "Arial")
+    font_name = subtitle_style.get("font_name", "BeVietnamPro-Bold")
     if fonts_dir:
         found, font_path = check_font_availability(font_name, fonts_dir)
         if not found:
@@ -261,7 +261,7 @@ def generate_ass_header(
             )
             print(f"WARNING: Font '{font_name}' not found in '{fonts_dir}'. Subtitles will use font fallback.")
 
-    font_size = int(subtitle_style.get("font_size", 48))
+    font_size = int(subtitle_style.get("font_size", 64))
     primary = normalize_ass_color(subtitle_style.get("primary_color"), "&H00FFFFFF")
     secondary = normalize_ass_color(subtitle_style.get("secondary_color"), "&H000000FF")
     outline = normalize_ass_color(subtitle_style.get("outline_color"), "&H00000000")
@@ -269,10 +269,10 @@ def generate_ass_header(
     bold = 1 if subtitle_style.get("bold", True) else 0
     italic = 1 if subtitle_style.get("italic", False) else 0
     border_style = int(subtitle_style.get("border_style", 1))
-    outline_w = float(subtitle_style.get("outline_width", 3.0))
-    shadow_d = float(subtitle_style.get("shadow_depth", 2.0))
+    outline_w = float(subtitle_style.get("outline_width", 3.5))
+    shadow_d = float(subtitle_style.get("shadow_depth", subtitle_style.get("shadow", 1.0)))
     alignment = int(subtitle_style.get("alignment", 2))
-    margin_v = int(subtitle_style.get("margin_v", 60))
+    margin_v = int(subtitle_style.get("margin_v", 80))
 
     header = f"""[Script Info]
 Title: Longform Video Subtitles
@@ -482,3 +482,93 @@ def generate_full_timeline_subtitles(
 
     logger.info(f"Generated full timeline subtitles: {out_srt} and {out_ass}")
     return out_srt, out_ass
+
+
+def generate_subtitle_preview_frames(
+    project_dir: Path,
+    manifest: Any,
+    chapter_index: int,
+    timestamps_seconds: List[float],
+    font_size_override: Optional[int] = None,
+    margin_v_override: Optional[int] = None,
+    output_dir: Optional[Path] = None,
+) -> List[Path]:
+    """Generate burned subtitle PNG preview frames at given timestamps without full chapter re-render (R1)."""
+    from app.services.longform.render.chapter_render import escape_ffmpeg_filter_path
+    import subprocess
+
+    p_dir = Path(project_dir)
+    ch = next((c for c in manifest.chapters if c.chapter_index == chapter_index), None)
+    if not ch:
+        raise ValueError(f"Chapter {chapter_index} not found in project manifest")
+
+    if not ch.shots:
+        raise ValueError(f"Chapter {chapter_index} has no shots built")
+
+    preview_dir = output_dir or (p_dir / "export" / "preview" / "subtitles")
+    preview_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. Prepare custom or preset subtitle style
+    preset_snap = dict(manifest.preset_snapshot or {})
+    sub_style = dict(preset_snap.get("subtitle_style", {}))
+    if font_size_override is not None:
+        sub_style["font_size"] = int(font_size_override)
+    if margin_v_override is not None:
+        sub_style["margin_v"] = int(margin_v_override)
+
+    preset_snap["subtitle_style"] = sub_style
+
+    # 2. Generate temporary ASS file for this chapter
+    temp_ass = preview_dir / f"temp_preview_ch{chapter_index:02d}.ass"
+    generate_chapter_ass_and_srt(
+        chapter=ch,
+        project_dir=p_dir,
+        preset_snapshot=preset_snap,
+        encoder_settings=manifest.encoder_settings,
+        output_ass_path=temp_ass,
+    )
+
+    # 3. Create temporary concat demuxer list for chapter shot clips
+    temp_concat = preview_dir / f"temp_concat_ch{chapter_index:02d}.txt"
+    concat_lines = []
+    for shot in ch.shots:
+        clip_rel = shot.rendered_clip or f"assets/visual/shots/{shot.shot_id}.mp4"
+        clip_p = (p_dir / clip_rel).resolve()
+        if not clip_p.is_file():
+            raise FileNotFoundError(f"Shot clip not found: {clip_p}")
+        safe_p = str(clip_p).replace("\\", "/")
+        concat_lines.append(f"file '{safe_p}'")
+    temp_concat.write_text("\n".join(concat_lines) + "\n", encoding="utf-8")
+
+    fonts_dir = p_dir / "resource" / "fonts"
+    if not fonts_dir.is_dir():
+        fonts_dir = Path("resource/fonts").resolve()
+
+    esc_ass = escape_ffmpeg_filter_path(temp_ass)
+    esc_fonts = escape_ffmpeg_filter_path(fonts_dir)
+
+    results: List[Path] = []
+    try:
+        for t in timestamps_seconds:
+            out_png = preview_dir / f"sub_preview_ch{chapter_index:02d}_at_{int(t):03d}s.png"
+            cmd = [
+                "ffmpeg", "-y",
+                "-f", "concat", "-safe", "0",
+                "-i", str(temp_concat.resolve()),
+                "-ss", str(t),
+                "-vf", f"ass=filename='{esc_ass}':fontsdir='{esc_fonts}'",
+                "-vframes", "1",
+                str(out_png),
+            ]
+            res = subprocess.run(cmd, capture_output=True, text=True)
+            if res.returncode != 0:
+                logger.error(f"Failed to generate subtitle preview at {t}s: {res.stderr}")
+            elif out_png.is_file():
+                results.append(out_png)
+    finally:
+        if temp_concat.is_file():
+            temp_concat.unlink(missing_ok=True)
+        if temp_ass.is_file():
+            temp_ass.unlink(missing_ok=True)
+
+    return results

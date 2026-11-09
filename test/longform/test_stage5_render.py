@@ -562,3 +562,145 @@ def test_cli_smoke_render_subcommands(tmp_path: Path):
                 })
                 ret_all = cli_longform.main()
                 assert ret_all == 0
+
+        # 5. render subtitle-preview (R1)
+        with patch("sys.argv", ["cli_longform.py", "render", "subtitle-preview", "cli_render_proj", "--chapter", "1", "--at", "10,20", "--font-size", "64", "--margin-v", "80"]):
+            with patch("app.services.longform.render.service.RenderService.preview_subtitles") as mock_prev:
+                mock_prev.return_value = [p_dir / "preview_10s.png", p_dir / "preview_20s.png"]
+                ret_prev = cli_longform.main()
+                assert ret_prev == 0
+                mock_prev.assert_called_once_with(
+                    manifest=manifest,
+                    chapter_index=1,
+                    timestamps_seconds=[10.0, 20.0],
+                    font_size=64,
+                    margin_v=80,
+                )
+
+
+def test_subtitle_style_change_invalidates_only_chapters_and_final(tmp_path: Path):
+    """R1: Changing subtitle style marks all chapter_render and final_concat stale, while audio and visual shots remain completed."""
+    p_dir = tmp_path / "sub_inval_proj"
+    p_dir.mkdir(parents=True, exist_ok=True)
+
+    from app.services.longform.shot import compute_shot_hash
+    from app.services.longform.hashing import compute_chapter_hash, compute_final_concat_hash
+
+    shot_dir = p_dir / "assets" / "visual" / "shots"
+    shot_dir.mkdir(parents=True, exist_ok=True)
+    clip1 = shot_dir / "ch01_shot001.mp4"
+    clip1.write_bytes(b"CLIP1")
+
+    ch_dir = p_dir / "assets" / "visual" / "chapters"
+    ch_dir.mkdir(parents=True, exist_ok=True)
+    ch1_file = ch_dir / "chapter_01.mp4"
+    ch1_file.write_bytes(b"CH1_VIDEO")
+
+    out_dir = p_dir / "output"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    final_file = out_dir / "final_video.mp4"
+    final_file.write_bytes(b"FINAL_VIDEO")
+
+    hash1 = compute_shot_hash(
+        shot_id="ch01_shot001",
+        duration_seconds=3.0,
+        target_frames=75,
+        motion="zoom_in",
+        asset_content_hash="",
+        fps=25.0,
+        requested_provider="ai_image",
+        actual_provider="ai_image",
+    )
+
+    shot1 = Shot(
+        shot_id="ch01_shot001",
+        chapter_index=1,
+        shot_index=1,
+        duration_seconds=3.0,
+        target_frames=75,
+        motion=MotionType.zoom_in,
+        rendered_clip="assets/visual/shots/ch01_shot001.mp4",
+        shot_hash=hash1,
+        status=ItemStatus.completed,
+    )
+
+    ch1 = Chapter(
+        chapter_index=1,
+        chapter_title="Ch1",
+        shots=[shot1],
+        output_file="assets/visual/chapters/chapter_01.mp4",
+        status=ItemStatus.completed,
+    )
+
+    initial_sub_style = {
+        "font_name": "BeVietnamPro-Bold",
+        "font_size": 20,
+        "outline_width": 2.0,
+        "margin_v": 45,
+    }
+
+    manifest = ProjectManifest(
+        project_id="sub_inval_proj",
+        title="Subtitle Inval Test",
+        preset_id="automotive",
+        preset_snapshot={"subtitle_style": initial_sub_style},
+        encoder_settings=EncoderSettings(fps=25.0),
+        chapters=[ch1],
+        final_video_file="output/final_video.mp4",
+    )
+
+    ch1.chapter_hash = compute_chapter_hash(
+        ch1, manifest.encoder_settings, initial_sub_style, manifest.preset_snapshot
+    )
+    manifest.final_video_hash = compute_final_concat_hash(manifest.chapters, bgm_hash="")
+    save_manifest(manifest, p_dir)
+
+    # Initial plan: all completed
+    plan1 = compute_plan(manifest, p_dir)
+    assert plan1.is_fully_completed
+    assert next(u for u in plan1.all_units if u.unit_id == "ch01_shot001").status == ItemStatus.completed
+    assert next(u for u in plan1.all_units if u.unit_id == "ch1_render").status == ItemStatus.completed
+    assert next(u for u in plan1.all_units if u.unit_id == "final_concat").status == ItemStatus.completed
+
+    # User modifies subtitle style in preset snapshot (e.g. font_size 20 -> 64)
+    new_sub_style = dict(initial_sub_style)
+    new_sub_style["font_size"] = 64
+    new_sub_style["margin_v"] = 80
+    manifest.preset_snapshot["subtitle_style"] = new_sub_style
+    save_manifest(manifest, p_dir)
+
+    # Re-evaluate plan
+    plan2 = compute_plan(manifest, p_dir)
+
+    # Visual shot remains completed! (clips and hashes untouched)
+    shot_unit = next(u for u in plan2.all_units if u.unit_id == "ch01_shot001")
+    assert shot_unit.status == ItemStatus.completed
+
+    # Chapter render is STALE due to subtitle style hash mismatch
+    ch_unit = next(u for u in plan2.all_units if u.unit_id == "ch1_render")
+    assert ch_unit.status == ItemStatus.stale
+
+    # Final concat is STALE because chapter render is stale
+    final_unit = next(u for u in plan2.all_units if u.unit_id == "final_concat")
+    assert final_unit.status == ItemStatus.stale
+
+
+def test_font_preflight_warning_in_render_status(tmp_path: Path):
+    """R2: render status flags missing preset font with prominent warning."""
+    p_dir = tmp_path / "font_warn_proj"
+    p_dir.mkdir(parents=True, exist_ok=True)
+
+    manifest = ProjectManifest(
+        project_id="font_warn_proj",
+        title="Font Warn Test",
+        preset_id="automotive",
+        preset_snapshot={"subtitle_style": {"font_name": "NonExistentFontXYZ"}},
+        chapters=[Chapter(chapter_index=1, chapter_title="Ch1")],
+    )
+    save_manifest(manifest, p_dir)
+
+    from app.services.longform.render.service import RenderService
+    srv = RenderService(p_dir)
+    st = srv.get_render_status(manifest)
+    assert st["font_status"]["available"] is False
+    assert st["font_status"]["font_name"] == "NonExistentFontXYZ"

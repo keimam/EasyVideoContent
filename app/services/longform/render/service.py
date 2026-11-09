@@ -122,7 +122,7 @@ class RenderService:
         return manifest, stats
 
     def get_render_status(self, manifest: ProjectManifest) -> Dict[str, Any]:
-        """Query render status for all chapters and final video (5.5)."""
+        """Query render status for all chapters and final video (5.5, R2)."""
         plan = compute_plan(manifest, self.project_dir)
         ch_units = [u for u in plan.all_units if u.unit_type == "chapter_render"]
         final_unit = next((u for u in plan.all_units if u.unit_type == "final_concat"), None)
@@ -140,10 +140,44 @@ class RenderService:
                 "current_hash": u.current_hash,
             })
 
+        # Font preflight check (R2)
+        font_name = manifest.preset_snapshot.get("subtitle_style", {}).get("font_name", "BeVietnamPro-Bold")
+        fonts_dir = self.project_dir / "resource" / "fonts"
+        if not fonts_dir.is_dir():
+            fonts_dir = Path("resource/fonts").resolve()
+        from app.services.longform.render.subtitle import check_font_availability
+        font_available, font_path = check_font_availability(font_name, fonts_dir)
+
         return {
             "project_id": manifest.project_id,
             "chapters": status_items,
             "final_status": final_unit.status.value if final_unit else "unknown",
             "final_reason": final_unit.reason if final_unit else "",
             "final_video_file": manifest.final_video_file,
+            "font_status": {
+                "font_name": font_name,
+                "available": font_available,
+                "path": str(font_path) if font_path else None,
+            },
         }
+
+    def preview_subtitles(
+        self,
+        manifest: ProjectManifest,
+        chapter_index: int,
+        timestamps_seconds: List[float],
+        font_size: Optional[int] = None,
+        margin_v: Optional[int] = None,
+        output_dir: Optional[Path] = None,
+    ) -> List[Path]:
+        """Generate burned subtitle PNG preview frames at given timestamps without full chapter re-render (R1)."""
+        from app.services.longform.render.subtitle import generate_subtitle_preview_frames
+        return generate_subtitle_preview_frames(
+            project_dir=self.project_dir,
+            manifest=manifest,
+            chapter_index=chapter_index,
+            timestamps_seconds=timestamps_seconds,
+            font_size_override=font_size,
+            margin_v_override=margin_v,
+            output_dir=output_dir,
+        )

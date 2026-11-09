@@ -15,13 +15,16 @@
   "hook_rules": "Buka dengan fakta mengejutkan atau paradoks dalam 10-15 detik pertama untuk menahan perhatian penonton.",
   "words_per_minute": 130,
   "subtitle_style": {
-    "font_name": "Arial",
-    "font_size": 18,
-    "primary_color": "&H0000FFFF",
+    "font_name": "BeVietnamPro-Bold",
+    "font_size": 64,
+    "bold": true,
+    "primary_color": "&H00FFFFFF",
     "outline_color": "&H00000000",
-    "outline_width": 2.0,
+    "outline_width": 3.5,
+    "shadow_depth": 1.0,
+    "border_style": 1,
     "alignment": 2,
-    "margin_v": 45
+    "margin_v": 80
   },
   "visual_style": "Sinematik realistis, pencahayaan alami, komposisi lanskap 16:9",
   "image_prompt_template": {
