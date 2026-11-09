@@ -98,9 +98,12 @@ def compute_chapter_hash(
     pipeline_version: str = "1.0.0",
     sub_niche_focus: str = "",
 ) -> str:
-    """Compute canonical hash for a chapter based on sequential elements (K1, K2, B3)."""
+    """Compute canonical hash for a chapter based on sequential elements (K1, K2, B3, 5.1)."""
     # K1: Sequential concatenation of element hashes with newline delimiter
     elements = []
+    if getattr(chapter, "shots", None):
+        for s in chapter.shots:
+            elements.append(f"shot_{s.shot_id}:{s.shot_hash or ''}")
     for group in chapter.tts_groups:
         elements.append(f"audio_group_{group.group_index}:{group.audio.audio_hash or ''}")
         for seg in group.segments:

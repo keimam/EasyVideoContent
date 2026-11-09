@@ -338,9 +338,8 @@ class VisualService:
         # Backfill if missing in snapshot
         if not req_terms or not stock_cat or not neg_terms:
             try:
-                from app.services.longform.presets import PresetStore
-                p_store = PresetStore()
-                p_obj = p_store.get_preset(manifest.preset_id)
+                from app.services.longform.presets import get_preset
+                p_obj = get_preset(manifest.preset_id)
                 if not req_terms and p_obj.required_subject_terms:
                     req_terms = p_obj.required_subject_terms
                     preset_snap["required_subject_terms"] = req_terms
@@ -358,7 +357,7 @@ class VisualService:
                     preset_snap["min_relevance_score"] = min_rel_score
                 manifest.preset_snapshot = preset_snap
             except Exception as e:
-                logger.debug(f"Could not backfill preset snapshot: {e}")
+                logger.warning(f"Could not backfill preset snapshot for preset '{manifest.preset_id}': {e}")
 
         for ch in manifest.chapters:
             for shot in ch.shots:
@@ -488,6 +487,7 @@ class VisualService:
                         shot.status = ItemStatus.pending
                         shot.relevance_score = 0.0
                         shot.tags = []
+                        shot.candidates = []
                         shot.fallback_reason = "No candidates matched required subject terms or query"
                         continue
 

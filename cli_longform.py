@@ -387,9 +387,19 @@ def cmd_project_dev_simulate(args: argparse.Namespace) -> int:
                             ch.status = ItemStatus.completed
 
                 elif unit.unit_type == "final_concat":
+                    bgm_hash = ""
+                    try:
+                        from app.services.longform.render.bgm import resolve_bgm_file
+                        from app.services.longform.hashing import hash_file
+                        bgm_file = resolve_bgm_file(project_dir, manifest.preset_snapshot)
+                        if bgm_file and bgm_file.is_file():
+                            bgm_hash = hash_file(bgm_file)
+                    except Exception:
+                        bgm_hash = ""
+
                     latest_final_hash = compute_final_concat_hash(
                         manifest.chapters,
-                        bgm_hash="",
+                        bgm_hash=bgm_hash,
                         pipeline_version=manifest.pipeline_version,
                     )
                     manifest.final_video_file = unit.target_file
@@ -1012,8 +1022,18 @@ def cmd_visual_review(args: argparse.Namespace) -> int:
 
     for ch, shot in review_shots:
         status_badge = "[NEEDS REVIEW]" if getattr(shot, "needs_review", False) else f"[{shot.status.value.upper()}]"
+        encoder_fps = getattr(getattr(manifest, "encoder_settings", None), "fps", 25.0) or 25.0
+        shot_fps = encoder_fps
+        if shot.duration_seconds and shot.duration_seconds > 0:
+            calc_fps = shot.target_frames / shot.duration_seconds
+            if abs(calc_fps - encoder_fps) < 0.5:
+                shot_fps = encoder_fps
+            else:
+                shot_fps = round(calc_fps, 2)
+        fps_display = f"{int(shot_fps)} fps" if float(shot_fps).is_integer() else f"{float(shot_fps):.2f} fps"
+
         print(f"\nShot: {shot.shot_id} (Chapter {ch.chapter_index}: {ch.chapter_title}) {status_badge}")
-        print(f"  Duration:     {shot.duration_seconds:.2f}s ({shot.target_frames} frames at 25 fps)")
+        print(f"  Duration:     {shot.duration_seconds:.2f}s ({shot.target_frames} frames at {fps_display})")
         print(f"  Visual Prompt:{shot.visual_prompt}")
         print(f"  Search Query: {shot.search_query}")
         print(f"  Source:       requested={shot.requested_source}, actual={shot.actual_source}")
@@ -1022,8 +1042,15 @@ def cmd_visual_review(args: argparse.Namespace) -> int:
 
         print("  Candidate Options:")
         if not shot.candidates:
-            print("    (No candidates recorded. Run 'visual fetch' with --allow-fallback or add local assets.)")
+            print("    (No candidates recorded. Run 'visual replace' with --search or --list to inspect alternatives.)")
         else:
+            from app.services.longform.visual.stock import score_candidate_relevance
+            preset_snap = manifest.preset_snapshot or {}
+            req_terms = preset_snap.get("required_subject_terms") or []
+            block_terms = preset_snap.get("blocked_terms") or []
+            neg_terms = preset_snap.get("negative_terms") or []
+            min_score = preset_snap.get("min_relevance_score", 0.35)
+
             for idx, cand in enumerate(shot.candidates):
                 c_id = cand.get("candidate_id", "unknown")
                 c_prov = cand.get("provider", "unknown")
@@ -1031,12 +1058,31 @@ def cmd_visual_review(args: argparse.Namespace) -> int:
                 c_rend = cand.get("rendition_name", "standard")
                 c_tags = cand.get("tags", [])
                 tag_preview = ", ".join(c_tags[:5]) if c_tags else "none"
-                print(f"    [{idx}] {c_prov.upper()} ID={c_id} | score: {c_score:.2f} | rend: {c_rend}")
-                print(f"        tags: [{tag_preview}]")
+
+                # A4: Validate against relevance filter so rejected candidates are labeled REJECTED, not passing
+                is_valid = True
+                reason = "Accepted"
+                if req_terms or block_terms or neg_terms:
+                    is_valid, c_score, reason = score_candidate_relevance(
+                        candidate_tags=c_tags,
+                        search_query=shot.search_query or shot.visual_prompt,
+                        required_subject_terms=req_terms,
+                        blocked_terms=block_terms,
+                        negative_terms=neg_terms,
+                        min_relevance_score=min_score,
+                    )
+
+                if not is_valid or cand.get("is_rejected"):
+                    rej_reason = cand.get("rejection_reason") or reason
+                    print(f"    [{idx}] {c_prov.upper()} ID={c_id} | [REJECTED: {rej_reason}] | rend: {c_rend}")
+                    print(f"        tags: [{tag_preview}]")
+                else:
+                    print(f"    [{idx}] {c_prov.upper()} ID={c_id} | score: {c_score:.2f} | rend: {c_rend}")
+                    print(f"        tags: [{tag_preview}]")
 
         print("  Resolution Commands:")
         print(f"    - Replace with candidate: python cli_longform.py visual replace {manifest.project_id} --shot {shot.shot_id} --candidate <index>")
-        print(f"    - Replace with custom query: python cli_longform.py visual replace {manifest.project_id} --shot {shot.shot_id} --prompt \"<search_query>\"")
+        print(f"    - Replace with custom query: python cli_longform.py visual replace {manifest.project_id} --shot {shot.shot_id} --search \"<search_query>\"")
         print(f"    - Replace with local file:   python cli_longform.py visual replace {manifest.project_id} --shot {shot.shot_id} --file <path/to/media.mp4>")
 
     print("\n" + "=" * 88 + "\n")
@@ -1310,6 +1356,208 @@ def cmd_visual_unlock(args: argparse.Namespace) -> int:
         return 1
 
 
+def cmd_render_chapter(args: argparse.Namespace) -> int:
+    """Render a single chapter MP4 with burned subtitles (5.1, 5.5)."""
+    from app.services.longform.render.service import RenderService
+
+    proj_dir = get_project_dir(args.project_id)
+    if not proj_dir.is_dir():
+        print(f"Error: Project '{args.project_id}' not found at {proj_dir}", file=sys.stderr)
+        return 1
+
+    try:
+        with ProjectLock(proj_dir):
+            manifest = load_manifest(proj_dir)
+            service = RenderService(proj_dir)
+            print(f"\n[Render Chapter] Rendering Chapter {args.chapter} for project '{args.project_id}'...")
+            print("-" * 75)
+            manifest, stats = service.render_chapter(manifest, args.chapter, force=args.force)
+            save_manifest(manifest, proj_dir)
+
+            print("-" * 75)
+            if stats.get("status") == "skipped":
+                print(f"Chapter {args.chapter} is already up to date: {stats.get('output_file')}\n")
+            else:
+                ch_obj = next((c for c in manifest.chapters if c.chapter_index == args.chapter), None)
+                out_path = ch_obj.output_file if ch_obj else f"chapter_{args.chapter}.mp4"
+                print(f"SUCCESS: Chapter {args.chapter} rendered in {stats['render_seconds']:.2f}s")
+                print(f"Video file:    {out_path}")
+                print(f"Video duration:{stats['video_duration']:.2f}s (audio: {stats['audio_duration']:.2f}s, drift: {stats['drift_seconds']*1000:.1f}ms)")
+                print(f"Stream params: {stats['width']}x{stats['height']} @ {stats['fps']} fps ({stats['video_encoder']})")
+                print(f"File size:     {stats['file_size_bytes'] / (1024*1024):.2f} MB\n")
+            return 0
+    except ProjectLockedError:
+        print(f"Error: Project '{args.project_id}' is locked by another process.", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print(f"\n[RENDER INTERRUPTED] KeyboardInterrupt received during Chapter {args.chapter} render. Partial file removed.\n", file=sys.stderr)
+        return 130
+    except Exception as exc:
+        print(f"Error rendering chapter: {exc}", file=sys.stderr)
+        return 1
+
+
+def cmd_render_all(args: argparse.Namespace) -> int:
+    """Render all chapters (resume-aware) and final video (5.1, 5.3, 5.5)."""
+    from app.services.longform.render.service import RenderService
+
+    proj_dir = get_project_dir(args.project_id)
+    if not proj_dir.is_dir():
+        print(f"Error: Project '{args.project_id}' not found at {proj_dir}", file=sys.stderr)
+        return 1
+
+    try:
+        with ProjectLock(proj_dir):
+            manifest = load_manifest(proj_dir)
+            service = RenderService(proj_dir)
+            print(f"\n[Render All] Starting full rendering for project '{args.project_id}' (BGM: {'Disabled' if args.no_bgm else 'Enabled'})...")
+            print("=" * 85)
+            manifest, summary = service.render_all(manifest, no_bgm=args.no_bgm, force=args.force)
+            save_manifest(manifest, proj_dir)
+
+            print("=" * 85)
+            print(f"SUCCESS: Rendered {summary['chapters_rendered']} chapters ({summary['chapters_skipped']} skipped) in {summary['total_elapsed_seconds']:.2f}s")
+            f_stats = summary["final_stats"]
+            print(f"Final video:   {f_stats['final_video_file']}")
+            print(f"Final duration:{f_stats['final_video_duration']:.2f}s (audio: {f_stats['total_audio_duration']:.2f}s, drift: {f_stats['drift_seconds']*1000:.1f}ms)")
+            print(f"Loudness:      {f_stats['integrated_lufs']:.1f} LUFS (integrated), {f_stats['true_peak_dbtp']:.1f} dBTP (true peak)")
+            print(f"YouTube meta:  {f_stats['youtube_chapters_file']}")
+            print(f"Subtitles:     {f_stats['full_timeline_srt']} and .ass\n")
+            return 0
+    except ProjectLockedError:
+        print(f"Error: Project '{args.project_id}' is locked by another process.", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print(f"\n[RENDER ALL INTERRUPTED] KeyboardInterrupt received. Completed chapters are saved.\n", file=sys.stderr)
+        return 130
+    except Exception as exc:
+        print(f"Error rendering project: {exc}", file=sys.stderr)
+        return 1
+
+
+def cmd_render_final(args: argparse.Namespace) -> int:
+    """Assemble final video from existing rendered chapters (5.3, 5.5)."""
+    from app.services.longform.render.service import RenderService
+
+    proj_dir = get_project_dir(args.project_id)
+    if not proj_dir.is_dir():
+        print(f"Error: Project '{args.project_id}' not found at {proj_dir}", file=sys.stderr)
+        return 1
+
+    try:
+        with ProjectLock(proj_dir):
+            manifest = load_manifest(proj_dir)
+            service = RenderService(proj_dir)
+            print(f"\n[Render Final] Assembling final video for project '{args.project_id}' (BGM: {'Disabled' if args.no_bgm else 'Enabled'})...")
+            print("-" * 75)
+            manifest, f_stats = service.render_final(manifest, no_bgm=args.no_bgm)
+            save_manifest(manifest, proj_dir)
+
+            print("-" * 75)
+            print(f"SUCCESS: Final video created: {f_stats['final_video_file']}")
+            print(f"Duration:      {f_stats['final_video_duration']:.2f}s (drift: {f_stats['drift_seconds']*1000:.1f}ms)")
+            print(f"Loudness:      {f_stats['integrated_lufs']:.1f} LUFS (integrated), {f_stats['true_peak_dbtp']:.1f} dBTP (true peak)")
+            print(f"YouTube meta:  {f_stats['youtube_chapters_file']}")
+            print(f"Subtitles:     {f_stats['full_timeline_srt']}\n")
+            return 0
+    except ProjectLockedError:
+        print(f"Error: Project '{args.project_id}' is locked by another process.", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print(f"\n[RENDER FINAL INTERRUPTED] KeyboardInterrupt received. Partial files removed.\n", file=sys.stderr)
+        return 130
+    except Exception as exc:
+        print(f"Error assembling final video: {exc}", file=sys.stderr)
+        return 1
+
+
+def cmd_render_status(args: argparse.Namespace) -> int:
+    """Show render completion and hash status for chapters and final video (5.5, R2)."""
+    from app.services.longform.render.service import RenderService
+
+    proj_dir = get_project_dir(args.project_id)
+    if not proj_dir.is_dir():
+        print(f"Error: Project '{args.project_id}' not found at {proj_dir}", file=sys.stderr)
+        return 1
+
+    manifest = load_manifest(proj_dir)
+    service = RenderService(proj_dir)
+    st = service.get_render_status(manifest)
+
+    print(f"\nRender Status for Project: {st['project_id']}")
+    print("=" * 85)
+    print(f"{'Ch':<4} {'Title':<30} {'Status':<12} {'Output File'}")
+    print("-" * 85)
+    for c in st["chapters"]:
+        out_f = c["output_file"] or "None"
+        print(f"{c['chapter_index']:<4} {c['title'][:28]:<30} {c['status'].upper():<12} {out_f}")
+    print("-" * 85)
+    print(f"Final Video Status: {st['final_status'].upper()} ({st['final_reason']})")
+    if st["final_video_file"]:
+        print(f"Final Video File:   {st['final_video_file']}")
+
+    font_st = st.get("font_status", {})
+    if font_st and not font_st.get("available", True):
+        f_name = font_st.get("font_name", "Unknown")
+        print(f"\nWARNING: Font '{f_name}' specified in preset is NOT found in 'resource/fonts'. Subtitles will fall back to system font.")
+
+    print("=" * 85 + "\n")
+    return 0
+
+
+def cmd_render_subtitle_preview(args: argparse.Namespace) -> int:
+    """Generate burned subtitle PNG preview frames at given timestamps without full chapter re-render (R1)."""
+    from app.services.longform.render.service import RenderService
+
+    proj_dir = get_project_dir(args.project_id)
+    if not proj_dir.is_dir():
+        print(f"Error: Project '{args.project_id}' not found at {proj_dir}", file=sys.stderr)
+        return 1
+
+    try:
+        manifest = load_manifest(proj_dir)
+        service = RenderService(proj_dir)
+
+        # Parse timestamps
+        ts_list = []
+        for part in str(args.at).split(","):
+            part_str = part.strip()
+            if part_str:
+                try:
+                    ts_list.append(float(part_str))
+                except ValueError:
+                    print(f"Warning: Skipping invalid timestamp '{part_str}'", file=sys.stderr)
+
+        if not ts_list:
+            ts_list = [10.0, 60.0, 150.0]
+
+        print(f"\n[Subtitle Preview] Generating preview frames for project '{args.project_id}', Chapter {args.chapter}...")
+        print(f"Timestamps:    {ts_list} seconds")
+        if args.font_size:
+            print(f"FontSize Over: {args.font_size}")
+        if args.margin_v:
+            print(f"MarginV Over:  {args.margin_v}")
+        print("-" * 75)
+
+        pngs = service.preview_subtitles(
+            manifest=manifest,
+            chapter_index=args.chapter,
+            timestamps_seconds=ts_list,
+            font_size=args.font_size,
+            margin_v=args.margin_v,
+        )
+
+        print("-" * 75)
+        print(f"SUCCESS: Generated {len(pngs)} subtitle preview frame(s):")
+        for p in pngs:
+            print(f"  - {p.resolve()}")
+        print()
+        return 0
+    except Exception as exc:
+        print(f"Error generating subtitle preview: {exc}", file=sys.stderr)
+        return 1
+
+
 def re_slugify(text: str) -> str:
     """Create a URL/folder-safe slug from title."""
     import re
@@ -1515,6 +1763,39 @@ def build_parser() -> argparse.ArgumentParser:
     p_c_prune.add_argument("--older-than", help="Age limit to prune (e.g. '30d' or '24h')")
     p_c_prune.add_argument("--max-size", help="Target maximum size (e.g. '5GB' or '5000MB')")
 
+    # 8. render (Stage 5)
+    p_render = subparsers.add_parser("render", help="Render chapters and final longform video")
+    render_subs = p_render.add_subparsers(dest="render_command", required=True)
+
+    # render chapter <id> --chapter N [--force]
+    p_r_ch = render_subs.add_parser("chapter", help="Render a specific chapter with burned subtitles")
+    p_r_ch.add_argument("project_id", help="Project ID")
+    p_r_ch.add_argument("--chapter", type=int, required=True, help="Chapter index to render")
+    p_r_ch.add_argument("--force", action="store_true", help="Force render even if up to date")
+
+    # render all <id> [--no-bgm] [--force]
+    p_r_all = render_subs.add_parser("all", help="Render all chapters (resume-aware) and final video")
+    p_r_all.add_argument("project_id", help="Project ID")
+    p_r_all.add_argument("--no-bgm", action="store_true", help="Disable background music mixing")
+    p_r_all.add_argument("--force", action="store_true", help="Force re-render of all chapters")
+
+    # render status <id>
+    p_r_status = render_subs.add_parser("status", help="Show render completion and hash status for chapters and final video")
+    p_r_status.add_argument("project_id", help="Project ID")
+
+    # render final <id> [--no-bgm]
+    p_r_final = render_subs.add_parser("final", help="Assemble final video from existing rendered chapters")
+    p_r_final.add_argument("project_id", help="Project ID")
+    p_r_final.add_argument("--no-bgm", action="store_true", help="Disable background music mixing")
+
+    # render subtitle-preview <id> [--chapter N] [--at 10,60,150] [--font-size <N>] [--margin-v <N>] (R1)
+    p_r_sub_prev = render_subs.add_parser("subtitle-preview", help="Generate burned subtitle PNG preview frames without full chapter render (R1)")
+    p_r_sub_prev.add_argument("project_id", help="Project ID")
+    p_r_sub_prev.add_argument("--chapter", type=int, default=1, help="Chapter index to preview (default: 1)")
+    p_r_sub_prev.add_argument("--at", default="10,60,150", help="Comma-separated timestamps in seconds (e.g. '10,60,150')")
+    p_r_sub_prev.add_argument("--font-size", type=int, default=None, help="Temporary font size override (e.g. 64)")
+    p_r_sub_prev.add_argument("--margin-v", type=int, default=None, help="Temporary vertical margin override (e.g. 80)")
+
     return parser
 
 
@@ -1596,6 +1877,17 @@ def main() -> int:
                 return cmd_cache_status(args)
             elif args.cache_command == "prune":
                 return cmd_cache_prune(args)
+        elif args.command == "render":
+            if args.render_command == "chapter":
+                return cmd_render_chapter(args)
+            elif args.render_command == "all":
+                return cmd_render_all(args)
+            elif args.render_command == "status":
+                return cmd_render_status(args)
+            elif args.render_command == "final":
+                return cmd_render_final(args)
+            elif args.render_command == "subtitle-preview":
+                return cmd_render_subtitle_preview(args)
 
         parser.print_help()
         return 1

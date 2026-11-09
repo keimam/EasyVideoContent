@@ -308,9 +308,19 @@ def compute_plan(manifest: ProjectManifest, project_dir: str | Path) -> Executio
 
     # Final Concat work unit
     target_final = manifest.final_video_file or "output/final_video.mp4"
+    bgm_hash = ""
+    try:
+        from app.services.longform.render.bgm import resolve_bgm_file
+        from app.services.longform.hashing import hash_file
+        bgm_file = resolve_bgm_file(p_dir, manifest.preset_snapshot)
+        if bgm_file and bgm_file.is_file():
+            bgm_hash = hash_file(bgm_file)
+    except Exception:
+        bgm_hash = ""
+
     expected_final_hash = compute_final_concat_hash(
         manifest.chapters,
-        bgm_hash="",
+        bgm_hash=bgm_hash,
         pipeline_version=manifest.pipeline_version,
     )
 
