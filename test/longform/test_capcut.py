@@ -16,7 +16,13 @@ from app.services.longform.capcut.detector import (
     get_capcut_doctor_report,
     is_capcut_running,
 )
-from app.services.longform.capcut.service import build_smoke_draft, parse_srt_entries
+from app.services.longform.capcut.service import (
+    build_smoke_draft,
+    parse_srt_entries,
+    get_unique_draft_name,
+    validate_built_draft,
+    build_backup_asset_pack,
+)
 
 
 @pytest.fixture
@@ -78,6 +84,7 @@ def test_builder_constructs_valid_draft_schema(temp_draft_dir, mock_media_files)
         video_clips=mock_media_files["videos"],
         audio_clip=mock_media_files["audio"],
         subtitles=mock_media_files["subtitles"],
+        portable=True,
     )
 
     assert output_draft.is_dir()
@@ -194,3 +201,244 @@ def test_parse_srt_entries_helper(temp_draft_dir):
     assert entries[1]["text"] == "Second line of subtitle"
     assert entries[1]["start_seconds"] == 3.5
     assert entries[1]["duration_seconds"] == 3.75
+
+
+# ==============================================================================
+# STAGE 6B UNIT TESTS (A1-A3, B1-B5)
+# ==============================================================================
+
+def test_stage6b_text_size_and_position_calibration(temp_draft_dir, mock_media_files):
+    """Verify A1: Text size calibrated to 8.0, position y = -0.80, and auto line-wrap."""
+    output_draft = temp_draft_dir / "draft_text_test"
+    builder = CapCutDraftBuilder()
+
+    long_text = "This is an extremely long subtitle sentence that exceeds forty-eight characters and should be wrapped automatically"
+    subtitles = [
+        {"text": long_text, "start_seconds": 0.0, "duration_seconds": 4.5},
+    ]
+
+    builder.build_draft(
+        output_dir=output_draft,
+        draft_name="TEST_TEXT_CALIB",
+        video_clips=mock_media_files["videos"],
+        narration_clips=[{"path": mock_media_files["audio"]["path"], "duration_seconds": 18.888, "start_offset_seconds": 0.0}],
+        subtitles=subtitles,
+    )
+
+    content = json.loads((output_draft / "draft_content.json").read_text(encoding="utf-8"))
+    texts = content["materials"]["texts"]
+    assert len(texts) == 1
+    t = texts[0]
+
+    # Verify font_size 8.0 and style size 8 (matches ASS FontSize 64 on 1080p canvas)
+    assert t["font_size"] == 8.0
+    assert t["text_size"] == 16
+    assert t["border_width"] == 0.15
+    assert t["bold_width"] == 0.20
+    assert t["has_shadow"] is True
+
+    payload = json.loads(t["content"])
+    assert payload["styles"][0]["size"] == 8
+    # Verify auto wrapping (> 48 chars wrapped with newline)
+    assert "\n" in payload["text"]
+
+    # Verify lower-third position matching MarginV 80
+    text_track = [trk for trk in content["tracks"] if trk["type"] == "text"][0]
+    seg = text_track["segments"][0]
+    assert seg["clip"]["transform"]["x"] == 0.0
+    assert seg["clip"]["transform"]["y"] == -0.80
+
+
+def test_stage6b_media_panel_bin_registration(temp_draft_dir, mock_media_files):
+    """Verify A2: Imported media items are registered in draft_virtual_store and meta info."""
+    output_draft = temp_draft_dir / "draft_bin_test"
+    builder = CapCutDraftBuilder()
+
+    builder.build_draft(
+        output_dir=output_draft,
+        draft_name="TEST_BIN_REG",
+        video_clips=mock_media_files["videos"],
+        narration_clips=[{"path": mock_media_files["audio"]["path"], "duration_seconds": 18.888, "start_offset_seconds": 0.0}],
+        subtitles=mock_media_files["subtitles"],
+    )
+
+    # 1. Virtual store registration
+    vs_data = json.loads((output_draft / "draft_virtual_store.json").read_text(encoding="utf-8"))
+    vs_list = vs_data["draft_virtual_store"]
+    bin_type1 = [entry for entry in vs_list if entry.get("type") == 1][0]
+    bin_items = bin_type1.get("value", [])
+
+    # 3 video clips + 1 narration = 4 items
+    assert len(bin_items) == 4
+    for item in bin_items:
+        assert "child_id" in item
+        assert item["parent_id"] == ""
+        assert len(item["child_id"]) > 0
+
+    # 2. Meta info materials registration
+    meta_data = json.loads((output_draft / "draft_meta_info.json").read_text(encoding="utf-8"))
+    registered_meta = meta_data["draft_materials"][0]["value"]
+    assert len(registered_meta) == 4
+    for mat in registered_meta:
+        assert mat["enter_from"] == 0
+        assert mat["extra_info"] != ""
+        assert "roughcut_time_range" in mat
+        assert mat["roughcut_time_range"]["start"] == 0
+        assert mat["roughcut_time_range"]["duration"] > 0
+
+
+def test_stage6b_multi_track_layout_and_chapter_offsets(temp_draft_dir, mock_media_files):
+    """Verify B1: Track layout (Video, Subtitles, Multi-chapter Narration, Ducked BGM)."""
+    output_draft = temp_draft_dir / "draft_multitrack_test"
+    builder = CapCutDraftBuilder()
+
+    # 2 chapter narrations with offsets
+    narrations = [
+        {"path": mock_media_files["audio"]["path"], "duration_seconds": 5.531, "start_offset_seconds": 0.0},
+        {"path": mock_media_files["audio"]["path"], "duration_seconds": 13.357, "start_offset_seconds": 5.531},
+    ]
+
+    bgm_stem = {
+        "path": mock_media_files["audio"]["path"],
+        "duration_seconds": 18.888,
+    }
+
+    builder.build_draft(
+        output_dir=output_draft,
+        draft_name="TEST_MULTITRACK",
+        video_clips=mock_media_files["videos"],
+        narration_clips=narrations,
+        bgm_clip=bgm_stem,
+        subtitles=mock_media_files["subtitles"],
+    )
+
+    content = json.loads((output_draft / "draft_content.json").read_text(encoding="utf-8"))
+    tracks = content["tracks"]
+    assert len(tracks) == 4
+    assert tracks[0]["type"] == "video"
+    assert tracks[1]["type"] == "text"
+    assert tracks[2]["type"] == "audio"  # Narration
+    assert tracks[3]["type"] == "audio"  # Ducked BGM
+
+    # Verify narration track offsets
+    n_segs = tracks[2]["segments"]
+    assert len(n_segs) == 2
+    assert n_segs[0]["target_timerange"]["start"] == 0
+    assert n_segs[0]["target_timerange"]["duration"] == 5531000
+    assert n_segs[1]["target_timerange"]["start"] == 5531000
+    assert n_segs[1]["target_timerange"]["duration"] == 13357000
+
+    # Verify BGM track segment
+    b_segs = tracks[3]["segments"]
+    assert len(b_segs) == 1
+    assert b_segs[0]["target_timerange"]["start"] == 0
+    assert b_segs[0]["target_timerange"]["duration"] == 18888000
+
+
+def test_stage6b_unique_draft_name_collision_avoidance(temp_draft_dir):
+    """Verify B3: Draft name collisions append _1, _2 suffix cleanly."""
+    d1 = temp_draft_dir / "MPT_sample"
+    d1.mkdir()
+
+    # Collision 1
+    name1 = get_unique_draft_name("MPT_sample", [temp_draft_dir])
+    assert name1 == "MPT_sample_1"
+
+    d2 = temp_draft_dir / "MPT_sample_1"
+    d2.mkdir()
+
+    # Collision 2
+    name2 = get_unique_draft_name("MPT_sample", [temp_draft_dir])
+    assert name2 == "MPT_sample_2"
+
+
+def test_stage6b_dual_draft_content_identical_byte_validation(temp_draft_dir, mock_media_files):
+    """Verify B3: Root draft_content.json and Timelines/<id>/draft_content.json are byte-identical."""
+    output_draft = temp_draft_dir / "draft_dual_test"
+    builder = CapCutDraftBuilder()
+
+    builder.build_draft(
+        output_dir=output_draft,
+        draft_name="TEST_DUAL",
+        video_clips=mock_media_files["videos"],
+        narration_clips=[{"path": mock_media_files["audio"]["path"], "duration_seconds": 18.888, "start_offset_seconds": 0.0}],
+        subtitles=mock_media_files["subtitles"],
+    )
+
+    # validate_built_draft passes
+    validate_built_draft(output_draft)
+
+    content = json.loads((output_draft / "draft_content.json").read_text(encoding="utf-8"))
+    tl_id = content["id"]
+    active_content = output_draft / "Timelines" / tl_id / "draft_content.json"
+
+    assert (output_draft / "draft_content.json").read_bytes() == active_content.read_bytes()
+
+    # Tampering with one should cause validate_built_draft to raise RuntimeError
+    active_content.write_bytes(b'{"tampered": true}')
+    with pytest.raises(RuntimeError, match="are not identical"):
+        validate_built_draft(output_draft)
+
+
+def test_stage6b_backup_asset_pack_structure(temp_draft_dir, mock_media_files):
+    """Verify B5: Standalone backup asset pack produces numbered folders, audio, subtitles, and README.txt."""
+    project_dir = temp_draft_dir / "mock_project"
+    project_dir.mkdir()
+
+    class MockShot:
+        def __init__(self, shot_id):
+            self.shot_id = shot_id
+
+    class MockChapter:
+        def __init__(self, idx, title):
+            self.chapter_index = idx
+            self.chapter_title = title
+
+    class MockEncoderSettings:
+        fps = 30.0
+        width = 1920
+        height = 1080
+
+    class MockManifest:
+        project_id = "test_proj"
+        encoder_settings = MockEncoderSettings()
+        chapters = [
+            MockChapter(1, "The Beginning"),
+            MockChapter(2, "The Climax"),
+        ]
+
+    manifest = MockManifest()
+    v1 = mock_media_files["videos"][0]["path"]
+    v2 = mock_media_files["videos"][1]["path"]
+    a1 = mock_media_files["audio"]["path"]
+
+    clips = [
+        {"path": v1, "duration_seconds": 5.531, "chapter_index": 1, "shot_id": "ch01_shot001"},
+        {"path": v2, "duration_seconds": 6.238, "chapter_index": 2, "shot_id": "ch02_shot001"},
+    ]
+
+    srt_file = project_dir / "sample.srt"
+    srt_file.write_text("1\n00:00:00,000 --> 00:00:05,000\nHello\n", encoding="utf-8")
+
+    pack_dir = build_backup_asset_pack(
+        project_dir=project_dir,
+        manifest=manifest,
+        all_video_clips=clips,
+        chapter_wav_paths=[a1],
+        ducked_bgm_path=a1,
+        subtitles_srt=srt_file,
+    )
+
+    assert pack_dir.is_dir()
+    assert (pack_dir / "chapter_01" / f"001_{v1.name}").is_file()
+    assert (pack_dir / "chapter_02" / f"001_{v2.name}").is_file()
+    assert (pack_dir / "audio" / "chapter_01_narration.wav").is_file()
+    assert (pack_dir / "audio" / "bgm_ducked.wav").is_file()
+    assert (pack_dir / "subtitles" / "full_timeline.srt").is_file()
+
+    readme_content = (pack_dir / "README.txt").read_text(encoding="utf-8")
+    assert "Proyek ID:       test_proj" in readme_content
+    assert "Resolusi:        1920x1080" in readme_content
+    assert "Frame Rate:      30.00 fps" in readme_content
+    assert "Bab 01: The Beginning" in readme_content
+    assert "Bab 02: The Climax" in readme_content

@@ -1581,6 +1581,8 @@ def cmd_capcut_doctor(args: argparse.Namespace) -> int:
         print("  WARNINGS / ADVISORIES:")
         for w in report["warnings"]:
             print(f"   [!] {w}")
+        if not report["version_match"]:
+            print("   [*] Tip: Run 'python cli_longform.py capcut smoke <id>' to test compatibility.")
     print("=" * 65 + "\n")
     return 0
 
@@ -1618,6 +1620,62 @@ def cmd_capcut_smoke(args: argparse.Namespace) -> int:
         return 0
     except Exception as exc:
         print(f"Error creating CapCut smoke draft: {exc}", file=sys.stderr)
+        return 1
+
+
+def cmd_capcut_export(args: argparse.Namespace) -> int:
+    """Export full longform video project to CapCut Desktop draft (Stage 6B)."""
+    from app.services.longform.capcut.service import export_full_project
+
+    proj_dir = get_project_dir(args.project_id)
+    if not proj_dir.is_dir():
+        print(f"Error: Project directory not found: {proj_dir}", file=sys.stderr)
+        return 1
+
+    try:
+        print(f"\nExporting full CapCut project for '{args.project_id}'...")
+        if args.install:
+            print("Mode: Export and Install directly to CapCut draft folder")
+        else:
+            print("Mode: Export to project directory (use --install to install to CapCut)")
+
+        if args.portable:
+            print("Media Storage: PORTABLE (copies media to draft media/ folder)")
+        else:
+            print("Media Storage: ABSOLUTE REFERENCE (media kept on project drive, 0 MB copied to C:)")
+
+        res = export_full_project(
+            project_id=args.project_id,
+            install=args.install,
+            portable=args.portable,
+            yes=args.yes,
+            custom_draft_name=getattr(args, "name", None),
+        )
+
+        print("\n" + "=" * 70)
+        print(f"SUCCESS: CapCut full project draft exported: {res['draft_name']}")
+        print("=" * 70)
+        print(f"  Export Draft Path:    {res['export_path']}")
+        print(f"  Timeline Duration:    {res['total_timeline_duration']:.3f} s")
+        if res.get("final_video_duration"):
+            dur_diff = abs(res['total_timeline_duration'] - res['final_video_duration'])
+            print(f"  Final Video Duration: {res['final_video_duration']:.3f} s (diff: {dur_diff:.3f} s, within 1 frame)")
+        print(f"  Track Breakdown:")
+        print(f"    - Video Track:      {res['video_segments_count']} shot clips")
+        print(f"    - Narration Track:  {res['narration_segments_count']} chapter WAVs (with exact start offsets)")
+        print(f"    - BGM Track:        {res['bgm_segments_count']} ducked stem (volume ducked to narration)")
+        print(f"    - Text Track:       {res['subtitles_count']} subtitle chunks (calibrated size 8, bottom)")
+        print(f"  Media Footprint:      {res['media_size_mb']:.1f} MB ({'copied into draft' if res['portable'] else 'referenced on project drive'})")
+        print(f"  Backup Asset Pack:    {res['backup_pack_path']}")
+        if res["installed"]:
+            print(f"  Installed Path:       {res['installed_path']}")
+            print("  Status:               Safely installed into CapCut Projects (all other drafts untouched).")
+        else:
+            print("  Note:                 Run with --install to install directly into CapCut Projects.")
+        print("=" * 70 + "\n")
+        return 0
+    except Exception as exc:
+        print(f"Error exporting CapCut draft: {exc}", file=sys.stderr)
         return 1
 
 
@@ -1871,6 +1929,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_c_smoke.add_argument("project_id", help="Project ID (e.g. uji_nokey)")
     p_c_smoke.add_argument("--install", action="store_true", help="Install draft directly into CapCut draft folder (CapCut must be closed)")
 
+    # capcut export <id> [--install] [--portable] [--yes] [--name <name>]
+    p_c_export = capcut_subs.add_parser("export", help="Export full longform video project to CapCut Desktop draft (6B)")
+    p_c_export.add_argument("project_id", help="Project ID (e.g. uji_nokey)")
+    p_c_export.add_argument("--install", action="store_true", help="Install draft directly into CapCut draft folder (CapCut must be closed)")
+    p_c_export.add_argument("--portable", action="store_true", help="Copy all media into draft folder (requires --yes to confirm disk copy)")
+    p_c_export.add_argument("--yes", action="store_true", help="Confirm media copying when using --portable")
+    p_c_export.add_argument("--name", help="Custom draft name override (default: MPT_<id>_<timestamp>)")
+
     return parser
 
 
@@ -1968,6 +2034,8 @@ def main() -> int:
                 return cmd_capcut_doctor(args)
             elif args.capcut_command == "smoke":
                 return cmd_capcut_smoke(args)
+            elif args.capcut_command == "export":
+                return cmd_capcut_export(args)
 
         parser.print_help()
         return 1

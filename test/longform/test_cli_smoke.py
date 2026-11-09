@@ -200,3 +200,8 @@ def test_cli_all_subcommands_smoke(temp_project_id: str):
     res = run_cli("capcut", "smoke", p_id)
     assert res.returncode == 0, f"capcut smoke failed: {res.stderr}"
     assert "SUCCESS: CapCut smoke draft created:" in res.stdout
+
+    # 30. capcut export (Stage 6B)
+    res = run_cli("capcut", "export", p_id, "--name", f"MPT_SMOKE_EXPORT_{p_id}")
+    assert res.returncode == 0, f"capcut export failed: {res.stderr}"
+    assert "SUCCESS: CapCut full project draft exported:" in res.stdout

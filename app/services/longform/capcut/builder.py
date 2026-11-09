@@ -1,8 +1,9 @@
 """CapCut Draft Builder module.
 
 Constructs valid CapCut Desktop 8.9.0 drafts by adapting the verified template,
-generating unique identifiers, calculating microseconds time offsets, copying media
-into portable project-relative folders, and synchronizing metadata.
+generating unique identifiers, calculating microseconds time offsets, managing media
+references (absolute project paths or portable local copies), synchronizing the Media
+panel (draft_virtual_store.json & draft_meta_info.json), and formatting subtitles.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ import json
 import os
 import shutil
 import subprocess
+import textwrap
 import time
 import uuid
 from pathlib import Path
@@ -18,7 +20,7 @@ from typing import Any
 
 from loguru import logger
 
-from app.services.longform.capcut.detector import detect_draft_folder, detect_capcut_version
+from app.services.longform.capcut.detector import detect_capcut_version, detect_draft_folder
 
 
 class CapCutDraftBuilder:
@@ -26,7 +28,6 @@ class CapCutDraftBuilder:
 
     def __init__(self, template_dir: Path | None = None) -> None:
         if template_dir is None:
-            # Default to repo template copy
             repo_root = Path(__file__).resolve().parents[4]
             self.template_dir = repo_root / "docs" / "longform" / "capcut_template_8.9.0"
         else:
@@ -40,26 +41,34 @@ class CapCutDraftBuilder:
         output_dir: Path,
         draft_name: str,
         video_clips: list[dict[str, Any]],
-        audio_clip: dict[str, Any],
-        subtitles: list[dict[str, Any]],
+        narration_clips: list[dict[str, Any]] | None = None,
+        bgm_clip: dict[str, Any] | None = None,
+        subtitles: list[dict[str, Any]] | None = None,
         draft_root_path: str | None = None,
+        portable: bool = False,
         font_path: str | None = None,
+        audio_clip: dict[str, Any] | None = None,
     ) -> Path:
         """
         Build a complete, standalone CapCut draft folder.
 
         :param output_dir: Destination folder path for the draft.
-        :param draft_name: Display name for the draft (e.g. MPT_SMOKE_uji_nokey).
+        :param draft_name: Display name for the draft (e.g. MPT_uji_nokey_20261109-1440).
         :param video_clips: List of dicts with 'path' (Path) and 'duration_seconds' (float).
-        :param audio_clip: Dict with 'path' (Path) and 'duration_seconds' (float).
+        :param narration_clips: List of dicts with 'path', 'duration_seconds', and 'start_offset_seconds'.
+        :param bgm_clip: Optional dict with 'path' and 'duration_seconds' for ducked BGM stem.
         :param subtitles: List of dicts with 'text' (str), 'start_seconds' (float), 'duration_seconds' (float).
         :param draft_root_path: Optional CapCut root directory (defaults to detected or parent).
+        :param portable: If True, copies media into <draft>/media/; if False, references absolute paths.
         :param font_path: Optional font file path.
         :return: Path to created draft directory.
         """
         output_dir = Path(output_dir).resolve()
-        media_dir = output_dir / "media"
-        media_dir.mkdir(parents=True, exist_ok=True)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        media_dest_dir = output_dir / "media"
+        if portable:
+            media_dest_dir.mkdir(parents=True, exist_ok=True)
 
         if draft_root_path is None:
             detected = detect_draft_folder()
@@ -73,32 +82,91 @@ class CapCutDraftBuilder:
         # 1. Copy auxiliary template files and directories
         self._copy_template_scaffolding(output_dir)
 
-        # 2. Copy and prepare media files
+        # 2. Process video clips
         prepared_videos = []
         for idx, vc in enumerate(video_clips):
-            src_path = Path(vc["path"])
-            dest_name = f"video_{idx + 1:03d}{src_path.suffix}"
-            dest_path = media_dir / dest_name
-            shutil.copy2(src_path, dest_path)
+            src_path = Path(vc["path"]).resolve()
+            if not src_path.is_file():
+                raise FileNotFoundError(f"Video clip not found: {src_path}")
+
+            if portable:
+                dest_name = f"video_{idx + 1:03d}{src_path.suffix}"
+                dest_path = media_dest_dir / dest_name
+                shutil.copy2(src_path, dest_path)
+                final_path = dest_path.resolve().as_posix()
+                file_name = dest_name
+            else:
+                final_path = src_path.as_posix()
+                file_name = src_path.name
+
             dur_us = int(round(vc["duration_seconds"] * 1_000_000))
             prepared_videos.append({
-                "path": dest_path.resolve().as_posix(),
-                "name": dest_name,
+                "path": final_path,
+                "name": file_name,
                 "duration_us": dur_us,
                 "duration_seconds": vc["duration_seconds"],
             })
 
-        # Audio file
-        src_audio = Path(audio_clip["path"])
-        dest_audio = media_dir / f"audio_track{src_audio.suffix}"
-        shutil.copy2(src_audio, dest_audio)
-        audio_dur_us = int(round(audio_clip["duration_seconds"] * 1_000_000))
-        prepared_audio = {
-            "path": dest_audio.resolve().as_posix(),
-            "name": dest_audio.name,
-            "duration_us": audio_dur_us,
-            "duration_seconds": audio_clip["duration_seconds"],
-        }
+        # Process narration clips
+        if audio_clip and not narration_clips:
+            narration_clips = [{
+                "path": audio_clip["path"],
+                "duration_seconds": audio_clip["duration_seconds"],
+                "start_offset_seconds": 0.0,
+            }]
+        elif narration_clips is None:
+            narration_clips = []
+
+        prepared_narrations = []
+        for idx, nc in enumerate(narration_clips):
+            src_path = Path(nc["path"]).resolve()
+            if not src_path.is_file():
+                raise FileNotFoundError(f"Narration file not found: {src_path}")
+
+            if portable:
+                if audio_clip and len(narration_clips) == 1:
+                    dest_name = f"audio_track{src_path.suffix}"
+                else:
+                    dest_name = f"narration_{idx + 1:02d}{src_path.suffix}"
+                dest_path = media_dest_dir / dest_name
+                shutil.copy2(src_path, dest_path)
+                final_path = dest_path.resolve().as_posix()
+                file_name = dest_name
+            else:
+                final_path = src_path.as_posix()
+                file_name = src_path.name
+
+            dur_us = int(round(nc["duration_seconds"] * 1_000_000))
+            offset_us = int(round(nc.get("start_offset_seconds", 0.0) * 1_000_000))
+            prepared_narrations.append({
+                "path": final_path,
+                "name": file_name,
+                "duration_us": dur_us,
+                "start_offset_us": offset_us,
+                "duration_seconds": nc["duration_seconds"],
+            })
+
+        # Process BGM clip (if provided)
+        prepared_bgm = None
+        if bgm_clip and bgm_clip.get("path"):
+            src_bgm = Path(bgm_clip["path"]).resolve()
+            if src_bgm.is_file():
+                if portable:
+                    dest_bgm = media_dest_dir / f"bgm_ducked{src_bgm.suffix}"
+                    shutil.copy2(src_bgm, dest_bgm)
+                    final_bgm_path = dest_bgm.resolve().as_posix()
+                    file_name = dest_bgm.name
+                else:
+                    final_bgm_path = src_bgm.as_posix()
+                    file_name = src_bgm.name
+
+                bgm_dur_us = int(round(bgm_clip["duration_seconds"] * 1_000_000))
+                prepared_bgm = {
+                    "path": final_bgm_path,
+                    "name": file_name,
+                    "duration_us": bgm_dur_us,
+                    "duration_seconds": bgm_clip["duration_seconds"],
+                }
 
         # Generate cover image from first video clip using ffmpeg
         cover_path = output_dir / "draft_cover.jpg"
@@ -108,9 +176,8 @@ class CapCutDraftBuilder:
         # Total duration is determined by video clips sum
         total_duration_us = sum(v["duration_us"] for v in prepared_videos)
 
-        # Font resolution
+        # Resolve font path
         if not font_path:
-            # Check if CapCut system font exists
             ver_info = detect_capcut_version()
             if ver_info.get("installed") and ver_info.get("full_ver") and ver_info.get("apps_dir"):
                 candidate = Path(ver_info["apps_dir"]) / ver_info["full_ver"] / "Resources" / "Font" / "SystemFont" / "en.ttf"
@@ -118,7 +185,6 @@ class CapCutDraftBuilder:
                     font_path = candidate.resolve().as_posix()
 
         if not font_path:
-            # Fallback to repo font
             repo_font = Path(__file__).resolve().parents[4] / "resource" / "fonts" / "BeVietnamPro-Bold.ttf"
             if repo_font.is_file():
                 font_path = repo_font.resolve().as_posix()
@@ -128,17 +194,17 @@ class CapCutDraftBuilder:
         # Generate unique IDs
         draft_id = str(uuid.uuid4()).upper()
         timeline_id = str(uuid.uuid4()).upper()
-
         now_us = int(time.time() * 1_000_000)
 
-        # 3. Build draft_content.json
-        draft_content, draft_meta_materials = self._build_draft_content(
+        # 3. Build draft_content.json and gather materials for meta info & virtual store
+        draft_content, draft_meta_materials, media_child_ids = self._build_draft_content(
             timeline_id=timeline_id,
             draft_name=draft_name,
             total_duration_us=total_duration_us,
             prepared_videos=prepared_videos,
-            prepared_audio=prepared_audio,
-            subtitles=subtitles,
+            prepared_narrations=prepared_narrations,
+            prepared_bgm=prepared_bgm,
+            subtitles=subtitles or [],
             font_path=font_path or "",
             now_us=now_us,
         )
@@ -193,7 +259,7 @@ class CapCutDraftBuilder:
                 shutil.rmtree(dest_common)
             shutil.copytree(output_dir / "common_attachment", dest_common)
 
-        # 5. Build draft_meta_info.json
+        # 5. Build draft_meta_info.json (with extra_info and roughcut_time_range)
         self._build_draft_meta_info(
             output_dir=output_dir,
             draft_id=draft_id,
@@ -203,6 +269,12 @@ class CapCutDraftBuilder:
             total_duration_us=total_duration_us,
             draft_materials=draft_meta_materials,
             now_us=now_us,
+        )
+
+        # 6. Build draft_virtual_store.json (A2 fix: Media panel bin registration)
+        self._build_draft_virtual_store(
+            output_dir=output_dir,
+            media_child_ids=media_child_ids,
         )
 
         logger.info(f"CapCut draft '{draft_name}' successfully built at {output_dir}")
@@ -228,7 +300,6 @@ class CapCutDraftBuilder:
             elif not (output_dir / fn).exists():
                 (output_dir / fn).touch()
 
-        # Copy common_attachment directory
         src_common = self.template_dir / "common_attachment"
         if src_common.is_dir():
             dest_common = output_dir / "common_attachment"
@@ -262,13 +333,13 @@ class CapCutDraftBuilder:
         draft_name: str,
         total_duration_us: int,
         prepared_videos: list[dict[str, Any]],
-        prepared_audio: dict[str, Any],
+        prepared_narrations: list[dict[str, Any]],
+        prepared_bgm: dict[str, Any] | None,
         subtitles: list[dict[str, Any]],
         font_path: str,
         now_us: int,
-    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    ) -> tuple[dict[str, Any], list[dict[str, Any]], list[str]]:
         """Construct the draft_content.json data structure."""
-        # Load base template draft_content
         template_content_path = self.template_dir / "draft_content.json"
         with open(template_content_path, "r", encoding="utf-8") as f:
             content = json.load(f)
@@ -286,7 +357,6 @@ class CapCutDraftBuilder:
             "width": 1920,
         }
 
-        # Clear existing tracks and materials
         content["tracks"] = []
         materials = content.get("materials", {})
         for k in list(materials.keys()):
@@ -294,8 +364,9 @@ class CapCutDraftBuilder:
                 materials[k] = []
 
         draft_meta_materials: list[dict[str, Any]] = []
+        media_child_ids: list[str] = []
 
-        # --- TRACK 0: VIDEO ---
+        # --- TRACK 0: VIDEO (all clips sequentially) ---
         video_track_id = str(uuid.uuid4()).upper()
         video_track = {
             "attribute": 0,
@@ -312,6 +383,7 @@ class CapCutDraftBuilder:
             mat_id = str(uuid.uuid4()).upper()
             seg_id = str(uuid.uuid4()).upper()
             local_mat_id = str(uuid.uuid4()).lower()
+            media_child_ids.append(local_mat_id)
 
             speed_id = str(uuid.uuid4()).upper()
             placeholder_id = str(uuid.uuid4()).upper()
@@ -320,7 +392,6 @@ class CapCutDraftBuilder:
             color_id = str(uuid.uuid4()).upper()
             vocal_id = str(uuid.uuid4()).upper()
 
-            # Material video object
             video_mat = {
                 "id": mat_id,
                 "type": "video",
@@ -348,7 +419,6 @@ class CapCutDraftBuilder:
             }
             materials["videos"].append(video_mat)
 
-            # Extra materials
             materials["speeds"].append({
                 "curve_speed": None,
                 "id": speed_id,
@@ -406,7 +476,6 @@ class CapCutDraftBuilder:
                 "type": "vocal_separation",
             })
 
-            # Video segment
             v_seg = {
                 "id": seg_id,
                 "material_id": mat_id,
@@ -434,13 +503,13 @@ class CapCutDraftBuilder:
             video_track["segments"].append(v_seg)
             current_v_offset += vid["duration_us"]
 
-            # Add to meta info materials
+            # Add to meta info materials (A2 fix: enter_from=0, extra_info=name, roughcut_time_range)
             draft_meta_materials.append({
                 "ai_group_type": "",
                 "create_time": now_us,
                 "duration": vid["duration_us"],
-                "enter_from": "",
-                "extra_info": "",
+                "enter_from": 0,
+                "extra_info": vid["name"],
                 "file_Path": vid["path"],
                 "height": 1080,
                 "id": local_mat_id,
@@ -449,7 +518,7 @@ class CapCutDraftBuilder:
                 "item_source": 1,
                 "md5": "",
                 "metetype": "video",
-                "roughcut_time_range": {"duration": 0, "start": 0},
+                "roughcut_time_range": {"duration": vid["duration_us"], "start": 0},
                 "sub_time_range": {"duration": -1, "start": -1},
                 "type": 0,
                 "width": 1920,
@@ -457,7 +526,7 @@ class CapCutDraftBuilder:
 
         content["tracks"].append(video_track)
 
-        # --- TRACK 1: TEXT (SUBTITLES) ---
+        # --- TRACK 1: TEXT (SUBTITLES with calibrated size 8 & position y=-0.80) ---
         if subtitles:
             text_track_id = str(uuid.uuid4()).upper()
             text_track = {
@@ -473,23 +542,31 @@ class CapCutDraftBuilder:
             for sub in subtitles:
                 text_id = str(uuid.uuid4()).upper()
                 seg_id = str(uuid.uuid4()).upper()
-                sub_text = sub["text"]
+                raw_text = sub["text"].strip()
+
+                # Text wrapping: wrap at ~48 characters if long
+                if len(raw_text) > 48:
+                    wrapped_text = "\n".join(textwrap.wrap(raw_text, width=48))
+                else:
+                    wrapped_text = raw_text
+
                 start_us = int(round(sub["start_seconds"] * 1_000_000))
                 dur_us = int(round(sub["duration_seconds"] * 1_000_000))
 
+                # A1 Calibration: size 8 in CapCut matches ASS 64 on 1080p canvas (~5.9% height)
                 text_content_payload = {
-                    "text": sub_text,
+                    "text": wrapped_text,
                     "styles": [
                         {
                             "fill": {
                                 "content": {
                                     "render_type": "solid",
-                                    "solid": {"color": [1, 1, 1]},
+                                    "solid": {"color": [1.0, 1.0, 1.0]},
                                 }
                             },
                             "font": {"path": font_path, "id": ""},
-                            "size": 15,
-                            "range": [0, len(sub_text)],
+                            "size": 8,
+                            "range": [0, len(wrapped_text)],
                         }
                     ],
                 }
@@ -498,18 +575,29 @@ class CapCutDraftBuilder:
                     "id": text_id,
                     "type": "text",
                     "content": json.dumps(text_content_payload, ensure_ascii=False),
-                    "font_size": 15.0,
+                    "font_size": 8.0,
+                    "text_size": 16,
                     "alignment": 1,
                     "font_path": font_path,
                     "text_color": "#FFFFFF",
                     "text_alpha": 1.0,
                     "border_alpha": 1.0,
                     "border_color": "#000000",
-                    "border_width": 0.08,
-                    "has_shadow": False,
+                    "border_width": 0.15,
+                    "border_mode": 0,
+                    "bold_width": 0.20,
+                    "has_shadow": True,
+                    "shadow_color": "#000000",
+                    "shadow_alpha": 0.85,
+                    "shadow_smoothing": 0.45,
+                    "shadow_distance": 5.0,
+                    "shadow_angle": -45.0,
+                    "force_apply_line_max_width": True,
+                    "line_max_width": 0.82,
                 }
                 materials["texts"].append(text_mat)
 
+                # A1 Position: transform y = -0.80 corresponds to MarginV 80 in ASS (center-bottom)
                 t_seg = {
                     "id": seg_id,
                     "material_id": text_id,
@@ -521,145 +609,292 @@ class CapCutDraftBuilder:
                     "extra_material_refs": [],
                     "speed": 1.0,
                     "volume": 1.0,
-                    "render_index": 1,
+                    "render_index": 14000,
                     "visible": True,
+                    "clip": {
+                        "alpha": 1.0,
+                        "flip": {"horizontal": False, "vertical": False},
+                        "rotation": 0.0,
+                        "scale": {"x": 1.0, "y": 1.0},
+                        "transform": {"x": 0.0, "y": -0.80},
+                    },
+                    "uniform_scale": {
+                        "on": True,
+                        "value": 1.0,
+                    },
                 }
                 text_track["segments"].append(t_seg)
 
             content["tracks"].append(text_track)
 
-        # --- TRACK 2: AUDIO ---
-        audio_track_id = str(uuid.uuid4()).upper()
-        audio_track = {
-            "attribute": 0,
-            "flag": 0,
-            "id": audio_track_id,
-            "is_default_name": True,
-            "name": "",
-            "segments": [],
-            "type": "audio",
-        }
+        # --- TRACK 2: NARRATION (independent WAV per chapter) ---
+        if prepared_narrations:
+            narr_track_id = str(uuid.uuid4()).upper()
+            narr_track = {
+                "attribute": 0,
+                "flag": 0,
+                "id": narr_track_id,
+                "is_default_name": True,
+                "name": "",
+                "segments": [],
+                "type": "audio",
+            }
 
-        aud_mat_id = str(uuid.uuid4()).upper()
-        aud_seg_id = str(uuid.uuid4()).upper()
-        aud_local_id = str(uuid.uuid4()).lower()
+            for narr in prepared_narrations:
+                aud_mat_id = str(uuid.uuid4()).upper()
+                aud_seg_id = str(uuid.uuid4()).upper()
+                aud_local_id = str(uuid.uuid4()).lower()
+                media_child_ids.append(aud_local_id)
 
-        aud_speed_id = str(uuid.uuid4()).upper()
-        aud_placeholder_id = str(uuid.uuid4()).upper()
-        aud_channel_id = str(uuid.uuid4()).upper()
-        aud_vocal_id = str(uuid.uuid4()).upper()
-        aud_beats_id = str(uuid.uuid4()).upper()
+                aud_speed_id = str(uuid.uuid4()).upper()
+                aud_placeholder_id = str(uuid.uuid4()).upper()
+                aud_channel_id = str(uuid.uuid4()).upper()
+                aud_vocal_id = str(uuid.uuid4()).upper()
+                aud_beats_id = str(uuid.uuid4()).upper()
 
-        audio_mat = {
-            "id": aud_mat_id,
-            "type": "extract_music",
-            "name": prepared_audio["name"],
-            "duration": prepared_audio["duration_us"],
-            "path": prepared_audio["path"],
-            "category_name": "local",
-            "local_material_id": aud_local_id,
-            "check_flag": 1,
-        }
-        materials["audios"].append(audio_mat)
+                audio_mat = {
+                    "id": aud_mat_id,
+                    "type": "extract_music",
+                    "name": narr["name"],
+                    "duration": narr["duration_us"],
+                    "path": narr["path"],
+                    "category_name": "local",
+                    "local_material_id": aud_local_id,
+                    "check_flag": 1,
+                }
+                materials["audios"].append(audio_mat)
 
-        materials["speeds"].append({
-            "curve_speed": None,
-            "id": aud_speed_id,
-            "mode": 0,
-            "speed": 1.0,
-            "type": "speed",
-        })
-        materials["placeholder_infos"].append({
-            "error_path": "",
-            "error_text": "",
-            "id": aud_placeholder_id,
-            "meta_type": 0,
-            "res_path": "",
-            "res_text": "",
-            "type": "placeholder_info",
-        })
-        materials["beats"].append({
-            "ai_beats": {
-                "beat_speed_infos": [],
-                "beats_path": "",
-                "beats_url": "",
-                "melody_path": "",
-                "melody_percents": [0.0],
-                "melody_url": "",
-            },
-            "enable_ai_beats": False,
-            "gear": 404,
-            "id": aud_beats_id,
-            "mode": 404,
-            "type": "beats",
-            "user_beats": [],
-            "user_delete_ai_beats": None,
-        })
-        materials["sound_channel_mappings"].append({
-            "audio_channel_mapping": 0,
-            "id": aud_channel_id,
-            "is_config_open": False,
-            "type": "none",
-        })
-        materials["vocal_separations"].append({
-            "choice": 0,
-            "enter_from": "",
-            "final_algorithm": "",
-            "id": aud_vocal_id,
-            "production_path": "",
-            "removed_sounds": [],
-            "time_range": None,
-            "type": "vocal_separation",
-        })
+                materials["speeds"].append({
+                    "curve_speed": None,
+                    "id": aud_speed_id,
+                    "mode": 0,
+                    "speed": 1.0,
+                    "type": "speed",
+                })
+                materials["placeholder_infos"].append({
+                    "error_path": "",
+                    "error_text": "",
+                    "id": aud_placeholder_id,
+                    "meta_type": 0,
+                    "res_path": "",
+                    "res_text": "",
+                    "type": "placeholder_info",
+                })
+                materials["beats"].append({
+                    "ai_beats": {
+                        "beat_speed_infos": [],
+                        "beats_path": "",
+                        "beats_url": "",
+                        "melody_path": "",
+                        "melody_percents": [0.0],
+                        "melody_url": "",
+                    },
+                    "enable_ai_beats": False,
+                    "gear": 404,
+                    "id": aud_beats_id,
+                    "mode": 404,
+                    "type": "beats",
+                    "user_beats": [],
+                    "user_delete_ai_beats": None,
+                })
+                materials["sound_channel_mappings"].append({
+                    "audio_channel_mapping": 0,
+                    "id": aud_channel_id,
+                    "is_config_open": False,
+                    "type": "none",
+                })
+                materials["vocal_separations"].append({
+                    "choice": 0,
+                    "enter_from": "",
+                    "final_algorithm": "",
+                    "id": aud_vocal_id,
+                    "production_path": "",
+                    "removed_sounds": [],
+                    "time_range": None,
+                    "type": "vocal_separation",
+                })
 
-        aud_seg = {
-            "id": aud_seg_id,
-            "material_id": aud_mat_id,
-            "target_timerange": {
-                "start": 0,
-                "duration": prepared_audio["duration_us"],
-            },
-            "source_timerange": {
-                "start": 0,
-                "duration": prepared_audio["duration_us"],
-            },
-            "extra_material_refs": [
-                aud_speed_id,
-                aud_placeholder_id,
-                aud_beats_id,
-                aud_channel_id,
-                aud_vocal_id,
-            ],
-            "speed": 1.0,
-            "volume": 1.0,
-            "render_index": 2,
-            "visible": True,
-        }
-        audio_track["segments"].append(aud_seg)
-        content["tracks"].append(audio_track)
+                aud_seg = {
+                    "id": aud_seg_id,
+                    "material_id": aud_mat_id,
+                    "target_timerange": {
+                        "start": narr["start_offset_us"],
+                        "duration": narr["duration_us"],
+                    },
+                    "source_timerange": {
+                        "start": 0,
+                        "duration": narr["duration_us"],
+                    },
+                    "extra_material_refs": [
+                        aud_speed_id,
+                        aud_placeholder_id,
+                        aud_beats_id,
+                        aud_channel_id,
+                        aud_vocal_id,
+                    ],
+                    "speed": 1.0,
+                    "volume": 1.0,
+                    "render_index": 2,
+                    "visible": True,
+                }
+                narr_track["segments"].append(aud_seg)
 
-        draft_meta_materials.append({
-            "ai_group_type": "",
-            "create_time": now_us,
-            "duration": prepared_audio["duration_us"],
-            "enter_from": "",
-            "extra_info": "",
-            "file_Path": prepared_audio["path"],
-            "height": 0,
-            "id": aud_local_id,
-            "import_time": int(time.time()),
-            "import_time_ms": int(time.time() * 1000),
-            "item_source": 1,
-            "md5": "",
-            "metetype": "music",
-            "roughcut_time_range": {"duration": 0, "start": 0},
-            "sub_time_range": {"duration": -1, "start": -1},
-            "type": 0,
-            "width": 0,
-        })
+                draft_meta_materials.append({
+                    "ai_group_type": "",
+                    "create_time": now_us,
+                    "duration": narr["duration_us"],
+                    "enter_from": 0,
+                    "extra_info": narr["name"],
+                    "file_Path": narr["path"],
+                    "height": 0,
+                    "id": aud_local_id,
+                    "import_time": int(time.time()),
+                    "import_time_ms": int(time.time() * 1000),
+                    "item_source": 1,
+                    "md5": "",
+                    "metetype": "music",
+                    "roughcut_time_range": {"duration": narr["duration_us"], "start": 0},
+                    "sub_time_range": {"duration": -1, "start": -1},
+                    "type": 0,
+                    "width": 0,
+                })
+
+            content["tracks"].append(narr_track)
+
+        # --- TRACK 3: BGM (ducked stem) ---
+        if prepared_bgm:
+            bgm_track_id = str(uuid.uuid4()).upper()
+            bgm_track = {
+                "attribute": 0,
+                "flag": 0,
+                "id": bgm_track_id,
+                "is_default_name": True,
+                "name": "",
+                "segments": [],
+                "type": "audio",
+            }
+
+            bgm_mat_id = str(uuid.uuid4()).upper()
+            bgm_seg_id = str(uuid.uuid4()).upper()
+            bgm_local_id = str(uuid.uuid4()).lower()
+            media_child_ids.append(bgm_local_id)
+
+            bgm_speed_id = str(uuid.uuid4()).upper()
+            bgm_placeholder_id = str(uuid.uuid4()).upper()
+            bgm_channel_id = str(uuid.uuid4()).upper()
+            bgm_vocal_id = str(uuid.uuid4()).upper()
+            bgm_beats_id = str(uuid.uuid4()).upper()
+
+            bgm_mat = {
+                "id": bgm_mat_id,
+                "type": "extract_music",
+                "name": prepared_bgm["name"],
+                "duration": prepared_bgm["duration_us"],
+                "path": prepared_bgm["path"],
+                "category_name": "local",
+                "local_material_id": bgm_local_id,
+                "check_flag": 1,
+            }
+            materials["audios"].append(bgm_mat)
+
+            materials["speeds"].append({
+                "curve_speed": None,
+                "id": bgm_speed_id,
+                "mode": 0,
+                "speed": 1.0,
+                "type": "speed",
+            })
+            materials["placeholder_infos"].append({
+                "error_path": "",
+                "error_text": "",
+                "id": bgm_placeholder_id,
+                "meta_type": 0,
+                "res_path": "",
+                "res_text": "",
+                "type": "placeholder_info",
+            })
+            materials["beats"].append({
+                "ai_beats": {
+                    "beat_speed_infos": [],
+                    "beats_path": "",
+                    "beats_url": "",
+                    "melody_path": "",
+                    "melody_percents": [0.0],
+                    "melody_url": "",
+                },
+                "enable_ai_beats": False,
+                "gear": 404,
+                "id": bgm_beats_id,
+                "mode": 404,
+                "type": "beats",
+                "user_beats": [],
+                "user_delete_ai_beats": None,
+            })
+            materials["sound_channel_mappings"].append({
+                "audio_channel_mapping": 0,
+                "id": bgm_channel_id,
+                "is_config_open": False,
+                "type": "none",
+            })
+            materials["vocal_separations"].append({
+                "choice": 0,
+                "enter_from": "",
+                "final_algorithm": "",
+                "id": bgm_vocal_id,
+                "production_path": "",
+                "removed_sounds": [],
+                "time_range": None,
+                "type": "vocal_separation",
+            })
+
+            bgm_seg = {
+                "id": bgm_seg_id,
+                "material_id": bgm_mat_id,
+                "target_timerange": {
+                    "start": 0,
+                    "duration": total_duration_us,
+                },
+                "source_timerange": {
+                    "start": 0,
+                    "duration": total_duration_us,
+                },
+                "extra_material_refs": [
+                    bgm_speed_id,
+                    bgm_placeholder_id,
+                    bgm_beats_id,
+                    bgm_channel_id,
+                    bgm_vocal_id,
+                ],
+                "speed": 1.0,
+                "volume": 1.0,
+                "render_index": 3,
+                "visible": True,
+            }
+            bgm_track["segments"].append(bgm_seg)
+            content["tracks"].append(bgm_track)
+
+            draft_meta_materials.append({
+                "ai_group_type": "",
+                "create_time": now_us,
+                "duration": prepared_bgm["duration_us"],
+                "enter_from": 0,
+                "extra_info": prepared_bgm["name"],
+                "file_Path": prepared_bgm["path"],
+                "height": 0,
+                "id": bgm_local_id,
+                "import_time": int(time.time()),
+                "import_time_ms": int(time.time() * 1000),
+                "item_source": 1,
+                "md5": "",
+                "metetype": "music",
+                "roughcut_time_range": {"duration": prepared_bgm["duration_us"], "start": 0},
+                "sub_time_range": {"duration": -1, "start": -1},
+                "type": 0,
+                "width": 0,
+            })
 
         content["materials"] = materials
-        return content, draft_meta_materials
+        return content, draft_meta_materials, media_child_ids
 
     def _build_draft_meta_info(
         self,
@@ -685,7 +920,6 @@ class CapCutDraftBuilder:
         meta["tm_draft_create"] = now_us
         meta["tm_draft_modified"] = now_us
 
-        # Materials inventory in index 0
         if "draft_materials" in meta and len(meta["draft_materials"]) > 0:
             meta["draft_materials"][0]["value"] = draft_materials
         else:
@@ -693,5 +927,35 @@ class CapCutDraftBuilder:
 
         (output_dir / "draft_meta_info.json").write_text(
             json.dumps(meta, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    def _build_draft_virtual_store(
+        self,
+        output_dir: Path,
+        media_child_ids: list[str],
+    ) -> None:
+        """Register all imported media items in draft_virtual_store.json (A2 fix)."""
+        store_template_path = self.template_dir / "draft_virtual_store.json"
+        with open(store_template_path, "r", encoding="utf-8") as f:
+            store = json.load(f)
+
+        # type 1 in draft_virtual_store holds the list of media child_ids
+        media_entries = [
+            {"child_id": cid, "parent_id": ""}
+            for cid in media_child_ids
+        ]
+
+        if "draft_virtual_store" in store and len(store["draft_virtual_store"]) > 1:
+            store["draft_virtual_store"][1]["value"] = media_entries
+        else:
+            store["draft_virtual_store"] = [
+                {"type": 0, "value": []},
+                {"type": 1, "value": media_entries},
+                {"type": 2, "value": []},
+            ]
+
+        (output_dir / "draft_virtual_store.json").write_text(
+            json.dumps(store, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
