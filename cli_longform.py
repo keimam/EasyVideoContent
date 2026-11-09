@@ -1012,8 +1012,18 @@ def cmd_visual_review(args: argparse.Namespace) -> int:
 
     for ch, shot in review_shots:
         status_badge = "[NEEDS REVIEW]" if getattr(shot, "needs_review", False) else f"[{shot.status.value.upper()}]"
+        encoder_fps = getattr(getattr(manifest, "encoder_settings", None), "fps", 25.0) or 25.0
+        shot_fps = encoder_fps
+        if shot.duration_seconds and shot.duration_seconds > 0:
+            calc_fps = shot.target_frames / shot.duration_seconds
+            if abs(calc_fps - encoder_fps) < 0.5:
+                shot_fps = encoder_fps
+            else:
+                shot_fps = round(calc_fps, 2)
+        fps_display = f"{int(shot_fps)} fps" if float(shot_fps).is_integer() else f"{float(shot_fps):.2f} fps"
+
         print(f"\nShot: {shot.shot_id} (Chapter {ch.chapter_index}: {ch.chapter_title}) {status_badge}")
-        print(f"  Duration:     {shot.duration_seconds:.2f}s ({shot.target_frames} frames at 25 fps)")
+        print(f"  Duration:     {shot.duration_seconds:.2f}s ({shot.target_frames} frames at {fps_display})")
         print(f"  Visual Prompt:{shot.visual_prompt}")
         print(f"  Search Query: {shot.search_query}")
         print(f"  Source:       requested={shot.requested_source}, actual={shot.actual_source}")
@@ -1022,8 +1032,15 @@ def cmd_visual_review(args: argparse.Namespace) -> int:
 
         print("  Candidate Options:")
         if not shot.candidates:
-            print("    (No candidates recorded. Run 'visual fetch' with --allow-fallback or add local assets.)")
+            print("    (No candidates recorded. Run 'visual replace' with --search or --list to inspect alternatives.)")
         else:
+            from app.services.longform.visual.stock import score_candidate_relevance
+            preset_snap = manifest.preset_snapshot or {}
+            req_terms = preset_snap.get("required_subject_terms") or []
+            block_terms = preset_snap.get("blocked_terms") or []
+            neg_terms = preset_snap.get("negative_terms") or []
+            min_score = preset_snap.get("min_relevance_score", 0.35)
+
             for idx, cand in enumerate(shot.candidates):
                 c_id = cand.get("candidate_id", "unknown")
                 c_prov = cand.get("provider", "unknown")
@@ -1031,12 +1048,31 @@ def cmd_visual_review(args: argparse.Namespace) -> int:
                 c_rend = cand.get("rendition_name", "standard")
                 c_tags = cand.get("tags", [])
                 tag_preview = ", ".join(c_tags[:5]) if c_tags else "none"
-                print(f"    [{idx}] {c_prov.upper()} ID={c_id} | score: {c_score:.2f} | rend: {c_rend}")
-                print(f"        tags: [{tag_preview}]")
+
+                # A4: Validate against relevance filter so rejected candidates are labeled REJECTED, not passing
+                is_valid = True
+                reason = "Accepted"
+                if req_terms or block_terms or neg_terms:
+                    is_valid, c_score, reason = score_candidate_relevance(
+                        candidate_tags=c_tags,
+                        search_query=shot.search_query or shot.visual_prompt,
+                        required_subject_terms=req_terms,
+                        blocked_terms=block_terms,
+                        negative_terms=neg_terms,
+                        min_relevance_score=min_score,
+                    )
+
+                if not is_valid or cand.get("is_rejected"):
+                    rej_reason = cand.get("rejection_reason") or reason
+                    print(f"    [{idx}] {c_prov.upper()} ID={c_id} | [REJECTED: {rej_reason}] | rend: {c_rend}")
+                    print(f"        tags: [{tag_preview}]")
+                else:
+                    print(f"    [{idx}] {c_prov.upper()} ID={c_id} | score: {c_score:.2f} | rend: {c_rend}")
+                    print(f"        tags: [{tag_preview}]")
 
         print("  Resolution Commands:")
         print(f"    - Replace with candidate: python cli_longform.py visual replace {manifest.project_id} --shot {shot.shot_id} --candidate <index>")
-        print(f"    - Replace with custom query: python cli_longform.py visual replace {manifest.project_id} --shot {shot.shot_id} --prompt \"<search_query>\"")
+        print(f"    - Replace with custom query: python cli_longform.py visual replace {manifest.project_id} --shot {shot.shot_id} --search \"<search_query>\"")
         print(f"    - Replace with local file:   python cli_longform.py visual replace {manifest.project_id} --shot {shot.shot_id} --file <path/to/media.mp4>")
 
     print("\n" + "=" * 88 + "\n")
