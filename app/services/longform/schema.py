@@ -85,6 +85,7 @@ class Preset(BaseModel):
     negative_terms: List[str] = Field(default_factory=list)
     min_relevance_score: float = 0.35
     stock_category: Optional[str] = None
+    capcut_text_size: Optional[int] = None
 
     model_config = {"extra": "forbid"}
 

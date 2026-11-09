@@ -107,5 +107,6 @@
     "people"
   ],
   "min_relevance_score": 0.35,
-  "stock_category": "transportation"
+  "stock_category": "transportation",
+  "capcut_text_size": 7
 }

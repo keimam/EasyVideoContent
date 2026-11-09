@@ -31,8 +31,9 @@
   ],
   "sensitivity_notes": "Verify whether engines were factory stock or dealer special packages (Yenko, COPO, Royal Bobcat). Do not mix up gross SAE vs net SAE horsepower ratings. Attach [verify: ...] to dyno ratings and production counts.",
   "recommended_visual_sources": {
-    "stock": 0.60,
+    "stock": 0.6,
     "local": 0.25,
     "ai_image": 0.15
-  }
+  },
+  "capcut_text_size": 7
 }

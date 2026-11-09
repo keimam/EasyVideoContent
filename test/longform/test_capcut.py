@@ -8,7 +8,11 @@ from unittest.mock import patch
 
 import pytest
 
-from app.services.longform.capcut.builder import CapCutDraftBuilder
+from app.services.longform.capcut.builder import (
+    CapCutDraftBuilder,
+    calculate_bottom_anchored_y,
+    format_capcut_subtitle,
+)
 from app.services.longform.capcut.detector import (
     TEMPLATE_VERSION,
     detect_capcut_version,
@@ -17,11 +21,14 @@ from app.services.longform.capcut.detector import (
     is_capcut_running,
 )
 from app.services.longform.capcut.service import (
-    build_smoke_draft,
-    parse_srt_entries,
-    get_unique_draft_name,
-    validate_built_draft,
     build_backup_asset_pack,
+    build_calibration_draft,
+    build_smoke_draft,
+    get_unique_draft_name,
+    parse_srt_entries,
+    resolve_capcut_text_size,
+    set_capcut_text_size,
+    validate_built_draft,
 )
 
 
@@ -223,6 +230,7 @@ def test_stage6b_text_size_and_position_calibration(temp_draft_dir, mock_media_f
         video_clips=mock_media_files["videos"],
         narration_clips=[{"path": mock_media_files["audio"]["path"], "duration_seconds": 18.888, "start_offset_seconds": 0.0}],
         subtitles=subtitles,
+        default_text_size=8,
     )
 
     content = json.loads((output_draft / "draft_content.json").read_text(encoding="utf-8"))
@@ -230,7 +238,7 @@ def test_stage6b_text_size_and_position_calibration(temp_draft_dir, mock_media_f
     assert len(texts) == 1
     t = texts[0]
 
-    # Verify font_size 8.0 and style size 8 (matches ASS FontSize 64 on 1080p canvas)
+    # Verify font_size 8.0 and style size 8
     assert t["font_size"] == 8.0
     assert t["text_size"] == 16
     assert t["border_width"] == 0.15
@@ -239,14 +247,14 @@ def test_stage6b_text_size_and_position_calibration(temp_draft_dir, mock_media_f
 
     payload = json.loads(t["content"])
     assert payload["styles"][0]["size"] == 8
-    # Verify auto wrapping (> 48 chars wrapped with newline)
+    # Verify auto wrapping (> 42 chars wrapped with newline)
     assert "\n" in payload["text"]
 
-    # Verify lower-third position matching MarginV 80
+    # Verify bottom-anchored position for 2 lines at size 8
     text_track = [trk for trk in content["tracks"] if trk["type"] == "text"][0]
     seg = text_track["segments"][0]
     assert seg["clip"]["transform"]["x"] == 0.0
-    assert seg["clip"]["transform"]["y"] == -0.80
+    assert seg["clip"]["transform"]["y"] == -0.7267
 
 
 def test_stage6b_media_panel_bin_registration(temp_draft_dir, mock_media_files):
@@ -442,3 +450,162 @@ def test_stage6b_backup_asset_pack_structure(temp_draft_dir, mock_media_files):
     assert "Frame Rate:      30.00 fps" in readme_content
     assert "Bab 01: The Beginning" in readme_content
     assert "Bab 02: The Climax" in readme_content
+
+
+# ==============================================================================
+# STAGE 6B.1 UNIT TESTS (C1-C5)
+# ==============================================================================
+
+def test_c1_format_capcut_subtitle_clean_max_2_lines():
+    """Verify C1: format_capcut_subtitle produces max 2 lines, no double newlines, word-balanced."""
+    # 1. Short text <= 42 chars -> exactly 1 line, no \n
+    short_text = "The quick brown fox jumps over lazy dog."
+    res1, n1 = format_capcut_subtitle(short_text, max_chars_per_line=42)
+    assert n1 == 1
+    assert "\n" not in res1
+    assert len(res1.splitlines()) == 1
+
+    # 2. Text with embedded newlines -> collapsed and clean
+    messy_text = "The asphalt\n\ntrembled under the\nimmense vibration of Detroit steel."
+    res2, n2 = format_capcut_subtitle(messy_text, max_chars_per_line=42)
+    assert n2 == 2
+    assert "\n\n" not in res2
+    lines2 = res2.splitlines()
+    assert len(lines2) == 2
+    assert abs(len(lines2[0]) - len(lines2[1])) <= 15  # Balanced split
+
+    # 3. Very long sentence (~100 chars) -> strictly capped at 2 lines
+    very_long = (
+        "Engineers worked through grueling night shifts in clandestine Michigan workshops "
+        "to forge the undisputed king of American muscle cars."
+    )
+    res3, n3 = format_capcut_subtitle(very_long, max_chars_per_line=42)
+    assert n3 == 2
+    lines3 = res3.splitlines()
+    assert len(lines3) == 2
+    assert "\n\n" not in res3
+
+
+def test_c2_bottom_anchored_position_calculation():
+    """Verify C2: calculate_bottom_anchored_y anchors bottom edge at -0.86 (~7% margin), expanding upward."""
+    font_size = 7.0
+
+    # 1 line
+    y_1line = calculate_bottom_anchored_y(line_count=1, font_size=font_size)
+    assert y_1line == -0.8017
+
+    # 2 lines (center moves UP from -0.8017 to -0.7433)
+    y_2line = calculate_bottom_anchored_y(line_count=2, font_size=font_size)
+    assert y_2line == -0.7433
+
+    # Check bottom edge distance for 1 line:
+    # bottom = y_center - (height / 2) = -0.8017 - (1 * (7 * 9 / 540) / 2) = -0.8017 - 0.0583 = -0.8600
+    line_h_norm = (font_size * 9.0) / 540.0
+    bottom_1 = y_1line - (line_h_norm / 2.0)
+    assert round(bottom_1, 3) == -0.860
+
+    # Check bottom edge distance for 2 lines:
+    # bottom = y_center - (height / 2) = -0.7433 - (2 * (7 * 9 / 540) / 2) = -0.7433 - 0.1167 = -0.8600
+    bottom_2 = y_2line - (2 * line_h_norm / 2.0)
+    assert round(bottom_2, 3) == -0.860
+
+    # Distance from bottom screen edge is 1.0 - 0.86 = 0.14 normalized units = 7.0% screen height (75.6px)
+    margin_bottom_pct = ((1.0 - abs(bottom_2)) / 2.0) * 100
+    assert abs(margin_bottom_pct - 7.0) < 0.1
+
+
+def test_c3_build_calibration_draft(temp_draft_dir):
+    """Verify C3: build_calibration_draft produces draft MPT_CALIBRATE with 6 labeled segments @3s."""
+    res = build_calibration_draft("uji_nokey", install=False)
+    assert res["draft_name"] == "MPT_CALIBRATE"
+    assert res["segments_count"] == 6
+    assert res["sizes_tested"] == [5, 6, 7, 8, 9, 10]
+    assert res["total_duration_seconds"] >= 18.0
+
+    draft_path = Path(res["export_path"])
+    assert draft_path.is_dir()
+    validate_built_draft(draft_path)
+
+    content = json.loads((draft_path / "draft_content.json").read_text(encoding="utf-8"))
+    text_track = [t for t in content["tracks"] if t["type"] == "text"][0]
+    assert len(text_track["segments"]) == 6
+
+    texts = content["materials"]["texts"]
+    for idx, expected_sz in enumerate([5, 6, 7, 8, 9, 10]):
+        seg = text_track["segments"][idx]
+        mat = [m for m in texts if m["id"] == seg["material_id"]][0]
+        payload = json.loads(mat["content"])
+
+        # Label check
+        assert f"[SIZE={expected_sz}]" in payload["text"]
+        assert payload["styles"][0]["size"] == expected_sz
+        assert mat["font_size"] == float(expected_sz)
+        assert mat["text_size"] == expected_sz * 2
+
+        # Auto-wrap turned off (C1)
+        assert mat["force_apply_line_max_width"] is False
+
+
+def test_c3_set_and_resolve_capcut_text_size(temp_draft_dir):
+    """Verify C3: set_capcut_text_size updates preset, and resolve_capcut_text_size reads it."""
+    # Test validation
+    with pytest.raises(ValueError, match="between 4 and 24"):
+        set_capcut_text_size("automotive.muscle_car", 2)
+
+    with pytest.raises(ValueError, match="between 4 and 24"):
+        set_capcut_text_size("automotive.muscle_car", 30)
+
+    # Test update and resolve
+    preset_file = set_capcut_text_size("automotive.muscle_car", 6)
+    assert preset_file.is_file()
+
+    class MockManifest:
+        preset_id = "automotive.muscle_car"
+        preset_snapshot = {}
+
+    m = MockManifest()
+    assert resolve_capcut_text_size(m) == 6
+
+    # Test snapshot override
+    m.preset_snapshot = {"capcut_text_size": 9}
+    assert resolve_capcut_text_size(m) == 9
+
+    # Restore preset to 7
+    set_capcut_text_size("automotive.muscle_car", 7)
+    m.preset_snapshot = {}
+    assert resolve_capcut_text_size(m) == 7
+
+
+def test_c4_media_panel_bin_and_timestamp_overflow_protection(temp_draft_dir, mock_media_files):
+    """Verify C4: create_time in meta info is unix epoch seconds (positive integer, no 32-bit overflow)."""
+    output_draft = temp_draft_dir / "draft_c4_test"
+    builder = CapCutDraftBuilder()
+
+    builder.build_draft(
+        output_dir=output_draft,
+        draft_name="TEST_C4",
+        video_clips=mock_media_files["videos"],
+        narration_clips=[{"path": mock_media_files["audio"]["path"], "duration_seconds": 18.888, "start_offset_seconds": 0.0}],
+        subtitles=mock_media_files["subtitles"],
+    )
+
+    meta = json.loads((output_draft / "draft_meta_info.json").read_text(encoding="utf-8"))
+    mats = meta["draft_materials"][0]["value"]
+    assert len(mats) == 4
+
+    for m in mats:
+        # Must be positive integer (unix epoch seconds, ~10 digits)
+        assert isinstance(m["create_time"], int)
+        assert m["create_time"] > 0
+        assert len(str(m["create_time"])) == 10
+        assert m["enter_from"] == 0
+        assert "roughcut_time_range" in m
+        assert m["roughcut_time_range"]["start"] == 0
+        assert m["roughcut_time_range"]["duration"] > 0
+
+    vs = json.loads((output_draft / "draft_virtual_store.json").read_text(encoding="utf-8"))
+    bin_items = vs["draft_virtual_store"][1]["value"]
+    assert len(bin_items) == 4
+    for item in bin_items:
+        assert item["parent_id"] == ""
+        assert len(item["child_id"]) > 0

@@ -14,7 +14,11 @@ from typing import Any
 
 from loguru import logger
 
-from app.services.longform.capcut.builder import CapCutDraftBuilder
+from app.services.longform.capcut.builder import (
+    CapCutDraftBuilder,
+    calculate_bottom_anchored_y,
+    format_capcut_subtitle,
+)
 from app.services.longform.capcut.detector import (
     detect_draft_folder,
     get_capcut_doctor_report,
@@ -68,6 +72,62 @@ def parse_srt_entries(srt_path: Path, max_entries: int | None = None) -> list[di
             break
 
     return entries
+
+
+def resolve_capcut_text_size(manifest: Any) -> int:
+    """
+    Resolve capcut_text_size from project preset snapshot, preset file, or fallback to 7 (C3).
+    """
+    if hasattr(manifest, "preset_snapshot") and manifest.preset_snapshot:
+        snap = manifest.preset_snapshot
+        if isinstance(snap, dict) and snap.get("capcut_text_size"):
+            return int(snap["capcut_text_size"])
+        elif hasattr(snap, "capcut_text_size") and snap.capcut_text_size:
+            return int(snap.capcut_text_size)
+
+    preset_id = getattr(manifest, "preset_id", None)
+    if preset_id:
+        repo_root = Path(__file__).resolve().parents[4]
+        for p_dir in [repo_root / "storage" / "presets", repo_root / "resource" / "presets"]:
+            p_file = p_dir / f"{preset_id}.json"
+            if p_file.is_file():
+                try:
+                    data = json.loads(p_file.read_text(encoding="utf-8"))
+                    if data.get("capcut_text_size"):
+                        return int(data["capcut_text_size"])
+                except Exception:
+                    pass
+
+    return 7
+
+
+def set_capcut_text_size(preset_id: str, size: int) -> Path:
+    """
+    Update capcut_text_size in preset file (C3).
+    """
+    if not (4 <= size <= 24):
+        raise ValueError(f"capcut_text_size must be between 4 and 24, got {size}")
+
+    repo_root = Path(__file__).resolve().parents[4]
+    candidate_paths = [
+        repo_root / "storage" / "presets" / f"{preset_id}.json",
+        repo_root / "resource" / "presets" / f"{preset_id}.json",
+    ]
+
+    target_path = None
+    for cp in candidate_paths:
+        if cp.is_file():
+            target_path = cp
+            break
+
+    if not target_path:
+        raise FileNotFoundError(f"Preset '{preset_id}' not found in storage/presets or resource/presets.")
+
+    data = json.loads(target_path.read_text(encoding="utf-8"))
+    data["capcut_text_size"] = int(size)
+    target_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    logger.info(f"Updated preset '{preset_id}' with capcut_text_size = {size} at {target_path}")
+    return target_path
 
 
 def render_ducked_bgm_stem(
@@ -212,6 +272,7 @@ def build_smoke_draft(project_id: str, install: bool = False) -> dict[str, Any]:
         draft_name = f"MPT_SMOKE_{project_id}"
         export_draft_dir = project_dir / "export" / "capcut" / draft_name
 
+        capcut_text_size = resolve_capcut_text_size(manifest)
         builder = CapCutDraftBuilder()
         builder.build_draft(
             output_dir=export_draft_dir,
@@ -224,6 +285,7 @@ def build_smoke_draft(project_id: str, install: bool = False) -> dict[str, Any]:
             }],
             subtitles=subtitles,
             portable=True,
+            default_text_size=capcut_text_size,
         )
 
         installed_path = None
@@ -248,6 +310,7 @@ def build_smoke_draft(project_id: str, install: bool = False) -> dict[str, Any]:
                 subtitles=subtitles,
                 portable=True,
                 draft_root_path=draft_root.resolve().as_posix(),
+                default_text_size=capcut_text_size,
             )
             installed_path = str(target_install_dir)
 
@@ -260,6 +323,7 @@ def build_smoke_draft(project_id: str, install: bool = False) -> dict[str, Any]:
             "shots_count": len(video_clips),
             "total_duration_seconds": total_shots_duration,
             "subtitles_count": len(subtitles),
+            "capcut_text_size": capcut_text_size,
         }
     finally:
         shutil.rmtree(temp_audio_dir, ignore_errors=True)
@@ -439,9 +503,10 @@ def export_full_project(
                 f"Required {total_media_mb * 1.2:.1f} MB (with 20% margin), but only {free_mb:.1f} MB available."
             )
 
-    # --- 7. BUILD CAPCUT DRAFT (B1, B2) ---
+    # --- 7. BUILD CAPCUT DRAFT (B1, B2, C1, C2, C3) ---
     export_draft_dir = export_capcut_root / draft_name
 
+    capcut_text_size = resolve_capcut_text_size(manifest)
     builder = CapCutDraftBuilder()
     builder.build_draft(
         output_dir=export_draft_dir,
@@ -451,6 +516,7 @@ def export_full_project(
         bgm_clip=bgm_clip,
         subtitles=all_subtitles,
         portable=portable,
+        default_text_size=capcut_text_size,
     )
 
     # --- 8. BUILD BACKUP ASSET PACK (B5) ---
@@ -486,6 +552,7 @@ def export_full_project(
                 subtitles=all_subtitles,
                 portable=True,
                 draft_root_path=draft_root.resolve().as_posix(),
+                default_text_size=capcut_text_size,
             )
         else:
             # Non-portable: draft in C: points directly to media on project drive
@@ -498,6 +565,7 @@ def export_full_project(
                 subtitles=all_subtitles,
                 portable=False,
                 draft_root_path=draft_root.resolve().as_posix(),
+                default_text_size=capcut_text_size,
             )
 
         validate_built_draft(target_install_dir)
@@ -518,6 +586,7 @@ def export_full_project(
         "subtitles_count": len(all_subtitles),
         "total_timeline_duration": total_timeline_duration,
         "final_video_duration": final_video_duration,
+        "capcut_text_size": capcut_text_size,
         "backup_pack_path": str(project_dir / "export" / "capcut_assets"),
     }
 
@@ -656,3 +725,145 @@ def build_backup_asset_pack(
 
     readme_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return pack_dir
+
+
+def build_calibration_draft(
+    project_id: str = "uji_nokey",
+    install: bool = True,
+) -> dict[str, Any]:
+    """
+    Generate an empirical calibration draft 'MPT_CALIBRATE' (C3).
+
+    6 sequential text segments @ 3.0s each with sizes 5, 6, 7, 8, 9, 10.
+    Each segment displays a 2-line test sentence (~80 chars) with label '[SIZE=N]'.
+    Overlaid on top of 18 seconds of real shot footage from the project.
+    """
+    project_dir = get_project_dir(project_id)
+    manifest = load_manifest(project_dir)
+
+    if not manifest.chapters:
+        raise ValueError(f"Project '{project_id}' has no chapters.")
+
+    ch1 = manifest.chapters[0]
+    shots = sorted(ch1.shots, key=lambda s: s.shot_index)
+    if not shots:
+        raise ValueError("Chapter 1 has no shots.")
+
+    # Gather real video clips to cover >= 18.0s (6 segments * 3.0s)
+    target_total_dur = 18.0
+    accumulated_dur = 0.0
+    selected_video_clips = []
+
+    for s in shots:
+        clip_rel = s.rendered_clip or s.asset_path
+        clip_path = project_dir / clip_rel if clip_rel else None
+        if not clip_path or not clip_path.is_file():
+            alt = project_dir / "assets" / "visual" / "shots" / f"{s.shot_id}.mp4"
+            if alt.is_file():
+                clip_path = alt
+            else:
+                continue
+
+        fps = float(getattr(manifest.encoder_settings, "fps", 30.0) or 30.0)
+        dur = (s.target_frames / fps) if s.target_frames else float(s.duration_seconds or 5.0)
+
+        selected_video_clips.append({"path": clip_path, "duration_seconds": dur})
+        accumulated_dur += dur
+        if accumulated_dur >= target_total_dur:
+            break
+
+    if not selected_video_clips:
+        raise FileNotFoundError(f"No valid video shot clips found in project '{project_id}'.")
+
+    while accumulated_dur < target_total_dur:
+        last = selected_video_clips[-1]
+        selected_video_clips.append(last)
+        accumulated_dur += last["duration_seconds"]
+
+    # 6 test segments @ 3.0s each with sizes 5, 6, 7, 8, 9, 10
+    sizes = [5, 6, 7, 8, 9, 10]
+    test_subtitles = []
+    sentence_p1 = "The asphalt trembled under the immense vibration"
+    sentence_p2 = "of Detroit steel as the engine roared to life."
+
+    for idx, sz in enumerate(sizes):
+        start_sec = idx * 3.0
+        test_subtitles.append({
+            "text": f"[SIZE={sz}] {sentence_p1}\n{sentence_p2}",
+            "start_seconds": start_sec,
+            "duration_seconds": 3.0,
+            "size": sz,
+        })
+
+    # Narration: trim 18.0s from chapter 1 audio if available
+    trimmed_audio_path = None
+    temp_audio_dir = None
+    if ch1.audio_file:
+        ch1_audio = project_dir / ch1.audio_file
+        if ch1_audio.is_file():
+            temp_audio_dir = Path(tempfile.mkdtemp(prefix="mpt_calibrate_audio_"))
+            trimmed_audio_path = temp_audio_dir / "calibrate_audio.wav"
+            trim_cmd = [
+                "ffmpeg", "-y",
+                "-i", str(ch1_audio),
+                "-t", f"{accumulated_dur:.3f}",
+                "-c:a", "pcm_s16le",
+                str(trimmed_audio_path),
+            ]
+            subprocess.run(trim_cmd, capture_output=True, check=False, timeout=15)
+
+    draft_name = "MPT_CALIBRATE"
+    export_draft_dir = project_dir / "export" / "capcut" / draft_name
+
+    builder = CapCutDraftBuilder()
+    builder.build_draft(
+        output_dir=export_draft_dir,
+        draft_name=draft_name,
+        video_clips=selected_video_clips,
+        narration_clips=[{
+            "path": trimmed_audio_path,
+            "duration_seconds": accumulated_dur,
+            "start_offset_seconds": 0.0,
+        }] if (trimmed_audio_path and trimmed_audio_path.is_file()) else [],
+        subtitles=test_subtitles,
+        portable=False,
+    )
+
+    installed_path = None
+    if install:
+        if is_capcut_running():
+            raise RuntimeError("CapCut sedang berjalan. Tutup CapCut sebelum ekspor untuk mencegah korupsi draft.")
+
+        draft_root = detect_draft_folder()
+        if not draft_root or not draft_root.is_dir():
+            raise RuntimeError("Could not locate CapCut draft directory (com.lveditor.draft).")
+
+        target_install_dir = draft_root / draft_name
+        builder.build_draft(
+            output_dir=target_install_dir,
+            draft_name=draft_name,
+            video_clips=selected_video_clips,
+            narration_clips=[{
+                "path": trimmed_audio_path,
+                "duration_seconds": accumulated_dur,
+                "start_offset_seconds": 0.0,
+            }] if (trimmed_audio_path and trimmed_audio_path.is_file()) else [],
+            subtitles=test_subtitles,
+            portable=False,
+            draft_root_path=draft_root.resolve().as_posix(),
+        )
+        validate_built_draft(target_install_dir)
+        installed_path = str(target_install_dir)
+        logger.info(f"Calibration draft installed at {installed_path}")
+
+    validate_built_draft(export_draft_dir)
+
+    return {
+        "draft_name": draft_name,
+        "export_path": str(export_draft_dir),
+        "installed": install,
+        "installed_path": installed_path,
+        "segments_count": len(test_subtitles),
+        "sizes_tested": sizes,
+        "total_duration_seconds": accumulated_dur,
+    }

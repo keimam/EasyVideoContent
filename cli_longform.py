@@ -1679,6 +1679,64 @@ def cmd_capcut_export(args: argparse.Namespace) -> int:
         return 1
 
 
+def cmd_capcut_calibrate(args: argparse.Namespace) -> int:
+    """Generate empirical subtitle size calibration draft MPT_CALIBRATE with sizes 5..10 (Stage 6B.1 C3)."""
+    from app.services.longform.capcut.service import build_calibration_draft
+
+    proj_id = getattr(args, "project_id", "uji_nokey") or "uji_nokey"
+    install = not getattr(args, "no_install", False)
+
+    try:
+        print(f"\nBuilding CapCut calibration draft for project '{proj_id}'...")
+        if install:
+            print("Mode: Export and Install directly into CapCut draft folder (com.lveditor.draft)")
+        else:
+            print("Mode: Export to project directory only (--no-install)")
+
+        result = build_calibration_draft(project_id=proj_id, install=install)
+        print("\n" + "=" * 70)
+        print(f"SUCCESS: CapCut calibration draft created: {result['draft_name']}")
+        print("=" * 70)
+        print(f"  Export Draft Path:    {result['export_path']}")
+        print(f"  Segments Count:       {result['segments_count']} test segments (@3.0s each)")
+        print(f"  Sizes Tested:         {result['sizes_tested']} (sizes 5, 6, 7, 8, 9, 10)")
+        print(f"  Total Duration:       {result['total_duration_seconds']:.3f} s")
+        if result["installed"]:
+            print(f"  Installed Path:       {result['installed_path']}")
+            print("  Status:               Safely installed into CapCut Projects (all other drafts untouched).")
+        print("\n  PETUNJUK PENGUJIAN PENGGUNA:")
+        print("  1. Buka CapCut Desktop, buka project 'MPT_CALIBRATE'.")
+        print("  2. Perhatikan 6 segmen berturut-turut dengan label SIZE=5 s/d SIZE=10.")
+        print("  3. Pilih N yang paling mirip ukuran subtitle video final (render Tahap 5).")
+        print("  4. Terapkan ukuran terpilih dengan perintah:")
+        print("     python cli_longform.py capcut set-text-size <preset_id> <N>")
+        print("=" * 70 + "\n")
+        return 0
+    except Exception as exc:
+        print(f"Error creating CapCut calibration draft: {exc}", file=sys.stderr)
+        return 1
+
+
+def cmd_capcut_set_text_size(args: argparse.Namespace) -> int:
+    """Set capcut_text_size in a preset file (Stage 6B.1 C3)."""
+    from app.services.longform.capcut.service import set_capcut_text_size
+
+    try:
+        preset_id = args.preset_id
+        size = args.size
+        target_path = set_capcut_text_size(preset_id, size)
+        print("\n" + "=" * 65)
+        print(f"SUCCESS: Set capcut_text_size = {size} for preset '{preset_id}'")
+        print("=" * 65)
+        print(f"  Preset File: {target_path}")
+        print(f"  Future 'capcut smoke' and 'capcut export' runs with this preset will use size {size}.")
+        print("=" * 65 + "\n")
+        return 0
+    except Exception as exc:
+        print(f"Error setting preset text size: {exc}", file=sys.stderr)
+        return 1
+
+
 def re_slugify(text: str) -> str:
     """Create a URL/folder-safe slug from title."""
     import re
@@ -1937,6 +1995,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_c_export.add_argument("--yes", action="store_true", help="Confirm media copying when using --portable")
     p_c_export.add_argument("--name", help="Custom draft name override (default: MPT_<id>_<timestamp>)")
 
+    # capcut calibrate [id] [--no-install]
+    p_c_calib = capcut_subs.add_parser("calibrate", help="Generate empirical subtitle calibration draft (sizes 5..10) (6B.1)")
+    p_c_calib.add_argument("project_id", nargs="?", default="uji_nokey", help="Project ID (default: uji_nokey)")
+    p_c_calib.add_argument("--no-install", action="store_true", help="Do not install directly into CapCut Projects")
+
+    # capcut set-text-size <preset_id> <size>
+    p_c_set_sz = capcut_subs.add_parser("set-text-size", help="Set capcut_text_size in preset file (6B.1)")
+    p_c_set_sz.add_argument("preset_id", help="Preset ID (e.g. automotive.muscle_car or documentary_en)")
+    p_c_set_sz.add_argument("size", type=int, help="CapCut subtitle font size (e.g. 5, 6, 7, 8, etc.)")
+
     return parser
 
 
@@ -2036,6 +2104,10 @@ def main() -> int:
                 return cmd_capcut_smoke(args)
             elif args.capcut_command == "export":
                 return cmd_capcut_export(args)
+            elif args.capcut_command == "calibrate":
+                return cmd_capcut_calibrate(args)
+            elif args.capcut_command == "set-text-size":
+                return cmd_capcut_set_text_size(args)
 
         parser.print_help()
         return 1

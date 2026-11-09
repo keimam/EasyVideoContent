@@ -76,3 +76,19 @@ Tujuannya adalah menjaga kemudahan sinkronisasi (merge/rebase) dari repositori u
   - `cli_longform.py`: Penambahan perintah `capcut export <id> [--install] [--portable] [--yes] [--name <name>]`.
   - `test/longform/test_capcut.py`: Penambahan 6 pengujian unit terisolasi untuk Stage 6B (kalibrasi teks, bin media, layout multi-track, deteksi tabrakan nama, validasi byte identik, dan struktur paket aset).
   - `test/longform/test_cli_smoke.py`: Penambahan pengujian smoke end-to-end untuk `capcut export`.
+
+### Tahap 6B.1: Kalibrasi Subtitle CapCut, Bottom-Anchor, & Draft Kalibrasi Empiris
+- **File Kode Upstream yang Disentuh:** **Nihil (0 berkas kode)**
+- **Pembaruan Subtitle & Template Engine:**
+  - `app/services/longform/capcut/builder.py`:
+    * Implementasi `format_capcut_subtitle`: pemecahan baris tunggal (maksimal 2 baris seimbang per chunk kata ~42 karakter/baris, tanpa `\n` beruntun).
+    * Penonaktifan auto-wrap CapCut (`"force_apply_line_max_width": False` mengacu template asli) guna mencegah wrapping ganda (double-wrap) yang memecah teks menjadi 3 baris.
+    * Implementasi `calculate_bottom_anchored_y`: jangkar vertikal dari tepi bawah layar, memastikan batas bawah teks selalu konstan pada margin $\approx 7\%$ ($y = -0.8600$ atau setara MarginV 80) baik pada 1 baris maupun 2 baris, sehingga teks mengembang ke atas dan tidak pernah terpotong ke luar frame.
+    * Perbaikan integer overflow pada `create_time` di `draft_meta_info.json` (menggunakan unix timestamp detik sesuai format bawaan template alih-alih mikrodetik).
+  - `app/services/longform/capcut/service.py`:
+    * Penambahan fungsi `build_calibration_draft`: memproduksi draft `MPT_CALIBRATE` dengan 6 segmen berurutan @3.0 detik (size 5, 6, 7, 8, 9, 10) berlabel `[SIZE=N]` di atas footage nyata proyek untuk pengujian empiris langsung oleh pengguna.
+    * Penambahan fungsi `resolve_capcut_text_size` dan `set_capcut_text_size`: menyetel field `capcut_text_size` pada preset (default: 7).
+  - `app/services/longform/schema.py`: Penambahan field `capcut_text_size: Optional[int] = None` pada model `Preset`.
+  - `resource/presets/*.json`: Penambahan `"capcut_text_size": 7` pada preset acuan (`documentary_en.json`, `automotive.muscle_car.json`, `automotive.json`).
+  - `cli_longform.py`: Penambahan subperintah `capcut calibrate [id] [--no-install]` dan `capcut set-text-size <preset_id> <size>`.
+  - `test/longform/test_capcut.py`: Penambahan 5 pengujian unit baru khusus Stage 6B.1 (C1: pemecahan baris tunggal maks 2 baris; C2: kalkulasi jangkar bawah; C3: pembuatan draft kalibrasi & penyetelan ukuran preset; C4: validasi registrasi media bin dan pencegahan integer overflow; C5: pembacaan ukuran preset pada smoke/export). Total 16 unit tests lolos 100%.

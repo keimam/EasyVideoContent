@@ -23,6 +23,58 @@ from loguru import logger
 from app.services.longform.capcut.detector import detect_capcut_version, detect_draft_folder
 
 
+def format_capcut_subtitle(raw_text: str, max_chars_per_line: int = 42) -> tuple[str, int]:
+    """
+    Format subtitle text for CapCut Desktop (C1):
+    - Strips all existing newlines and collapses whitespace.
+    - If length <= max_chars_per_line: returns 1 line.
+    - If length > max_chars_per_line: cleanly wraps into at most 2 lines
+      at a natural word boundary near the middle of the text.
+    - Returns (formatted_text, line_count). Never returns > 2 lines.
+    """
+    clean = " ".join(raw_text.strip().replace("\n", " ").split())
+    if len(clean) <= max_chars_per_line:
+        return clean, 1
+
+    words = clean.split()
+    if len(words) <= 1:
+        return clean, 1
+
+    mid = len(clean) / 2.0
+    best_idx = 1
+    best_diff = float("inf")
+    curr_len = 0
+    for i in range(len(words) - 1):
+        curr_len += len(words[i]) + (1 if i > 0 else 0)
+        diff = abs(curr_len - mid)
+        if diff < best_diff:
+            best_diff = diff
+            best_idx = i + 1
+
+    line1 = " ".join(words[:best_idx])
+    line2 = " ".join(words[best_idx:])
+    return f"{line1}\n{line2}", 2
+
+
+def calculate_bottom_anchored_y(line_count: int, font_size: float) -> float:
+    """
+    Calculate bottom-anchored vertical center position (C2):
+    - Target margin bottom: ~7.0% from bottom of screen (setara ASS MarginV 80).
+    - In normalized coordinates [-1.0, 1.0], bottom canvas edge is -1.0.
+    - Bottom of text block is anchored at y_bottom = -0.86 (14% of canvas height = 75.6px margin).
+    - transform.y is the center of the text block:
+        y_center = y_bottom + (total_height / 2)
+      where total_height = line_count * line_height.
+    - At 1080p, 1 line height in normalized units is ~ (font_size * 9.0) / 540.
+    - Result:
+        y_center(1) ~= -0.80
+        y_center(2) ~= -0.74 (expands upward, bottom stays anchored at -0.86).
+    """
+    line_h_norm = (font_size * 9.0) / 540.0
+    y_center = -0.86 + ((line_count * line_h_norm) / 2.0)
+    return round(y_center, 4)
+
+
 class CapCutDraftBuilder:
     """Builder for CapCut Desktop 8.9.0 drafts."""
 
@@ -48,6 +100,7 @@ class CapCutDraftBuilder:
         portable: bool = False,
         font_path: str | None = None,
         audio_clip: dict[str, Any] | None = None,
+        default_text_size: int = 7,
     ) -> Path:
         """
         Build a complete, standalone CapCut draft folder.
@@ -207,6 +260,7 @@ class CapCutDraftBuilder:
             subtitles=subtitles or [],
             font_path=font_path or "",
             now_us=now_us,
+            default_text_size=default_text_size,
         )
 
         content_str = json.dumps(draft_content, indent=2, ensure_ascii=False)
@@ -338,6 +392,7 @@ class CapCutDraftBuilder:
         subtitles: list[dict[str, Any]],
         font_path: str,
         now_us: int,
+        default_text_size: int = 7,
     ) -> tuple[dict[str, Any], list[dict[str, Any]], list[str]]:
         """Construct the draft_content.json data structure."""
         template_content_path = self.template_dir / "draft_content.json"
@@ -506,7 +561,7 @@ class CapCutDraftBuilder:
             # Add to meta info materials (A2 fix: enter_from=0, extra_info=name, roughcut_time_range)
             draft_meta_materials.append({
                 "ai_group_type": "",
-                "create_time": now_us,
+                "create_time": int(time.time()),
                 "duration": vid["duration_us"],
                 "enter_from": 0,
                 "extra_info": vid["name"],
@@ -526,7 +581,7 @@ class CapCutDraftBuilder:
 
         content["tracks"].append(video_track)
 
-        # --- TRACK 1: TEXT (SUBTITLES with calibrated size 8 & position y=-0.80) ---
+        # --- TRACK 1: TEXT (SUBTITLES with calibrated size & bottom-anchored positioning C1, C2) ---
         if subtitles:
             text_track_id = str(uuid.uuid4()).upper()
             text_track = {
@@ -543,17 +598,17 @@ class CapCutDraftBuilder:
                 text_id = str(uuid.uuid4()).upper()
                 seg_id = str(uuid.uuid4()).upper()
                 raw_text = sub["text"].strip()
+                eff_size = int(sub.get("size") or default_text_size or 7)
 
-                # Text wrapping: wrap at ~48 characters if long
-                if len(raw_text) > 48:
-                    wrapped_text = "\n".join(textwrap.wrap(raw_text, width=48))
-                else:
-                    wrapped_text = raw_text
+                # C1: Single wrap mechanism (max 2 lines, word-balanced, no double wrap)
+                wrapped_text, line_count = format_capcut_subtitle(raw_text, max_chars_per_line=42)
+
+                # C2: Bottom-anchored vertical center position
+                y_pos = calculate_bottom_anchored_y(line_count, eff_size)
 
                 start_us = int(round(sub["start_seconds"] * 1_000_000))
                 dur_us = int(round(sub["duration_seconds"] * 1_000_000))
 
-                # A1 Calibration: size 8 in CapCut matches ASS 64 on 1080p canvas (~5.9% height)
                 text_content_payload = {
                     "text": wrapped_text,
                     "styles": [
@@ -565,7 +620,7 @@ class CapCutDraftBuilder:
                                 }
                             },
                             "font": {"path": font_path, "id": ""},
-                            "size": 8,
+                            "size": eff_size,
                             "range": [0, len(wrapped_text)],
                         }
                     ],
@@ -575,8 +630,8 @@ class CapCutDraftBuilder:
                     "id": text_id,
                     "type": "text",
                     "content": json.dumps(text_content_payload, ensure_ascii=False),
-                    "font_size": 8.0,
-                    "text_size": 16,
+                    "font_size": float(eff_size),
+                    "text_size": int(eff_size * 2),
                     "alignment": 1,
                     "font_path": font_path,
                     "text_color": "#FFFFFF",
@@ -592,12 +647,12 @@ class CapCutDraftBuilder:
                     "shadow_smoothing": 0.45,
                     "shadow_distance": 5.0,
                     "shadow_angle": -45.0,
-                    "force_apply_line_max_width": True,
+                    "force_apply_line_max_width": False,
+                    "line_feed": 1,
                     "line_max_width": 0.82,
                 }
                 materials["texts"].append(text_mat)
 
-                # A1 Position: transform y = -0.80 corresponds to MarginV 80 in ASS (center-bottom)
                 t_seg = {
                     "id": seg_id,
                     "material_id": text_id,
@@ -616,7 +671,7 @@ class CapCutDraftBuilder:
                         "flip": {"horizontal": False, "vertical": False},
                         "rotation": 0.0,
                         "scale": {"x": 1.0, "y": 1.0},
-                        "transform": {"x": 0.0, "y": -0.80},
+                        "transform": {"x": 0.0, "y": y_pos},
                     },
                     "uniform_scale": {
                         "on": True,
@@ -741,7 +796,7 @@ class CapCutDraftBuilder:
 
                 draft_meta_materials.append({
                     "ai_group_type": "",
-                    "create_time": now_us,
+                    "create_time": int(time.time()),
                     "duration": narr["duration_us"],
                     "enter_from": 0,
                     "extra_info": narr["name"],
@@ -875,7 +930,7 @@ class CapCutDraftBuilder:
 
             draft_meta_materials.append({
                 "ai_group_type": "",
-                "create_time": now_us,
+                "create_time": int(time.time()),
                 "duration": prepared_bgm["duration_us"],
                 "enter_from": 0,
                 "extra_info": prepared_bgm["name"],
