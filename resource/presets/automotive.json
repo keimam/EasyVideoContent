@@ -69,5 +69,40 @@
     "hot rod",
     "race car"
   ],
-  "blocked_terms": []
+  "blocked_terms": [
+    "lava lamp",
+    "cartoon",
+    "animation",
+    "toy",
+    "render"
+  ],
+  "negative_terms": [
+    "sea",
+    "ocean",
+    "beach",
+    "bay",
+    "port",
+    "boat",
+    "ship",
+    "island",
+    "coast",
+    "river",
+    "lake",
+    "waterfall",
+    "flower",
+    "garden",
+    "field",
+    "meadow",
+    "forest",
+    "park",
+    "mountain",
+    "landscape",
+    "skyline",
+    "city",
+    "wind turbine",
+    "office",
+    "people"
+  ],
+  "min_relevance_score": 0.35,
+  "stock_category": "transportation"
 }

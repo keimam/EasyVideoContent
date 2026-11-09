@@ -61,6 +61,10 @@ class FakeVisualProvider(BaseVisualProvider):
         required_subject_terms: Optional[List[str]] = None,
         blocked_terms: Optional[List[str]] = None,
         visual_keywords: Optional[List[str]] = None,
+        negative_terms: Optional[List[str]] = None,
+        min_relevance_score: Optional[float] = None,
+        category: Optional[str] = None,
+        **kwargs: Any,
     ) -> List[VisualCandidate]:
         """Generate deterministic fake candidates for a query, applying S1 relevance rules."""
         excluded = excluded_ids or set()
@@ -76,6 +80,8 @@ class FakeVisualProvider(BaseVisualProvider):
                     visual_keywords=visual_keywords,
                     required_subject_terms=required_subject_terms,
                     blocked_terms=blocked_terms,
+                    negative_terms=negative_terms,
+                    min_relevance_score=min_relevance_score,
                 )
                 if is_valid:
                     c.relevance_score = score
@@ -108,6 +114,8 @@ class FakeVisualProvider(BaseVisualProvider):
                 visual_keywords=visual_keywords,
                 required_subject_terms=required_subject_terms,
                 blocked_terms=blocked_terms,
+                negative_terms=negative_terms,
+                min_relevance_score=min_relevance_score,
             )
             if not is_valid:
                 continue

@@ -113,6 +113,7 @@ class LocalVisualProvider(BaseVisualProvider):
         target_duration: float,
         limit: int = 3,
         excluded_ids: Optional[Set[str]] = None,
+        **kwargs: Any,
     ) -> List[VisualCandidate]:
         """Search local library files matching query or sequential fallback."""
         excluded = excluded_ids or set()

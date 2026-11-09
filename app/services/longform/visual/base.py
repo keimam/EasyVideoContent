@@ -46,6 +46,7 @@ class VisualCandidate:
     tags: List[str] = field(default_factory=list)
     relevance_score: float = 0.0
     rendition_name: Optional[str] = None
+    is_low_res: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -65,6 +66,7 @@ class VisualCandidate:
             "tags": self.tags,
             "relevance_score": round(self.relevance_score, 3),
             "rendition_name": self.rendition_name,
+            "is_low_res": self.is_low_res,
         }
 
     @classmethod
@@ -86,6 +88,7 @@ class VisualCandidate:
             tags=data.get("tags") or [],
             relevance_score=float(data.get("relevance_score") or 0.0),
             rendition_name=data.get("rendition_name"),
+            is_low_res=bool(data.get("is_low_res", False)),
         )
 
 
@@ -162,6 +165,7 @@ class BaseVisualProvider(ABC):
         target_duration: float,
         limit: int = 3,
         excluded_ids: Optional[set[str]] = None,
+        **kwargs: Any,
     ) -> List[VisualCandidate]:
         """Search available candidates matching query and minimum duration."""
         pass

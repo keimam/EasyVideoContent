@@ -82,6 +82,9 @@ class Preset(BaseModel):
     recommended_visual_sources: dict[str, float] = Field(default_factory=dict)
     required_subject_terms: List[str] = Field(default_factory=list)
     blocked_terms: List[str] = Field(default_factory=list)
+    negative_terms: List[str] = Field(default_factory=list)
+    min_relevance_score: float = 0.35
+    stock_category: Optional[str] = None
 
     model_config = {"extra": "forbid"}
 
@@ -156,6 +159,8 @@ class Shot(BaseModel):
     relevance_score: Optional[float] = None
     needs_review: bool = False
     chosen_rendition: Optional[str] = None
+    is_low_res: bool = False
+    effective_query: Optional[str] = None
     status: ItemStatus = ItemStatus.pending
 
     model_config = {"extra": "forbid"}

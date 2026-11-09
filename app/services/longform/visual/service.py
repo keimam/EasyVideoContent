@@ -46,6 +46,7 @@ from app.services.longform.visual.credits import CreditsManager
 # V5: Heavy providers (stock/ai_image) imported lazily in get_provider()
 from app.services.longform.visual.fake import FakeVisualProvider
 from app.services.longform.visual.local import LocalLibraryManager, LocalVisualProvider
+from PIL import Image, ImageDraw
 
 
 def _get_clip_frame_count(clip_path: Path) -> Optional[int]:
@@ -182,14 +183,27 @@ class VisualService:
         self,
         shot: Shot,
         target_provider_name: str,
+        required_subject_terms: Optional[List[str]] = None,
+        blocked_terms: Optional[List[str]] = None,
+        negative_terms: Optional[List[str]] = None,
+        min_relevance_score: Optional[float] = None,
+        visual_keywords: Optional[List[str]] = None,
     ) -> bool:
-        """Check if the shot's current asset is valid for the requested provider (V1).
+        """Check if the shot's current asset is genuinely valid (V1, S4, S5, T3).
 
-        Returns False (stale) if:
-        - The asset file does not exist or hash doesn't match.
-        - The shot has a fake asset but a real provider is requested.
-        - The actual_source provider differs from the requested provider.
+        'valid' MUST mean:
+        1. If shot is locked, it is always valid (user intent protected).
+        2. File exists on disk.
+        3. Content hash matches manifest.
+        4. Not fake / placeholder asset when real provider requested.
+        5. Actual source matches requested provider.
+        6. Decodable via ffprobe (has video/image stream, duration > 0, width > 0, height > 0).
+        7. Candidate tags satisfy strict subject criteria (T3): subject in first 5 tags or >=2 subjects,
+           negative terms penalty, and score >= min_relevance_score.
         """
+        if shot.locked:
+            return True
+
         if not shot.asset_path or not shot.asset_content_hash:
             return False
 
@@ -207,7 +221,6 @@ class VisualService:
             return False
 
         # V1: If the shot was fetched from a different real provider, re-fetch
-        # (e.g., user switches from pexels to pixabay)
         if (
             not shot.is_fake
             and shot.actual_source
@@ -215,6 +228,37 @@ class VisualService:
             and shot.actual_source.lower() != target_provider_name.lower()
         ):
             return False
+
+        # S4: ffprobe decodability check (for real media files)
+        if target_provider_name.lower() != "fake" and not shot.is_fake:
+            from app.services.longform.visual.builder import is_valid_media_file
+            valid, reason, _ = is_valid_media_file(asset_file)
+            if not valid:
+                logger.warning(f"Shot {shot.shot_id} asset {asset_file} failed media decode check: {reason}")
+                return False
+
+        # S5, T3: Subject relevance and strict negative terms check on existing asset tags
+        if required_subject_terms or blocked_terms or negative_terms:
+            if not shot.tags:
+                logger.info(f"Shot {shot.shot_id} has no metadata tags to verify subject terms; marking stale for re-fetch")
+                return False
+            from app.services.longform.visual.stock import score_candidate_relevance
+            is_valid, score, reason = score_candidate_relevance(
+                candidate_tags=shot.tags,
+                search_query=shot.search_query or shot.visual_prompt,
+                visual_keywords=visual_keywords,
+                required_subject_terms=required_subject_terms,
+                blocked_terms=blocked_terms,
+                negative_terms=negative_terms,
+                min_relevance_score=min_relevance_score,
+                is_low_res=shot.is_low_res,
+            )
+            if not is_valid:
+                logger.info(f"Shot {shot.shot_id} existing asset failed strict relevance check ({reason}); marking stale for re-fetch")
+                return False
+            shot.relevance_score = round(score, 3)
+            if not shot.effective_query:
+                shot.effective_query = shot.search_query or shot.visual_prompt
 
         return True
 
@@ -281,6 +325,41 @@ class VisualService:
                         if c.get("candidate_id"):
                             used_candidate_ids.add(c["candidate_id"])
 
+        # S5, T3: Load preset filtering and scoring rules from snapshot or PresetStore
+        preset_snap = manifest.preset_snapshot or {}
+        req_terms = preset_snap.get("required_subject_terms") or []
+        block_terms = preset_snap.get("blocked_terms") or []
+        neg_terms = preset_snap.get("negative_terms") or []
+        min_rel_score = preset_snap.get("min_relevance_score", 0.35)
+        visual_kws = preset_snap.get("visual_keywords") or []
+        stock_cat = preset_snap.get("stock_category")
+        topic_kws = preset_snap.get("topic_keywords") or []
+
+        # Backfill if missing in snapshot
+        if not req_terms or not stock_cat or not neg_terms:
+            try:
+                from app.services.longform.presets import PresetStore
+                p_store = PresetStore()
+                p_obj = p_store.get_preset(manifest.preset_id)
+                if not req_terms and p_obj.required_subject_terms:
+                    req_terms = p_obj.required_subject_terms
+                    preset_snap["required_subject_terms"] = req_terms
+                if not stock_cat and getattr(p_obj, "stock_category", None):
+                    stock_cat = p_obj.stock_category
+                    preset_snap["stock_category"] = stock_cat
+                if not block_terms and p_obj.blocked_terms:
+                    block_terms = p_obj.blocked_terms
+                    preset_snap["blocked_terms"] = block_terms
+                if not neg_terms and getattr(p_obj, "negative_terms", None):
+                    neg_terms = p_obj.negative_terms
+                    preset_snap["negative_terms"] = neg_terms
+                if "min_relevance_score" not in preset_snap:
+                    min_rel_score = getattr(p_obj, "min_relevance_score", 0.35)
+                    preset_snap["min_relevance_score"] = min_rel_score
+                manifest.preset_snapshot = preset_snap
+            except Exception as e:
+                logger.debug(f"Could not backfill preset snapshot: {e}")
+
         for ch in manifest.chapters:
             for shot in ch.shots:
                 # Skip locked shots
@@ -288,8 +367,16 @@ class VisualService:
                     logger.info(f"Skipping locked shot: {shot.shot_id}")
                     continue
 
-                # V1: Check if asset is valid for the REQUESTED provider, not just any provider
-                if self._is_shot_asset_valid_for_provider(shot, effective_provider_name):
+                # V1, S4, S5, T3: Check if asset is valid for requested provider AND meets strict subject filter
+                if self._is_shot_asset_valid_for_provider(
+                    shot,
+                    effective_provider_name,
+                    req_terms,
+                    block_terms,
+                    neg_terms,
+                    min_rel_score,
+                    visual_kws,
+                ):
                     logger.debug(f"Shot {shot.shot_id} asset valid for provider '{effective_provider_name}', skipping fetch")
                     continue
 
@@ -300,8 +387,6 @@ class VisualService:
 
                 try:
                     active_provider = self.get_provider(target_provider_name, manifest)
-                    # validate_credentials already called globally above for real providers
-                    # but call again here for local (which may have changed its library)
                     if target_provider_name in ("fake", "local"):
                         active_provider.validate_credentials()
                 except VisualConfigurationError as conf_err:
@@ -317,42 +402,49 @@ class VisualService:
                     logger.warning(f"Shot {shot.shot_id}: {fallback_reason}")
                     active_provider = FakeVisualProvider(mode=target_provider_name)
 
-                # S1: Get preset filtering and scoring rules from snapshot
-                preset_snap = manifest.preset_snapshot or {}
-                req_terms = preset_snap.get("required_subject_terms") or []
-                block_terms = preset_snap.get("blocked_terms") or []
-                visual_kws = preset_snap.get("visual_keywords") or []
+                # S5 Multi-tier escalation search
+                from app.services.longform.visual.stock import (
+                    extract_narrower_query,
+                    restructure_stock_query,
+                )
 
-                # S1: Escalation search (initial -> narrower -> visual keywords)
-                from app.services.longform.visual.stock import extract_narrower_query
-
-                query = shot.search_query or shot.visual_prompt or "cinematic scene"
+                raw_query = shot.search_query or shot.visual_prompt or "cinematic scene"
                 candidates = []
+                chosen_query = raw_query
 
-                # Step 1: Initial query
-                search_kwargs = {
-                    "query": query,
-                    "target_duration": shot.duration_seconds,
-                    "limit": 3,
-                    "excluded_ids": used_candidate_ids,
-                }
-                # Pass S1 metadata if provider supports it
-                try:
-                    candidates = active_provider.search_candidates(
-                        required_subject_terms=req_terms,
-                        blocked_terms=block_terms,
-                        visual_keywords=visual_kws,
-                        **search_kwargs,
-                    )
-                except TypeError:
-                    candidates = active_provider.search_candidates(**search_kwargs)
+                # Tiers of queries:
+                restruct_q = restructure_stock_query(raw_query, req_terms, topic_kws)
+                query_tiers = [
+                    (restruct_q, stock_cat),
+                    (restruct_q, None),
+                    (raw_query, stock_cat),
+                    (raw_query, None),
+                ]
+                narrow_q = extract_narrower_query(raw_query, req_terms)
+                if narrow_q and narrow_q.lower() not in (restruct_q.lower(), raw_query.lower()):
+                    query_tiers.append((narrow_q, None))
+                for vk in visual_kws[:3]:
+                    if vk and vk.lower() not in [qt[0].lower() for qt in query_tiers]:
+                        query_tiers.append((vk, stock_cat))
 
-                # Step 2: Retry with narrower query if rejected
-                if not candidates and req_terms:
-                    narrow_q = extract_narrower_query(query, req_terms)
-                    if narrow_q and narrow_q.lower() != query.lower():
-                        logger.info(f"Shot {shot.shot_id}: retrying with narrower query '{narrow_q}'...")
-                        search_kwargs["query"] = narrow_q
+                for q_text, q_cat in query_tiers:
+                    search_kwargs = {
+                        "query": q_text,
+                        "target_duration": shot.duration_seconds,
+                        "limit": 3,
+                        "excluded_ids": used_candidate_ids,
+                    }
+                    try:
+                        candidates = active_provider.search_candidates(
+                            required_subject_terms=req_terms,
+                            blocked_terms=block_terms,
+                            negative_terms=neg_terms,
+                            min_relevance_score=min_rel_score,
+                            visual_keywords=visual_kws,
+                            category=q_cat,
+                            **search_kwargs,
+                        )
+                    except TypeError:
                         try:
                             candidates = active_provider.search_candidates(
                                 required_subject_terms=req_terms,
@@ -363,22 +455,10 @@ class VisualService:
                         except TypeError:
                             candidates = active_provider.search_candidates(**search_kwargs)
 
-                # Step 3: Retry with preset visual keywords
-                if not candidates and visual_kws:
-                    for vk in visual_kws[:3]:
-                        logger.info(f"Shot {shot.shot_id}: retrying with visual keyword '{vk}'...")
-                        search_kwargs["query"] = vk
-                        try:
-                            candidates = active_provider.search_candidates(
-                                required_subject_terms=req_terms,
-                                blocked_terms=block_terms,
-                                visual_keywords=visual_kws,
-                                **search_kwargs,
-                            )
-                        except TypeError:
-                            candidates = active_provider.search_candidates(**search_kwargs)
-                        if candidates:
-                            break
+                    if candidates:
+                        chosen_query = q_text
+                        logger.info(f"Shot {shot.shot_id}: found {len(candidates)} candidates using query '{q_text}' (cat={q_cat})")
+                        break
 
                 # Step 4: Fallback to next provider or mark needs_review
                 if not candidates:
@@ -387,7 +467,7 @@ class VisualService:
                         active_provider = FakeVisualProvider(mode=target_provider_name)
                         try:
                             candidates = active_provider.search_candidates(
-                                query=query,
+                                query=raw_query,
                                 target_duration=shot.duration_seconds,
                                 limit=3,
                                 required_subject_terms=req_terms,
@@ -396,13 +476,13 @@ class VisualService:
                             )
                         except TypeError:
                             candidates = active_provider.search_candidates(
-                                query=query,
+                                query=raw_query,
                                 target_duration=shot.duration_seconds,
                                 limit=3,
                             )
 
                     if not candidates:
-                        # S1: Mark shot needs_review rather than silently using an irrelevant clip
+                        # S1, S5: Mark shot needs_review rather than silently using an irrelevant clip
                         logger.warning(f"Shot {shot.shot_id}: no acceptable candidates found. Marked needs_review.")
                         shot.needs_review = True
                         shot.status = ItemStatus.pending
@@ -434,6 +514,8 @@ class VisualService:
                 shot.tags = selected_candidate.tags
                 shot.relevance_score = selected_candidate.relevance_score
                 shot.chosen_rendition = selected_candidate.rendition_name
+                shot.is_low_res = getattr(selected_candidate, "is_low_res", False)
+                shot.effective_query = chosen_query
                 shot.needs_review = False
                 shot.status = ItemStatus.pending
 
@@ -623,16 +705,112 @@ class VisualService:
 
         return preview_file
 
-    def replace_shot(
+    def generate_candidate_preview_grid(
+        self,
+        shot: Shot,
+        candidates: List[VisualCandidate],
+        output_path: Path,
+    ) -> Path:
+        """Create a temporary preview contact grid image of up to 5 candidates for manual review (T4)."""
+        output_path = Path(output_path).resolve()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        n = len(candidates)
+        if n == 0:
+            raise ValueError(f"No candidates to preview for shot {shot.shot_id}")
+
+        tile_w = 320
+        tile_h = 180
+        pad = 16
+        header_h = 45
+        footer_h = 75
+        col_w = tile_w
+        total_w = pad + n * (col_w + pad)
+        total_h = header_h + tile_h + footer_h + pad
+
+        grid_img = Image.new("RGB", (total_w, total_h), color=(20, 22, 26))
+        draw = ImageDraw.Draw(grid_img)
+
+        # Header line
+        draw.text(
+            (pad, 14),
+            f"Candidate Options for Shot {shot.shot_id} (Duration: {shot.duration_seconds:.2f}s | Target: {shot.target_frames} frames)",
+            fill=(255, 255, 255),
+        )
+
+        for idx, cand in enumerate(candidates):
+            x = pad + idx * (col_w + pad)
+            y = header_h
+
+            # Extract small thumbnail
+            thumb = None
+            if cand.local_path and Path(cand.local_path).is_file():
+                try:
+                    thumb = Image.open(cand.local_path).convert("RGB")
+                    thumb.thumbnail((tile_w, tile_h))
+                except Exception:
+                    pass
+            elif cand.url:
+                tmp_thumb = output_path.parent / f"thumb_{shot.shot_id}_{idx}.jpg"
+                try:
+                    cmd = [
+                        "ffmpeg", "-y",
+                        "-ss", "0.5",
+                        "-i", cand.url,
+                        "-vframes", "1",
+                        "-s", f"{tile_w}x{tile_h}",
+                        str(tmp_thumb),
+                    ]
+                    subprocess.run(cmd, capture_output=True, timeout=12)
+                    if tmp_thumb.is_file():
+                        thumb = Image.open(tmp_thumb).convert("RGB")
+                except Exception:
+                    pass
+                finally:
+                    if tmp_thumb.exists():
+                        tmp_thumb.unlink(missing_ok=True)
+
+            if thumb is None:
+                thumb = Image.new("RGB", (tile_w, tile_h), color=(35, 40, 48))
+                tdraw = ImageDraw.Draw(thumb)
+                tdraw.text((15, tile_h // 2 - 10), f"Preview unavailable\n{cand.candidate_id}", fill=(180, 180, 180))
+
+            # Paste thumb centered in tile
+            tx = x + (tile_w - thumb.width) // 2
+            ty = y + (tile_h - thumb.height) // 2
+            grid_img.paste(thumb, (tx, ty))
+
+            # Outline
+            draw.rectangle([x, y, x + tile_w, y + tile_h], outline=(70, 80, 95), width=1)
+
+            # Footer info
+            score_color = (100, 230, 120) if cand.relevance_score >= 0.50 else (240, 200, 60) if cand.relevance_score >= 0.35 else (255, 80, 80)
+            draw.text((x, y + tile_h + 6), f"[{idx + 1}] {cand.candidate_id}", fill=(255, 255, 255))
+            draw.text((x + tile_w - 90, y + tile_h + 6), f"Score: {cand.relevance_score:.2f}", fill=score_color)
+
+            res_label = f"{cand.width}x{cand.height}"
+            if cand.is_low_res:
+                res_label += " [LOW RES]"
+            draw.text((x, y + tile_h + 24), res_label, fill=(180, 190, 200))
+
+            # First 5 tags
+            tags_snippet = ", ".join(cand.tags[:5])
+            if len(tags_snippet) > 42:
+                tags_snippet = tags_snippet[:39] + "..."
+            draw.text((x, y + tile_h + 42), tags_snippet, fill=(140, 150, 160))
+
+        grid_img.save(output_path, format="JPEG", quality=90)
+        return output_path
+
+    def search_and_preview_candidates(
         self,
         manifest: ProjectManifest,
         shot_id: str,
-        file_path: Optional[Path | str] = None,
-        candidate_index: Optional[int] = None,
+        search_query: Optional[str] = None,
         provider_name: Optional[str] = None,
-        prompt: Optional[str] = None,
-    ) -> Shot:
-        """Replace visual asset for a shot and invalidate its rendered clip (4.4)."""
+        limit: int = 5,
+    ) -> Tuple[List[VisualCandidate], Path]:
+        """Search top candidates for shot and create preview grid file (T4)."""
         target_shot: Optional[Shot] = None
         for ch in manifest.chapters:
             for s in ch.shots:
@@ -644,6 +822,83 @@ class VisualService:
 
         if not target_shot:
             raise ValueError(f"Shot {shot_id} not found in project")
+
+        prov_name = provider_name or target_shot.requested_source or "pixabay"
+        prov = self.get_provider(prov_name, manifest)
+
+        preset_snap = manifest.preset_snapshot or {}
+        req_terms = preset_snap.get("required_subject_terms") or []
+        block_terms = preset_snap.get("blocked_terms") or []
+        neg_terms = preset_snap.get("negative_terms") or []
+        min_rel = preset_snap.get("min_relevance_score", 0.35)
+        stock_cat = preset_snap.get("stock_category")
+        vis_kws = preset_snap.get("visual_keywords") or []
+
+        q = search_query or target_shot.search_query or target_shot.visual_prompt or "cinematic scene"
+
+        candidates = prov.search_candidates(
+            query=q,
+            target_duration=target_shot.duration_seconds,
+            limit=limit,
+            required_subject_terms=req_terms,
+            blocked_terms=block_terms,
+            negative_terms=neg_terms,
+            min_relevance_score=min_rel,
+            visual_keywords=vis_kws,
+            category=stock_cat,
+        )
+
+        if not candidates and stock_cat:
+            candidates = prov.search_candidates(
+                query=q,
+                target_duration=target_shot.duration_seconds,
+                limit=limit,
+                required_subject_terms=req_terms,
+                blocked_terms=block_terms,
+                negative_terms=neg_terms,
+                min_relevance_score=min_rel,
+                visual_keywords=vis_kws,
+                category=None,
+            )
+
+        if not candidates:
+            raise VisualError(f"No valid candidates found for shot {shot_id} with query '{q}'")
+
+        target_shot.candidates = [c.to_dict() for c in candidates]
+        if search_query:
+            target_shot.effective_query = search_query
+
+        grid_file = self.project_dir / "export" / f"temp_replace_{shot_id}_grid.jpg"
+        self.generate_candidate_preview_grid(target_shot, candidates, grid_file)
+        return candidates, grid_file
+
+    def replace_shot(
+        self,
+        manifest: ProjectManifest,
+        shot_id: str,
+        file_path: Optional[Path | str] = None,
+        candidate_index: Optional[int] = None,
+        provider_name: Optional[str] = None,
+        prompt: Optional[str] = None,
+        rebuild: bool = False,
+    ) -> Shot:
+        """Replace visual asset for a shot, lock it, and immediately re-build clip (T4)."""
+        target_shot: Optional[Shot] = None
+        for ch in manifest.chapters:
+            for s in ch.shots:
+                if s.shot_id == shot_id:
+                    target_shot = s
+                    break
+            if target_shot:
+                break
+
+        if not target_shot:
+            raise ValueError(f"Shot {shot_id} not found in project")
+
+        fps = getattr(getattr(manifest, "encoder_settings", None), "fps", 25) or 25
+        builder = ShotClipBuilder(fps=fps)
+        clip_rel = f"assets/visual/shots/{shot_id}.mp4"
+        clip_path = (self.project_dir / clip_rel).resolve()
 
         if file_path:
             src = Path(file_path).resolve()
@@ -658,14 +913,39 @@ class VisualService:
             target_shot.asset_path = rel_dest
             target_shot.asset_content_hash = compute_file_content_hash(dest)
             target_shot.actual_source = "local"
-            target_shot.status = ItemStatus.pending
-            target_shot.shot_hash = None  # invalidate
+            target_shot.locked = True  # T4 auto-lock
+            target_shot.needs_review = False
+
+            if rebuild:
+                builder.build_shot_clip(
+                    asset_path=dest,
+                    output_path=clip_path,
+                    motion=target_shot.motion,
+                    target_frames=target_shot.target_frames,
+                )
+                target_shot.rendered_clip = clip_rel
+                target_shot.status = ItemStatus.completed
+                target_shot.shot_hash = compute_shot_hash(
+                    shot_id=target_shot.shot_id,
+                    duration_seconds=target_shot.duration_seconds,
+                    target_frames=target_shot.target_frames,
+                    motion=target_shot.motion.value,
+                    asset_content_hash=target_shot.asset_content_hash,
+                    fps=fps,
+                    requested_provider=target_shot.requested_source or "",
+                    actual_provider=target_shot.actual_source or "",
+                )
+            else:
+                target_shot.status = ItemStatus.pending
+                target_shot.shot_hash = None
             return target_shot
 
         if candidate_index is not None:
-            if not target_shot.candidates or candidate_index >= len(target_shot.candidates):
+            # 1-indexed to 0-indexed conversion
+            idx = (candidate_index - 1) if candidate_index >= 1 else candidate_index
+            if not target_shot.candidates or idx >= len(target_shot.candidates):
                 raise ValueError(f"Candidate index {candidate_index} out of range for shot {shot_id}")
-            cand_dict = target_shot.candidates[candidate_index]
+            cand_dict = target_shot.candidates[idx]
             candidate = VisualCandidate.from_dict(cand_dict)
             provider = self.get_provider(candidate.provider, manifest)
             ext = ".mp4" if candidate.source_type == "stock_video" else ".jpg"
@@ -676,17 +956,52 @@ class VisualService:
             target_shot.asset_path = rel_dest
             target_shot.asset_content_hash = asset.content_hash
             target_shot.actual_source = candidate.provider
-            target_shot.status = ItemStatus.pending
-            target_shot.shot_hash = None
+            target_shot.tags = candidate.tags
+            target_shot.relevance_score = candidate.relevance_score
+            target_shot.is_low_res = candidate.is_low_res
+            target_shot.locked = True  # T4 auto-lock
+            target_shot.needs_review = False
+
+            if rebuild:
+                builder.build_shot_clip(
+                    asset_path=dest,
+                    output_path=clip_path,
+                    motion=target_shot.motion,
+                    target_frames=target_shot.target_frames,
+                )
+                target_shot.rendered_clip = clip_rel
+                target_shot.status = ItemStatus.completed
+                target_shot.shot_hash = compute_shot_hash(
+                    shot_id=target_shot.shot_id,
+                    duration_seconds=target_shot.duration_seconds,
+                    target_frames=target_shot.target_frames,
+                    motion=target_shot.motion.value,
+                    asset_content_hash=target_shot.asset_content_hash,
+                    fps=fps,
+                    requested_provider=target_shot.requested_source or "",
+                    actual_provider=target_shot.actual_source or "",
+                )
+            else:
+                target_shot.status = ItemStatus.pending
+                target_shot.shot_hash = None
             return target_shot
 
         if provider_name or prompt:
-            prov_name = provider_name or target_shot.requested_source
+            prov_name = provider_name or target_shot.requested_source or "pixabay"
             prov = self.get_provider(prov_name, manifest)
             q = prompt or target_shot.search_query or target_shot.visual_prompt
-            cands = prov.search_candidates(q, target_shot.duration_seconds, limit=3)
+            preset_snap = manifest.preset_snapshot or {}
+            cands = prov.search_candidates(
+                query=q,
+                target_duration=target_shot.duration_seconds,
+                limit=5,
+                required_subject_terms=preset_snap.get("required_subject_terms"),
+                blocked_terms=preset_snap.get("blocked_terms"),
+                negative_terms=preset_snap.get("negative_terms"),
+                min_relevance_score=preset_snap.get("min_relevance_score", 0.35),
+            )
             if not cands:
-                raise VisualError(f"No candidates found for prompt '{q}'")
+                raise VisualError(f"No valid candidates found for query '{q}'")
             target_shot.candidates = [c.to_dict() for c in cands]
             sel = cands[0]
             ext = ".mp4" if sel.source_type == "stock_video" else ".jpg"
@@ -698,11 +1013,38 @@ class VisualService:
             target_shot.asset_content_hash = asset.content_hash
             target_shot.actual_source = prov_name
             target_shot.is_fake = prov.is_fake
-            target_shot.status = ItemStatus.pending
-            target_shot.shot_hash = None
+            target_shot.tags = sel.tags
+            target_shot.relevance_score = sel.relevance_score
+            target_shot.is_low_res = sel.is_low_res
+            target_shot.effective_query = q
+            target_shot.locked = True  # T4 auto-lock
+            target_shot.needs_review = False
+
+            if rebuild:
+                builder.build_shot_clip(
+                    asset_path=dest,
+                    output_path=clip_path,
+                    motion=target_shot.motion,
+                    target_frames=target_shot.target_frames,
+                )
+                target_shot.rendered_clip = clip_rel
+                target_shot.status = ItemStatus.completed
+                target_shot.shot_hash = compute_shot_hash(
+                    shot_id=target_shot.shot_id,
+                    duration_seconds=target_shot.duration_seconds,
+                    target_frames=target_shot.target_frames,
+                    motion=target_shot.motion.value,
+                    asset_content_hash=target_shot.asset_content_hash,
+                    fps=fps,
+                    requested_provider=target_shot.requested_source or "",
+                    actual_provider=target_shot.actual_source or "",
+                )
+            else:
+                target_shot.status = ItemStatus.pending
+                target_shot.shot_hash = None
             return target_shot
 
-        raise ValueError("Must provide --file, --candidate, or --provider/--prompt for replace")
+        raise ValueError("Must provide --file, --candidate, or --search/--prompt for replace")
 
     def set_lock(
         self,

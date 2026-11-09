@@ -47,6 +47,57 @@ def _get_video_duration(path: Path) -> float:
         return 0.0
 
 
+def is_valid_media_file(file_path: Path | str) -> Tuple[bool, str, Dict[str, Any]]:
+    """Verify that a media file exists and can be decoded via ffprobe with duration > 0 (S4).
+
+    Returns:
+        (is_valid, reason, info_dict)
+    """
+    p = Path(file_path).resolve()
+    if not p.is_file():
+        return False, f"File does not exist: {p}", {}
+    if p.stat().st_size < 1024:
+        return False, f"File too small ({p.stat().st_size} bytes): {p}", {}
+
+    cmd = [
+        "ffprobe",
+        "-v", "error",
+        "-show_entries", "stream=codec_type,width,height,duration:format=duration",
+        "-of", "json",
+        str(p),
+    ]
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        if res.returncode != 0:
+            return False, f"ffprobe error: {res.stderr.strip()[-200:]}", {}
+        import json
+        info = json.loads(res.stdout)
+        streams = info.get("streams", [])
+        v_stream = next((s for s in streams if s.get("codec_type") in ("video", "image2")), None)
+        if not v_stream:
+            return False, "No video/image stream found in media file", {}
+
+        dur_str = v_stream.get("duration") or info.get("format", {}).get("duration") or 0.0
+        try:
+            dur = float(dur_str)
+        except (ValueError, TypeError):
+            dur = 0.0
+
+        w = int(v_stream.get("width") or 0)
+        h = int(v_stream.get("height") or 0)
+        if w <= 0 or h <= 0:
+            return False, f"Invalid dimensions: {w}x{h}", {}
+
+        # For video files, duration must be > 0.05s
+        if p.suffix.lower() not in IMAGE_EXTENSIONS:
+            if dur <= 0.05:
+                return False, f"Video duration too short or zero: {dur}s", {}
+
+        return True, "Valid media file", {"width": w, "height": h, "duration": dur}
+    except Exception as exc:
+        return False, f"Probe exception: {exc}", {}
+
+
 def verify_clip_stream_parameters(
     clip_path: Path,
     expected_frames: int,
@@ -266,26 +317,29 @@ class ShotClipBuilder:
         trim_source_video_asset(video_path, target_duration + 1.5)
 
         raw_dur = _get_video_duration(video_path)
-        usable_dur = max(raw_dur - 0.5, 0.5)
+        # Only skip initial 0.5s if source has sufficient duration margin
+        start_ss = 0.5 if raw_dur >= (target_duration + 0.75) else 0.0
+        usable_dur = max(raw_dur - start_ss, 0.1)
 
-        # Check if video duration is slightly short -> apply slowdown up to 1.25x
+        # Check if video duration is slightly short -> apply slowdown up to 1.5x
         pts_filter = ""
-        if usable_dur < target_duration and usable_dur >= (target_duration / 1.25):
-            slowdown_ratio = target_duration / usable_dur
+        if usable_dur < target_duration:
+            slowdown_ratio = min(target_duration / usable_dur, 1.5)
             logger.info(f"Applying subtle {slowdown_ratio:.2f}x slowdown to stock video {video_path.name}")
-            pts_filter = f"setpts={slowdown_ratio}*PTS,"
+            pts_filter = f"setpts={slowdown_ratio:.4f}*PTS,"
 
         vf = (
             f"{pts_filter}"
             f"scale={self.width}:{self.height}:force_original_aspect_ratio=increase,"
             f"crop={self.width}:{self.height},"
             f"setsar=1,"
+            f"tpad=stop_mode=clone:stop=-1,"
             f"format=yuv420p"
         )
 
         cmd = [
             "ffmpeg", "-y",
-            "-ss", "0.5",
+            "-ss", str(start_ss),
             "-i", str(video_path),
             "-vf", vf,
             "-frames:v", str(target_frames),

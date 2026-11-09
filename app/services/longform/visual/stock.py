@@ -45,14 +45,166 @@ STOP_WORDS = {
     "a", "an", "the", "and", "or", "in", "on", "at", "to", "for", "of", "with",
     "by", "from", "up", "about", "into", "over", "after", "is", "are", "was", "were",
     "be", "been", "being", "have", "has", "had", "do", "does", "did", "this", "that",
-    "shot", "scene", "video", "footage", "clip", "cinematic", "realism", "view"
+    "it", "its", "then", "there", "their"
+}
+
+GENERIC_WORDS = {
+    "black", "vintage", "smoke", "slow", "motion", "shot", "close", "up",
+    "photo", "high", "speed", "classic", "modern", "video", "footage", "clip",
+    "cinematic", "realism", "view", "4k", "hd", "background", "abstract",
+    "nature", "retro", "white", "red", "blue", "scene", "color", "dark",
+    "light", "action", "detail", "movement", "fast", "stream", "room", "table",
+    "massive", "chrome", "smoothly", "rumbling", "rural", "sunset"
+}
+
+ABSTRACT_WORDS = {
+    "aerodynamic", "billowing", "gliding", "breathtaking", "unleashing",
+    "timeless", "dramatic", "legendary", "iconic", "mythical", "glory",
+    "nostalgic", "atmosphere", "presence", "essence"
+}
+
+NUMBER_WORDS = {
+    "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+    "dual", "single", "triple", "quad", "1960s", "1950s", "1970s", "1980s", "1990s"
+}
+
+PRIORITY_NOUNS = {
+    "engine", "carburetor", "exhaust", "highway", "burnout", "dragstrip", "road",
+    "track", "dashboard", "wheel", "hood", "chassis", "speedometer", "transmission",
+    "race", "draftsmen", "engineers", "tunnel", "driver", "tires", "racing"
 }
 
 
+def normalize_tag(tag: str) -> str:
+    """Normalize a tag string to its root singular form for automotive and common entities (T3).
+
+    Conversions:
+    - 'cars' -> 'car'
+    - 'automobiles' -> 'automobile'
+    - 'vehicles' -> 'vehicle'
+    - 'muscle cars' -> 'muscle car'
+    - 'hot rods' -> 'hot rod'
+    - 'race cars' -> 'race car'
+    - 'sports cars' -> 'sports car'
+    - 'engines' -> 'engine'
+    - 'carburetors' -> 'carburetor'
+    - 'tires' -> 'tire'
+    - 'wheels' -> 'wheel'
+    - 'roads' -> 'road'
+    - 'highways' -> 'highway'
+    - 'drivers' -> 'driver'
+    """
+    t = tag.lower().strip()
+    if not t:
+        return ""
+    replacements = {
+        "cars": "car",
+        "automobiles": "automobile",
+        "vehicles": "vehicle",
+        "muscle cars": "muscle car",
+        "hot rods": "hot rod",
+        "race cars": "race car",
+        "sports cars": "sports car",
+        "engines": "engine",
+        "carburetors": "carburetor",
+        "tires": "tire",
+        "wheels": "wheel",
+        "roads": "road",
+        "highways": "highway",
+        "drivers": "driver",
+        "islands": "island",
+        "mountains": "mountain",
+        "flowers": "flower",
+        "boats": "boat",
+        "ships": "ship",
+        "turbines": "wind turbine",
+        "cities": "city",
+    }
+    if t in replacements:
+        return replacements[t]
+    if len(t) > 3 and t.endswith("s") and not t.endswith("ss"):
+        singular = t[:-1]
+        for stem in ["car", "automobile", "vehicle", "rod", "engine", "tire", "wheel", "road", "boat", "ship", "island"]:
+            if singular.endswith(stem):
+                return singular
+    return t
+
+
+def term_matches_tags(term: str, candidate_tags: List[str]) -> bool:
+    """Check if term matches candidate tags using whole-word boundary and tag normalization (S5, T3).
+
+    'car' matches 'muscle car', 'car show', 'race car', 'car', 'cars'.
+    'car' does NOT match 'carpet', 'red carpet', 'cartoon'.
+    """
+    term_clean = normalize_tag(term.strip().lower())
+    if not term_clean or not candidate_tags:
+        return False
+    pattern = r"\b" + re.escape(term_clean) + r"(?:s|es)?\b"
+    for tag in candidate_tags:
+        tag_clean = tag.strip().lower()
+        tag_norm = normalize_tag(tag_clean)
+        if re.search(pattern, tag_clean) or re.search(pattern, tag_norm):
+            return True
+    return False
+
+
 def extract_query_keywords(text: str) -> List[str]:
-    """Tokenize query into lowercase keywords, removing stop words (S1)."""
+    """Tokenize query into lowercase keywords, removing stop and generic words (S1, S5)."""
     words = [w.lower().strip() for w in re.findall(r"[A-Za-z0-9_-]+", text or "")]
-    return [w for w in words if len(w) > 2 and w not in STOP_WORDS]
+    return [
+        w for w in words
+        if len(w) > 2 and w not in STOP_WORDS and w not in GENERIC_WORDS and w not in ABSTRACT_WORDS and w not in NUMBER_WORDS
+    ]
+
+
+def restructure_stock_query(
+    search_query: str,
+    required_subject_terms: Optional[List[str]] = None,
+    topic_keywords: Optional[List[str]] = None,
+) -> str:
+    """Restructure a stock search query into 2-3 words with subject in front (S5).
+
+    e.g.:
+    - 'classic muscle car rumbling highway' -> 'muscle car highway'
+    - 'dual four barrel engine bay carburetor' -> 'car engine carburetor'
+    - 'dragstrip burnout tire smoke slow motion' -> 'car dragstrip burnout'
+    - 'wind tunnel aerodynamic smoke stream car' -> 'car tunnel wind'
+    """
+    clean_q = (search_query or "").lower().strip()
+    req = [t.lower().strip() for t in (required_subject_terms or []) if t.strip()]
+
+    # 1. Identify primary subject (multi-word first, e.g. 'muscle car')
+    chosen_subject = None
+    for st in sorted(req, key=len, reverse=True):
+        if re.search(r"\b" + re.escape(st) + r"\b", clean_q):
+            chosen_subject = st
+            break
+
+    if not chosen_subject:
+        for common in ["car", "vehicle", "automobile", "truck", "motorcycle"]:
+            if re.search(r"\b" + common + r"\b", clean_q):
+                chosen_subject = common
+                break
+
+    if not chosen_subject:
+        chosen_subject = req[0] if req else "car"
+
+    # 2. Extract remaining concrete nouns/keywords
+    words = re.findall(r"[a-z0-9]+", clean_q)
+    subj_tokens = set(chosen_subject.split())
+    p_nouns = []
+    others = []
+    for w in words:
+        if w in subj_tokens or w in STOP_WORDS or w in GENERIC_WORDS or w in ABSTRACT_WORDS or w in NUMBER_WORDS or len(w) <= 2:
+            continue
+        if w in PRIORITY_NOUNS and w not in p_nouns:
+            p_nouns.append(w)
+        elif w not in others and w not in p_nouns:
+            others.append(w)
+
+    combined = p_nouns + others
+    final_parts = [chosen_subject] + combined[:2]
+    return " ".join(final_parts)
 
 
 def score_candidate_relevance(
@@ -61,83 +213,113 @@ def score_candidate_relevance(
     visual_keywords: Optional[List[str]] = None,
     required_subject_terms: Optional[List[str]] = None,
     blocked_terms: Optional[List[str]] = None,
+    negative_terms: Optional[List[str]] = None,
+    min_relevance_score: Optional[float] = None,
+    is_low_res: bool = False,
 ) -> Tuple[bool, float, str]:
-    """Score candidate relevance against search query and preset rules (S1).
+    """Score candidate relevance against search query and preset rules with strict filters (S1, S5, S6, T3).
+
+    Strict filters (T3):
+    1. Blocked terms (whole-word boundary): if matched, REJECT immediately.
+    2. Required subject terms: candidate MUST have:
+       - Subject in the first 5 tags (Pixabay orders by relevance), OR
+       - At least 2 distinct required subject terms across all tags.
+       If neither condition is met, REJECT immediately.
+    3. Negative terms penalty & ambiguous query words:
+       - Matched negative terms incur heavy penalty (-0.15 per term, up to -0.45).
+       - Ambiguous query words matching negative terms (e.g. 'bay' from 'engine bay')
+         are excluded from query overlap credit if negative terms are present in candidate tags.
+    4. Minimum score threshold (default 0.35):
+       - If score after all penalties is below min_relevance_score, return False.
 
     Returns:
         (is_valid, relevance_score, reason)
     """
     req_terms = [t.lower().strip() for t in (required_subject_terms or []) if t.strip()]
     block_terms = [t.lower().strip() for t in (blocked_terms or []) if t.strip()]
+    neg_terms = [t.lower().strip() for t in (negative_terms or []) if t.strip()]
     cand_tags = [t.lower().strip() for t in (candidate_tags or []) if t.strip()]
+    min_thresh = min_relevance_score if min_relevance_score is not None else 0.35
 
-    # 1. Blocked terms check
+    # 1. Blocked terms hard check (whole-word boundary, S5)
     for bt in block_terms:
-        if any(bt in tag for tag in cand_tags):
+        if term_matches_tags(bt, cand_tags):
             return False, 0.0, f"Blocked term matched: {bt}"
 
-    # 2. Required subject terms check
+    # 2. Required subject terms strict check (T3)
     if req_terms:
-        has_req = any(
-            any(req == tag or req in tag or tag in req for req in req_terms)
-            for tag in cand_tags
-        )
-        if not has_req:
-            return False, 0.0, f"Candidate lacks required subject terms: {req_terms}"
+        first_5_tags = cand_tags[:5]
+        subj_in_first_5 = any(term_matches_tags(req, first_5_tags) for req in req_terms)
+        matched_distinct_subjects = {req for req in req_terms if term_matches_tags(req, cand_tags)}
+        has_sufficient_subjects = subj_in_first_5 or (len(matched_distinct_subjects) >= 2)
 
-    # 3. Query keywords overlap
+        if not has_sufficient_subjects:
+            return (
+                False,
+                0.0,
+                f"Candidate lacks required subject terms: subject not in first 5 tags and fewer than 2 distinct subject terms ({len(matched_distinct_subjects)} found)",
+            )
+
+    # 3. Subject score (if passed, 1.0 if req_terms present else 0.5)
+    subject_score = 1.0 if req_terms else 0.5
+
+    # 4. Check negative terms present in candidate tags (T3)
+    matched_neg_terms = [nt for nt in neg_terms if term_matches_tags(nt, cand_tags)]
+
+    # 5. Query keywords overlap (ignoring stopwords and generic words, S5)
+    # T3: If candidate contains negative terms, ambiguous query words matching negative terms
+    # (e.g. 'bay' in 'engine bay') must not give query overlap credit.
     q_words = extract_query_keywords(search_query)
-    q_matches = 0
-    if q_words:
-        for qw in q_words:
-            if any(qw in tag or tag in qw for tag in cand_tags):
-                q_matches += 1
-        q_ratio = q_matches / len(q_words)
-    else:
-        q_ratio = 0.5
+    effective_q_words = []
+    for qw in q_words:
+        if matched_neg_terms and (qw in neg_terms or any(term_matches_tags(qw, [nt]) for nt in neg_terms)):
+            continue
+        effective_q_words.append(qw)
 
-    # 4. Preset visual keywords overlap
+    if effective_q_words:
+        q_matches = sum(1 for qw in effective_q_words if term_matches_tags(qw, cand_tags))
+        q_ratio = q_matches / len(effective_q_words)
+    else:
+        q_ratio = 0.5 if not matched_neg_terms else 0.0
+
+    # 6. Preset visual keywords overlap
     vk_list = visual_keywords or []
-    vk_matches = 0
     if vk_list:
+        vk_matches = 0
         for vk in vk_list:
             vk_words = extract_query_keywords(vk)
-            if any(any(vkw in tag or tag in vkw for tag in cand_tags) for vkw in vk_words):
+            if any(term_matches_tags(vkw, cand_tags) for vkw in vk_words):
                 vk_matches += 1
         vk_ratio = min(vk_matches / len(vk_list), 1.0)
     else:
         vk_ratio = 0.0
 
-    score = 0.7 * q_ratio + 0.3 * vk_ratio
-    # If candidate passed required subject check, provide a baseline relevance
-    if req_terms:
-        score = max(score, 0.25)
+    score = 0.50 * subject_score + 0.35 * q_ratio + 0.15 * vk_ratio
 
-    return True, round(score, 3), "Accepted"
+    # T3: Negative terms heavy penalty (-0.15 per matched negative term, max -0.45)
+    if matched_neg_terms:
+        neg_penalty = min(len(matched_neg_terms) * 0.15, 0.45)
+        score = max(0.0, score - neg_penalty)
+
+    # S6: Low resolution / extreme aspect ratio penalty
+    if is_low_res:
+        score = max(0.05, score - 0.20)
+
+    score = round(score, 3)
+
+    # T3: Minimum threshold enforcement
+    if score < min_thresh:
+        return False, score, f"Score {score:.3f} below minimum threshold {min_thresh:.2f}"
+
+    return True, score, "Accepted"
 
 
 def extract_narrower_query(
     search_query: str,
     required_subject_terms: Optional[List[str]] = None,
 ) -> str:
-    """Extract a narrower query (subject term + 1-2 key nouns) for retry escalation (S1)."""
-    q_words = extract_query_keywords(search_query)
-    req_terms = [t.lower().strip() for t in (required_subject_terms or []) if t.strip()]
-
-    chosen_subject = None
-    for rt in req_terms:
-        if rt in (search_query or "").lower():
-            chosen_subject = rt
-            break
-    if not chosen_subject and req_terms:
-        chosen_subject = req_terms[0]
-
-    other_keywords = [w for w in q_words if not (chosen_subject and chosen_subject in w)]
-    narrow_parts = []
-    if chosen_subject:
-        narrow_parts.append(chosen_subject)
-    narrow_parts.extend(other_keywords[:2])
-    return " ".join(narrow_parts) if narrow_parts else (chosen_subject or search_query)
+    """Extract a narrower query (subject term + 1-2 key nouns) for retry escalation (S1, S5)."""
+    return restructure_stock_query(search_query, required_subject_terms)
 
 
 def _has_non_empty_key(cfg_key: str) -> bool:
@@ -207,8 +389,9 @@ class StockVisualProvider(BaseVisualProvider):
         self,
         query: str,
         min_duration: int,
+        category: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Query Pixabay API directly to extract tags and all renditions (S1, S2)."""
+        """Query Pixabay API directly to extract tags and all renditions (S1, S2, S5, S6)."""
         api_keys = config.app.get("pixabay_api_keys")
         api_key = api_keys[0] if isinstance(api_keys, list) and api_keys else api_keys
         if not api_key:
@@ -220,6 +403,9 @@ class StockVisualProvider(BaseVisualProvider):
             "per_page": 50,
             "key": api_key,
         }
+        if category:
+            params["category"] = category
+
         query_url = f"https://pixabay.com/api/videos/?{urllib.parse.urlencode(params)}"
         try:
             r = requests.get(query_url, proxies=config.proxy, timeout=30)
@@ -239,9 +425,10 @@ class StockVisualProvider(BaseVisualProvider):
                 tags = [t.strip().lower() for t in tags_str.split(",") if t.strip()]
 
                 videos_dict = v.get("videos") or {}
-                # S2: Filter renditions with width >= 1920 (prefer smallest >= 1920, e.g. 1080p over 4K)
-                rendition_matches = []
-                all_renditions = []
+                tier_a = []  # >= 1920 and near 16:9
+                tier_b = []  # >= 1920 other ratio
+                tier_c = []  # < 1920 or extreme ratio
+
                 for r_name, r_info in videos_dict.items():
                     if not isinstance(r_info, dict):
                         continue
@@ -251,20 +438,28 @@ class StockVisualProvider(BaseVisualProvider):
                     sz = int(r_info.get("size") or 0)
                     if not u or w <= 0 or h <= 0:
                         continue
-                    # Check landscape aspect
                     if w > h:
-                        all_renditions.append((w, h, sz, r_name, u))
-                        if w >= 1920 and h >= 1080:
-                            rendition_matches.append((w, h, sz, r_name, u))
+                        ratio = w / h
+                        is_near_16_9 = 1.60 <= ratio <= 1.95
+                        is_extreme = ratio < 1.33 or ratio > 2.20
+                        if w >= 1920 and is_near_16_9:
+                            tier_a.append((w, h, sz, r_name, u, False))
+                        elif w >= 1920 and not is_extreme:
+                            tier_b.append((w, h, sz, r_name, u, False))
+                        else:
+                            tier_c.append((w, h, sz, r_name, u, True))
 
-                if rendition_matches:
+                if tier_a:
                     # Pick smallest rendition with width >= 1920 (e.g. medium 1920x1080 rather than large 3840x2160)
-                    rendition_matches.sort(key=lambda x: (x[0], x[2]))
-                    chosen_w, chosen_h, chosen_sz, chosen_key, chosen_url = rendition_matches[0]
-                elif all_renditions:
-                    # Pick largest available if < 1920
-                    all_renditions.sort(key=lambda x: x[0], reverse=True)
-                    chosen_w, chosen_h, chosen_sz, chosen_key, chosen_url = all_renditions[0]
+                    tier_a.sort(key=lambda x: (x[0], x[2]))
+                    chosen_w, chosen_h, chosen_sz, chosen_key, chosen_url, is_low_res = tier_a[0]
+                elif tier_b:
+                    tier_b.sort(key=lambda x: (x[0], x[2]))
+                    chosen_w, chosen_h, chosen_sz, chosen_key, chosen_url, is_low_res = tier_b[0]
+                elif tier_c:
+                    # Pick highest resolution among tier_c (< 1920 or extreme ratio)
+                    tier_c.sort(key=lambda x: x[0], reverse=True)
+                    chosen_w, chosen_h, chosen_sz, chosen_key, chosen_url, is_low_res = tier_c[0]
                 else:
                     continue
 
@@ -279,6 +474,7 @@ class StockVisualProvider(BaseVisualProvider):
                     "height": chosen_h,
                     "duration": float(dur),
                     "rendition_name": f"{chosen_key} ({chosen_w}x{chosen_h})",
+                    "is_low_res": is_low_res,
                 })
 
             return raw_candidates
@@ -295,10 +491,15 @@ class StockVisualProvider(BaseVisualProvider):
         required_subject_terms: Optional[List[str]] = None,
         blocked_terms: Optional[List[str]] = None,
         visual_keywords: Optional[List[str]] = None,
+        negative_terms: Optional[List[str]] = None,
+        min_relevance_score: Optional[float] = None,
+        category: Optional[str] = None,
+        **kwargs: Any,
     ) -> List[VisualCandidate]:
         """Search stock video candidates in 16:9 landscape using priority order: Pixabay -> Pexels -> Coverr.
 
-        Applies relevance scoring (S1), term filtering (S1), and smallest >= 1920 rendition selection (S2).
+        Applies relevance scoring (S1), hard term filtering (S5), category filtering (S5),
+        and rendition optimization (S2, S6).
         """
         self.validate_credentials()
         excluded = excluded_ids or set()
@@ -312,8 +513,12 @@ class StockVisualProvider(BaseVisualProvider):
         # 1. Pixabay search
         if (self.provider_name == "pixabay" or (self.provider_name == "stock" and has_pixabay)) and len(candidates) < limit:
             try:
-                # Try enhanced direct search first for full tags and smallest >=1920 rendition
-                raw_items = self._search_pixabay_enhanced(query, min_sec)
+                # Try enhanced direct search with category first
+                raw_items = self._search_pixabay_enhanced(query, min_sec, category=category)
+                if not raw_items and category:
+                    # Retry without category in case category was too narrow
+                    raw_items = self._search_pixabay_enhanced(query, min_sec, category=None)
+
                 if raw_items:
                     for raw in raw_items:
                         asset_id = raw["asset_id"]
@@ -322,13 +527,16 @@ class StockVisualProvider(BaseVisualProvider):
                             continue
 
                         tags = raw["tags"]
-                        # Score candidate relevance
+                        # Score candidate relevance with hard filters
                         is_valid, score, reason = score_candidate_relevance(
                             candidate_tags=tags,
                             search_query=query,
                             visual_keywords=visual_keywords,
                             required_subject_terms=required_subject_terms,
                             blocked_terms=blocked_terms,
+                            negative_terms=negative_terms,
+                            min_relevance_score=min_relevance_score,
+                            is_low_res=raw.get("is_low_res", False),
                         )
                         if not is_valid:
                             logger.debug(f"Candidate {cand_id} rejected: {reason}")
@@ -352,6 +560,7 @@ class StockVisualProvider(BaseVisualProvider):
                                 tags=tags,
                                 relevance_score=score,
                                 rendition_name=raw["rendition_name"],
+                                is_low_res=raw.get("is_low_res", False),
                             )
                         )
                 else:
@@ -382,6 +591,8 @@ class StockVisualProvider(BaseVisualProvider):
                             visual_keywords=visual_keywords,
                             required_subject_terms=required_subject_terms,
                             blocked_terms=blocked_terms,
+                            negative_terms=negative_terms,
+                            min_relevance_score=min_relevance_score,
                         )
                         if not is_valid:
                             continue
@@ -438,6 +649,8 @@ class StockVisualProvider(BaseVisualProvider):
                         visual_keywords=visual_keywords,
                         required_subject_terms=required_subject_terms,
                         blocked_terms=blocked_terms,
+                        negative_terms=negative_terms,
+                        min_relevance_score=min_relevance_score,
                     )
                     if not is_valid:
                         continue
@@ -494,6 +707,8 @@ class StockVisualProvider(BaseVisualProvider):
                         visual_keywords=visual_keywords,
                         required_subject_terms=required_subject_terms,
                         blocked_terms=blocked_terms,
+                        negative_terms=negative_terms,
+                        min_relevance_score=min_relevance_score,
                     )
                     if not is_valid:
                         continue

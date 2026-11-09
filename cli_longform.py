@@ -1193,7 +1193,7 @@ def cmd_visual_preview(args: argparse.Namespace) -> int:
 
 
 def cmd_visual_replace(args: argparse.Namespace) -> int:
-    """Replace asset for a specific shot (4.4, 4.5)."""
+    """Replace asset for a specific shot (4.4, 4.5, T4)."""
     from app.services.longform.visual.service import VisualService
 
     proj_dir = get_project_dir(args.project_id)
@@ -1201,24 +1201,65 @@ def cmd_visual_replace(args: argparse.Namespace) -> int:
         print(f"Error: Project '{args.project_id}' not found at {proj_dir}", file=sys.stderr)
         return 1
 
+    shot_id = args.shot or getattr(args, "opt_shot", None)
+    if not shot_id:
+        print("Error: Must specify shot ID (e.g. python cli_longform.py visual replace <project_id> <shot_id>)", file=sys.stderr)
+        return 1
+
+    search_query = getattr(args, "search", None) or getattr(args, "prompt", None)
+
     try:
         with ProjectLock(proj_dir):
             manifest = load_manifest(proj_dir)
             service = VisualService(proj_dir)
 
+            # If --list, or (no candidate and no file): show candidate options + preview grid (T4)
+            if getattr(args, "list_candidates", False) or (args.candidate is None and not args.file):
+                cands, grid_path = service.search_and_preview_candidates(
+                    manifest=manifest,
+                    shot_id=shot_id,
+                    search_query=search_query,
+                    provider_name=args.provider,
+                    limit=5,
+                )
+                save_manifest(manifest, proj_dir)
+
+                header_label = f"Search Results for Shot '{shot_id}' with query '{search_query}':" if search_query else f"Top {len(cands)} Candidates for Shot '{shot_id}':"
+                print(f"\n[Visual Replace] {header_label}")
+                print("-" * 75)
+                for i, c in enumerate(cands, 1):
+                    score_str = f"Score: {c.relevance_score:.2f}"
+                    low_res_str = " [LOW RES]" if c.is_low_res else ""
+                    tags_str = ", ".join(c.tags[:6])
+                    print(f"  [{i}] ID: {c.candidate_id} | {score_str}{low_res_str} | Res: {c.width}x{c.height}")
+                    print(f"      Tags: {tags_str}")
+                print("-" * 75)
+                print(f"Temporary candidate preview grid: {grid_path}")
+                print(f"To select a candidate, run:")
+                print(f"  python cli_longform.py visual replace {args.project_id} {shot_id} --candidate <N>")
+                if not search_query:
+                    print(f"To search with custom keywords, run:")
+                    print(f"  python cli_longform.py visual replace {args.project_id} {shot_id} --search \"<query>\" [--list]\n")
+                else:
+                    print()
+                return 0
+
+            # Execute replacement with candidate or file (T4 auto-lock & auto-rebuild)
             shot = service.replace_shot(
                 manifest=manifest,
-                shot_id=args.shot,
+                shot_id=shot_id,
                 file_path=args.file,
                 candidate_index=args.candidate,
                 provider_name=args.provider,
-                prompt=args.prompt,
+                prompt=search_query,
+                rebuild=True,
             )
             save_manifest(manifest, proj_dir)
-            print(f"\nSUCCESS: Shot '{args.shot}' asset replaced.")
+            print(f"\nSUCCESS: Shot '{shot_id}' asset replaced, locked, and re-built.")
+            print(f"Clips built: 1")
             print(f"New asset path: {shot.asset_path}")
-            print(f"Source: {shot.actual_source} | Status: {shot.status.value}")
-            print("Note: Run 'visual build' to re-render the clip.\n")
+            print(f"Rendered clip:  {shot.rendered_clip}")
+            print(f"Source: {shot.actual_source} | Status: {shot.status.value} | Locked: {shot.locked}\n")
             return 0
     except Exception as exc:
         print(f"Error replacing shot: {exc}", file=sys.stderr)
@@ -1434,14 +1475,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_v_prev.add_argument("project_id", help="Project ID")
     p_v_prev.add_argument("--chapter", type=int, required=True, help="Chapter index")
 
-    # visual replace
+    # visual replace (T4)
     p_v_replace = visual_subs.add_parser("replace", help="Replace visual asset for a specific shot")
     p_v_replace.add_argument("project_id", help="Project ID")
-    p_v_replace.add_argument("--shot", required=True, help="Shot ID to replace (e.g. 'ch01_shot002')")
+    p_v_replace.add_argument("shot", nargs="?", help="Shot ID to replace (e.g. 'ch01_shot002')")
+    p_v_replace.add_argument("--shot", dest="opt_shot", help="Shot ID to replace (alternative to positional)")
     p_v_replace.add_argument("--file", help="Path to local replacement image or video file")
-    p_v_replace.add_argument("--candidate", type=int, help="Candidate index (0, 1, or 2) to activate")
+    p_v_replace.add_argument("--candidate", type=int, help="Candidate index (1 to 5) to activate")
+    p_v_replace.add_argument("--list", dest="list_candidates", action="store_true", help="List top 5 candidate alternatives with temporary preview grid")
+    p_v_replace.add_argument("--search", dest="search", help="Custom search query to search new candidates")
+    p_v_replace.add_argument("--prompt", dest="prompt", help="Alternative for --search")
     p_v_replace.add_argument("--provider", help="Provider to re-fetch with")
-    p_v_replace.add_argument("--prompt", help="Custom prompt or search query")
 
     # visual lock
     p_v_lock = visual_subs.add_parser("lock", help="Lock a shot to prevent automated re-fetch or replacement")

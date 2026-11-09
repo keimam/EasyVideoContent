@@ -583,6 +583,10 @@ def test_v1_fake_assets_stale_when_real_provider_requested(tmp_path: Path):
     assert service._is_shot_asset_valid_for_provider(shot, "fake")
 
     # Switching real providers: asset fetched from pexels is stale if pixabay is requested
+    sample_img = Path("test/resources/sample_image.png")
+    if sample_img.is_file():
+        fake_asset.write_bytes(sample_img.read_bytes())
+        shot.asset_content_hash = compute_file_content_hash(fake_asset)
     shot.is_fake = False
     shot.actual_source = "pexels"
     assert not service._is_shot_asset_valid_for_provider(shot, "pixabay")
@@ -1014,3 +1018,433 @@ def test_s3_set_voice_cli_accurate_summary(tmp_path: Path):
     assert total_groups == 2
     assert stale_groups == 2
     assert valid_groups == 0
+
+
+
+def test_s4_invalid_or_non_decodable_asset_marked_stale(tmp_path: Path):
+    """S4: Non-decodable media files and empty-tag assets under required terms are marked stale."""
+    from app.services.longform.visual.service import VisualService
+    from app.services.longform.visual.base import compute_file_content_hash
+
+    proj_dir = tmp_path / "s4_proj"
+    proj_dir.mkdir(parents=True, exist_ok=True)
+    asset_dir = proj_dir / "assets" / "visual" / "shots"
+    asset_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. Corrupt/empty file (0 bytes)
+    corrupt_file = asset_dir / "corrupt_asset.mp4"
+    corrupt_file.write_bytes(b"not a valid mp4 header or empty")
+    h_corrupt = compute_file_content_hash(corrupt_file)
+
+    shot_corrupt = Shot(
+        shot_id="ch01_shot001",
+        chapter_index=1,
+        shot_index=1,
+        asset_path="assets/visual/shots/corrupt_asset.mp4",
+        asset_content_hash=h_corrupt,
+        actual_source="pixabay",
+        is_fake=False,
+        tags=["car", "automobile"],
+    )
+
+    service = VisualService(proj_dir)
+    # Must fail decodability check
+    is_valid = service._is_shot_asset_valid_for_provider(
+        shot_corrupt,
+        target_provider_name="pixabay",
+        required_subject_terms=["car", "automobile"],
+    )
+    assert is_valid is False
+
+    # 2. Shot with missing/empty tags when required_subject_terms are configured
+    # Even if valid video, without tags it cannot be verified against required subjects
+    sample_clip = Path("test/resources/sample_clip_a.mp4")
+    if sample_clip.is_file():
+        valid_dest = asset_dir / "valid_clip.mp4"
+        valid_dest.write_bytes(sample_clip.read_bytes())
+        h_valid = compute_file_content_hash(valid_dest)
+
+        shot_no_tags = Shot(
+            shot_id="ch01_shot002",
+            chapter_index=1,
+            shot_index=2,
+            asset_path="assets/visual/shots/valid_clip.mp4",
+            asset_content_hash=h_valid,
+            actual_source="pixabay",
+            is_fake=False,
+            tags=[],  # Empty tags!
+        )
+        is_valid_empty_tags = service._is_shot_asset_valid_for_provider(
+            shot_no_tags,
+            target_provider_name="pixabay",
+            required_subject_terms=["car", "automobile"],
+        )
+        assert is_valid_empty_tags is False
+
+
+def test_s4_contact_sheet_missing_or_invalid_asset_red_banner(tmp_path: Path):
+    """S4: Contact sheet displays MISSING/INVALID ASSET card with red border when thumbnail fails."""
+    from app.services.longform.visual.contact_sheet import _extract_or_load_thumbnail, generate_chapter_contact_sheet
+
+    proj_dir = tmp_path / "s4_contact_proj"
+    proj_dir.mkdir(parents=True, exist_ok=True)
+
+    # Shot with non-existent asset
+    shot = Shot(
+        shot_id="ch01_shot099",
+        chapter_index=1,
+        shot_index=1,
+        asset_path="assets/visual/shots/missing_file.mp4",
+        actual_source="pixabay",
+        is_fake=False,
+    )
+
+    thumb_img, is_valid = _extract_or_load_thumbnail(shot, proj_dir, thumb_w=400, thumb_h=225)
+    assert is_valid is False
+    # Check that image was created with red border / warning
+    assert thumb_img.size == (400, 225)
+
+    ch = Chapter(chapter_index=1, chapter_title="Ch1", shots=[shot])
+    sheet_p = generate_chapter_contact_sheet(ch, proj_dir)
+    assert sheet_p.is_file()
+    assert sheet_p.stat().st_size > 1000
+
+
+def test_s5_fixtures_whole_word_matching_and_relevance():
+    """S5: Exact user fixtures tested for whole-word boundary matching and relevance scoring."""
+    from app.services.longform.visual.stock import (
+        score_candidate_relevance,
+        term_matches_tags,
+        restructure_stock_query,
+    )
+
+    req_terms = ["car", "automobile", "vehicle", "muscle car", "hot rod", "race car"]
+    blocked = ["lava lamp", "cartoon", "animation", "toy"]
+
+    fixtures = [
+        (["lava lamp", "lamp", "light", "wax"], False),
+        (["ocean", "sea", "wave"], False),
+        (["tiger", "animal"], False),
+        (["flower", "nature"], False),
+        (["red carpet", "event"], False),
+        (["car", "muscle car", "vintage"], True),
+        (["automobile", "highway", "road"], True),
+    ]
+
+    for tags, should_accept in fixtures:
+        is_valid, score, reason = score_candidate_relevance(
+            candidate_tags=tags,
+            search_query="classic muscle car rumbling highway",
+            required_subject_terms=req_terms,
+            blocked_terms=blocked,
+        )
+        assert is_valid == should_accept, f"Fixture failed for tags {tags}: got {is_valid}, reason={reason}"
+        if should_accept:
+            assert score > 0.0
+
+    # Test whole-word boundary (car does NOT match carpet or cartoon)
+    assert term_matches_tags("car", ["muscle car"]) is True
+    assert term_matches_tags("car", ["cars"]) is True
+    assert term_matches_tags("car", ["red carpet"]) is False
+    assert term_matches_tags("car", ["cartoon"]) is False
+
+    # Test query restructuring (2-3 words, subject first, concrete)
+    q1 = restructure_stock_query("classic muscle car rumbling highway", req_terms)
+    assert q1 == "muscle car highway"
+
+    q2 = restructure_stock_query("dual four barrel engine bay carburetor", req_terms)
+    assert q2 == "car engine carburetor"
+
+    q3 = restructure_stock_query("dragstrip burnout tire smoke slow motion", req_terms)
+    assert q3 == "car dragstrip burnout"
+
+
+def test_s6_resolution_aspect_ratio_and_low_res_penalty():
+    """S6: Renditions with width < 1920 or extreme ratios get low_res penalty and flag."""
+    from app.services.longform.visual.stock import score_candidate_relevance
+
+    req_terms = ["car"]
+    tags = ["car", "highway"]
+
+    # High res (1920x1080)
+    valid_hr, score_hr, _ = score_candidate_relevance(
+        candidate_tags=tags,
+        search_query="car highway",
+        required_subject_terms=req_terms,
+        is_low_res=False,
+    )
+    # Low res (e.g. 1280x720)
+    valid_lr, score_lr, _ = score_candidate_relevance(
+        candidate_tags=tags,
+        search_query="car highway",
+        required_subject_terms=req_terms,
+        is_low_res=True,
+    )
+
+    assert valid_hr is True
+    assert valid_lr is True
+    assert score_lr < score_hr  # Low res must have reduced score
+    assert round(score_hr - score_lr, 2) == 0.20
+
+
+def test_s7_quality_checker_flags_excessive_search_keywords(tmp_path: Path):
+    """S7: Quality checker marks [search: ...] queries that exceed 4 words."""
+    from app.services.longform.quality_checker import ScriptQualityChecker
+    from app.services.longform.schema import Segment, VisualSpec
+
+    proj_dir = tmp_path / "s7_quality_proj"
+    proj_dir.mkdir(parents=True, exist_ok=True)
+    script_dir = proj_dir / "script"
+    script_dir.mkdir(parents=True, exist_ok=True)
+
+    seg_good = Segment(
+        segment_index=1,
+        narration_text="The 1964 GTO launched an era.",
+        visual=VisualSpec(search_keywords="muscle car highway"),
+    )
+    seg_bad = Segment(
+        segment_index=2,
+        narration_text="Tire smoke billowed across the strip.",
+        visual=VisualSpec(search_keywords="slow motion tire smoke billowing from wide rear radials"),  # 9 words!
+    )
+    ch = Chapter(chapter_index=1, chapter_title="Genesis", tts_groups=[
+        TtsGroup(group_index=1, paragraph_text="Para", segments=[seg_good, seg_bad])
+    ])
+    manifest = ProjectManifest(
+        project_id="s7_proj",
+        title="S7 Test",
+        preset_id="automotive",
+        preset_snapshot={"name": "Automotive"},
+        chapters=[ch],
+    )
+
+    save_manifest(manifest, proj_dir)
+    checker = ScriptQualityChecker(project_dir=proj_dir)
+    res = checker.inspect()
+
+    excessive = res.get("excessive_search_queries", [])
+    assert len(excessive) == 1
+    assert excessive[0]["segment"] == 2
+    assert excessive[0]["word_count"] == 9
+
+    # Check that report markdown contains section 8
+    report_text = checker.report_file.read_text(encoding="utf-8")
+    assert "Stock Search Query Quality" in report_text
+    assert "slow motion tire smoke billowing" in report_text
+
+
+
+def test_t3_fixture_dubrovnik_ch01_shot002_rejected():
+    """T3: Verify candidate tags from ch01_shot002 (Dubrovnik) are rejected (needs_review).
+
+    Because 'cars' is not in the first 5 tags, only 1 subject term exists,
+    and heavy negative terms (sea, city, port, bay, ocean, etc.) penalize score.
+    """
+    from app.services.longform.visual.stock import score_candidate_relevance
+
+    dubrovnik_tags = [
+        "dubrovnik", "sunset", "sea", "city", "timelapse", "time lapse", "summer",
+        "croatia", "europe", "on the water", "lighting", "artificial light", "port",
+        "landscape", "bay", "ocean", "hill", "islands", "by the sea", "quickly",
+        "clouds", "colored clouds", "orange clouds", "darkness", "dusk", "fading light",
+        "outlook", "boats", "ships", "skyscraper", "house", "cars", "fast movement",
+    ]
+    req_terms = ["car", "automobile", "vehicle", "muscle car", "hot rod", "race car"]
+    neg_terms = [
+        "sea", "ocean", "beach", "bay", "port", "boat", "ship", "island", "coast",
+        "river", "lake", "waterfall", "flower", "garden", "field", "meadow", "forest",
+        "park", "mountain", "landscape", "skyline", "city", "wind turbine", "office", "people"
+    ]
+
+    is_valid, score, reason = score_candidate_relevance(
+        candidate_tags=dubrovnik_tags,
+        search_query="dual four barrel engine bay carburetor",
+        required_subject_terms=req_terms,
+        negative_terms=neg_terms,
+        min_relevance_score=0.35,
+    )
+    assert is_valid is False
+    assert "lacks required subject terms" in reason or score < 0.35
+
+
+def test_t3_fixture_alps_road_car_passes_with_penalty():
+    """T3: 'road, highway, drive, car, alps, aerial, landscape' -> car in first 5 tags, passes with penalty."""
+    from app.services.longform.visual.stock import score_candidate_relevance
+
+    tags = ["road", "highway", "drive", "car", "alps", "aerial", "landscape"]
+    req_terms = ["car", "automobile", "vehicle", "muscle car", "hot rod", "race car"]
+    neg_terms = ["sea", "ocean", "beach", "bay", "port", "boat", "ship", "island", "mountain", "landscape"]
+
+    is_valid, score, reason = score_candidate_relevance(
+        candidate_tags=tags,
+        search_query="classic muscle car rumbling highway",
+        required_subject_terms=req_terms,
+        negative_terms=neg_terms,
+        min_relevance_score=0.35,
+    )
+    assert is_valid is True
+    assert score >= 0.35
+    assert reason == "Accepted"
+
+
+def test_t3_fixture_high_relevance_muscle_car_passes_high_score():
+    """T3: 'car, vehicle, automobile, muscle car' -> passes with high score."""
+    from app.services.longform.visual.stock import score_candidate_relevance
+
+    tags = ["car", "vehicle", "automobile", "muscle car"]
+    req_terms = ["car", "automobile", "vehicle", "muscle car", "hot rod", "race car"]
+
+    is_valid, score, reason = score_candidate_relevance(
+        candidate_tags=tags,
+        search_query="classic muscle car rumbling highway",
+        required_subject_terms=req_terms,
+        min_relevance_score=0.35,
+    )
+    assert is_valid is True
+    assert score >= 0.70
+    assert reason == "Accepted"
+
+
+def test_t3_ambiguous_engine_bay_does_not_credit_bay_when_negative_terms_present():
+    """T3: Query 'bay' from 'engine bay' does not credit candidate when negative terms present."""
+    from app.services.longform.visual.stock import score_candidate_relevance
+
+    harbor_tags = ["dubrovnik", "port", "bay", "sea", "ocean", "car", "cars"]
+    req_terms = ["car", "automobile", "vehicle", "muscle car"]
+    neg_terms = ["bay", "port", "sea", "ocean"]
+
+    is_valid, score, reason = score_candidate_relevance(
+        candidate_tags=harbor_tags,
+        search_query="dual four barrel engine bay carburetor",
+        required_subject_terms=req_terms,
+        negative_terms=neg_terms,
+        min_relevance_score=0.35,
+    )
+    assert score < 0.35
+    assert is_valid is False
+
+
+def test_t4_visual_replace_preview_grid_and_auto_lock_and_build(tmp_path: Path):
+    """T4: visual replace displays candidate grid, selects candidate, auto-locks and auto-rebuilds."""
+    from app.services.longform.visual.fake import FakeVisualProvider
+    from app.services.longform.visual.service import VisualService
+    from PIL import Image
+
+    proj_dir = tmp_path / "t4_replace_proj"
+    proj_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create dummy image asset
+    assets_dir = proj_dir / "assets" / "visual" / "shots"
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    img1 = assets_dir / "ch01_shot001_asset.jpg"
+    Image.new("RGB", (1920, 1080), color=(100, 120, 140)).save(img1)
+
+    shot = Shot(
+        shot_id="ch01_shot001",
+        chapter_index=1,
+        shot_index=1,
+        start_seconds=0.0,
+        end_seconds=4.0,
+        duration_seconds=4.0,
+        target_frames=100,
+        requested_source="fake",
+        actual_source="fake",
+        search_query="classic muscle car rumbling highway",
+        asset_path="assets/visual/shots/ch01_shot001_asset.jpg",
+        asset_content_hash=compute_file_content_hash(img1),
+        status=ItemStatus.pending,
+    )
+    ch = Chapter(chapter_index=1, chapter_title="Intro", shots=[shot])
+    manifest = ProjectManifest(
+        project_id="t4_proj",
+        title="T4 Project",
+        preset_id="automotive",
+        preset_snapshot={"name": "Automotive"},
+        chapters=[ch],
+    )
+    save_manifest(manifest, proj_dir)
+
+    service = VisualService(proj_dir)
+
+    # 1. Preview candidates
+    cands, grid_path = service.search_and_preview_candidates(
+        manifest=manifest,
+        shot_id="ch01_shot001",
+        provider_name="fake",
+        limit=5,
+    )
+    assert len(cands) == 5
+    assert grid_path.is_file()
+    assert len(manifest.chapters[0].shots[0].candidates) == 5
+
+    # 2. Select candidate 2 -> should replace, auto-lock, and auto-build
+    updated_shot = service.replace_shot(
+        manifest=manifest,
+        shot_id="ch01_shot001",
+        candidate_index=2,
+        rebuild=True,
+    )
+
+    assert updated_shot.locked is True
+    assert updated_shot.needs_review is False
+    assert updated_shot.status == ItemStatus.completed
+    assert (proj_dir / updated_shot.rendered_clip).is_file()
+
+
+def test_t3_locked_shot_never_overwritten_by_new_rules(tmp_path: Path):
+    """T3: Locked shot is protected and never marked stale or overwritten by new relevance rules."""
+    from app.services.longform.visual.service import VisualService
+    proj_dir = tmp_path / "locked_proj"
+    proj_dir.mkdir(parents=True, exist_ok=True)
+
+    assets_dir = proj_dir / "assets" / "visual" / "shots"
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    asset_file = assets_dir / "ch01_shot001_asset.jpg"
+    Image.new("RGB", (1920, 1080), color=(80, 80, 80)).save(asset_file)
+    asset_hash = compute_file_content_hash(asset_file)
+
+    shot = Shot(
+        shot_id="ch01_shot001",
+        chapter_index=1,
+        shot_index=1,
+        duration_seconds=3.0,
+        target_frames=75,
+        requested_source="pixabay",
+        actual_source="pixabay",
+        is_fake=False,
+        locked=True,  # LOCKED!
+        tags=["dubrovnik", "sunset", "sea", "city", "port", "bay", "boats", "cars"],
+        relevance_score=0.10,
+        asset_path="assets/visual/shots/ch01_shot001_asset.jpg",
+        asset_content_hash=asset_hash,
+        status=ItemStatus.completed,
+    )
+    ch = Chapter(chapter_index=1, chapter_title="Intro", shots=[shot])
+    manifest = ProjectManifest(
+        project_id="locked_test",
+        title="Locked Test",
+        preset_id="automotive",
+        preset_snapshot={
+            "required_subject_terms": ["car", "automobile"],
+            "negative_terms": ["sea", "port", "bay"],
+            "min_relevance_score": 0.35,
+        },
+        chapters=[ch],
+    )
+    save_manifest(manifest, proj_dir)
+
+    service = VisualService(proj_dir)
+    assert service._is_shot_asset_valid_for_provider(
+        shot,
+        "pixabay",
+        required_subject_terms=["car"],
+        negative_terms=["sea"],
+        min_relevance_score=0.35,
+    ) is True
+
+    # fetch_all must skip locked shot without altering it
+    updated_manifest = service.fetch_all(manifest, provider_name="pixabay", allow_fallback=False)
+    assert updated_manifest.chapters[0].shots[0].locked is True
+    assert updated_manifest.chapters[0].shots[0].asset_content_hash == asset_hash
+    assert updated_manifest.chapters[0].shots[0].tags == ["dubrovnik", "sunset", "sea", "city", "port", "bay", "boats", "cars"]
+
