@@ -69,8 +69,8 @@ def test_webui_smoke_empty_storage(tmp_path, monkeypatch):
     assert not at.exception, f"AppTest threw exceptions: {[e.value for e in at.exception]}"
     info_messages = [inf.value for inf in at.info]
     assert any("Belum ada proyek" in msg for msg in info_messages)
-    # Form expander exists
-    assert any("Buat Proyek Baru" in str(exp.label) for exp in at.expander)
+    # Button "+ Proyek Baru" exists in top bar (D5)
+    assert any("Proyek Baru" in str(b.label) for b in at.button)
 
 
 def test_webui_smoke_with_test_project_cards(tmp_path, monkeypatch):
@@ -93,7 +93,7 @@ def test_webui_smoke_with_test_project_cards(tmp_path, monkeypatch):
     # Verify project card title and next step rendered in markdown
     all_markdown = " ".join(m.value for m in at.markdown)
     assert "Smoke Card Muscle Car Legend" in all_markdown
-    assert "Berikutnya: Naskah" in all_markdown
+    assert "Berikutnya:" in all_markdown and "Naskah" in all_markdown
 
     # Verify Open button exists
     open_btns = [b for b in at.button if "Buka" in (b.label or "")]
@@ -150,8 +150,8 @@ def test_webui_smoke_uji_nokey_project_page():
     assert len(stepper_buttons) == 5
     assert all("✅ Selesai" in b.label for b in stepper_buttons)
 
-    # With all steps completed, active step defaults to script, where label is "Selesai ✔ — Lanjut ke Suara"
-    completed_nav_btns = [b for b in at.button if "Selesai ✔ — Lanjut ke Suara" in (b.label or "")]
+    # With all steps completed, active step defaults to script, where nav button to voice is present
+    completed_nav_btns = [b for b in at.button if "Lanjut ke Suara" in (b.label or "")]
     assert len(completed_nav_btns) == 1
 
 
@@ -195,3 +195,105 @@ def test_webui_smoke_stopped_state_adaptive_resume_button(tmp_path, monkeypatch)
     resume_btns = [b for b in at.button if "Lanjutkan Sintesis Audio" in (b.label or "")]
     assert len(resume_btns) == 1
     assert "▶️ Lanjutkan Sintesis Audio" in resume_btns[0].label
+
+
+def test_webui_job_monitor_refresh_resilience_and_lifecycle(tmp_path, monkeypatch):
+    """Test D1: Job monitor refresh resilience and full lifecycle in AppTest without exception.
+
+    Verifies:
+    (a) Project page loaded first time when job_state=running and PID is alive.
+    (b) Reloaded (new AppTest instance = F5 simulation) while running.
+    (c) Transition running -> selesai (completed).
+    (d) Transition running -> terhenti (stopped).
+    All transitions complete without raising any Streamlit fragment exceptions.
+    """
+    import subprocess
+    import sys
+    import json
+    from app.services.longform.ui import jobs
+
+    monkeypatch.setattr("app.services.longform.store.get_projects_root", lambda: tmp_path)
+    monkeypatch.setattr("app.services.longform.ui.components.get_projects_root", lambda: tmp_path)
+
+    test_pid = "lifecycle_monitor_proj"
+    manifest, p_dir = create_project(
+        project_id=test_pid,
+        title="Lifecycle Monitor Project",
+        preset_id="automotive.muscle_car",
+        projects_root=tmp_path,
+    )
+
+    # Spawn a detached long-running sleep process as our real alive child PID
+    worker_proc = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+    )
+    alive_pid = worker_proc.pid
+
+    try:
+        # Write initial job_state as running
+        job_state = {
+            "project_id": test_pid,
+            "step": "audio_synthesize",
+            "status": "running",
+            "pid": alive_pid,
+            "exit_code": None,
+            "started_at": "2026-11-10T11:00:00",
+            "finished_at": None,
+            "log_file": str(p_dir / "logs" / "job_mock.log"),
+            "command": ["mock"],
+            "error_message": None,
+        }
+        (p_dir / "logs").mkdir(parents=True, exist_ok=True)
+        (p_dir / "job_state.json").write_text(json.dumps(job_state), encoding="utf-8")
+
+        # --- (a) Halaman proyek dimuat pertama kali saat job_state=running dan PID hidup ---
+        at1 = AppTest.from_file(get_long_video_app_file())
+        at1.query_params["project"] = test_pid
+        at1.run(timeout=10)
+
+        assert not at1.exception, f"(a) AppTest threw exceptions: {[e.value for e in at1.exception]}"
+        info_texts1 = " ".join(inf.value for inf in at1.info)
+        assert "Pekerjaan Sedang Berjalan" in info_texts1
+        assert "Sintesis Narasi Suara" in info_texts1
+
+        # --- (b) Dimuat ulang (instance AppTest baru = simulasi F5 browser refresh) saat running ---
+        at2 = AppTest.from_file(get_long_video_app_file())
+        at2.query_params["project"] = test_pid
+        at2.run(timeout=10)
+
+        assert not at2.exception, f"(b) F5 reload threw exceptions: {[e.value for e in at2.exception]}"
+        info_texts2 = " ".join(inf.value for inf in at2.info)
+        assert "Pekerjaan Sedang Berjalan" in info_texts2
+
+        # --- (c) Transisi running -> selesai ---
+        job_state["status"] = "completed"
+        job_state["exit_code"] = 0
+        job_state["finished_at"] = "2026-11-10T11:01:00"
+        (p_dir / "job_state.json").write_text(json.dumps(job_state), encoding="utf-8")
+
+        at3 = AppTest.from_file(get_long_video_app_file())
+        at3.query_params["project"] = test_pid
+        at3.run(timeout=10)
+
+        assert not at3.exception, f"(c) Completed transition threw exceptions: {[e.value for e in at3.exception]}"
+        success_texts = " ".join(s.value for s in at3.success)
+        assert "Pekerjaan Selesai" in success_texts
+
+        # --- (d) Transisi running -> terhenti ---
+        job_state["status"] = "stopped"
+        job_state["exit_code"] = -1
+        (p_dir / "job_state.json").write_text(json.dumps(job_state), encoding="utf-8")
+
+        at4 = AppTest.from_file(get_long_video_app_file())
+        at4.query_params["project"] = test_pid
+        at4.run(timeout=10)
+
+        assert not at4.exception, f"(d) Stopped transition threw exceptions: {[e.value for e in at4.exception]}"
+        warning_texts = " ".join(w.value for w in at4.warning)
+        assert "Pekerjaan Terhenti" in warning_texts
+
+    finally:
+        if worker_proc.poll() is None:
+            worker_proc.terminate()
+            worker_proc.wait(timeout=2.0)

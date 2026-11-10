@@ -57,39 +57,47 @@ from app.services.longform.ui.security import check_llm_status, mask_api_key, sa
 from app.services.longform.voice_service import VoiceService, list_available_voices
 
 
-# --- Project Discovery via Single Status Resolver (C2) ---
+# --- Project Discovery via Single Status Resolver (C2, D5) ---
+
+def check_has_llm_key() -> bool:
+    """Check if an actual LLM API key is configured in MoneyPrinterTurbo config (D3)."""
+    try:
+        from app.config import config
+        prov = config.app.get("llm_provider", "openai")
+        key = (config.app.get(f"{prov}_api_key") or "").strip()
+        if not key:
+            return False
+        if prov == "gemini" and not key.startswith("AIzaSy"):
+            return False
+        return True
+    except Exception:
+        return False
+
 
 def get_project_summaries() -> List[Dict[str, Any]]:
-    """Scan projects directory and build status summaries via compute_project_step_status (C2)."""
+    """Scan projects directory and build status summaries via compute_project_step_status (C2, D5)."""
     root = get_projects_root()
     projects = []
     if not root.is_dir():
         return projects
 
-    for p in sorted(root.iterdir()):
+    for p in root.iterdir():
         if p.is_dir() and (p / "manifest.json").is_file():
             try:
                 st_info = compute_project_step_status(p)
+                st_info["mtime"] = (p / "manifest.json").stat().st_mtime
                 projects.append(st_info)
             except Exception as exc:
                 logger.warning(f"Failed to inspect project at {p}: {exc}")
 
+    # Sort newest first by last modified time (D5)
+    projects.sort(key=lambda x: x.get("mtime", 0), reverse=True)
     return projects
 
 
-# --- Job Monitor Widget (C1) ---
+# --- Job Monitor Widget with Fragment (D1) ---
 
-@st.fragment
-def render_job_monitor_widget(project_id: str):
-    """Real-time detached background job monitor widget (C1).
-
-    Auto-refreshes every 2 seconds while a job is actively running.
-    Handles 'stopped' states cleanly with resumption guidance.
-    """
-    state = jobs.get_job_state(project_id)
-    if not state:
-        return
-
+def _render_job_monitor_content(project_id: str, state: Dict[str, Any]):
     status = state.get("status")
     step = state.get("step", "")
     pid = state.get("pid")
@@ -118,8 +126,8 @@ def render_job_monitor_widget(project_id: str):
             if st.button("🛑 Batalkan Pekerjaan", key=f"btn_cancel_{project_id}"):
                 cancelled = jobs.cancel_job(project_id)
                 if cancelled:
-                    st.warning("Permintaan pembatalan telah dikirim.")
-                    st.rerun()
+                    st.warning("Pekerjaan telah dibatalkan.")
+                    st.rerun(scope="app")
 
         logs = jobs.get_job_logs(project_id, max_lines=30)
         with st.expander("📋 Log Keluaran Proses (30 baris terakhir)", expanded=True):
@@ -127,11 +135,6 @@ def render_job_monitor_widget(project_id: str):
                 st.code("\n".join(logs), language="text")
             else:
                 st.caption("Menunggu keluaran log...")
-
-        # Auto-refresh fragment while job is running (skip during pytest)
-        if not os.environ.get("PYTEST_CURRENT_TEST"):
-            time.sleep(2)
-            st.rerun(scope="fragment")
 
     elif status == "stopped":
         st.warning(f"⚠️ **Pekerjaan Terhenti**: `{step_display}` (Pekerjaan belum selesai). Klik tombol **Lanjutkan** di bawah untuk meneruskan.")
@@ -152,144 +155,203 @@ def render_job_monitor_widget(project_id: str):
                 st.code("\n".join(logs), language="text")
 
 
-# --- Beranda (Home Page) Components (C4.1, C4.2) ---
+@st.fragment(run_every=2)
+def _active_job_monitor_fragment(project_id: str):
+    """Auto-refreshing fragment monitor that polls job state while running (D1)."""
+    state = jobs.get_job_state(project_id)
+    if not state or state.get("status") != "running":
+        # Job transitioned from running to completed / stopped / cancelled / failed.
+        # Trigger full app rerun so stepper, buttons, and badges update!
+        st.rerun(scope="app")
+        return
+
+    _render_job_monitor_content(project_id, state)
+
+
+def render_job_monitor_widget(project_id: str):
+    """Real-time background job monitor widget (D1)."""
+    state = jobs.get_job_state(project_id)
+    if not state:
+        return
+
+    status = state.get("status")
+    if status == "running":
+        _active_job_monitor_fragment(project_id)
+    else:
+        _render_job_monitor_content(project_id, state)
+
+
+# --- Beranda (Home Page) Components (D5) ---
 
 def render_home_page():
-    """Render Beranda: Project Cards & Quick Creation (C4.1, C4.2)."""
-    st.header("🎬 Studio Video Panjang")
-    st.caption("Buat video dokumenter berdurasi 10–20 menit secara otomatis dengan alur 5 langkah terstruktur.")
+    """Render Beranda: Compact 2-column cards grid & quick creation (D5)."""
+    # 1. Top bar: Title + "+ Proyek Baru" button at top right
+    col_h, col_new = st.columns([4, 1.2])
+    with col_h:
+        st.title("🎬 Studio Video Panjang")
+        st.caption("Alur otomatis video dokumenter 10–20 menit: Naskah › Suara › Visual › Render › CapCut.")
+    with col_new:
+        st.write("")
+        show_form = st.session_state.get("show_new_proj_form", False)
+        btn_label = "✕ Tutup Form" if show_form else "➕ Proyek Baru"
+        if st.button(btn_label, type="primary", use_container_width=True, key="btn_toggle_new_proj"):
+            st.session_state["show_new_proj_form"] = not show_form
+            st.rerun()
 
-    # 1. New Project Quick Form (C4.2)
-    with st.expander("➕ Buat Proyek Baru", expanded=st.session_state.get("show_new_proj_expander", False)):
-        with st.form("form_create_project"):
-            new_title = st.text_input("Judul Proyek (Wajib):", placeholder="Mis. Kisah Legenda Dodge Charger 1969")
+    # 2. New Project Form (shown when toggled)
+    if st.session_state.get("show_new_proj_form"):
+        with st.container(border=True):
+            st.subheader("✨ Buat Proyek Video Baru")
+            with st.form("form_create_project"):
+                new_title = st.text_input("Judul Proyek (Wajib):", placeholder="Mis. Kisah Legenda Dodge Charger 1969")
 
-            # Presets categorized for user simplicity
-            niche_catalog = {
-                "Automotive / Otomotif": [
-                    ("American Muscle Cars & V8 Heritage", "automotive.muscle_car"),
-                    ("Japanese Domestic Market (JDM) Icons", "automotive.jdm"),
-                    ("Supercars & Exotic Engineering", "automotive.supercar"),
-                    ("Classic Car Restoration & Preservation", "automotive.classic_restoration"),
-                ],
-                "Documentary / Dokumenter": [
-                    ("Dokumenter Umum (Bahasa Indonesia)", "documentary_id"),
-                    ("General Documentary (English)", "documentary_en"),
-                ],
-                "History / Sejarah": [
-                    ("Military History & Battlefield Tactics", "history.military"),
-                    ("Ancient Civilizations & Lost Empires", "history.ancient"),
-                ],
-                "True Crime / Misteri": [
-                    ("Unsolved Mysteries & Cold Cases", "true_crime.unsolved"),
-                ],
-                "Technology / Teknologi": [
-                    ("Artificial Intelligence & Deep Tech", "technology.ai_frontier"),
-                ],
-            }
+                niche_catalog = {
+                    "Automotive / Otomotif": [
+                        ("American Muscle Cars & V8 Heritage", "automotive.muscle_car"),
+                        ("Japanese Domestic Market (JDM) Icons", "automotive.jdm"),
+                        ("Supercars & Exotic Engineering", "automotive.supercar"),
+                        ("Classic Car Restoration & Preservation", "automotive.classic_restoration"),
+                    ],
+                    "Documentary / Dokumenter": [
+                        ("Dokumenter Umum (Bahasa Indonesia)", "documentary_id"),
+                        ("General Documentary (English)", "documentary_en"),
+                    ],
+                    "History / Sejarah": [
+                        ("Military History & Battlefield Tactics", "history.military"),
+                        ("Ancient Civilizations & Lost Empires", "history.ancient"),
+                    ],
+                    "True Crime / Misteri": [
+                        ("Unsolved Mysteries & Cold Cases", "true_crime.unsolved"),
+                    ],
+                    "Technology / Teknologi": [
+                        ("Artificial Intelligence & Deep Tech", "technology.ai_frontier"),
+                    ],
+                }
 
-            col_n, col_sub = st.columns(2)
-            with col_n:
-                selected_niche_cat = st.selectbox("Niche:", list(niche_catalog.keys()), index=0)
-            with col_sub:
-                sub_pairs = niche_catalog[selected_niche_cat]
-                sub_idx = st.selectbox(
-                    "Sub-Niche:",
-                    range(len(sub_pairs)),
-                    format_func=lambda i: sub_pairs[i][0],
-                    index=0,
-                )
-                chosen_preset_id = sub_pairs[sub_idx][1]
+                col_n, col_sub = st.columns(2)
+                with col_n:
+                    selected_niche_cat = st.selectbox("Niche:", list(niche_catalog.keys()), index=0)
+                with col_sub:
+                    sub_pairs = niche_catalog[selected_niche_cat]
+                    sub_idx = st.selectbox(
+                        "Sub-Niche:",
+                        range(len(sub_pairs)),
+                        format_func=lambda i: sub_pairs[i][0],
+                        index=0,
+                    )
+                    chosen_preset_id = sub_pairs[sub_idx][1]
 
-            col_dur, col_lang = st.columns(2)
-            with col_dur:
-                new_duration = st.slider("Target Durasi (menit):", min_value=10, max_value=20, value=12)
-            with col_lang:
-                preset_def = get_preset(chosen_preset_id)
-                default_lang = preset_def.language if preset_def else "en-US"
-                lang_options = ["en-US (Bahasa Inggris)", "id-ID (Bahasa Indonesia)"]
-                lang_idx = 0 if default_lang == "en-US" else 1
-                new_lang = st.selectbox("Bahasa Narasi:", lang_options, index=lang_idx)
+                col_dur, col_lang = st.columns(2)
+                with col_dur:
+                    new_duration = st.slider("Target Durasi (menit):", min_value=10, max_value=20, value=12)
+                with col_lang:
+                    preset_def = get_preset(chosen_preset_id)
+                    default_lang = preset_def.language if preset_def else "en-US"
+                    lang_options = ["en-US (Bahasa Inggris)", "id-ID (Bahasa Indonesia)"]
+                    lang_idx = 0 if default_lang == "en-US" else 1
+                    new_lang = st.selectbox("Bahasa Narasi:", lang_options, index=lang_idx)
 
-            # Hidden / advanced settings in expander (C4.2)
-            with st.expander("Pengaturan Lanjutan (Opsional)", expanded=False):
-                suggested_id = re.sub(r"[^a-zA-Z0-9_\-]+", "_", new_title.lower()).strip("_")
-                custom_id = st.text_input("ID Proyek (Folder):", value=suggested_id, help="Biarkan default jika ingin dibuat otomatis dari judul.")
-                new_focus = st.text_input("Sudut Fokus Sub-Niche:", placeholder="Mis. Mesin 426 Hemi dan dominasi NASCAR")
-                aspect_ratio = st.selectbox("Rasio Aspek:", ["16:9 (Horizontal YouTube)", "9:16 (Vertikal Shorts/Reels)"], index=0)
+                with st.expander("Pengaturan Lanjutan (Opsional)", expanded=False):
+                    suggested_id = re.sub(r"[^a-zA-Z0-9_\-]+", "_", new_title.lower()).strip("_")
+                    custom_id = st.text_input("ID Proyek (Folder):", value=suggested_id, help="Biarkan default jika ingin dibuat otomatis dari judul.")
+                    new_focus = st.text_input("Sudut Fokus Sub-Niche:", placeholder="Mis. Mesin 426 Hemi dan dominasi NASCAR")
+                    aspect_ratio = st.selectbox("Rasio Aspek:", ["16:9 (Horizontal YouTube)", "9:16 (Vertikal Shorts/Reels)"], index=0)
 
-            submitted = st.form_submit_button("🚀 Buat Proyek & Mulai", type="primary")
-            if submitted:
-                eff_id = custom_id.strip() if custom_id.strip() else re.sub(r"[^a-zA-Z0-9_\-]+", "_", new_title.lower()).strip("_")
-                if not new_title.strip() or not eff_id:
-                    st.error("Judul proyek wajib diisi.")
-                elif get_project_dir(eff_id).exists():
-                    st.error(f"Proyek dengan ID '{eff_id}' sudah ada. Ubah judul atau ID proyek.")
-                else:
-                    try:
-                        create_project(
-                            project_id=eff_id,
-                            title=new_title.strip(),
-                            preset_id=chosen_preset_id,
-                            sub_niche_focus=new_focus.strip() if new_focus else None,
-                            aspect_ratio="16:9" if "16:9" in aspect_ratio else "9:16",
-                        )
-                        st.query_params["project"] = eff_id
-                        st.session_state["show_new_proj_expander"] = False
-                        st.rerun()
-                    except Exception as exc:
-                        st.error(f"Gagal membuat proyek: {exc}")
+                col_sub_btn, col_sub_cancel = st.columns([1, 4])
+                with col_sub_btn:
+                    submitted = st.form_submit_button("🚀 Buat Proyek", type="primary")
+
+                if submitted:
+                    eff_id = custom_id.strip() if custom_id.strip() else re.sub(r"[^a-zA-Z0-9_\-]+", "_", new_title.lower()).strip("_")
+                    if not new_title.strip() or not eff_id:
+                        st.error("Judul proyek wajib diisi.")
+                    elif get_project_dir(eff_id).exists():
+                        st.error(f"Proyek dengan ID '{eff_id}' sudah ada. Ubah judul atau ID proyek.")
+                    else:
+                        try:
+                            create_project(
+                                project_id=eff_id,
+                                title=new_title.strip(),
+                                preset_id=chosen_preset_id,
+                                sub_niche_focus=new_focus.strip() if new_focus else None,
+                                aspect_ratio="16:9" if "16:9" in aspect_ratio else "9:16",
+                            )
+                            st.query_params["project"] = eff_id
+                            st.session_state["show_new_proj_form"] = False
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(f"Gagal membuat proyek: {exc}")
 
     st.write("---")
 
-    # 2. Project Cards List (C4.1)
+    # 3. Project Cards Grid (D5)
     projects = get_project_summaries()
+
+    col_search, col_stats = st.columns([4, 1.2])
+    with col_search:
+        search_kw = st.text_input("🔍 Cari proyek...", placeholder="Ketik kata kunci judul atau ID proyek...", label_visibility="collapsed")
+    with col_stats:
+        st.caption(f"Total: **{len(projects)} Proyek**")
+
+    if search_kw:
+        kw = search_kw.strip().lower()
+        projects = [p for p in projects if kw in p["title"].lower() or kw in p["project_id"].lower()]
+
     if not projects:
-        st.info("Belum ada proyek video panjang. Silakan klik **➕ Buat Proyek Baru** di atas untuk memulai.")
+        st.info("Tidak ada proyek yang sesuai dengan pencarian." if search_kw else "Belum ada proyek video panjang. Klik **➕ Proyek Baru** di kanan atas.")
         return
 
-    st.subheader(f"Daftar Proyek ({len(projects)})")
-
+    cols = st.columns(2)
     step_icons = {
-        "selesai": "✅",
+        "selesai": "✔",
         "berjalan": "⏳",
         "terhenti": "⚠️",
         "perlu_diperbarui": "🔄",
-        "belum": "⚪",
+        "belum": "○",
     }
 
-    for p in projects:
-        with st.container(border=True):
-            col_info, col_steps, col_action = st.columns([3, 2, 1])
+    for idx, p in enumerate(projects):
+        with cols[idx % 2]:
+            with st.container(border=True):
+                # 1-line title truncated with ellipsis
+                raw_title = p["title"].strip()
+                trunc_title = (raw_title[:32] + "…") if len(raw_title) > 34 else raw_title
+                st.markdown(f"#### {trunc_title}", help=raw_title)
 
-            with col_info:
-                st.markdown(f"### {p['title']}")
-                niche_text = p['preset_id']
-                if p.get('sub_niche_focus'):
+                # Niche & Duration
+                niche_text = p["preset_id"]
+                if p.get("sub_niche_focus"):
                     niche_text += f" › {p['sub_niche_focus']}"
-                st.caption(f"📁 {niche_text}  |  ⏱️ ~{p['duration_minutes']} menit  |  <small style='color:gray;'>ID: {p['project_id']}</small>", unsafe_allow_html=True)
-                st.markdown(f"👉 **Langkah Berikutnya:** `{p['next_step_name']}`")
+                if len(niche_text) > 40:
+                    niche_text = niche_text[:38] + "…"
+                st.caption(f"📁 {niche_text}  •  ⏱️ ~{p['duration_minutes']} mnt")
 
-            with col_steps:
-                st.write("**Status Alur 5 Langkah:**")
-                sc = p['steps']['script']
-                vc = p['steps']['voice']
-                vs = p['steps']['visual']
-                rd = p['steps']['render']
-                cc = p['steps']['capcut']
-                st.write(
-                    f"① {step_icons.get(sc['status'], '⚪')} Naskah &nbsp;&nbsp;"
-                    f"② {step_icons.get(vc['status'], '⚪')} Suara &nbsp;&nbsp;"
-                    f"③ {step_icons.get(vs['status'], '⚪')} Visual &nbsp;&nbsp;"
-                    f"④ {step_icons.get(rd['status'], '⚪')} Render &nbsp;&nbsp;"
-                    f"⑤ {step_icons.get(cc['status'], '⚪')} CapCut"
+                # 5 status icons in 1 row
+                sc = p['steps']['script']['status']
+                vc = p['steps']['voice']['status']
+                vs = p['steps']['visual']['status']
+                rd = p['steps']['render']['status']
+                cc = p['steps']['capcut']['status']
+
+                diff_icon = " ⚠️" if p.get("preset_has_impactful_diff") else ""
+                st.markdown(
+                    f"`{step_icons.get(sc, '○')}` Naskah &nbsp; "
+                    f"`{step_icons.get(vc, '○')}` Suara &nbsp; "
+                    f"`{step_icons.get(vs, '○')}` Visual &nbsp; "
+                    f"`{step_icons.get(rd, '○')}` Render &nbsp; "
+                    f"`{step_icons.get(cc, '○')}` CapCut{diff_icon}",
+                    help="Status 5 langkah workflow proyek" if not diff_icon else "Pengaturan niche diperbarui sejak proyek dibuat"
                 )
-                if p.get("preset_has_impactful_diff"):
-                    st.caption("⚠️ *Pengaturan niche diperbarui sejak proyek dibuat*")
 
-            with col_action:
-                st.write("")
-                if st.button("📂 Buka", key=f"btn_open_{p['project_id']}", type="primary"):
+                # Clean Next Step line: NO double words!
+                next_step = p.get("next_step", "Naskah")
+                if next_step == "Semua Selesai ✔":
+                    st.markdown("✅ **Semua Selesai**")
+                else:
+                    st.markdown(f"👉 **Berikutnya:** {next_step}")
+
+                # Open button
+                if st.button("📂 Buka", key=f"btn_open_{p['project_id']}", use_container_width=True):
                     st.query_params["project"] = p["project_id"]
                     st.rerun()
 
@@ -416,93 +478,109 @@ def render_project_page(project_id: str):
 # --- Step 1: Naskah Flow (C4.3) ---
 
 def render_script_step_flow(project_id: str, p_dir: Path, manifest: ProjectManifest, step_info: Dict[str, Any], is_running: bool):
-    """Render Step 1: Naskah with single adaptive primary button and settings expander."""
+    """Render Step 1: Naskah with two clear side-by-side cards (D3)."""
     status = step_info["status"]
     st.subheader("① Naskah Cerita & Pembagian Bab")
     st.write(f"**Status:** `{step_info['label']}`")
 
-    # LLM status & FAKE toggle
-    llm_status = check_llm_status()
-    use_fake = st.session_state.get(f"fake_toggle_{project_id}", False)
-
-    # 1. Single Adaptive Primary Action Button (C4.3)
-    if is_running:
-        st.button("⏳ Sedang Menulis Naskah...", disabled=True, type="primary")
-    elif status == "selesai":
-        if st.button("Selesai ✔ — Lanjut ke Suara", type="primary", key=f"btn_next_voice_{project_id}"):
+    # If script is already finished: show chapter list and continue button
+    if status == "selesai":
+        st.success(f"✅ Naskah telah selesai ({len(manifest.chapters)} bab). Anda dapat melanjutkan ke langkah pembuatan suara.")
+        if st.button("Lanjut ke Suara 👉", type="primary", key=f"btn_next_voice_{project_id}"):
             st.session_state[f"active_step_{project_id}"] = "voice"
             st.rerun()
-    elif status == "terhenti":
-        btn_label = "▶️ Lanjutkan Naskah"
-        if st.button(btn_label, type="primary", key=f"btn_resume_script_{project_id}"):
-            provider_arg = ["--provider", "fake"] if use_fake else []
-            if len(manifest.chapters) == 0:
-                cmd = [sys.executable, "cli_longform.py", "script", "outline", project_id, "--topic", manifest.title] + provider_arg
-                jobs.start_job(project_id, "script_outline", cmd)
-            else:
-                cmd = [sys.executable, "cli_longform.py", "script", "write", project_id] + provider_arg
-                jobs.start_job(project_id, "script_generate", cmd)
-            st.rerun()
-    elif status == "perlu_diperbarui":
-        btn_label = "🔄 Ulangi Naskah (Perlu Diperbarui)"
-        if st.button(btn_label, type="primary", key=f"btn_stale_script_{project_id}"):
-            provider_arg = ["--provider", "fake"] if use_fake else []
-            cmd = [sys.executable, "cli_longform.py", "script", "write", project_id] + provider_arg
-            jobs.start_job(project_id, "script_generate", cmd)
-            st.rerun()
-    else:  # belum
-        btn_label = "🚀 Mulai Tulis Naskah"
-        btn_disabled = bool(not llm_status["configured"] and not use_fake)
-        if st.button(btn_label, type="primary", disabled=btn_disabled, key=f"btn_start_script_{project_id}"):
-            provider_arg = ["--provider", "fake"] if use_fake else []
-            if len(manifest.chapters) == 0:
-                cmd = [sys.executable, "cli_longform.py", "script", "outline", project_id, "--topic", manifest.title] + provider_arg
-                jobs.start_job(project_id, "script_outline", cmd)
-            else:
-                cmd = [sys.executable, "cli_longform.py", "script", "write", project_id] + provider_arg
-                jobs.start_job(project_id, "script_generate", cmd)
-            st.rerun()
-        if btn_disabled:
-            st.caption("⚠️ Kunci API LLM belum diatur di config. Aktifkan **Mode Pengujian FAKE** di Pengaturan Lanjutan bila ingin mencoba tanpa API.")
 
-    # 2. Hidden Options in Expander (C4.3)
-    with st.expander("⚙️ Pengaturan Lanjutan Naskah & Editor", expanded=False):
-        col_cred, col_fk = st.columns([3, 1])
-        with col_cred:
-            if llm_status["configured"]:
-                st.caption(f"🤖 Provider LLM: `{llm_status['provider']}` (Kunci: `{llm_status['masked_key']}`)")
-            else:
-                st.caption(f"⚠️ {llm_status['message']}")
-        with col_fk:
-            use_fake_val = st.checkbox("Mode Pengujian FAKE", value=use_fake, key=f"fake_toggle_{project_id}")
-            if use_fake_val != use_fake:
-                st.session_state[f"fake_toggle_{project_id}"] = use_fake_val
-                st.rerun()
-
-        if use_fake_val:
-            st.error("⚠️ **MODE PENGUJIAN FAKE AKTIF**: Naskah dibuat secara tiruan tanpa memanggil API LLM nyata.")
+        with st.expander("📖 Lihat Rincian Naskah Bab", expanded=False):
+            for ch in manifest.chapters:
+                st.markdown(f"**Bab {ch.chapter_index}: {ch.chapter_title}** ({len(ch.tts_groups)} grup narasi)")
+                ch_txt = "\n\n".join(g.paragraph_text for g in ch.tts_groups if g.paragraph_text)
+                st.text_area(f"Teks Bab {ch.chapter_index}:", value=ch_txt, height=120, disabled=True, key=f"view_ch_{project_id}_{ch.chapter_index}")
 
         st.write("---")
+        st.markdown("##### Ingin mengganti atau mengimpor ulang naskah?")
 
-        # Import Markdown option
-        st.write("#### Impor Naskah Markdown Sendiri")
-        st.caption("Punya naskah sendiri? Tempel naskah berformat `# Judul` dan `## Bab` di bawah.")
-        raw_md = st.text_area("Isi Markdown Naskah:", height=180, key=f"txt_import_md_{project_id}")
-        if st.button("Terapkan Naskah Markdown", key=f"btn_apply_md_{project_id}"):
-            if not raw_md.strip():
-                st.error("Isi naskah markdown tidak boleh kosong.")
-            else:
-                try:
-                    stats = update_project_script(p_dir, raw_md)
-                    st.success(f"Naskah berhasil diimpor! {stats['chapters_modified']} bab diperbarui.")
-                    time.sleep(0.5)
+    # Two clear side-by-side cards (D3)
+    col_import, col_ai = st.columns(2)
+
+    with col_import:
+        with st.container(border=True):
+            st.markdown("### 📄 Impor Naskah Sendiri")
+            st.caption("Gunakan naskah milik Anda sendiri dari berkas markdown/teks atau tempel langsung.")
+
+            uploaded_file = st.file_uploader(
+                "Unggah berkas naskah (.md atau .txt):",
+                type=["md", "txt"],
+                key=f"file_uploader_{project_id}",
+            )
+            pasted_text = st.text_area(
+                "Atau tempel teks naskah di sini:",
+                height=130,
+                placeholder="# Bab 1: Judul Bab\nParagraf narasi bab 1...\n\n# Bab 2: Judul Bab\nParagraf narasi bab 2...",
+                key=f"pasted_script_{project_id}",
+            )
+
+            with st.expander("ℹ️ Contoh & Format Tag Naskah"):
+                st.markdown(
+                    "Format naskah menggunakan heading Markdown atau tag bab:\n\n"
+                    "```markdown\n"
+                    "# Bab 1: The Detroit Street Legend\n"
+                    "The asphalt trembled under Detroit steel as the big-block V8 roared...\n\n"
+                    "# Bab 2: Homologation Battles\n"
+                    "In 1969, NASCAR homologation rules required 500 production cars...\n"
+                    "```"
+                )
+
+            if st.button("📥 Impor Naskah Ini", type="primary", key=f"btn_submit_import_{project_id}", disabled=is_running):
+                content = ""
+                if uploaded_file is not None:
+                    content = uploaded_file.getvalue().decode("utf-8", errors="replace")
+                elif pasted_text and pasted_text.strip():
+                    content = pasted_text.strip()
+
+                if not content.strip():
+                    st.error("Silakan unggah berkas atau tempel teks naskah terlebih dahulu.")
+                else:
+                    try:
+                        stats = update_project_script(p_dir, content.strip())
+                        st.success(f"Naskah berhasil diimpor! ({stats['chapters_added'] + stats['chapters_modified']} bab siap)")
+                        time.sleep(0.5)
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Gagal mengimpor naskah: {exc}")
+
+    with col_ai:
+        with st.container(border=True):
+            st.markdown("### ✨ Tulis dengan AI")
+            st.caption("AI menyusun kerangka dan menulis narasi dokumenter otomatis berdasarkan niche.")
+
+            llm_ok = check_has_llm_key()
+            use_fake = st.session_state.get(f"fake_toggle_{project_id}", False)
+
+            if not llm_ok and not use_fake:
+                st.warning("⚠️ Belum ada API key AI. Isi di pengaturan MoneyPrinterTurbo, atau impor naskah sendiri.")
+
+            with st.expander("⚙️ Opsi Penulisan AI", expanded=False):
+                custom_topic = st.text_input("Topik Tambahan / Fokus:", value=manifest.sub_niche_focus or "", key=f"ai_topic_{project_id}")
+                fake_val = st.checkbox("Gunakan Provider Simulasi / Pengujian (FAKE)", value=use_fake, key=f"fake_cb_{project_id}")
+                if fake_val != use_fake:
+                    st.session_state[f"fake_toggle_{project_id}"] = fake_val
                     st.rerun()
-                except Exception as exc:
-                    st.error(f"Gagal mengimpor naskah: {exc}")
 
-        # Chapter Editor if chapters exist
-        if manifest.chapters:
-            st.write("---")
+            if use_fake:
+                st.error("⚠️ **MODE PENGUJIAN FAKE AKTIF**: Naskah dibuat secara tiruan tanpa memanggil API AI nyata.")
+
+            ai_disabled = is_running or (not llm_ok and not use_fake)
+            ai_btn_label = "⏳ Sedang Menulis..." if is_running else ("✨ Mulai Tulis Naskah AI" if len(manifest.chapters) == 0 else "✨ Buat Ulang Naskah AI")
+            if st.button(ai_btn_label, type="primary" if not ai_disabled else "secondary", disabled=ai_disabled, key=f"btn_start_ai_{project_id}"):
+                provider_arg = ["--provider", "fake"] if use_fake else []
+                topic = custom_topic.strip() if custom_topic.strip() else manifest.title
+                cmd = ["script", "outline", project_id, "--topic", topic] + provider_arg
+                jobs.start_job(project_id, "script_outline", cmd)
+                st.rerun()
+
+    # Chapter Editor & Quality Report if chapters exist
+    if manifest.chapters:
+        with st.expander("📝 Editor Per Bab & Kualitas Naskah", expanded=False):
             st.write("#### Editor Teks Bab")
             ch_indices = [ch.chapter_index for ch in manifest.chapters]
             sel_ch_idx = st.selectbox(
@@ -517,7 +595,6 @@ def render_script_step_flow(project_id: str, p_dir: Path, manifest: ProjectManif
                 new_ch_text = st.text_area("Teks Narasi Bab Ini:", value=ch_paras, height=180, key=f"ch_txt_{project_id}_{sel_ch_idx}")
                 if st.button("Simpan Perubahan Bab", key=f"btn_save_ch_{project_id}_{sel_ch_idx}"):
                     if new_ch_text.strip():
-                        # Save back into markdown file and update project
                         ch_file = p_dir / "script" / f"chapter_{sel_ch_idx:02d}.md"
                         ch_file.parent.mkdir(parents=True, exist_ok=True)
                         ch_file.write_text(f"## {ch_obj.chapter_title}\n\n{new_ch_text.strip()}\n", encoding="utf-8")
@@ -525,8 +602,6 @@ def render_script_step_flow(project_id: str, p_dir: Path, manifest: ProjectManif
                         time.sleep(0.5)
                         st.rerun()
 
-        # Quality Inspection Report
-        if manifest.chapters:
             st.write("---")
             st.write("#### Laporan Kualitas Naskah")
             try:
