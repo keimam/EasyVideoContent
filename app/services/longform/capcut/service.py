@@ -103,31 +103,32 @@ def resolve_capcut_text_size(manifest: Any) -> int:
 
 def set_capcut_text_size(preset_id: str, size: int) -> Path:
     """
-    Update capcut_text_size in preset file (C3).
+    Update capcut_text_size in storage/presets/<preset_id>.override.json (B1).
+    Leaves resource/presets/ completely untouched.
     """
     if not (4 <= size <= 24):
         raise ValueError(f"capcut_text_size must be between 4 and 24, got {size}")
 
-    repo_root = Path(__file__).resolve().parents[4]
-    candidate_paths = [
-        repo_root / "storage" / "presets" / f"{preset_id}.json",
-        repo_root / "resource" / "presets" / f"{preset_id}.json",
-    ]
+    from app.services.longform.presets import get_preset, get_preset_directories
+    # Validate that the preset actually exists
+    get_preset(preset_id)
 
-    target_path = None
-    for cp in candidate_paths:
-        if cp.is_file():
-            target_path = cp
-            break
+    _, storage_dir = get_preset_directories()
+    storage_dir.mkdir(parents=True, exist_ok=True)
+    override_path = storage_dir / f"{preset_id}.override.json"
 
-    if not target_path:
-        raise FileNotFoundError(f"Preset '{preset_id}' not found in storage/presets or resource/presets.")
+    if override_path.is_file():
+        try:
+            data = json.loads(override_path.read_text(encoding="utf-8"))
+        except Exception:
+            data = {"id": preset_id}
+    else:
+        data = {"id": preset_id}
 
-    data = json.loads(target_path.read_text(encoding="utf-8"))
     data["capcut_text_size"] = int(size)
-    target_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    logger.info(f"Updated preset '{preset_id}' with capcut_text_size = {size} at {target_path}")
-    return target_path
+    override_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    logger.info(f"Updated preset override for '{preset_id}' with capcut_text_size = {size} at {override_path}")
+    return override_path
 
 
 def render_ducked_bgm_stem(

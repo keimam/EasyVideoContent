@@ -43,9 +43,12 @@ from app.services.longform.hashing import (
 from app.services.longform.planner import compute_plan
 from app.services.longform.presets import (
     format_preset_tree,
+    get_all_preset_overrides,
     get_preset,
     get_preset_directories,
     get_preset_inheritance_chain,
+    get_preset_override_path,
+    has_preset_override,
     list_presets,
     load_preset_file,
     validate_preset_file,
@@ -82,6 +85,8 @@ def cmd_presets_validate(args: argparse.Namespace) -> int:
     if is_valid:
         preset = load_preset_file(path)
         chain = get_preset_inheritance_chain(preset.id)
+        has_ovr = has_preset_override(preset.id)
+        ovr_str = f"Active ({get_preset_override_path(preset.id).name})" if has_ovr else "None"
         print(f"SUCCESS: Preset '{path.name}' is valid.")
         print(f"  - ID:          {preset.id}")
         print(f"  - Name:        {preset.name}")
@@ -90,6 +95,7 @@ def cmd_presets_validate(args: argparse.Namespace) -> int:
         print(f"  - Chain:       {' -> '.join(chain)}")
         print(f"  - Language:    {preset.language}")
         print(f"  - WPM:         {preset.words_per_minute}")
+        print(f"  - Override:    {ovr_str}")
         if preset.topic_keywords:
             print(f"  - Keywords:    {len(preset.topic_keywords)} topic, {len(preset.visual_keywords)} visual")
         return 0
@@ -202,6 +208,11 @@ def cmd_project_show(args: argparse.Namespace) -> int:
         num_g = len(ch.tts_groups)
         num_s = sum(len(g.segments) for g in ch.tts_groups)
         print(f"    - Ch {ch.chapter_index}: {ch.chapter_title} [{ch.status.value}] ({num_g} groups, {num_s} segs)")
+
+    current_preset = get_preset(manifest.preset_id)
+    if manifest.preset_snapshot != current_preset.model_dump():
+        print("\n  [PERINGATAN] Preset berubah — jalankan refresh-preset?")
+
     print("=" * 65 + "\n")
     return 0
 
