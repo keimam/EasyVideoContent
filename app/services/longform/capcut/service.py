@@ -87,16 +87,23 @@ def resolve_capcut_text_size(manifest: Any) -> int:
 
     preset_id = getattr(manifest, "preset_id", None)
     if preset_id:
+        try:
+            from app.services.longform.presets import get_preset
+            p = get_preset(preset_id)
+            if p.capcut_text_size is not None:
+                return int(p.capcut_text_size)
+        except Exception:
+            pass
         repo_root = Path(__file__).resolve().parents[4]
         for p_dir in [repo_root / "storage" / "presets", repo_root / "resource" / "presets"]:
-            p_file = p_dir / f"{preset_id}.json"
-            if p_file.is_file():
-                try:
-                    data = json.loads(p_file.read_text(encoding="utf-8"))
-                    if data.get("capcut_text_size"):
-                        return int(data["capcut_text_size"])
-                except Exception:
-                    pass
+            for p_file in [p_dir / f"{preset_id}.override.json", p_dir / f"{preset_id}.json"]:
+                if p_file.is_file():
+                    try:
+                        data = json.loads(p_file.read_text(encoding="utf-8"))
+                        if data.get("capcut_text_size"):
+                            return int(data["capcut_text_size"])
+                    except Exception:
+                        pass
 
     return 7
 

@@ -291,7 +291,11 @@ def get_project_progress(project_id: str, step: Optional[str] = None) -> Dict[st
 
     # 1. Script step
     if step in ("script_outline", "script_generate"):
-        completed_chapters = sum(1 for ch in manifest.chapters if ch.content and ch.content.strip())
+        completed_chapters = sum(
+            1 for ch in manifest.chapters
+            if any(g.paragraph_text and g.paragraph_text.strip() for g in ch.tts_groups)
+            or (p_dir / "script" / f"chapter_{ch.chapter_index:02d}.md").is_file()
+        )
         pct = (completed_chapters / total_chapters * 100.0) if total_chapters > 0 else 0.0
         return {
             "completed": completed_chapters,
@@ -305,8 +309,8 @@ def get_project_progress(project_id: str, step: Optional[str] = None) -> Dict[st
     completed_groups = 0
     for ch in manifest.chapters:
         for g in ch.tts_groups:
-            if g.audio_file:
-                af = p_dir / g.audio_file
+            if g.audio and g.audio.file_path:
+                af = p_dir / g.audio.file_path
                 if af.is_file() and af.stat().st_size > 0:
                     completed_groups += 1
 
