@@ -323,13 +323,19 @@ def cmd_project_update_script(args: argparse.Namespace) -> int:
 
 
 def cmd_project_refresh_preset(args: argparse.Namespace) -> int:
-    """Refresh project preset snapshot from disk and mark dependencies stale (B2)."""
+    """Refresh project preset snapshot from disk and mark dependencies stale (B2, G2)."""
     project_dir = get_project_dir(args.project_id)
     if not project_dir.is_dir():
         print(f"Error: Project '{args.project_id}' not found at {project_dir}", file=sys.stderr)
         return 1
 
     try:
+        new_pid = getattr(args, "preset_id", None)
+        if new_pid:
+            manifest = load_manifest(project_dir)
+            manifest.preset_id = new_pid
+            save_manifest(manifest, project_dir)
+
         manifest, details = refresh_project_preset(project_dir)
     except Exception as exc:
         print(f"Error refreshing preset: {exc}", file=sys.stderr)
@@ -1838,6 +1844,7 @@ def build_parser() -> argparse.ArgumentParser:
     # project refresh-preset
     p_ref = proj_subs.add_parser("refresh-preset", help="Refresh preset snapshot from disk")
     p_ref.add_argument("project_id", help="Project ID")
+    p_ref.add_argument("--preset-id", dest="preset_id", default=None, help="Optionally change preset ID before refreshing (G2)")
 
     # project set-voice (3.5, 3.7)
     p_set_voice = proj_subs.add_parser("set-voice", help="Change project default voice (marks audio stale)")

@@ -25,14 +25,17 @@ from loguru import logger
 
 from app.services.longform.hashing import compute_audio_group_hash
 from app.services.longform.presets import (
+    create_custom_niche_hierarchy,
     delete_custom_preset,
     format_preset_tree,
     get_all_preset_overrides,
+    get_available_niches_for_ui,
     get_builtin_presets,
     get_custom_presets,
     get_preset,
     get_preset_directories,
     get_preset_inheritance_chain,
+    get_sub_niches_for_ui,
     has_preset_override,
     list_presets,
     save_custom_preset,
@@ -265,80 +268,101 @@ def render_home_page():
     if st.session_state.get("show_niche_mgmt"):
         render_niche_management_section()
 
-    # 2. New Project Form ala MoneyPrinterTurbo asli (shown when toggled) (D7, D8)
+    # 2. New Project Form ala MoneyPrinterTurbo asli (shown when toggled) (D7, D8, G2, G3)
     if st.session_state.get("show_new_proj_form"):
         with st.container(border=True):
             st.subheader("✨ Buat Proyek Video Baru")
-            with st.form("form_create_project"):
-                # D7: Main fields outside expander
-                new_topic = st.text_input(
-                    "Topik / Judul Video (Wajib):",
-                    placeholder="Mis. Kisah Legenda Dodge Charger 1969 atau Sejarah Perkembangan AI",
-                    key="input_new_topic",
-                )
+            # D7: Main fields outside expander
+            new_topic = st.text_input(
+                "Topik / Judul Video (Wajib):",
+                placeholder="Mis. Kisah Legenda Dodge Charger 1969 atau Sejarah Perkembangan AI",
+                key="input_new_topic",
+            )
 
-                col_dur, col_lang = st.columns(2)
-                with col_dur:
-                    new_duration = st.slider("Target Durasi (menit):", min_value=10, max_value=20, value=12)
-                with col_lang:
-                    new_lang = st.selectbox("Bahasa Narasi:", ["id-ID (Bahasa Indonesia)", "en-US (Bahasa Inggris)"], index=0)
+            col_dur, col_lang = st.columns(2)
+            with col_dur:
+                new_duration = st.slider("Target Durasi (menit):", min_value=10, max_value=20, value=12)
+            with col_lang:
+                new_lang = st.selectbox("Bahasa Narasi:", ["id-ID (Bahasa Indonesia)", "en-US (Bahasa Inggris)"], index=0, key="sel_new_proj_lang")
 
-                # D7: Niche, Sub-niche, Fokus inside expander "Pengaturan lanjutan"
-                with st.expander("⚙️ Pengaturan Lanjutan (Niche, Sub-Niche, Rasio)", expanded=False):
-                    all_p = list_presets()
+            eff_lang_code = "en-US" if "en-US" in new_lang else "id-ID"
 
-                    # Root niches: default to "umum" (D7)
-                    root_niche_ids = ["umum"] + sorted([
-                        pid for pid, p in all_p.items()
-                        if pid != "umum" and (not p.extends or p.kind == "niche")
-                    ])
-                    root_labels = {pid: all_p[pid].name if pid in all_p else pid for pid in root_niche_ids}
+            # D7, G3: Niche, Sub-niche, Fokus inside expander "Pengaturan lanjutan"
+            with st.expander("⚙️ Pengaturan Lanjutan (Niche, Sub-Niche, Rasio)", expanded=False):
+                root_ids, root_labels = get_available_niches_for_ui(eff_lang_code)
 
-                    col_n, col_sub = st.columns(2)
-                    with col_n:
-                        chosen_root = st.selectbox(
-                            "Niche Utama:",
-                            options=root_niche_ids,
-                            format_func=lambda pid: root_labels.get(pid, pid),
-                            index=0,
-                            accept_new_options=True,
-                            help="Pilih niche yang tersedia atau ketik nama niche baru (D8).",
-                            key="sel_root_niche",
-                        )
+                col_n, col_sub = st.columns(2)
+                with col_n:
+                    chosen_root = st.selectbox(
+                        "Niche Utama:",
+                        options=root_ids,
+                        format_func=lambda pid: root_labels.get(pid, pid),
+                        index=0,
+                        help="Pilih niche yang tersedia atau pilih '+ Niche baru…' untuk membuat baru.",
+                        key="sel_root_niche",
+                    )
 
-                    is_new_root = chosen_root not in all_p
+                is_creating_new_root = (chosen_root == "+ Niche baru…")
+                new_niche_name = ""
+                new_sub_name = ""
+                chosen_sub = "(Gunakan Niche Utama)"
+                is_creating_new_sub = False
+                custom_footage_kw = ""
+                custom_avoid_kw = ""
 
+                if is_creating_new_root:
                     with col_sub:
-                        sub_candidates = [
-                            pid for pid, p in all_p.items()
-                            if p.extends == chosen_root
-                        ]
-                        sub_options = ["(Gunakan Niche Utama)"] + sub_candidates
-                        sub_labels = {pid: all_p[pid].name for pid in sub_candidates}
-                        sub_labels["(Gunakan Niche Utama)"] = "(Gunakan Niche Utama)"
-
+                        st.caption("✨ Membuat Niche Utama Baru")
+                    col_nname, col_subname = st.columns(2)
+                    with col_nname:
+                        new_niche_name = st.text_input(
+                            "Nama Niche Baru (Wajib):",
+                            placeholder="Mis. Kuliner atau Wisata Alam",
+                            key="input_new_niche_name",
+                        )
+                    with col_subname:
+                        new_sub_name = st.text_input(
+                            "Nama Sub-Niche (Opsional):",
+                            placeholder="Mis. Street food Jepang",
+                            key="input_new_sub_name",
+                        )
+                    col_kw1, col_kw2 = st.columns(2)
+                    with col_kw1:
+                        custom_footage_kw = st.text_input(
+                            "Kata Kunci Footage / Visual (pisahkan koma):",
+                            placeholder="Mis. ramen, yatai, tokyo street",
+                            key="input_custom_footage_kw",
+                        )
+                    with col_kw2:
+                        custom_avoid_kw = st.text_input(
+                            "Hindari Kata / Filter Negatif (pisahkan koma):",
+                            placeholder="Mis. cartoon, 3d render, watermark",
+                            key="input_custom_avoid_kw",
+                        )
+                else:
+                    sub_ids, sub_labels = get_sub_niches_for_ui(chosen_root, eff_lang_code)
+                    with col_sub:
                         chosen_sub = st.selectbox(
                             "Sub-Niche (Opsional):",
-                            options=sub_options,
+                            options=sub_ids,
                             format_func=lambda pid: sub_labels.get(pid, pid),
                             index=0,
-                            accept_new_options=True,
-                            help="Pilih sub-niche atau ketik nama sub-niche baru (D8).",
+                            help="Pilih sub-niche atau pilih '+ Sub-niche baru…' untuk menambah sub-niche.",
                             key="sel_sub_niche",
                         )
 
-                    is_new_sub = (chosen_sub != "(Gunakan Niche Utama)" and chosen_sub not in all_p)
-
-                    custom_footage_kw = ""
-                    custom_avoid_kw = ""
-                    if is_new_root or is_new_sub:
-                        target_new_label = chosen_sub if is_new_sub else chosen_root
-                        st.info(f"✨ Menyiapkan niche kustom baru: **{target_new_label}**")
+                    is_creating_new_sub = (chosen_sub == "+ Sub-niche baru…")
+                    if is_creating_new_sub:
+                        new_sub_name = st.text_input(
+                            "Nama Sub-Niche Baru (Wajib):",
+                            placeholder="Mis. Street food Jepang",
+                            key="input_new_sub_name",
+                        )
                         col_kw1, col_kw2 = st.columns(2)
                         with col_kw1:
                             custom_footage_kw = st.text_input(
                                 "Kata Kunci Footage / Visual (pisahkan koma):",
-                                placeholder="Mis. v8 engine, muscle car drag strip, burnout",
+                                placeholder="Mis. ramen, yatai, tokyo street",
                                 key="input_custom_footage_kw",
                             )
                         with col_kw2:
@@ -348,81 +372,71 @@ def render_home_page():
                                 key="input_custom_avoid_kw",
                             )
 
-                    suggested_id = re.sub(r"[^a-zA-Z0-9_\-]+", "_", new_topic.lower()).strip("_")
-                    custom_id = st.text_input("ID Proyek (Folder):", value=suggested_id, help="Biarkan default jika ingin dibuat otomatis dari topik.")
-                    new_focus = st.text_input("Sudut Fokus Khusus:", placeholder="Mis. Mesin 426 Hemi dan dominasi NASCAR")
-                    aspect_ratio = st.selectbox("Rasio Aspek:", ["16:9 (Horizontal YouTube)", "9:16 (Vertikal Shorts/Reels)"], index=0)
+                suggested_id = re.sub(r"[^a-zA-Z0-9_\-]+", "_", new_topic.lower()).strip("_")
+                custom_id = st.text_input("ID Proyek (Folder):", value=suggested_id, help="Biarkan default jika ingin dibuat otomatis dari topik.")
+                new_focus = st.text_input("Sudut Fokus Khusus:", placeholder="Mis. Mesin 426 Hemi dan dominasi NASCAR")
+                aspect_ratio = st.selectbox("Rasio Aspek:", ["16:9 (Horizontal YouTube)", "9:16 (Vertikal Shorts/Reels)"], index=0)
 
-                col_sub_btn, col_sub_cancel = st.columns([1, 4])
-                with col_sub_btn:
-                    submitted = st.form_submit_button("🚀 Buat Proyek", type="primary")
+            col_sub_btn, col_sub_cancel = st.columns([1, 4])
+            with col_sub_btn:
+                submitted = st.button("🚀 Buat Proyek", type="primary", key="btn_create_project_submit")
 
-                if submitted:
-                    if not new_topic.strip():
-                        st.error("Topik / Judul video wajib diisi.")
+            if submitted:
+                if not new_topic.strip():
+                    st.error("Topik / Judul video wajib diisi.")
+                elif is_creating_new_root and not new_niche_name.strip():
+                    st.error("Nama Niche Baru wajib diisi saat memilih opsi '+ Niche baru…'.")
+                elif is_creating_new_sub and not new_sub_name.strip():
+                    st.error("Nama Sub-Niche Baru wajib diisi saat memilih opsi '+ Sub-niche baru…'.")
+                else:
+                    eff_id = custom_id.strip() if custom_id.strip() else re.sub(r"[^a-zA-Z0-9_\-]+", "_", new_topic.lower()).strip("_")
+                    if not eff_id:
+                        eff_id = f"project_{int(time.time())}"
+
+                    if get_project_dir(eff_id).exists():
+                        st.error(f"Proyek dengan ID '{eff_id}' sudah ada. Ubah topik atau ID proyek.")
                     else:
-                        eff_id = custom_id.strip() if custom_id.strip() else re.sub(r"[^a-zA-Z0-9_\-]+", "_", new_topic.lower()).strip("_")
-                        if not eff_id:
-                            eff_id = f"project_{int(time.time())}"
+                        try:
+                            extra_vis = [k.strip() for k in custom_footage_kw.split(",") if k.strip()] if (is_creating_new_root or is_creating_new_sub) else []
+                            extra_neg = [k.strip() for k in custom_avoid_kw.split(",") if k.strip()] if (is_creating_new_root or is_creating_new_sub) else []
 
-                        if get_project_dir(eff_id).exists():
-                            st.error(f"Proyek dengan ID '{eff_id}' sudah ada. Ubah topik atau ID proyek.")
-                        else:
-                            try:
-                                eff_lang_code = "en-US" if "en-US" in new_lang else "id-ID"
+                            if is_creating_new_root:
+                                target_preset_id, _ = create_custom_niche_hierarchy(
+                                    niche_name=new_niche_name.strip(),
+                                    sub_niche_name=new_sub_name.strip() if new_sub_name.strip() else None,
+                                    language=eff_lang_code,
+                                    visual_keywords=extra_vis,
+                                    negative_terms=extra_neg,
+                                )
+                            elif is_creating_new_sub:
+                                target_preset_id, _ = create_custom_niche_hierarchy(
+                                    niche_name="",
+                                    sub_niche_name=new_sub_name.strip(),
+                                    parent_niche_id=chosen_root,
+                                    language=eff_lang_code,
+                                    visual_keywords=extra_vis,
+                                    negative_terms=extra_neg,
+                                )
+                            elif chosen_sub != "(Gunakan Niche Utama)":
+                                target_preset_id = chosen_sub
+                            else:
                                 target_preset_id = chosen_root
 
-                                if is_new_sub or is_new_root:
-                                    target_label = chosen_sub if is_new_sub else chosen_root
-                                    clean_slug = re.sub(r"[^a-zA-Z0-9_]+", "_", target_label.lower()).strip("_")
-                                    parent_ext = chosen_root if is_new_sub else "umum"
-
-                                    custom_pid = f"custom.{clean_slug}" if not is_new_sub else f"custom.{parent_ext}.{clean_slug}"
-
-                                    suggested = suggest_niche_keywords(target_label, new_topic, use_llm=check_has_llm_key())
-                                    if custom_footage_kw.strip():
-                                        extra_vis = [k.strip() for k in custom_footage_kw.split(",") if k.strip()]
-                                        suggested["visual_keywords"] = list(dict.fromkeys(suggested.get("visual_keywords", []) + extra_vis))
-                                    if custom_avoid_kw.strip():
-                                        extra_neg = [k.strip() for k in custom_avoid_kw.split(",") if k.strip()]
-                                        suggested["negative_terms"] = list(dict.fromkeys(suggested.get("negative_terms", []) + extra_neg))
-
-                                    new_preset_data = {
-                                        "id": custom_pid,
-                                        "name": target_label,
-                                        "schema_version": "1.0.0",
-                                        "kind": "sub_niche" if is_new_sub else "niche",
-                                        "extends": parent_ext,
-                                        "language": eff_lang_code,
-                                        "+topic_keywords": suggested.get("topic_keywords", []),
-                                        "+visual_keywords": suggested.get("visual_keywords", []),
-                                        "+required_subject_terms": suggested.get("required_subject_terms", []),
-                                        "+negative_terms": suggested.get("negative_terms", []),
-                                        "+blocked_terms": suggested.get("blocked_terms", []),
-                                        "capcut_text_size": 8,
-                                    }
-                                    save_custom_preset(new_preset_data, allow_overwrite=True)
-                                    target_preset_id = custom_pid
-                                elif chosen_sub != "(Gunakan Niche Utama)":
-                                    target_preset_id = chosen_sub
-                                else:
-                                    target_preset_id = chosen_root
-
-                                create_project(
-                                    project_id=eff_id,
-                                    title=new_topic.strip(),
-                                    topic=new_topic.strip(),
-                                    target_duration_minutes=new_duration,
-                                    preset_id=target_preset_id,
-                                    sub_niche_focus=new_focus.strip() if new_focus else None,
-                                    aspect_ratio="16:9" if "16:9" in aspect_ratio else "9:16",
-                                    language=eff_lang_code,
-                                )
-                                st.query_params["project"] = eff_id
-                                st.session_state["show_new_proj_form"] = False
-                                st.rerun()
-                            except Exception as exc:
-                                st.error(f"Gagal membuat proyek: {exc}")
+                            create_project(
+                                project_id=eff_id,
+                                title=new_topic.strip(),
+                                topic=new_topic.strip(),
+                                target_duration_minutes=new_duration,
+                                preset_id=target_preset_id,
+                                sub_niche_focus=new_focus.strip() if new_focus else None,
+                                aspect_ratio="16:9" if "16:9" in aspect_ratio else "9:16",
+                                language=eff_lang_code,
+                            )
+                            st.query_params["project"] = eff_id
+                            st.session_state["show_new_proj_form"] = False
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(f"Gagal membuat proyek: {exc}")
 
     st.write("---")
 
@@ -549,6 +563,31 @@ def render_project_page(project_id: str):
                 st.success("Pengaturan proyek diperbarui ke versi terbaru.")
                 time.sleep(0.5)
                 st.rerun()
+
+    # Expander Relink / Ubah Preset Proyek (G2)
+    with st.expander("⚙️ Ganti / Hubungkan Ulang (Relink) Niche Proyek", expanded=False):
+        all_presets = list_presets()
+        preset_options = sorted(all_presets.keys())
+        current_idx = preset_options.index(manifest.preset_id) if manifest.preset_id in preset_options else 0
+        new_selected_preset = st.selectbox(
+            "Pilih Preset Baru untuk Proyek ini:",
+            options=preset_options,
+            format_func=lambda pid: f"{all_presets[pid].name} ({pid})",
+            index=current_idx,
+            key=f"sel_relink_preset_{project_id}",
+        )
+        col_rel, _ = st.columns([1, 4])
+        with col_rel:
+            if st.button("Terapkan Preset", key=f"btn_apply_relink_{project_id}"):
+                if new_selected_preset != manifest.preset_id:
+                    manifest.preset_id = new_selected_preset
+                    save_manifest(manifest, p_dir)
+                    refresh_project_preset(p_dir)
+                    st.success(f"Preset proyek berhasil diubah ke '{new_selected_preset}'.")
+                    time.sleep(0.5)
+                    st.rerun()
+                else:
+                    st.info("Preset yang dipilih sama dengan preset proyek saat ini.")
 
     # Always Visible Top Job Monitor (C1, C4.3)
     render_job_monitor_widget(project_id)

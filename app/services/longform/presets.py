@@ -371,22 +371,33 @@ def format_preset_tree(presets: Dict[str, Preset] | None = None) -> str:
     return "\n".join(lines)
 
 
+def slugify_preset_name(name: str) -> str:
+    """Convert a human-readable preset name into a safe alphanumeric slug (G2)."""
+    import re
+    clean = re.sub(r"[^a-zA-Z0-9]+", "_", name.strip().lower()).strip("_")
+    return clean or "kustom"
+
+
 def save_custom_preset(
     preset_data: dict[str, Any],
     allow_overwrite: bool = False,
 ) -> Path:
-    """Save a user-defined custom preset into storage/presets/<id>.json (D8).
+    """Save a user-defined custom preset into storage/presets/<id>.json (D8, G2).
 
     Validates schema and inheritance resolution before persisting to disk.
-    Duplicate IDs are rejected with a clear error unless allow_overwrite=True.
+    Duplicate IDs and duplicate names (case-insensitive) are rejected unless allow_overwrite=True.
     Never writes to resource/presets/.
     """
     resource_dir, storage_dir = get_preset_directories()
     storage_dir.mkdir(parents=True, exist_ok=True)
 
     raw_id = (preset_data.get("id") or "").strip()
+    raw_name = (preset_data.get("name") or "").strip()
+    if not raw_id and not raw_name:
+        raise PresetValidationError("Field 'id' atau 'name' wajib diisi untuk preset kustom.")
+
     if not raw_id:
-        raise PresetValidationError("Field 'id' wajib diisi untuk preset kustom.")
+        raw_id = slugify_preset_name(raw_name)
 
     # Ensure slug has valid format custom.<parent>.<name> or custom.<name>
     if not raw_id.startswith("custom."):
@@ -401,6 +412,19 @@ def save_custom_preset(
         raise PresetValidationError(
             f"ID preset '{raw_id}' bertabrakan dengan preset bawaan sistem. Pilih nama atau ID lain."
         )
+
+    # Case-insensitive duplicate check against all existing presets (G2)
+    all_existing = list_presets()
+    for existing_id, existing_preset in all_existing.items():
+        if not allow_overwrite:
+            if existing_id.lower() == preset_id.lower():
+                raise PresetValidationError(
+                    f"Preset kustom dengan ID '{preset_id}' sudah ada. Gunakan nama lain atau aktifkan pembaruan."
+                )
+            if raw_name and existing_preset.name.strip().lower() == raw_name.lower() and existing_id.lower() != preset_id.lower():
+                raise PresetValidationError(
+                    f"Preset dengan nama '{raw_name}' sudah ada ('{existing_id}'). Gunakan nama lain."
+                )
 
     target_path = storage_dir / f"{preset_id}.json"
     if target_path.is_file() and not allow_overwrite:
@@ -436,22 +460,31 @@ def save_custom_preset(
 
 
 def delete_custom_preset(preset_id: str) -> None:
-    """Delete a custom preset from storage/presets/ (D8).
+    """Delete a custom preset from storage/presets/ (D8, G2).
 
-    Rejects deletion if the preset is built-in or if it is currently in-use by any project.
+    Rejects deletion if the preset is built-in or if it is currently in-use by any project
+    or any descendant preset.
     """
     resource_dir, storage_dir = get_preset_directories()
 
     # Reject if built-in
     if (resource_dir / f"{preset_id}.json").is_file():
-        raise PresetError(f"Preset '{preset_id}' adalah preset bawaan dan tidak dapat dihapus.")
+        raise PresetValidationError(f"Preset '{preset_id}' adalah preset bawaan dan tidak dapat dihapus.")
 
     target_path = storage_dir / f"{preset_id}.json"
     if not target_path.is_file():
         raise PresetNotFoundError(f"Preset kustom '{preset_id}' tidak ditemukan di storage/presets/.")
 
-    # Guard: check if any project uses this preset
+    # Guard: check if any project uses this preset OR any descendant preset (G2)
     from app.services.longform.store import get_projects_root, load_manifest
+
+    all_p = list_presets()
+    target_ids = {preset_id}
+    for pid, p in all_p.items():
+        if p.extends == preset_id:
+            target_ids.add(pid)
+
+    child_presets = [pid for pid, p in all_p.items() if p.extends == preset_id]
 
     root = get_projects_root()
     in_use_projects: List[str] = []
@@ -461,15 +494,20 @@ def delete_custom_preset(preset_id: str) -> None:
                 try:
                     manifest = load_manifest(p_dir)
                     chain = getattr(manifest, "preset_inheritance_chain", []) or []
-                    if manifest.preset_id == preset_id or preset_id in chain:
+                    if manifest.preset_id in target_ids or any(tid in chain for tid in target_ids):
                         in_use_projects.append(f"'{manifest.title}' ({manifest.project_id})")
                 except Exception:
                     pass
 
     if in_use_projects:
         proj_list = ", ".join(in_use_projects)
-        raise PresetError(
+        raise PresetValidationError(
             f"Tidak dapat menghapus preset '{preset_id}' karena sedang digunakan oleh proyek: {proj_list}."
+        )
+
+    if child_presets:
+        raise PresetValidationError(
+            f"Tidak dapat menghapus preset '{preset_id}' karena masih memiliki sub-niche turunan: {', '.join(child_presets)}. Hapus sub-niche terlebih dahulu."
         )
 
     # Proceed with deletion
@@ -481,6 +519,250 @@ def delete_custom_preset(preset_id: str) -> None:
         logger.info(f"Custom preset '{preset_id}' successfully deleted.")
     except Exception as exc:
         raise PresetError(f"Gagal menghapus berkas preset '{preset_id}': {exc}") from exc
+
+
+def create_custom_niche_hierarchy(
+    niche_name: str,
+    sub_niche_name: Optional[str] = None,
+    parent_niche_id: Optional[str] = None,
+    language: str = "id-ID",
+    topic_keywords: Optional[List[str]] = None,
+    visual_keywords: Optional[List[str]] = None,
+    required_subject_terms: Optional[List[str]] = None,
+    negative_terms: Optional[List[str]] = None,
+    blocked_terms: Optional[List[str]] = None,
+) -> Tuple[str, List[Path]]:
+    """Create custom niche and/or sub-niche presets in one coordinated action (G2).
+
+    - If both niche_name and sub_niche_name are provided:
+      Creates custom.<niche_slug> (extends umum) AND custom.<niche_slug>.<sub_slug> (extends custom.<niche_slug>).
+      Keywords & negative terms are stored in the sub-niche preset.
+      Returns (sub_niche_preset_id, [path_niche, path_sub]).
+    - If only niche_name is provided:
+      Creates custom.<niche_slug> (extends parent_niche_id or umum).
+      Keywords & negative terms are stored in this niche.
+      Returns (niche_preset_id, [path_niche]).
+    - If parent_niche_id is provided and sub_niche_name is provided:
+      Creates custom.<parent_slug>.<sub_slug> extending parent_niche_id.
+      Keywords & negative terms are stored in the sub-niche preset.
+      Returns (sub_niche_preset_id, [path_sub]).
+    """
+    saved_paths: List[Path] = []
+    clean_sub = sub_niche_name.strip() if sub_niche_name and sub_niche_name.strip() not in ("(Gunakan Niche Utama)", "+ Sub-niche baru…") else None
+    all_p = list_presets()
+
+    # Case 1: Brand new root niche
+    if niche_name and niche_name.strip() not in ("+ Niche baru…", ""):
+        clean_niche = niche_name.strip()
+        root_slug = slugify_preset_name(clean_niche)
+        root_pid = f"custom.{root_slug}"
+
+        # Duplicate check (case-insensitive) (G2)
+        for existing_id, existing_p in all_p.items():
+            if existing_p.name.strip().lower() == clean_niche.lower():
+                raise PresetValidationError(
+                    f"Preset dengan nama '{clean_niche}' sudah ada ('{existing_id}'). Gunakan nama lain."
+                )
+            if existing_id.lower() == root_pid.lower():
+                raise PresetValidationError(
+                    f"Preset dengan ID '{root_pid}' sudah ada. Gunakan nama lain."
+                )
+
+        if clean_sub:
+            for existing_id, existing_p in all_p.items():
+                if existing_p.name.strip().lower() == clean_sub.lower():
+                    raise PresetValidationError(
+                        f"Preset dengan nama '{clean_sub}' sudah ada ('{existing_id}'). Gunakan nama lain."
+                    )
+
+            root_data = {
+                "id": root_pid,
+                "name": clean_niche,
+                "schema_version": "1.0.0",
+                "kind": "niche",
+                "extends": "umum",
+                "language": language,
+                "capcut_text_size": 8,
+            }
+            p_root = save_custom_preset(root_data, allow_overwrite=False)
+            saved_paths.append(p_root)
+
+            sub_slug = slugify_preset_name(clean_sub)
+            sub_pid = f"{root_pid}.{sub_slug}"
+            sub_data = {
+                "id": sub_pid,
+                "name": clean_sub,
+                "schema_version": "1.0.0",
+                "kind": "sub_niche",
+                "extends": root_pid,
+                "language": language,
+                "+topic_keywords": topic_keywords or [],
+                "+visual_keywords": visual_keywords or [],
+                "+required_subject_terms": required_subject_terms or [],
+                "+negative_terms": negative_terms or [],
+                "+blocked_terms": blocked_terms or [],
+                "capcut_text_size": 8,
+            }
+            p_sub = save_custom_preset(sub_data, allow_overwrite=False)
+            saved_paths.append(p_sub)
+            return sub_pid, saved_paths
+
+        else:
+            root_data = {
+                "id": root_pid,
+                "name": clean_niche,
+                "schema_version": "1.0.0",
+                "kind": "niche",
+                "extends": "umum",
+                "language": language,
+                "+topic_keywords": topic_keywords or [],
+                "+visual_keywords": visual_keywords or [],
+                "+required_subject_terms": required_subject_terms or [],
+                "+negative_terms": negative_terms or [],
+                "+blocked_terms": blocked_terms or [],
+                "capcut_text_size": 8,
+            }
+            p_root = save_custom_preset(root_data, allow_overwrite=False)
+            saved_paths.append(p_root)
+            return root_pid, saved_paths
+
+    # Case 2: Existing root niche selected, new sub-niche typed
+    elif parent_niche_id and clean_sub:
+        parent_slug = parent_niche_id.removeprefix("custom.")
+        sub_slug = slugify_preset_name(clean_sub)
+        sub_pid = f"custom.{parent_slug}.{sub_slug}"
+
+        # Duplicate check (case-insensitive) under parent (G2)
+        for existing_id, existing_p in all_p.items():
+            if existing_p.extends == parent_niche_id and existing_p.name.strip().lower() == clean_sub.lower():
+                raise PresetValidationError(
+                    f"Sub-niche dengan nama '{clean_sub}' sudah ada di bawah niche ini ('{existing_id}'). Gunakan nama lain."
+                )
+            if existing_id.lower() == sub_pid.lower():
+                raise PresetValidationError(
+                    f"Preset dengan ID '{sub_pid}' sudah ada. Gunakan nama lain."
+                )
+
+        sub_data = {
+            "id": sub_pid,
+            "name": clean_sub,
+            "schema_version": "1.0.0",
+            "kind": "sub_niche",
+            "extends": parent_niche_id,
+            "language": language,
+            "+topic_keywords": topic_keywords or [],
+            "+visual_keywords": visual_keywords or [],
+            "+required_subject_terms": required_subject_terms or [],
+            "+negative_terms": negative_terms or [],
+            "+blocked_terms": blocked_terms or [],
+            "capcut_text_size": 8,
+        }
+        p_sub = save_custom_preset(sub_data, allow_overwrite=False)
+        saved_paths.append(p_sub)
+        return sub_pid, saved_paths
+
+    raise PresetValidationError("Nama niche atau sub-niche baru tidak valid.")
+
+
+def get_available_niches_for_ui(language: str = "id-ID") -> Tuple[List[str], Dict[str, str]]:
+    """Return available root niches filtered by language, with simplified labels (G3).
+
+    - 'umum' is always the first option.
+    - 'documentary_id' and 'documentary_en' are hidden from dropdown.
+    - Built-in niches matching language (or neutral) are shown.
+    - Custom niches are shown with '(buatan sendiri)'.
+    - '+ Niche baru…' is always appended at the end.
+    """
+    all_p = list_presets()
+    custom_p = get_custom_presets()
+
+    built_in_labels = {
+        "umum": "Umum (Dokumenter Naratif)",
+        "automotive": "Otomotif & Rekayasa Mesin",
+        "history": "Sejarah & Peradaban",
+        "technology": "Teknologi & Sains",
+        "true_crime": "Misteri & Investigasi",
+    }
+
+    root_ids: List[str] = ["umum"]
+    labels: Dict[str, str] = {"umum": built_in_labels["umum"]}
+
+    for pid, p in sorted(all_p.items()):
+        # Hide base internal presets (G3)
+        if pid in ("umum", "documentary_id", "documentary_en"):
+            continue
+
+        # Must be a root niche
+        is_root = (not p.extends) or (p.extends in ("documentary_id", "documentary_en", "umum") and p.kind == "niche")
+        if not is_root:
+            continue
+
+        # Language filter (G3)
+        p_lang = getattr(p, "language", "") or ""
+        if language.startswith("id"):
+            if p_lang.startswith("en"):
+                continue
+        elif language.startswith("en"):
+            if p_lang.startswith("id"):
+                continue
+
+        root_ids.append(pid)
+        if pid in custom_p:
+            labels[pid] = f"{p.name} (buatan sendiri)"
+        elif pid in built_in_labels:
+            labels[pid] = built_in_labels[pid]
+        else:
+            labels[pid] = p.name
+
+    root_ids.append("+ Niche baru…")
+    labels["+ Niche baru…"] = "➕ Buat Niche Baru…"
+    return root_ids, labels
+
+
+def get_sub_niches_for_ui(parent_niche_id: str, language: str = "id-ID") -> Tuple[List[str], Dict[str, str]]:
+    """Return available sub-niches for the chosen parent niche (G3).
+
+    - Starts with '(Gunakan Niche Utama)'.
+    - Lists sub-niches extending parent_niche_id.
+    - Custom sub-niches marked '(buatan sendiri)'.
+    - Ends with '+ Sub-niche baru…'.
+    """
+    if parent_niche_id in ("+ Niche baru…", ""):
+        return [], {}
+
+    all_p = list_presets()
+    custom_p = get_custom_presets()
+
+    sub_ids: List[str] = ["(Gunakan Niche Utama)"]
+    labels: Dict[str, str] = {"(Gunakan Niche Utama)": "(Gunakan Niche Utama)"}
+
+    built_in_sub_labels = {
+        "automotive.muscle_car": "American Muscle Cars & V8",
+        "automotive.jdm": "Japanese Domestic Market (JDM)",
+        "automotive.supercar": "Supercars & Hypercars",
+        "automotive.classic_restoration": "Restorasi Mobil Klasik",
+    }
+
+    for pid, p in sorted(all_p.items()):
+        if p.extends == parent_niche_id and p.kind == "sub_niche":
+            # Language filter
+            p_lang = getattr(p, "language", "") or ""
+            if language.startswith("id") and p_lang.startswith("en"):
+                continue
+            if language.startswith("en") and p_lang.startswith("id"):
+                continue
+
+            sub_ids.append(pid)
+            if pid in custom_p:
+                labels[pid] = f"{p.name} (buatan sendiri)"
+            elif pid in built_in_sub_labels:
+                labels[pid] = built_in_sub_labels[pid]
+            else:
+                labels[pid] = p.name
+
+    sub_ids.append("+ Sub-niche baru…")
+    labels["+ Sub-niche baru…"] = "➕ Buat Sub-Niche Baru…"
+    return sub_ids, labels
 
 
 def get_custom_presets() -> Dict[str, Preset]:
