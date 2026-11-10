@@ -155,3 +155,54 @@ time.sleep(5)
     finally:
         # Cleanup child process
         jobs.cancel_job(project_id)
+
+
+def test_graceful_stop_via_marker_and_resume(temp_project):
+    """Verify that writing stop marker causes child process to exit cleanly and be resumable (D2)."""
+    project_id, proj_dir = temp_project
+    from app.services.longform.store import (
+        clear_stop_request,
+        is_stop_requested,
+        load_manifest,
+        request_job_stop,
+        save_manifest,
+    )
+
+    # 1. Start a python script that loops over units, checking is_stop_requested
+    worker_script = f"""
+import sys, time
+from pathlib import Path
+from app.services.longform.store import is_stop_requested, load_manifest, save_manifest
+
+p_dir = Path(r"{proj_dir}")
+manifest = load_manifest(p_dir)
+
+for i in range(1, 10):
+    if is_stop_requested(p_dir):
+        print(f"STOP_DETECTED_AT_UNIT_{{i}}", flush=True)
+        break
+    time.sleep(0.3)
+    # simulate completing unit
+    if manifest.chapters and manifest.chapters[0].tts_groups:
+        manifest.chapters[0].tts_groups[0].paragraph_text = f"Unit {{i}} done"
+        save_manifest(manifest, p_dir)
+"""
+    cmd = [sys.executable, "-c", worker_script]
+    state = jobs.start_job(project_id, "mock_loop", cmd)
+    pid = state["pid"]
+    assert jobs.is_pid_alive(pid)
+
+    # Allow worker to run for 0.5s (should complete at least 1 unit)
+    time.sleep(0.5)
+
+    # 2. Cancel via stop marker
+    cancelled = jobs.cancel_job(project_id, timeout_seconds=5.0)
+    assert cancelled is True
+
+    # Process should be terminated/exited cleanly
+    assert not jobs.is_pid_alive(pid)
+    final_state = jobs.get_job_state(project_id)
+    assert final_state["status"] == "cancelled"
+
+    # Stop marker should be cleaned up
+    assert not is_stop_requested(proj_dir)

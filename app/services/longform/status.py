@@ -60,6 +60,9 @@ def get_impactful_preset_diffs(
     diffs: List[Dict[str, Any]] = []
     for field, description in _IMPACTFUL_PRESET_FIELDS.items():
         snap_v = _normalize_val(snapshot.get(field))
+        # Rule D4: Field not present in older snapshot (None) is not considered a change
+        if snap_v is None:
+            continue
         curr_v = _normalize_val(current.get(field))
         if snap_v != curr_v:
             diffs.append({
@@ -138,7 +141,6 @@ def compute_project_step_status(project_dir: str | Path) -> Dict[str, Any]:
         if (any(g.paragraph_text and g.paragraph_text.strip() for g in ch.tts_groups)
             or (p_dir / "script" / f"chapter_{ch.chapter_index:02d}.md").is_file())
     )
-    has_stale_chapters = any(ch.status == ItemStatus.stale for ch in manifest.chapters)
 
     if active_step in ("script_outline", "script_generate"):
         script_status = "berjalan"
@@ -146,9 +148,6 @@ def compute_project_step_status(project_dir: str | Path) -> Dict[str, Any]:
     elif total_chapters == 0:
         script_status = "belum"
         script_label = "Belum dibuat"
-    elif has_stale_chapters:
-        script_status = "perlu_diperbarui"
-        script_label = "Naskah perlu diperbarui"
     elif completed_chapters == total_chapters and total_chapters > 0:
         script_status = "selesai"
         script_label = f"Selesai ({total_chapters} bab)"
@@ -256,9 +255,11 @@ def compute_project_step_status(project_dir: str | Path) -> Dict[str, Any]:
         ("CapCut", capcut_status),
     ]
 
+    next_step_raw = "Semua Selesai ✔"
     next_step_name = "Semua Selesai ✔"
     for name, st_val in steps_order:
         if st_val != "selesai":
+            next_step_raw = name
             next_step_name = f"Berikutnya: {name}"
             break
 
@@ -311,8 +312,10 @@ def compute_project_step_status(project_dir: str | Path) -> Dict[str, Any]:
                 "draft_info": capcut_info,
             },
         },
+        "next_step": next_step_raw,
         "next_step_name": next_step_name,
         "preset_has_impactful_diff": len(preset_diffs) > 0,
+        "preset_diffs": preset_diffs,
         "preset_diff_details": preset_diffs,
         "active_job": job_state if is_job_running else None,
         "manifest": manifest,

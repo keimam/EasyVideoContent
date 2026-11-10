@@ -43,12 +43,13 @@ def get_preset_directories() -> Tuple[Path, Path]:
     return resource_dir, storage_dir
 
 
-def deep_merge_dicts(parent: dict[str, Any], child: dict[str, Any]) -> dict[str, Any]:
+def deep_merge_dicts(parent: dict[str, Any], child: dict[str, Any], strip_plus: bool = True) -> dict[str, Any]:
     """Merge child dict into parent dict recursively with '+' list append support (B1).
 
     - Keys starting with '+' (e.g. '+topic_keywords') append child list to parent list.
     - Dicts are merged recursively per key.
     - Other values in child override parent.
+    - If strip_plus is True, any remaining '+' keys are removed from the result.
     """
     merged = dict(parent)
 
@@ -64,12 +65,13 @@ def deep_merge_dicts(parent: dict[str, Any], child: dict[str, Any]) -> dict[str,
                 )
             merged[base_k] = list(parent_val) + list(v)
         elif isinstance(v, dict) and isinstance(merged.get(k), dict):
-            merged[k] = deep_merge_dicts(merged[k], v)
+            merged[k] = deep_merge_dicts(merged[k], v, strip_plus=strip_plus)
         else:
             merged[k] = v
 
-    # Strip any remaining '+' keys from the resulting dict
-    return {k: v for k, v in merged.items() if not k.startswith("+")}
+    if strip_plus:
+        return {k: v for k, v in merged.items() if not k.startswith("+")}
+    return merged
 
 
 def _load_raw_preset_file(file_path: Path) -> dict[str, Any]:
@@ -167,7 +169,7 @@ def _collect_raw_presets() -> dict[str, Tuple[dict[str, Any], Path]]:
             target_pid = data.get("id") or f.name[:-len(".override.json")]
             if target_pid in raw_presets:
                 base_dict, base_path = raw_presets[target_pid]
-                merged = deep_merge_dicts(base_dict, data)
+                merged = deep_merge_dicts(base_dict, data, strip_plus=False)
                 raw_presets[target_pid] = (merged, base_path)
             else:
                 logger.warning(f"Override file '{f}' specifies preset '{target_pid}' which was not found.")

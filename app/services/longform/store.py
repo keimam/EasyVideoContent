@@ -158,6 +158,32 @@ class ProjectLock:
         self.release()
 
 
+STOP_MARKER_FILENAME = ".stop_requested"
+
+
+def request_job_stop(project_dir: str | Path) -> Path:
+    """Write an advisory stop marker file in the project directory (D2)."""
+    p_dir = Path(project_dir).resolve()
+    p_dir.mkdir(parents=True, exist_ok=True)
+    stop_file = p_dir / STOP_MARKER_FILENAME
+    stop_file.write_text(f"stop_requested_at: {datetime.now().isoformat()}\n", encoding="utf-8")
+    return stop_file
+
+
+def is_stop_requested(project_dir: str | Path) -> bool:
+    """Check if a stop has been requested for this project (D2)."""
+    p_dir = Path(project_dir).resolve()
+    return (p_dir / STOP_MARKER_FILENAME).is_file()
+
+
+def clear_stop_request(project_dir: str | Path) -> None:
+    """Remove any advisory stop marker file in the project directory (D2)."""
+    p_dir = Path(project_dir).resolve()
+    stop_file = p_dir / STOP_MARKER_FILENAME
+    if stop_file.is_file():
+        stop_file.unlink(missing_ok=True)
+
+
 def get_projects_root() -> Path:
     """Return the absolute path to storage/longform_projects/."""
     repo_root = Path(__file__).resolve().parent.parent.parent.parent

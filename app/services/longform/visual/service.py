@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from loguru import logger
 
 from app.services.longform.schema import Chapter, ItemStatus, MotionType, ProjectManifest, Shot
-from app.services.longform.store import load_manifest, save_manifest
+from app.services.longform.store import is_stop_requested, load_manifest, save_manifest
 from app.services.longform.shot import (
     compute_shot_hash,
     form_chapter_shots,
@@ -359,8 +359,17 @@ class VisualService:
             except Exception as e:
                 logger.warning(f"Could not backfill preset snapshot for preset '{manifest.preset_id}': {e}")
 
+        stop_requested = False
         for ch in manifest.chapters:
+            if is_stop_requested(self.project_dir):
+                logger.info(f"Stop requested for project '{manifest.project_id}'. Exiting visual matching gracefully.")
+                stop_requested = True
+                break
             for shot in ch.shots:
+                if is_stop_requested(self.project_dir):
+                    logger.info(f"Stop requested for project '{manifest.project_id}'. Exiting visual matching gracefully.")
+                    stop_requested = True
+                    break
                 # Skip locked shots
                 if shot.locked:
                     logger.info(f"Skipping locked shot: {shot.shot_id}")
@@ -536,8 +545,17 @@ class VisualService:
         skipped_count = 0
         total_time = 0.0
 
+        stop_requested = False
         for ch in manifest.chapters:
+            if is_stop_requested(self.project_dir):
+                logger.info(f"Stop requested for project '{manifest.project_id}'. Exiting visual matching gracefully.")
+                stop_requested = True
+                break
             for shot in ch.shots:
+                if is_stop_requested(self.project_dir):
+                    logger.info(f"Stop requested for project '{manifest.project_id}'. Exiting visual matching gracefully.")
+                    stop_requested = True
+                    break
                 if not shot.asset_path:
                     raise VisualError(f"Cannot build shot {shot.shot_id}: asset_path is missing. Run visual fetch first.")
 

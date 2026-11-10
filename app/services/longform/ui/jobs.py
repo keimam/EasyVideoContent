@@ -20,7 +20,14 @@ from typing import Any, Dict, List, Optional
 from loguru import logger
 
 from app.services.longform.schema import ItemStatus, ProjectManifest
-from app.services.longform.store import get_project_dir, is_pid_alive, load_manifest
+from app.services.longform.store import (
+    clear_stop_request,
+    get_project_dir,
+    is_pid_alive,
+    is_stop_requested,
+    load_manifest,
+    request_job_stop,
+)
 
 # In-memory tracking of active process handles in this Python process
 _ACTIVE_PROCESSES: Dict[str, subprocess.Popen] = {}
@@ -197,10 +204,13 @@ def start_job(
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_file = logs_dir / f"job_{timestamp}_{step}.log"
 
-    # 4. Configure process creation flags (C1: DETACHED_PROCESS to survive Streamlit restarts)
+    # Clear any lingering stop marker from previous cancellation (D2)
+    clear_stop_request(p_dir)
+
+    # 4. Configure process creation flags (D2: Completely headless without console window)
     creationflags = 0
     if sys.platform == "win32":
-        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+        creationflags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
 
     repo_root = cwd or Path(__file__).resolve().parents[4]
 
@@ -240,84 +250,62 @@ def start_job(
     return state
 
 
-def cancel_job(project_id: str, timeout_seconds: float = 3.0) -> bool:
-    """Cancel an active background job using CTRL_BREAK_EVENT on Windows (B2).
-
-    Fallback to terminate() and kill() if process does not exit within timeout.
-    """
+def cancel_job(project_id: str, timeout_seconds: float = 15.0) -> bool:
+    """Cancel an active background job via stop marker file with 15s clean exit fallback (D2)."""
     state = get_job_state(project_id)
     if not state or state.get("status") != "running":
         return False
 
     pid = state.get("pid")
     proc = _ACTIVE_PROCESSES.get(project_id)
+    p_dir = get_project_dir(project_id)
+
+    logger.info(f"Requesting graceful stop for project '{project_id}' via stop marker (timeout: {timeout_seconds}s)")
+    request_job_stop(p_dir)
 
     cancelled = False
+    start_time = time.time()
 
-    if proc is not None and proc.poll() is None:
-        logger.info(f"Sending break signal to active process PID {proc.pid} for project '{project_id}'")
-        if sys.platform == "win32":
-            try:
-                proc.send_signal(signal.CTRL_BREAK_EVENT)
-            except Exception as exc:
-                logger.warning(f"Failed to send CTRL_BREAK_EVENT: {exc}, using terminate()")
-                proc.terminate()
-        else:
-            try:
-                proc.send_signal(signal.SIGINT)
-            except Exception:
-                proc.terminate()
-
-        try:
-            proc.wait(timeout=timeout_seconds)
+    # Wait for process to exit gracefully between work units
+    while time.time() - start_time < timeout_seconds:
+        if proc is not None and proc.poll() is not None:
             cancelled = True
-        except subprocess.TimeoutExpired:
-            logger.warning(f"Process PID {proc.pid} did not exit after signal; terminating.")
+            break
+        if pid and not is_pid_alive(pid):
+            cancelled = True
+            break
+        time.sleep(0.5)
+
+    # Fallback: force terminate if process is still running after timeout
+    if not cancelled:
+        logger.warning(f"Process PID {pid} did not exit gracefully within {timeout_seconds}s; terminating.")
+        if proc is not None and proc.poll() is None:
             proc.terminate()
             try:
-                proc.wait(timeout=2.0)
-                cancelled = True
+                proc.wait(timeout=3.0)
             except subprocess.TimeoutExpired:
                 proc.kill()
-                proc.wait(timeout=1.0)
-                cancelled = True
-        _ACTIVE_PROCESSES.pop(project_id, None)
-
-    elif pid and is_pid_alive(pid):
-        logger.info(f"Sending break signal to external PID {pid} for project '{project_id}'")
-        if sys.platform == "win32":
-            try:
-                os.kill(pid, signal.CTRL_BREAK_EVENT)
-                time.sleep(1.0)
-            except Exception:
-                pass
-            if is_pid_alive(pid):
+        elif pid and is_pid_alive(pid):
+            if sys.platform == "win32":
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True)
+            else:
                 try:
-                    os.kill(pid, signal.SIGTERM)
-                    time.sleep(1.0)
-                except Exception:
+                    os.kill(pid, signal.SIGKILL)
+                except OSError:
                     pass
-            if is_pid_alive(pid):
-                subprocess.run(["taskkill", "/PID", str(pid), "/F", "/T"], capture_output=True)
-            cancelled = not is_pid_alive(pid)
-        else:
-            try:
-                os.kill(pid, signal.SIGINT)
-                time.sleep(1.0)
-            except Exception:
-                pass
-            if is_pid_alive(pid):
-                os.kill(pid, signal.SIGKILL)
-            cancelled = not is_pid_alive(pid)
-    else:
         cancelled = True
+
+    clear_stop_request(p_dir)
+    cleanup_stale_lock(project_id)
 
     state["status"] = "cancelled"
     state["finished_at"] = datetime.now().isoformat()
-    state["exit_code"] = -1
+    state["exit_code"] = -signal.SIGTERM if sys.platform != "win32" else 3221225786
     _save_job_state_to_disk(project_id, state)
-    logger.info(f"Background job for project '{project_id}' marked as cancelled.")
-    return cancelled
+    _ACTIVE_PROCESSES.pop(project_id, None)
+
+    logger.info(f"Background job for project '{project_id}' successfully cancelled.")
+    return True
 
 
 def get_job_logs(project_id: str, max_lines: int = 30) -> List[str]:
