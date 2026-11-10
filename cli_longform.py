@@ -55,6 +55,7 @@ from app.services.longform.presets import (
 )
 from app.services.longform.schema import ItemStatus, ProjectManifest
 from app.services.longform.script_import import estimate_script_duration, parse_markdown_script
+from app.services.longform.status import compute_project_step_status
 from app.services.longform.store import (
     ProjectLock,
     ProjectLockedError,
@@ -175,14 +176,15 @@ def cmd_project_create(args: argparse.Namespace) -> int:
 
 
 def cmd_project_show(args: argparse.Namespace) -> int:
-    """Display information about an existing project."""
+    """Display information about an existing project using unified status resolver (C2, C3)."""
     project_dir = get_project_dir(args.project_id)
     if not project_dir.is_dir():
         print(f"Error: Project directory not found at {project_dir}", file=sys.stderr)
         return 1
 
     try:
-        manifest = load_manifest(project_dir)
+        st_info = compute_project_step_status(project_dir)
+        manifest = st_info["manifest"]
     except Exception as exc:
         print(f"Error loading project: {exc}", file=sys.stderr)
         return 1
@@ -203,15 +205,44 @@ def cmd_project_show(args: argparse.Namespace) -> int:
     print(f"  Pipeline Ver:   {manifest.pipeline_version}")
     print(f"  Schema Ver:     {manifest.schema_version}")
     print(f"  Est. Duration:  {duration_stats['estimated_duration_seconds']:.1f}s ({duration_stats['estimated_duration_seconds']/60:.1f} min)")
-    print(f"  Chapters ({len(manifest.chapters)}):")
+
+    print(f"\n  Alur Langkah & Status (5 Tahap):")
+    steps = st_info["steps"]
+    step_icons = {
+        "selesai": "✔",
+        "berjalan": "⏳",
+        "terhenti": "⚠",
+        "perlu_diperbarui": "🔄",
+        "belum": "○",
+    }
+
+    sc = steps["script"]
+    print(f"    1. Naskah:  [{step_icons.get(sc['status'], '○')} {sc['status'].upper()}] {sc['label']}")
+    vc = steps["voice"]
+    print(f"    2. Suara:   [{step_icons.get(vc['status'], '○')} {vc['status'].upper()}] {vc['label']}")
+    vs = steps["visual"]
+    print(f"    3. Visual:  [{step_icons.get(vs['status'], '○')} {vs['status'].upper()}] {vs['label']}")
+    rd = steps["render"]
+    print(f"    4. Render:  [{step_icons.get(rd['status'], '○')} {rd['status'].upper()}] {rd['label']}")
+    cc = steps["capcut"]
+    cc_extra = ""
+    if cc.get("draft_info"):
+        cc_extra = f" -> {cc['draft_info']['draft_name']} ({cc['draft_info']['exported_at']})"
+    print(f"    5. CapCut:  [{step_icons.get(cc['status'], '○')} {cc['status'].upper()}] {cc['label']}{cc_extra}")
+
+    print(f"\n  Langkah Berikutnya: {st_info['next_step_name']}")
+
+    if st_info["preset_has_impactful_diff"]:
+        print(f"\n  [PERINGATAN] Preset berubah pada pengaturan penting (jalankan refresh-preset?):")
+        for diff in st_info["preset_diff_details"]:
+            print(f"    - {diff['field']}: {diff['description']}")
+            print(f"      (proyek: {diff['snapshot_val']} vs preset: {diff['current_val']})")
+
+    print(f"\n  Chapters ({len(manifest.chapters)}):")
     for ch in manifest.chapters:
         num_g = len(ch.tts_groups)
         num_s = sum(len(g.segments) for g in ch.tts_groups)
         print(f"    - Ch {ch.chapter_index}: {ch.chapter_title} [{ch.status.value}] ({num_g} groups, {num_s} segs)")
-
-    current_preset = get_preset(manifest.preset_id)
-    if manifest.preset_snapshot != current_preset.model_dump():
-        print("\n  [PERINGATAN] Preset berubah — jalankan refresh-preset?")
 
     print("=" * 65 + "\n")
     return 0

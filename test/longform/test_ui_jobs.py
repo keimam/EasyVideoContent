@@ -1,6 +1,7 @@
 import json
 import os
 import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -87,8 +88,70 @@ def test_job_state_persistence_across_restarts(temp_project):
     # Wait for process to finish
     time.sleep(0.5)
 
-    # State read from disk should detect process ended
+    # State read from disk should detect process ended and mark stopped because manifest wasn't finished
     recovered_state = jobs.get_job_state(project_id)
     assert recovered_state is not None
-    assert recovered_state["status"] in ("completed", "failed")
+    assert recovered_state["status"] in ("completed", "failed", "stopped")
     assert recovered_state["step"] == "persist_step"
+
+
+def test_stale_lock_cleanup(temp_project):
+    """Verify that stale .lock files from dead PIDs are automatically cleaned up (C1)."""
+    project_id, proj_dir = temp_project
+    lock_file = proj_dir / ".lock"
+
+    # Write a fake stale lock with an impossible dead PID
+    dead_pid = 999998
+    lock_file.write_text(json.dumps({"pid": dead_pid, "time": "2026-01-01"}), encoding="utf-8")
+    assert lock_file.is_file()
+
+    # cleanup_stale_lock should remove it
+    cleaned = jobs.cleanup_stale_lock(project_id)
+    assert cleaned is True
+    assert not lock_file.is_file()
+
+
+def test_detached_process_survives_parent_termination(temp_project):
+    """Verify on Windows that killing the parent process does NOT kill the detached child job (C1)."""
+    project_id, proj_dir = temp_project
+
+    # Run a parent script that imports jobs, calls start_job with a 10s sleep, prints child PID, and gets killed
+    parent_script = f"""
+import sys, time
+from pathlib import Path
+from app.services.longform.ui import jobs
+
+child_cmd = [sys.executable, "-c", "import time; time.sleep(10)"]
+state = jobs.start_job("{project_id}", "detached_step", child_cmd)
+print(f"CHILD_PID:{{state['pid']}}", flush=True)
+time.sleep(5)
+"""
+    parent_proc = subprocess.Popen(
+        [sys.executable, "-c", parent_script],
+        cwd=str(Path(__file__).resolve().parents[2]),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    child_pid = None
+    # Read child PID from parent output
+    for line in parent_proc.stdout:
+        if "CHILD_PID:" in line:
+            child_pid = int(line.strip().split("CHILD_PID:")[1])
+            break
+
+    assert child_pid is not None, "Failed to get child PID from parent process"
+    assert jobs.is_pid_alive(child_pid), "Child job should be alive initially"
+
+    # Kill the parent process forcefully
+    parent_proc.kill()
+    parent_proc.wait(timeout=2.0)
+    assert not jobs.is_pid_alive(parent_proc.pid), "Parent process should be dead"
+
+    # Verify the detached child process IS STILL ALIVE!
+    try:
+        assert jobs.is_pid_alive(child_pid), "Detached child job must remain alive after parent termination"
+    finally:
+        # Cleanup child process
+        jobs.cancel_job(project_id)

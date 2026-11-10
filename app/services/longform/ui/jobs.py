@@ -54,14 +54,75 @@ def _save_job_state_to_disk(project_id: str, state: Dict[str, Any]) -> None:
         logger.error(f"Failed to write job state for '{project_id}': {exc}")
 
 
+def cleanup_stale_lock(project_id: str) -> bool:
+    """Remove project .lock file if the holding PID is dead (C1)."""
+    p_dir = get_project_dir(project_id)
+    lock_file = p_dir / ".lock"
+    if lock_file.is_file():
+        try:
+            lock_data = json.loads(lock_file.read_text(encoding="utf-8"))
+            lock_pid = lock_data.get("pid")
+            if lock_pid and not is_pid_alive(lock_pid):
+                lock_file.unlink(missing_ok=True)
+                logger.info(f"Removed stale lock file for project '{project_id}' (dead PID {lock_pid})")
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def is_job_step_completed(project_id: str, step: str) -> bool:
+    """Check if the manifest/disk assets for a step are fully completed (C1)."""
+    p_dir = get_project_dir(project_id)
+    if not p_dir.is_dir() or not (p_dir / "manifest.json").is_file():
+        return False
+    try:
+        manifest = load_manifest(p_dir)
+        if step in ("script_outline", "script_generate"):
+            return len(manifest.chapters) > 0 and all(
+                any(g.paragraph_text and g.paragraph_text.strip() for g in ch.tts_groups)
+                or (p_dir / "script" / f"chapter_{ch.chapter_index:02d}.md").is_file()
+                for ch in manifest.chapters
+            )
+        elif step == "audio_synthesize":
+            total_g = sum(len(ch.tts_groups) for ch in manifest.chapters)
+            if total_g == 0:
+                return False
+            done_g = sum(
+                1 for ch in manifest.chapters for g in ch.tts_groups
+                if g.audio and g.audio.file_path and (p_dir / g.audio.file_path).is_file() and (p_dir / g.audio.file_path).stat().st_size > 44
+            )
+            return done_g == total_g
+        elif step == "visual_generate":
+            total_s = sum(len(ch.shots) for ch in manifest.chapters)
+            if total_s == 0:
+                return False
+            done_s = sum(
+                1 for ch in manifest.chapters for sh in ch.shots
+                if (sh.rendered_clip and (p_dir / sh.rendered_clip).is_file()) or (sh.asset_path and (p_dir / sh.asset_path).is_file())
+            )
+            return done_s == total_s
+        elif step == "render_final":
+            return bool(manifest.final_video_file and (p_dir / manifest.final_video_file).is_file())
+        elif step == "capcut_export":
+            from app.services.longform.status import find_latest_capcut_draft
+            return find_latest_capcut_draft(p_dir, project_id) is not None
+    except Exception:
+        return False
+    return False
+
+
 def get_job_state(project_id: str) -> Optional[Dict[str, Any]]:
     """Get the current job state for a project, refreshing live status if running."""
+    cleanup_stale_lock(project_id)
+
     state = _read_job_state_from_disk(project_id)
     if not state:
         return None
 
     if state.get("status") == "running":
         pid = state.get("pid")
+        step = state.get("step", "")
         proc = _ACTIVE_PROCESSES.get(project_id)
 
         # Check process status
@@ -76,16 +137,18 @@ def get_job_state(project_id: str) -> Optional[Dict[str, Any]]:
                 elif ret in (-1073741510, 3221225786, -signal.SIGINT, signal.SIGINT):
                     state["status"] = "cancelled"
                 else:
-                    state["status"] = "failed"
+                    state["status"] = "stopped" if not is_job_step_completed(project_id, step) else "completed"
                 _save_job_state_to_disk(project_id, state)
                 _ACTIVE_PROCESSES.pop(project_id, None)
         elif pid and not is_pid_alive(pid):
             # Process was not alive and not in _ACTIVE_PROCESSES
             state["finished_at"] = datetime.now().isoformat()
-            if state.get("exit_code") is None:
-                state["exit_code"] = 0  # Process ended
-            if state.get("status") == "running":
-                state["status"] = "completed" if state.get("exit_code") == 0 else "failed"
+            if is_job_step_completed(project_id, step):
+                state["status"] = "completed"
+                state["exit_code"] = 0
+            else:
+                state["status"] = "stopped"
+                state["exit_code"] = state.get("exit_code") or -1
             _save_job_state_to_disk(project_id, state)
 
     return state
@@ -114,7 +177,8 @@ def start_job(
                 f"Job '{current_state.get('step')}' is currently running for project '{project_id}' (PID {pid})."
             )
 
-    # 2. Check project .lock file
+    # 2. Check project .lock file and reclaim stale locks
+    cleanup_stale_lock(project_id)
     lock_file = p_dir / ".lock"
     if lock_file.is_file():
         try:
@@ -133,10 +197,10 @@ def start_job(
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_file = logs_dir / f"job_{timestamp}_{step}.log"
 
-    # 4. Configure process creation flags
+    # 4. Configure process creation flags (C1: DETACHED_PROCESS to survive Streamlit restarts)
     creationflags = 0
     if sys.platform == "win32":
-        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
+        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
 
     repo_root = cwd or Path(__file__).resolve().parents[4]
 
@@ -146,10 +210,12 @@ def start_job(
     try:
         proc = subprocess.Popen(
             command,
+            stdin=subprocess.DEVNULL,
             stdout=fp,
             stderr=subprocess.STDOUT,
             cwd=str(repo_root),
             creationflags=creationflags,
+            close_fds=True,
         )
     except Exception as exc:
         fp.close()
