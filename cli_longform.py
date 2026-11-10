@@ -134,6 +134,7 @@ def cmd_project_create(args: argparse.Namespace) -> int:
             script_markdown=script_markdown,
             aspect_ratio=args.aspect_ratio or "16:9",
             sub_niche_focus=args.focus,
+            topic=getattr(args, "topic", None) or args.title,
         )
     except Exception as exc:
         print(f"Error creating project: {exc}", file=sys.stderr)
@@ -195,6 +196,8 @@ def cmd_project_show(args: argparse.Namespace) -> int:
     print(f"\nProject Overview: {manifest.project_id}")
     print("=" * 65)
     print(f"  Title:          {manifest.title}")
+    if getattr(manifest, "topic", None):
+        print(f"  Topic:          \"{manifest.topic}\"")
     print(f"  Status:         {manifest.status.value}")
     print(f"  Preset:         {manifest.preset_id}")
     if manifest.preset_inheritance_chain:
@@ -489,9 +492,12 @@ def cmd_script_outline(args: argparse.Namespace) -> int:
     print(f"\n[LLM Configuration] Provider: {prov_str} | Model: {generator.adapter.model or '(default)'}")
     sys.stdout.flush()
 
+    manifest = load_manifest(project_dir)
+    eff_topic = args.topic or getattr(manifest, "topic", None) or manifest.title
+
     try:
         outline = generator.generate_outline(
-            topic=args.topic,
+            topic=eff_topic,
             target_duration_minutes=args.minutes,
         )
     except LLMConfigurationError as exc:
@@ -1809,7 +1815,7 @@ def build_parser() -> argparse.ArgumentParser:
     # project create
     p_create = proj_subs.add_parser("create", help="Create a new longform project")
     p_create.add_argument("--title", required=True, help="Title of the project")
-    p_create.add_argument("--preset", required=True, help="Preset ID to use")
+    p_create.add_argument("--preset", default="umum", help="Preset ID to use (default: umum)")
     p_create.add_argument("--script", help="Path to Markdown script file (optional if --topic is provided)")
     p_create.add_argument("--topic", help="Video topic for automated AI script generation")
     p_create.add_argument("--id", help="Optional custom project ID")
@@ -1853,7 +1859,7 @@ def build_parser() -> argparse.ArgumentParser:
     # script outline
     p_s_outline = script_subs.add_parser("outline", help="Generate structured outline with candidate titles")
     p_s_outline.add_argument("project_id", help="Project ID")
-    p_s_outline.add_argument("--topic", required=True, help="Video topic")
+    p_s_outline.add_argument("--topic", default=None, help="Video topic (defaults to project topic/title)")
     p_s_outline.add_argument("--minutes", type=float, default=12.0, help="Target duration in minutes (default: 12)")
     p_s_outline.add_argument("--provider", default=None, help="LLM provider (defaults to upstream config.toml; pass 'fake' for offline test mock)")
     p_s_outline.add_argument("--model", help="Optional model name override")

@@ -295,11 +295,14 @@ def create_project(
     script_markdown: Optional[str] = None,
     aspect_ratio: str = "16:9",
     sub_niche_focus: Optional[str] = None,
+    topic: Optional[str] = None,
+    target_duration_minutes: Optional[int] = None,
+    language: Optional[str] = None,
     projects_root: Optional[Path] = None,
 ) -> Tuple[ProjectManifest, Path]:
     """Create a new longform project folder with directory structure and manifest.
 
-    Copies preset snapshot and inheritance chain into manifest (K2, B2, B3).
+    Copies preset snapshot and inheritance chain into manifest (K2, B2, B3, D7).
     """
     clean_id = project_id.strip()
     if not clean_id or not clean_id.replace("_", "").replace("-", "").isalnum():
@@ -328,6 +331,14 @@ def create_project(
     preset_snapshot = preset.model_dump()
     preset_chain = get_preset_inheritance_chain(preset_id)
 
+    # Adapt general preset when en-US is selected (D7)
+    if language == "en-US" and preset_id == "umum":
+        preset_snapshot["language"] = "en-US"
+        preset_snapshot["default_voice"] = "en-US-ChristopherNeural"
+        preset_snapshot["words_per_minute"] = 140
+        if preset_chain and preset_chain[0] == "documentary_id":
+            preset_chain = ["documentary_en"] + preset_chain[1:]
+
     # Create chapters from script if provided
     chapters: list[Chapter] = []
     if script_markdown:
@@ -339,6 +350,8 @@ def create_project(
         schema_version="1.0.0",
         project_id=clean_id,
         title=title,
+        topic=topic.strip() if topic else None,
+        target_duration_minutes=target_duration_minutes,
         aspect_ratio=aspect_ratio,
         preset_id=preset_id,
         preset_inheritance_chain=preset_chain,

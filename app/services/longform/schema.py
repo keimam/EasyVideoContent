@@ -316,6 +316,8 @@ class ProjectManifest(BaseModel):
     schema_version: str = "1.0.0"
     project_id: str
     title: str
+    topic: Optional[str] = None
+    target_duration_minutes: Optional[int] = None
     aspect_ratio: str = "16:9"
     preset_id: str
     preset_inheritance_chain: List[str] = Field(default_factory=list)

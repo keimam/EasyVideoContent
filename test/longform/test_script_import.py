@@ -125,7 +125,8 @@ def test_clean_chapter_title_prefix_stripping_and_sample_script():
 
     # Fallback when only chapter number is provided
     assert clean_chapter_title("Chapter 1", fallback_index=1) == "Chapter 1"
-    assert clean_chapter_title("Ch 2", fallback_index=2) == "Chapter 2"
+    assert clean_chapter_title("Ch 2", fallback_index=2) == "Ch 2"
+    assert clean_chapter_title("Ch1") == "Ch1"
 
     # Test with actual test/resources/sample_script.md
     sample_path = Path(__file__).resolve().parent.parent / "resources" / "sample_script.md"

@@ -49,9 +49,9 @@ def test_preset_override_layer(tmp_path, monkeypatch):
         updated_preset = get_preset(preset_id)
         assert updated_preset.capcut_text_size == 12
 
-        # 4. Verify format_preset_tree displays [OVERRIDE]
+        # 4. Verify format_preset_tree displays override badge
         tree = format_preset_tree()
-        assert f"{preset_id} [OVERRIDE]" in tree
+        assert f"{preset_id} [override]" in tree or f"{preset_id} [OVERRIDE]" in tree
 
         # 5. Verify validation of preset file reports override
         resource_dir, _ = get_preset_directories()

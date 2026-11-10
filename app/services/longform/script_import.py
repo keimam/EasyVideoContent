@@ -169,7 +169,7 @@ def clean_chapter_title(title: str, fallback_index: Optional[int] = None) -> str
 
     Repeatedly applies stripping until no prefix matches.
     If the stripped title is non-empty, returns it.
-    If empty (e.g. heading was literally '## Chapter 1'), returns fallback or original.
+    If empty (e.g. heading was literally '## Chapter 1' or 'Ch1'), returns original.
     """
     if not title:
         return f"Chapter {fallback_index}" if fallback_index else ""
@@ -180,8 +180,6 @@ def clean_chapter_title(title: str, fallback_index: Optional[int] = None) -> str
             break
         cleaned = cleaned[m.end():].strip()
     if not cleaned:
-        if fallback_index is not None:
-            return f"Chapter {fallback_index}"
         return title.strip()
     return cleaned
 

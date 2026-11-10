@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
+from loguru import logger
 from pydantic import ValidationError
 
 from app.services.longform.schema import Preset
@@ -305,13 +307,15 @@ def get_preset_inheritance_chain(preset_id: str) -> List[str]:
 
 
 def format_preset_tree(presets: Dict[str, Preset] | None = None) -> str:
-    """Render a visual ASCII tree of presets showing niches and their sub-niches (B1)."""
+    """Render a visual ASCII tree of presets showing niches and their sub-niches (B1, D8)."""
     if presets is None:
         presets = list_presets()
 
     if not presets:
         return "No presets found."
 
+    resource_dir, storage_dir = get_preset_directories()
+    raw_presets = _collect_raw_presets()
     overrides = get_all_preset_overrides()
 
     # Identify roots (niche or no extends) and build children map
@@ -333,8 +337,22 @@ def format_preset_tree(presets: Dict[str, Preset] | None = None) -> str:
 
     def _render_node(pid: str, prefix: str = "", is_last: bool = True, is_root: bool = False):
         p = presets[pid]
-        ovr_badge = " [OVERRIDE]" if pid in overrides else ""
-        info = f"{p.id}{ovr_badge} ({p.kind}, {p.language}, {p.words_per_minute} WPM) - {p.name}"
+        badges = []
+        is_custom = False
+        if pid in raw_presets:
+            p_path = raw_presets[pid][1]
+            if storage_dir in p_path.parents or p_path.parent == storage_dir or pid.startswith("custom."):
+                is_custom = True
+        elif pid.startswith("custom."):
+            is_custom = True
+
+        if is_custom:
+            badges.append("[kustom]")
+        if pid in overrides:
+            badges.append("[override]")
+
+        badge_str = (" " + " ".join(badges)) if badges else ""
+        info = f"{p.id}{badge_str} ({p.kind}, {p.language}, {p.words_per_minute} WPM) - {p.name}"
         if is_root:
             lines.append(info)
         else:
@@ -351,3 +369,197 @@ def format_preset_tree(presets: Dict[str, Preset] | None = None) -> str:
 
     lines.append("-" * 85)
     return "\n".join(lines)
+
+
+def save_custom_preset(
+    preset_data: dict[str, Any],
+    allow_overwrite: bool = False,
+) -> Path:
+    """Save a user-defined custom preset into storage/presets/<id>.json (D8).
+
+    Validates schema and inheritance resolution before persisting to disk.
+    Duplicate IDs are rejected with a clear error unless allow_overwrite=True.
+    Never writes to resource/presets/.
+    """
+    resource_dir, storage_dir = get_preset_directories()
+    storage_dir.mkdir(parents=True, exist_ok=True)
+
+    raw_id = (preset_data.get("id") or "").strip()
+    if not raw_id:
+        raise PresetValidationError("Field 'id' wajib diisi untuk preset kustom.")
+
+    # Ensure slug has valid format custom.<parent>.<name> or custom.<name>
+    if not raw_id.startswith("custom."):
+        preset_id = f"custom.{raw_id}"
+    else:
+        preset_id = raw_id
+
+    preset_data["id"] = preset_id
+
+    # Check for duplicate with built-in presets
+    if (resource_dir / f"{raw_id}.json").is_file() or (resource_dir / f"{preset_id}.json").is_file():
+        raise PresetValidationError(
+            f"ID preset '{raw_id}' bertabrakan dengan preset bawaan sistem. Pilih nama atau ID lain."
+        )
+
+    target_path = storage_dir / f"{preset_id}.json"
+    if target_path.is_file() and not allow_overwrite:
+        raise PresetValidationError(
+            f"Preset kustom dengan ID '{preset_id}' sudah ada di '{target_path.name}'. Gunakan nama lain atau aktifkan pembaruan."
+        )
+
+    # Set default kind if missing
+    if not preset_data.get("kind"):
+        preset_data["kind"] = "sub_niche" if preset_data.get("extends") else "niche"
+    if not preset_data.get("schema_version"):
+        preset_data["schema_version"] = "1.0.0"
+
+    # Validate before saving: write to temp file, validate inheritance & schema, then atomically replace
+    temp_path = storage_dir / f".tmp_{preset_id}_{int(time.time())}.json"
+    try:
+        with open(temp_path, "w", encoding="utf-8") as fp:
+            json.dump(preset_data, fp, indent=2, ensure_ascii=False)
+
+        # Validate with load_preset_file
+        load_preset_file(temp_path)
+
+        # Validated successfully, move to final target
+        if target_path.exists():
+            target_path.unlink()
+        temp_path.replace(target_path)
+        logger.info(f"Custom preset '{preset_id}' saved successfully to {target_path}")
+        return target_path
+    except Exception as exc:
+        if temp_path.exists():
+            temp_path.unlink(missing_ok=True)
+        raise PresetValidationError(f"Gagal memvalidasi preset kustom '{preset_id}': {exc}") from exc
+
+
+def delete_custom_preset(preset_id: str) -> None:
+    """Delete a custom preset from storage/presets/ (D8).
+
+    Rejects deletion if the preset is built-in or if it is currently in-use by any project.
+    """
+    resource_dir, storage_dir = get_preset_directories()
+
+    # Reject if built-in
+    if (resource_dir / f"{preset_id}.json").is_file():
+        raise PresetError(f"Preset '{preset_id}' adalah preset bawaan dan tidak dapat dihapus.")
+
+    target_path = storage_dir / f"{preset_id}.json"
+    if not target_path.is_file():
+        raise PresetNotFoundError(f"Preset kustom '{preset_id}' tidak ditemukan di storage/presets/.")
+
+    # Guard: check if any project uses this preset
+    from app.services.longform.store import get_projects_root, load_manifest
+
+    root = get_projects_root()
+    in_use_projects: List[str] = []
+    if root.is_dir():
+        for p_dir in root.iterdir():
+            if p_dir.is_dir() and (p_dir / "manifest.json").is_file():
+                try:
+                    manifest = load_manifest(p_dir)
+                    chain = getattr(manifest, "preset_inheritance_chain", []) or []
+                    if manifest.preset_id == preset_id or preset_id in chain:
+                        in_use_projects.append(f"'{manifest.title}' ({manifest.project_id})")
+                except Exception:
+                    pass
+
+    if in_use_projects:
+        proj_list = ", ".join(in_use_projects)
+        raise PresetError(
+            f"Tidak dapat menghapus preset '{preset_id}' karena sedang digunakan oleh proyek: {proj_list}."
+        )
+
+    # Proceed with deletion
+    try:
+        target_path.unlink()
+        override_path = storage_dir / f"{preset_id}.override.json"
+        if override_path.is_file():
+            override_path.unlink()
+        logger.info(f"Custom preset '{preset_id}' successfully deleted.")
+    except Exception as exc:
+        raise PresetError(f"Gagal menghapus berkas preset '{preset_id}': {exc}") from exc
+
+
+def get_custom_presets() -> Dict[str, Preset]:
+    """Return all user-defined custom presets."""
+    all_p = list_presets()
+    _, storage_dir = get_preset_directories()
+    raw_presets = _collect_raw_presets()
+    custom_p: Dict[str, Preset] = {}
+
+    for pid, p in all_p.items():
+        if pid in raw_presets:
+            p_path = raw_presets[pid][1]
+            if storage_dir in p_path.parents or p_path.parent == storage_dir or pid.startswith("custom."):
+                custom_p[pid] = p
+        elif pid.startswith("custom."):
+            custom_p[pid] = p
+
+    return custom_p
+
+
+def get_builtin_presets() -> Dict[str, Preset]:
+    """Return all built-in resource presets."""
+    all_p = list_presets()
+    custom_p = get_custom_presets()
+    return {pid: p for pid, p in all_p.items() if pid not in custom_p}
+
+
+def suggest_niche_keywords(
+    niche_name: str,
+    topic: str = "",
+    use_llm: bool = True,
+) -> dict[str, list[str]]:
+    """Propose keywords for a custom niche, with AI when available or heuristic fallback (D8)."""
+    import re
+    words = re.findall(r"[a-zA-Z0-9]+", f"{niche_name} {topic}".lower())
+    meaningful = [
+        w for w in dict.fromkeys(words)
+        if len(w) > 3 and w not in {"video", "cerita", "tentang", "yang", "dan", "dari", "with", "this", "that"}
+    ]
+
+    fallback_result = {
+        "topic_keywords": meaningful[:6] if meaningful else [niche_name.lower()],
+        "visual_keywords": [f"{w} footage" for w in meaningful[:4]] if meaningful else [niche_name.lower()],
+        "required_subject_terms": meaningful[:3] if meaningful else [],
+        "negative_terms": ["watermark", "blurry", "low quality"],
+        "blocked_terms": ["cartoon", "illustration", "distorted"],
+    }
+
+    if not use_llm:
+        return fallback_result
+
+    # Try LLM proposal if configured
+    try:
+        from app.services.longform.llm_adapter import LLMAdapter
+        adapter = LLMAdapter()
+        adapter.validate_configuration()
+        prompt = (
+            f"You are a documentary video producer. Propose search keywords and filters for a video project.\n"
+            f"Niche: {niche_name}\n"
+            f"Topic: {topic or niche_name}\n\n"
+            f"Output strictly a JSON object with keys:\n"
+            f"- topic_keywords: list of 4-6 topical keywords\n"
+            f"- visual_keywords: list of 4-6 specific visual search queries for b-roll\n"
+            f"- required_subject_terms: list of 2-3 essential subject keywords\n"
+            f"- negative_terms: list of 2-4 visual aspects to avoid\n"
+            f"- blocked_terms: list of 2-4 blocked content terms\n"
+        )
+        resp = adapter.generate(prompt=prompt, fake_kind="outline")
+        from app.services.longform.script_generator import extract_json_payload
+        data = json.loads(extract_json_payload(resp.content))
+        if isinstance(data, dict) and "visual_keywords" in data:
+            return {
+                "topic_keywords": [str(x).strip() for x in data.get("topic_keywords", []) if str(x).strip()],
+                "visual_keywords": [str(x).strip() for x in data.get("visual_keywords", []) if str(x).strip()],
+                "required_subject_terms": [str(x).strip() for x in data.get("required_subject_terms", []) if str(x).strip()],
+                "negative_terms": [str(x).strip() for x in data.get("negative_terms", []) if str(x).strip()],
+                "blocked_terms": [str(x).strip() for x in data.get("blocked_terms", []) if str(x).strip()],
+            }
+    except Exception as exc:
+        logger.debug(f"LLM keyword proposal skipped or failed: {exc}. Using heuristic fallback.")
+
+    return fallback_result
