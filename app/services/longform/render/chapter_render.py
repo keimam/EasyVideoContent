@@ -20,6 +20,7 @@ from app.services.longform.config import load_longform_config
 from app.services.longform.hashing import compute_chapter_hash
 from app.services.longform.render.subtitle import generate_chapter_ass_and_srt
 from app.services.longform.schema import Chapter, ItemStatus, ProjectManifest, Shot
+from app.services.longform.store import is_stop_requested
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +110,9 @@ class ChapterRenderer:
         ch = next((c for c in manifest.chapters if c.chapter_index == chapter_index), None)
         if not ch:
             raise ValueError(f"Chapter {chapter_index} not found in project '{manifest.project_id}'")
+
+        if is_stop_requested(self.project_dir):
+            raise InterruptedError(f"Render interrupted: stop requested for project in {self.project_dir}")
 
         # 1. Preflight checks
         if not ch.audio_file:
@@ -202,6 +206,9 @@ class ChapterRenderer:
         ])
 
         # 7. Execute FFmpeg with Ctrl+C protection
+        if is_stop_requested(self.project_dir):
+            raise InterruptedError(f"Render interrupted: stop requested for project in {self.project_dir}")
+
         logger.info(f"Rendering chapter {chapter_index} -> {tmp_mp4_path}...")
         t0 = time.perf_counter()
         proc: Optional[subprocess.Popen] = None

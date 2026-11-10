@@ -33,20 +33,17 @@ def test_api_key_masking_security():
 
     pk_key = "pk_live_123456789abcdef0"
     masked_pk = mask_api_key(pk_key)
-    assert masked_pk.startswith("pk_****")
-    assert masked_pk.endswith("ef0")
+    assert masked_pk == "****ef0" or masked_pk == "****def0"
     assert "123456789" not in masked_pk
 
     sk_key = "sk-proj-9876543210zyxwvu"
     masked_sk = mask_api_key(sk_key)
-    assert masked_sk.startswith("sk-****")
-    assert masked_sk.endswith("wvu")
+    assert masked_sk == "****xwvu"
     assert "9876543210" not in masked_sk
 
     aiza_key = "AIzaSyD1234567890abcdef"
     masked_aiza = mask_api_key(aiza_key)
-    assert masked_aiza.startswith("AIz****")
-    assert masked_aiza.endswith("cdef")
+    assert masked_aiza == "****cdef"
     assert "1234567890" not in masked_aiza
 
 

@@ -60,14 +60,14 @@ from app.services.longform.voice_service import VoiceService, list_available_voi
 # --- Project Discovery via Single Status Resolver (C2, D5) ---
 
 def check_has_llm_key() -> bool:
-    """Check if an actual LLM API key is configured in MoneyPrinterTurbo config (D3)."""
+    """Check if an actual LLM API key is configured in MoneyPrinterTurbo config (D3, E5)."""
     try:
         from app.config import config
-        prov = config.app.get("llm_provider", "openai")
+        prov = (config.app.get("llm_provider") or "openai").lower().strip()
         key = (config.app.get(f"{prov}_api_key") or "").strip()
         if not key:
             return False
-        if prov == "gemini" and not key.startswith("AIzaSy"):
+        if ("gemini" in prov or "google" in prov) and not key.startswith("AIza"):
             return False
         return True
     except Exception:
@@ -553,10 +553,13 @@ def render_script_step_flow(project_id: str, p_dir: Path, manifest: ProjectManif
             st.markdown("### ✨ Tulis dengan AI")
             st.caption("AI menyusun kerangka dan menulis narasi dokumenter otomatis berdasarkan niche.")
 
+            llm_status = check_llm_status()
             llm_ok = check_has_llm_key()
             use_fake = st.session_state.get(f"fake_toggle_{project_id}", False)
 
-            if not llm_ok and not use_fake:
+            if llm_status.get("is_invalid"):
+                st.warning(f"⚠️ {llm_status['message']}")
+            elif not llm_ok and not use_fake:
                 st.warning("⚠️ Belum ada API key AI. Isi di pengaturan MoneyPrinterTurbo, atau impor naskah sendiri.")
 
             with st.expander("⚙️ Opsi Penulisan AI", expanded=False):

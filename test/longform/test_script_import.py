@@ -75,7 +75,7 @@ Third paragraph in chapter two. [motion: static]
     chapters, title = parse_markdown_script(script, preset)
     assert title == "Title of Documentary"
     assert len(chapters) == 2
-    assert chapters[0].chapter_title == "Chapter 1: The Beginning"
+    assert chapters[0].chapter_title == "The Beginning"
     assert len(chapters[0].tts_groups) == 2
     assert len(chapters[0].tts_groups[0].segments) == 2
 
@@ -83,7 +83,7 @@ Third paragraph in chapter two. [motion: static]
     seg2 = chapters[0].tts_groups[0].segments[1]
     assert seg2.visual.prompt == "vintage map"
 
-    assert chapters[1].chapter_title == "Chapter 2: The Climax"
+    assert chapters[1].chapter_title == "The Climax"
     assert chapters[1].tts_groups[0].segments[0].visual.motion == MotionType.static
 
 
@@ -107,3 +107,34 @@ def test_duration_estimation_and_warnings():
     assert stats_med["total_words"] == 1820
     assert 600 <= stats_med["estimated_duration_seconds"] <= 1200
     assert len(stats_med["warnings"]) == 0
+
+
+def test_clean_chapter_title_prefix_stripping_and_sample_script():
+    """Verify clean_chapter_title strips repeated Chapter/Bab prefixes and cleans sample_script.md (E1)."""
+    from pathlib import Path
+    from app.services.longform.script_import import clean_chapter_title
+
+    # Single prefix
+    assert clean_chapter_title("Chapter 1: The Beginning") == "The Beginning"
+    assert clean_chapter_title("Bab 2 - Mesin V8") == "Mesin V8"
+    assert clean_chapter_title("Ch. 3: Aero Dynamics") == "Aero Dynamics"
+
+    # Repeated prefixes
+    assert clean_chapter_title("Chapter 1: Chapter 1: Foundations of the Local Land") == "Foundations of the Local Land"
+    assert clean_chapter_title("Bab 1: Chapter 1 - Ch 1: Detroit Steel") == "Detroit Steel"
+
+    # Fallback when only chapter number is provided
+    assert clean_chapter_title("Chapter 1", fallback_index=1) == "Chapter 1"
+    assert clean_chapter_title("Ch 2", fallback_index=2) == "Chapter 2"
+
+    # Test with actual test/resources/sample_script.md
+    sample_path = Path(__file__).resolve().parent.parent / "resources" / "sample_script.md"
+    assert sample_path.is_file()
+    sample_text = sample_path.read_text(encoding="utf-8")
+    preset = get_preset("documentary_en")
+    chapters, title = parse_markdown_script(sample_text, preset)
+    assert title == "The Local Heritage Journey"
+    assert len(chapters) == 1
+    # Line 3 of sample_script.md: "## Chapter 1: Foundations of the Local Land" -> stripped to subtitle
+    assert chapters[0].chapter_title == "Foundations of the Local Land"
+

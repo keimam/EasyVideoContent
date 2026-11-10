@@ -15,6 +15,7 @@ from app.services.longform.planner import compute_plan
 from app.services.longform.render.chapter_render import ChapterRenderer
 from app.services.longform.render.final_concat import FinalConcatenator
 from app.services.longform.schema import Chapter, ItemStatus, ProjectManifest
+from app.services.longform.store import is_stop_requested
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +78,9 @@ class RenderService:
 
         # Render chapters in sequence (resume per chapter)
         for ch in sorted(manifest.chapters, key=lambda c: c.chapter_index):
+            if is_stop_requested(self.project_dir):
+                logger.info(f"Stop requested for project in {self.project_dir}. Halting chapter renders.")
+                break
             manifest, c_stats = self.render_chapter(manifest, ch.chapter_index, force=force)
             if c_stats.get("status") == "rendered":
                 rendered_count += 1
@@ -85,10 +89,14 @@ class RenderService:
             chapter_stats.append(c_stats)
 
         # Final video assembly
-        final_mp4, final_stats = self.final_concatenator.concatenate_final_video(
-            manifest=manifest,
-            no_bgm=no_bgm,
-        )
+        if is_stop_requested(self.project_dir):
+            logger.info(f"Stop requested for project in {self.project_dir}. Skipping final concat.")
+            final_stats = {"status": "stopped", "reason": "Stop requested"}
+        else:
+            final_mp4, final_stats = self.final_concatenator.concatenate_final_video(
+                manifest=manifest,
+                no_bgm=no_bgm,
+            )
 
         total_elapsed = time.perf_counter() - t0
         summary = {

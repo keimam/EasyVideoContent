@@ -39,6 +39,16 @@ _IMPACTFUL_PRESET_FIELDS = {
 }
 
 
+# Default fallback values for fields when evaluating diffs (E2)
+_FIELD_DEFAULTS: Dict[str, Any] = {
+    "voice_rate": 1.0,
+    "pause_between_groups_ms": 350,
+    "min_relevance_score": 0.6,
+    "words_per_minute": 140,
+    "tts_provider": "edge",
+}
+
+
 def _normalize_val(val: Any) -> Any:
     """Normalize empty or None values for comparison."""
     if val is None or val == "" or val == [] or val == {}:
@@ -46,24 +56,39 @@ def _normalize_val(val: Any) -> Any:
     return val
 
 
+def _normalize_field_val(field: str, val: Any) -> Any:
+    """Normalize values and resolve effective defaults (E2)."""
+    norm = _normalize_val(val)
+    if norm is None and field in _FIELD_DEFAULTS:
+        return _FIELD_DEFAULTS[field]
+    return norm
+
+
 def get_impactful_preset_diffs(
     snapshot: Optional[Dict[str, Any]],
     current: Optional[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    """Compare project preset snapshot with effective disk preset definition (C3).
+    """Compare project preset snapshot with effective disk preset definition (C3, E2).
 
-    Filters out legacy None-vs-empty differences and non-impactful metadata.
+    Filters out legacy None-vs-empty differences, default equivalence, and non-impactful metadata.
     """
     if not snapshot or not current:
         return []
 
     diffs: List[Dict[str, Any]] = []
     for field, description in _IMPACTFUL_PRESET_FIELDS.items():
-        snap_v = _normalize_val(snapshot.get(field))
-        # Rule D4: Field not present in older snapshot (None) is not considered a change
+        raw_snap = snapshot.get(field)
+        raw_curr = current.get(field)
+
+        snap_v = _normalize_field_val(field, raw_snap)
+        curr_v = _normalize_field_val(field, raw_curr)
+
+        # Rule D4: Field completely absent from snapshot (None) is not considered a change
         if snap_v is None:
             continue
-        curr_v = _normalize_val(current.get(field))
+        if curr_v is None:
+            continue
+
         if snap_v != curr_v:
             diffs.append({
                 "field": field,

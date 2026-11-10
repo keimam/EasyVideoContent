@@ -15,9 +15,9 @@ from app.models.llm_provider import DEFAULT_LLM_PROVIDER_ID, get_llm_provider
 
 
 def mask_api_key(key: Optional[str]) -> str:
-    """Mask sensitive API keys for display (e.g. 'pk_****abcd', 'sk-****1234') (B6).
+    """Mask sensitive API keys for display (e.g. '****abcd') (B6, E5).
 
-    Never exposes full key content.
+    Returns '****' followed by the last 4 characters only.
     """
     if not key or not isinstance(key, str):
         return "(belum diatur)"
@@ -25,20 +25,7 @@ def mask_api_key(key: Optional[str]) -> str:
     k = key.strip()
     if len(k) <= 6:
         return "****"
-
-    # Check for common prefixes like pk_..., sk-..., etc.
-    if "_" in k[:6]:
-        prefix = k.split("_", 1)[0] + "_"
-        suffix = k[-4:]
-        return f"{prefix}****{suffix}"
-    elif "-" in k[:6]:
-        prefix = k.split("-", 1)[0] + "-"
-        suffix = k[-4:]
-        return f"{prefix}****{suffix}"
-    elif len(k) > 10:
-        return f"{k[:3]}****{k[-4:]}"
-    else:
-        return f"{k[:2]}****{k[-2:]}"
+    return f"****{k[-4:]}"
 
 
 def check_llm_status() -> Dict[str, Any]:
@@ -80,6 +67,20 @@ def check_llm_status() -> Dict[str, Any]:
             "api_key_url": prov_def.api_key_url,
             "message": f"Kunci API '{key_name}' belum dikonfigurasi di config.toml.",
         }
+
+    # Gemini key validation (E5)
+    if "gemini" in provider_id or "google" in provider_id:
+        if not raw_key.startswith("AIza"):
+            return {
+                "configured": False,
+                "provider": provider_id,
+                "requires_key": True,
+                "key_name": key_name,
+                "masked_key": mask_api_key(raw_key),
+                "api_key_url": prov_def.api_key_url,
+                "is_invalid": True,
+                "message": "Key Gemini tampaknya tidak valid (bukan dari Google AI Studio)",
+            }
 
     label = getattr(prov_def, "default_label", prov_def.provider_id)
     return {

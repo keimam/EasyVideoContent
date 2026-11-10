@@ -270,8 +270,11 @@ def load_manifest(project_dir: str | Path) -> ProjectManifest:
 
     try:
         manifest = ProjectManifest.model_validate(data)
-        # Synchronize paragraph_text with segments if present (A1)
+        # Synchronize paragraph_text with segments (A1) and clean chapter title prefixes (E1)
+        from app.services.longform.script_import import clean_chapter_title
         for ch in manifest.chapters:
+            if ch.chapter_title:
+                ch.chapter_title = clean_chapter_title(ch.chapter_title, fallback_index=ch.chapter_index)
             for g in ch.tts_groups:
                 if g.segments:
                     g.paragraph_text = g.get_effective_paragraph_text()
