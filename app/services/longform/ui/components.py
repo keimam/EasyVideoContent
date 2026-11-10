@@ -531,6 +531,10 @@ def render_project_page(project_id: str):
     st_info = compute_project_step_status(p_dir)
     manifest = st_info["manifest"]
 
+    # G5, H3, H5: Sidebar studio navigation and CSS
+    from app.services.longform.ui.nav import render_mpt_entry
+    render_mpt_entry(show_top_return=False)
+
     # Navigation header
     col_back, col_title = st.columns([1, 5])
     with col_back:

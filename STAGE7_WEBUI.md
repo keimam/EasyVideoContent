@@ -162,3 +162,14 @@
     - Menampilkan tombol toggle sidebar (`[data-testid="stExpandSidebarButton"]` dan `[data-testid="stSidebarCollapseButton"]`) dengan `display: inline-flex !important`, `pointer-events: auto !important`, dan `z-index: 999999 !important`.
     - Mengisi sidebar dengan tautan navigasi studio ke halaman Utama dan halaman Long Video.
   - File `webui/Main.py` tetap mempertahankan isolasi (hanya 6 baris pemanggilan hook try/except).
+
+---
+
+### 4. Navigasi Sidebar Tunggal & Penyorotan Aktif (H5)
+- **Masalah Navigasi Ganda**:
+  - Sidebar di kedua halaman (`Main.py` dan `Long_Video.py`) menampilkan dua navigasi bersamaan: bawaan Streamlit (`stSidebarNav` dengan label "Main" dan "Long Video") dan navigasi kustom (`Navigasi Studio` dengan label "MoneyPrinterTurbo (Video Pendek)" dan "Studio Video Panjang"). Hal ini dinilai berulang dan membingungkan pengguna.
+- **Solusi Bersih H5**:
+  - Navigasi bawaan Streamlit (`[data-testid="stSidebarNav"]`, `[data-testid="stSidebarNavSeparator"]`, `ul[data-testid="stSidebarNavItems"]`) disembunyikan menggunakan CSS scoped yang disuntikkan secara terisolasi dari modul longform (`app/services/longform/ui/nav.py`) di KEDUA halaman.
+  - Mempertahankan HANYA `"🧭 Navigasi Studio"`.
+  - Item halaman aktif disorot dengan teks tebal (`**...**`), aksen border kiri merah (`border-left: 4px solid #ff4b4b`), latar belakang semi-transparan (`rgba(255, 75, 75, 0.12)`), serta tipe `primary` pada tombol fallback.
+  - Berkas upstream `webui/styles.css`, `webui/.streamlit/config.toml`, dan `webui/Main.py` (di luar blok G5) tidak diubah sama sekali.

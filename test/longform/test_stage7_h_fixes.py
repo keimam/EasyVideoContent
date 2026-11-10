@@ -164,3 +164,60 @@ def test_h3_long_video_renders_sidebar_and_back_link(tmp_path, monkeypatch):
     all_links = [pl.label for pl in at.page_link]
     all_buttons = [b.label for b in at.button]
     assert any("MoneyPrinterTurbo" in str(lbl) for lbl in all_links + all_buttons)
+
+
+def test_h5_main_page_hides_stsidebar_nav_and_highlights_active_item():
+    """Verify Main.py injects CSS hiding stSidebarNav and highlights MoneyPrinterTurbo in Navigasi Studio (H5)."""
+    with mock.patch("app.services.version_checker.poll_available_update") as mock_update:
+        mock_update.return_value.complete = True
+        mock_update.return_value.available_version = None
+
+        at = AppTest.from_file(get_main_app_file())
+        at.run(timeout=25)
+
+        assert not at.exception, f"Main.py threw exceptions: {[e.value for e in at.exception]}"
+
+        # 1. Verify CSS hiding stSidebarNav is injected
+        nav_hide_css = [m.value for m in at.markdown if 'data-testid="stSidebarNav"' in m.value]
+        assert len(nav_hide_css) >= 1, "Expected injected CSS hiding stSidebarNav not found in Main.py"
+        assert "display: none !important" in nav_hide_css[0]
+
+        # 2. Verify 'Navigasi Studio' subheader exists in sidebar
+        subheaders = [s.value for s in at.subheader]
+        assert any("Navigasi Studio" in s for s in subheaders), f"Navigasi Studio subheader missing from: {subheaders}"
+
+        # 3. Verify MoneyPrinterTurbo item is highlighted as active (bold label or primary button)
+        links = [pl.label for pl in at.page_link]
+        buttons = [b.label for b in at.button]
+        all_labels = links + buttons
+        assert any("**MoneyPrinterTurbo (Video Pendek)**" in l or "(Aktif)" in l for l in all_labels), (
+            f"MoneyPrinterTurbo item is not highlighted as active in: {all_labels}"
+        )
+
+
+def test_h5_long_video_hides_stsidebar_nav_and_highlights_active_item(tmp_path, monkeypatch):
+    """Verify Long Video injects CSS hiding stSidebarNav and highlights Studio Video Panjang in Navigasi Studio (H5)."""
+    monkeypatch.setattr("app.services.longform.store.get_projects_root", lambda: tmp_path)
+    monkeypatch.setattr("app.services.longform.ui.components.get_projects_root", lambda: tmp_path)
+
+    at = AppTest.from_file(get_long_video_app_file())
+    at.run(timeout=10)
+
+    assert not at.exception, f"Long Video threw exceptions: {[e.value for e in at.exception]}"
+
+    # 1. Verify CSS hiding stSidebarNav is injected
+    nav_hide_css = [m.value for m in at.markdown if 'data-testid="stSidebarNav"' in m.value]
+    assert len(nav_hide_css) >= 1, "Expected injected CSS hiding stSidebarNav not found in Long Video"
+    assert "display: none !important" in nav_hide_css[0]
+
+    # 2. Verify 'Navigasi Studio' subheader exists in sidebar
+    subheaders = [s.value for s in at.subheader]
+    assert any("Navigasi Studio" in s for s in subheaders), f"Navigasi Studio subheader missing from: {subheaders}"
+
+    # 3. Verify Studio Video Panjang item is highlighted as active (bold label or primary button)
+    links = [pl.label for pl in at.page_link]
+    buttons = [b.label for b in at.button]
+    all_labels = links + buttons
+    assert any("**Studio Video Panjang**" in l or "(Aktif)" in l for l in all_labels), (
+        f"Studio Video Panjang item is not highlighted as active in: {all_labels}"
+    )
