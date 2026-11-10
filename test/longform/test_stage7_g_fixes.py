@@ -82,7 +82,7 @@ def test_create_custom_niche_hierarchy_root_and_sub(tmp_path, monkeypatch):
     root_data = json.loads((custom_dir / "custom.wisata.json").read_text(encoding="utf-8"))
     assert root_data["id"] == "custom.wisata"
     assert root_data["name"] == "Wisata"
-    assert root_data["extends"] == "umum"
+    assert root_data["extends"] == "umum.id"
     assert root_data["kind"] == "niche"
     assert root_data["capcut_text_size"] == 8
 
@@ -164,21 +164,22 @@ def test_dropdown_niches_filtering_and_formatting(tmp_path, monkeypatch):
 
     # Indonesian filter
     root_ids_id, labels_id = get_available_niches_for_ui("id-ID")
-    assert root_ids_id[0] == "umum"
+    assert root_ids_id[0] == "umum.id"
     assert root_ids_id[-1] == "+ Niche baru…"
     assert "documentary_id" not in root_ids_id
     assert "documentary_en" not in root_ids_id
     assert "automotive" not in root_ids_id  # automotive has language: en-US
-    assert labels_id["umum"] == "Umum (Dokumenter Naratif)"
+    assert labels_id["umum.id"] == "Umum (Dokumenter Naratif)"
     assert labels_id["+ Niche baru…"] == "➕ Buat Niche Baru…"
 
     # English filter
     root_ids_en, labels_en = get_available_niches_for_ui("en-US")
-    assert root_ids_en[0] == "umum"
+    assert root_ids_en[0] == "umum.en"
     assert root_ids_en[-1] == "+ Niche baru…"
     assert "documentary_en" not in root_ids_en
     assert "documentary_id" not in root_ids_en
     assert "automotive" in root_ids_en
+    assert labels_en["umum.en"] == "Umum (Dokumenter Naratif)"
 
 
 # --- AppTest Workflow Tests: G4 ---
@@ -236,7 +237,7 @@ def test_apptest_create_custom_niche_and_sub_niche(tmp_path, monkeypatch):
     assert manifest.preset_id == "custom.kuliner.street_food_jepang"
     assert manifest.preset_inheritance_chain == [
         "documentary_id",
-        "umum",
+        "umum.id",
         "custom.kuliner",
         "custom.kuliner.street_food_jepang",
     ]

@@ -95,3 +95,70 @@
 4. **Pemulihan Proyek Kuliner Lama**:
    - Membuat file preset `custom.kuliner.json` dan `custom.kuliner.street_food_jepang.json` berdasarkan data dari `history_of_street_food_in_japan`.
    - Menghubungkan kembali manifest proyek `history_of_street_food_in_japan` ke preset tersebut.
+
+---
+
+## Diagnosa & Pemulihan Tahap 7A.5 (H1-H4)
+
+### 1. Investigasi Proyek Tokyo (H2)
+- **Pertanyaan Diagnostik**: Apakah `history_of_street_food_in_tokyo` diubah oleh skrip pemulihan agen pada 7A.4 atau dipilih pengguna saat pembuatan?
+- **Bukti Verbatim dari Jejak Transkrip 7A.4**:
+  - *Sebelum pemulihan 7A.4 (Step 8440)*: Manifest asli proyek `history_of_street_food_in_tokyo` diinspeksi:
+    ```text
+    "project_id": "history_of_street_food_in_tokyo",
+    "title": "History of street food in Tokyo",
+    "preset_id": "umum",
+    "preset_inheritance_chain": ["documentary_id", "umum"],
+    "sub_niche_focus": null
+    ```
+    Terbukti bahwa pengguna membuat proyek ini pada 7A.3 Langkah 1 hanya dengan topik (niche bawaan `"umum"`), tanpa memilih Kuliner atau sub-niche apapun.
+  - *Saat eksekusi pemulihan 7A.4 (Step 8492)*: Agen menjalankan skrip pemulihan darurat yang mencakup baris:
+    `for pid in ['history_of_street_food_in_japan', 'history_of_street_food_in_tokyo']:`
+    yang memaksa kedua proyek menggunakan `custom.kuliner.street_food_jepang`.
+  - **Kesimpulan**: Perubahan preset pada proyek Tokyo murni kesalahan skrip pemulihan agen di 7A.4, bukan aksi pengguna.
+- **Tindakan Pemulihan (H2)**:
+  - Preset proyek `history_of_street_food_in_tokyo` dikembalikan ke `umum.id` (chain: `documentary_id -> umum.id`).
+  - Skrip pemulihan kini memiliki guard ketat (`migrate_umum_presets_and_projects()`): hanya menyentuh preset/proyek yang benar-benar membutuhkan pembaruan, dan setiap perubahan dicatat secara transparan dengan format `[TINDAKAN] Proyek/Preset: nilai_lama -> nilai_baru`.
+
+---
+
+### 2. Pemisahan Preset Umum per Bahasa (H1)
+- **Akar Masalah**:
+  - Pada 7A.3-7A.4, terdapat berkas preset disk tunggal `resource/presets/umum.json` yang mewarisi `documentary_id` (`id-ID`, ArdiNeural, 130 WPM).
+  - Ketika proyek bahasa Inggris (seperti `street_food_in_tokyo_english`) dibuat, kode runtime memodifikasi snapshot proyek, namun perbandingan disk diff (`get_impactful_preset_diffs`) dan `refresh_project_preset` membandingkan proyek dengan `umum.json` di disk, sehingga memunculkan peringatan diff WPM (140 vs 130) dan Voice (ChristopherNeural vs ArdiNeural).
+- **Solusi Bersih H1**:
+  - Berkas disk tunggal `umum.json` dihapus.
+  - Dibuat dua preset disk konkret:
+    1. `resource/presets/umum.id.json`:
+       - `extends`: `"documentary_id"`
+       - `language`: `"id-ID"`
+       - `words_per_minute`: 130
+       - `default_voice`: `"id-ID-ArdiNeural"`
+       - `capcut_text_size`: 8
+    2. `resource/presets/umum.en.json`:
+       - `extends`: `"documentary_en"`
+       - `language`: `"en-US"`
+       - `words_per_minute`: 140
+       - `default_voice`: `"en-US-ChristopherNeural"`
+       - `capcut_text_size`: 8
+  - **UI Abstraction**: UI tetap menampilkan SATU label `"Umum (Dokumenter Naratif)"`. Berdasarkan bahasa narasi proyek yang dipilih (`id-ID` atau `en-US`), sistem secara transparan memetakan ke `umum.id` atau `umum.en`.
+  - **Hierarki Bersih**:
+    - `documentary_en -> umum.en`
+    - `documentary_id -> umum.id -> custom.*`
+  - **Guard Perbedaan Bahasa**:
+    - `refresh_project_preset` menolak pembaruan jika keluarga bahasa proyek (`en` vs `id`) berbeda dari preset target dengan melempar `PresetValidationError`.
+    - Di WebUI, tombol "Pakai Pengaturan Terbaru" disembunyikan jika terdapat perbedaan bahasa, menampilkan pesan bahwa perubahan bahasa harus dilakukan secara eksplisit terpisah.
+
+---
+
+### 3. Panah Navigasi Sidebar Halaman Utama (H3)
+- **Investigasi DOM Streamlit 1.66.1**:
+  - `webui/styles.css` upstream menyembunyikan header dan toolbar dengan aturan:
+    `header[data-testid="stHeader"], div[data-testid="stToolbar"] { display: none !important; }`
+  - Di Streamlit, tombol panah sidebar (`[data-testid="stExpandSidebarButton"]`) berada di dalam `header[data-testid="stHeader"]`.
+- **Solusi Tanpa Mengubah `webui/styles.css`**:
+  - Melalui `render_longform_entry()` di modul longform (`app/services/longform/ui/nav.py`), disuntikkan CSS scoped yang:
+    - Menampilkan container header (`display: block !important`), namun berlatar belakang transparan dan `pointer-events: none !important` agar tombol toolbar yang tidak diinginkan tidak dapat diklik.
+    - Menampilkan tombol toggle sidebar (`[data-testid="stExpandSidebarButton"]` dan `[data-testid="stSidebarCollapseButton"]`) dengan `display: inline-flex !important`, `pointer-events: auto !important`, dan `z-index: 999999 !important`.
+    - Mengisi sidebar dengan tautan navigasi studio ke halaman Utama dan halaman Long Video.
+  - File `webui/Main.py` tetap mempertahankan isolasi (hanya 6 baris pemanggilan hook try/except).

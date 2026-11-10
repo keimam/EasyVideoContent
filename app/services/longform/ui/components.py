@@ -550,10 +550,11 @@ def render_project_page(project_id: str):
         meta_sub += f" | Rasio: `{manifest.aspect_ratio}` | Est. Durasi: ~{st_info['duration_minutes']} menit"
         st.caption(meta_sub)
 
-    # Preset Impactful Difference Banner (C3)
+    # Preset Impactful Difference Banner (C3, H1)
     if st_info.get("preset_has_impactful_diff"):
         diff_count = len(st_info["preset_diff_details"])
         col_w, col_wb = st.columns([4, 1])
+        has_lang_mismatch = any(df.get("field") == "language" for df in st_info["preset_diff_details"])
         with col_w:
             st.warning(f"⚠️ **Pengaturan Niche Diperbarui**: Terdapat {diff_count} perubahan pengaturan niche sejak proyek dibuat.")
             with st.expander("Lihat Rincian Perubahan Pengaturan", expanded=False):
@@ -562,7 +563,9 @@ def render_project_page(project_id: str):
                     st.caption(f"  Proyek: `{df['snapshot_val']}`  vs  Preset Baru: `{df['current_val']}`")
         with col_wb:
             st.write("")
-            if st.button("Pakai Pengaturan Terbaru", key=f"btn_refresh_preset_{project_id}"):
+            if has_lang_mismatch:
+                st.caption("🔒 Perubahan bahasa narasi harus dilakukan secara terpisah.")
+            elif st.button("Pakai Pengaturan Terbaru", key=f"btn_refresh_preset_{project_id}"):
                 refresh_project_preset(p_dir)
                 st.success("Pengaturan proyek diperbarui ke versi terbaru.")
                 time.sleep(0.5)

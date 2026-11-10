@@ -1,6 +1,6 @@
 {
-  "id": "umum",
-  "name": "Umum (General)",
+  "id": "umum.id",
+  "name": "Umum (Dokumenter Naratif)",
   "schema_version": "1.0.0",
   "kind": "niche",
   "extends": "documentary_id",

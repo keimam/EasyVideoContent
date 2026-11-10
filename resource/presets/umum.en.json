@@ -1,0 +1,24 @@
+{
+  "id": "umum.en",
+  "name": "General Documentary",
+  "schema_version": "1.0.0",
+  "kind": "niche",
+  "extends": "documentary_en",
+  "language": "en-US",
+  "audience": "Broad general audience, curious learners, YouTube faceless viewers",
+  "narration_style": "Expository, engaging, authoritative yet accessible, measured pacing",
+  "chapter_structure": [
+    "Hook & The Core Mystery",
+    "Historical Context & Origins",
+    "The Climax / Turning Point",
+    "Modern Implications & Legacy"
+  ],
+  "hook_rules": "Capture curiosity within the first 10-15 seconds. Introduce a provocative question or shocking fact without giving away the conclusion immediately.",
+  "words_per_minute": 140,
+  "default_voice": "en-US-ChristopherNeural",
+  "recommended_visual_sources": {
+    "stock": 0.7,
+    "ai_image": 0.3
+  },
+  "capcut_text_size": 8
+}

@@ -76,6 +76,21 @@ def get_impactful_preset_diffs(
         return []
 
     diffs: List[Dict[str, Any]] = []
+
+    # Check language change guard (H1)
+    snap_lang = snapshot.get("language")
+    curr_lang = current.get("language")
+    if snap_lang and curr_lang:
+        snap_norm = "en" if str(snap_lang).lower().startswith("en") else ("id" if str(snap_lang).lower().startswith("id") else "")
+        curr_norm = "en" if str(curr_lang).lower().startswith("en") else ("id" if str(curr_lang).lower().startswith("id") else "")
+        if snap_norm and curr_norm and snap_norm != curr_norm:
+            diffs.append({
+                "field": "language",
+                "description": "Perbedaan bahasa narasi (perubahan bahasa harus dilakukan secara eksplisit terpisah)",
+                "snapshot_val": snap_lang,
+                "current_val": curr_lang,
+            })
+
     for field, description in _IMPACTFUL_PRESET_FIELDS.items():
         raw_snap = snapshot.get(field)
         raw_curr = current.get(field)

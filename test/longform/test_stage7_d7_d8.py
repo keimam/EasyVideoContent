@@ -22,17 +22,24 @@ from app.services.longform.store import create_project, get_projects_root, load_
 
 
 def test_d7_umum_preset_exists_and_extends_documentary():
-    """Verify built-in 'umum' preset exists, extends documentary_id, and has capcut_text_size == 8 (D7)."""
-    preset = get_preset("umum")
-    assert preset.id == "umum"
-    assert preset.name == "Umum (General)"
-    assert preset.extends == "documentary_id"
-    assert preset.language == "id-ID"
-    assert preset.capcut_text_size == 8
+    """Verify built-in 'umum.id' and 'umum.en' presets exist and extend their documentary parents (H1)."""
+    preset_id = get_preset("umum.id")
+    assert preset_id.id == "umum.id"
+    assert preset_id.name == "Umum (Dokumenter Naratif)"
+    assert preset_id.extends == "documentary_id"
+    assert preset_id.language == "id-ID"
+    assert preset_id.capcut_text_size == 8
+
+    preset_en = get_preset("umum.en")
+    assert preset_en.id == "umum.en"
+    assert preset_en.name == "General Documentary"
+    assert preset_en.extends == "documentary_en"
+    assert preset_en.language == "en-US"
+    assert preset_en.capcut_text_size == 8
 
 
 def test_d7_create_project_with_only_topic(tmp_path):
-    """Verify creating project with only topic defaults to umum preset, saves topic in manifest (D7)."""
+    """Verify creating project with only topic defaults to umum.id preset, saves topic in manifest (D7/H1)."""
     manifest, p_dir = create_project(
         project_id="test_mpt_topic",
         title="Sejarah Singkat AI",
@@ -46,7 +53,7 @@ def test_d7_create_project_with_only_topic(tmp_path):
     assert manifest.title == "Sejarah Singkat AI"
     assert manifest.topic == "Sejarah Singkat AI"
     assert manifest.target_duration_minutes == 15
-    assert manifest.preset_id == "umum"
+    assert manifest.preset_id == "umum.id"
     assert manifest.aspect_ratio == "16:9"
 
     # Verify manifest file on disk
@@ -56,7 +63,7 @@ def test_d7_create_project_with_only_topic(tmp_path):
 
 
 def test_d7_create_project_umum_en_us_adaptation(tmp_path):
-    """Verify language en-US with umum preset adapts snapshot to en-US voice and 140 WPM (D7)."""
+    """Verify language en-US with umum preset adapts to umum.en preset, en-US voice, and 140 WPM (D7/H1)."""
     manifest, _ = create_project(
         project_id="test_mpt_en",
         title="History of Computing",
@@ -66,6 +73,7 @@ def test_d7_create_project_umum_en_us_adaptation(tmp_path):
         projects_root=tmp_path,
     )
 
+    assert manifest.preset_id == "umum.en"
     assert manifest.preset_snapshot["language"] == "en-US"
     assert manifest.preset_snapshot["default_voice"] == "en-US-ChristopherNeural"
     assert manifest.preset_snapshot["words_per_minute"] == 140

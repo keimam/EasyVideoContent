@@ -326,18 +326,14 @@ def create_project(
     for d in subdirs:
         d.mkdir(parents=True, exist_ok=True)
 
+    # Resolve generic "umum" to language-specific preset (H1)
+    if preset_id == "umum":
+        preset_id = "umum.en" if (language and language.startswith("en")) else "umum.id"
+
     # Fetch preset & snapshot
     preset = get_preset(preset_id)
     preset_snapshot = preset.model_dump()
     preset_chain = get_preset_inheritance_chain(preset_id)
-
-    # Adapt general preset when en-US is selected (D7)
-    if language == "en-US" and preset_id == "umum":
-        preset_snapshot["language"] = "en-US"
-        preset_snapshot["default_voice"] = "en-US-ChristopherNeural"
-        preset_snapshot["words_per_minute"] = 140
-        if preset_chain and preset_chain[0] == "documentary_id":
-            preset_chain = ["documentary_en"] + preset_chain[1:]
 
     # Create chapters from script if provided
     chapters: list[Chapter] = []
@@ -568,6 +564,20 @@ def refresh_project_preset(project_dir: str | Path) -> Tuple[ProjectManifest, di
         old_snapshot = dict(manifest.preset_snapshot)
 
         latest_preset = get_preset(manifest.preset_id)
+
+        # Guard: check language compatibility between project and target preset (H1)
+        from app.services.longform.presets import PresetValidationError
+        proj_lang = (manifest.preset_snapshot or {}).get("language")
+        preset_lang = getattr(latest_preset, "language", None)
+        if proj_lang and preset_lang:
+            proj_norm = "en" if str(proj_lang).lower().startswith("en") else ("id" if str(proj_lang).lower().startswith("id") else "")
+            preset_norm = "en" if str(preset_lang).lower().startswith("en") else ("id" if str(preset_lang).lower().startswith("id") else "")
+            if proj_norm and preset_norm and proj_norm != preset_norm:
+                raise PresetValidationError(
+                    f"Tidak dapat memperbarui preset: perbedaan bahasa terdeteksi (proyek: '{proj_lang}' vs preset: '{preset_lang}'). "
+                    f"Perubahan bahasa narasi harus dilakukan secara eksplisit terpisah."
+                )
+
         latest_chain = get_preset_inheritance_chain(manifest.preset_id)
         latest_snapshot = latest_preset.model_dump()
 
@@ -618,3 +628,89 @@ def stage_local_visual_file(project_dir: str | Path, source_path: str | Path) ->
 
     rel_path = f"assets/visual/raw/{safe_name}"
     return rel_path, content_hash
+
+
+def migrate_umum_presets_and_projects() -> List[str]:
+    """Migrate legacy 'umum' preset references to 'umum.id' / 'umum.en' and restore Tokyo project (H1, H2).
+
+    Returns a list of log messages detailing all migrations performed.
+    """
+    from app.services.longform.presets import (
+        get_preset,
+        get_preset_directories,
+        get_preset_inheritance_chain,
+    )
+
+    logs: List[str] = []
+    _, storage_dir = get_preset_directories()
+
+    # 1. Migrate custom presets in storage/presets/
+    if storage_dir.is_dir():
+        for f in sorted(storage_dir.glob("*.json")):
+            if f.name.endswith(".override.json"):
+                continue
+            try:
+                data = json.loads(f.read_text(encoding="utf-8"))
+                if data.get("extends") == "umum":
+                    p_lang = data.get("language", "")
+                    new_ext = "umum.en" if str(p_lang).startswith("en") else "umum.id"
+                    data["extends"] = new_ext
+                    f.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+                    msg = f"[MIGRASI PRESET H1] Preset kustom '{data.get('id', f.stem)}': extends diubah dari 'umum' ke '{new_ext}'"
+                    logger.info(msg)
+                    logs.append(msg)
+            except Exception as exc:
+                logger.warning(f"Error checking preset file {f}: {exc}")
+
+    # 2. Migrate projects in storage/longform_projects/
+    root = get_projects_root()
+    if root.is_dir():
+        for p_dir in sorted(root.iterdir()):
+            if not p_dir.is_dir() or not (p_dir / "manifest.json").is_file():
+                continue
+            try:
+                manifest = load_manifest(p_dir)
+
+                # H2: Restore history_of_street_food_in_tokyo
+                if manifest.project_id == "history_of_street_food_in_tokyo" and manifest.sub_niche_focus is None and manifest.preset_id == "custom.kuliner.street_food_jepang":
+                    old_pid = manifest.preset_id
+                    manifest.preset_id = "umum.id"
+                    manifest.preset_inheritance_chain = ["documentary_id", "umum.id"]
+                    manifest.preset_snapshot = get_preset("umum.id").model_dump()
+                    save_manifest(manifest, p_dir)
+                    msg = f"[PEMULIHAN PROYEK H2] Proyek '{manifest.title}' ({manifest.project_id}): preset dipulihkan dari '{old_pid}' ke 'umum.id'"
+                    logger.info(msg)
+                    logs.append(msg)
+                    continue
+
+                # H1: Migrate projects with preset_id == "umum"
+                if manifest.preset_id == "umum":
+                    old_pid = manifest.preset_id
+                    proj_lang = getattr(manifest, "language", None) or (manifest.preset_snapshot or {}).get("language", "")
+                    target_pid = "umum.en" if str(proj_lang).startswith("en") else "umum.id"
+                    manifest.preset_id = target_pid
+                    target_preset = get_preset(target_pid)
+                    manifest.preset_inheritance_chain = get_preset_inheritance_chain(target_pid)
+                    manifest.preset_snapshot = target_preset.model_dump()
+                    save_manifest(manifest, p_dir)
+                    msg = f"[MIGRASI PROYEK H1] Proyek '{manifest.title}' ({manifest.project_id}): preset_id diubah dari '{old_pid}' ke '{target_pid}'"
+                    logger.info(msg)
+                    logs.append(msg)
+                    continue
+
+                # Clean inheritance chain containing "umum"
+                chain = list(getattr(manifest, "preset_inheritance_chain", []) or [])
+                if "umum" in chain:
+                    proj_lang = getattr(manifest, "language", None) or (manifest.preset_snapshot or {}).get("language", "")
+                    replacement = "umum.en" if str(proj_lang).startswith("en") else "umum.id"
+                    new_chain = [replacement if x == "umum" else x for x in chain]
+                    manifest.preset_inheritance_chain = new_chain
+                    save_manifest(manifest, p_dir)
+                    msg = f"[MIGRASI CHAIN H1] Proyek '{manifest.title}' ({manifest.project_id}): 'umum' diganti '{replacement}' pada inheritance chain"
+                    logger.info(msg)
+                    logs.append(msg)
+
+            except Exception as exc:
+                logger.warning(f"Error migrating project at {p_dir}: {exc}")
+
+    return logs

@@ -201,6 +201,8 @@ def _resolve_preset(
 
     raw_data, file_path = raw_presets[preset_id]
     parent_id = raw_data.get("extends")
+    if parent_id == "umum":
+        parent_id = "umum.en" if raw_data.get("language", "").startswith("en") else "umum.id"
 
     if not parent_id:
         # Base preset (root niche)
@@ -288,6 +290,9 @@ def list_presets() -> Dict[str, Preset]:
 
 def get_preset(preset_id: str) -> Preset:
     """Retrieve a fully resolved preset by its ID."""
+    if preset_id == "umum":
+        preset_id = "umum.id"
+
     all_presets = list_presets()
     if preset_id not in all_presets:
         available = ", ".join(sorted(all_presets.keys())) or "None"
@@ -299,6 +304,9 @@ def get_preset(preset_id: str) -> Preset:
 
 def get_preset_inheritance_chain(preset_id: str) -> List[str]:
     """Return the ordered list of preset IDs in the inheritance hierarchy for preset_id."""
+    if preset_id == "umum":
+        preset_id = "umum.id"
+
     raw_presets = _collect_raw_presets()
     if preset_id not in raw_presets:
         raise PresetNotFoundError(f"Preset with id '{preset_id}' not found.")
@@ -575,12 +583,13 @@ def create_custom_niche_hierarchy(
                         f"Preset dengan nama '{clean_sub}' sudah ada ('{existing_id}'). Gunakan nama lain."
                     )
 
+            root_parent = "umum.en" if language.startswith("en") else "umum.id"
             root_data = {
                 "id": root_pid,
                 "name": clean_niche,
                 "schema_version": "1.0.0",
                 "kind": "niche",
-                "extends": "umum",
+                "extends": root_parent,
                 "language": language,
                 "capcut_text_size": 8,
             }
@@ -608,12 +617,13 @@ def create_custom_niche_hierarchy(
             return sub_pid, saved_paths
 
         else:
+            root_parent = "umum.en" if language.startswith("en") else "umum.id"
             root_data = {
                 "id": root_pid,
                 "name": clean_niche,
                 "schema_version": "1.0.0",
                 "kind": "niche",
-                "extends": "umum",
+                "extends": root_parent,
                 "language": language,
                 "+topic_keywords": topic_keywords or [],
                 "+visual_keywords": visual_keywords or [],
@@ -665,10 +675,10 @@ def create_custom_niche_hierarchy(
 
 
 def get_available_niches_for_ui(language: str = "id-ID") -> Tuple[List[str], Dict[str, str]]:
-    """Return available root niches filtered by language, with simplified labels (G3).
+    """Return available root niches filtered by language, with simplified labels (G3, H1).
 
-    - 'umum' is always the first option.
-    - 'documentary_id' and 'documentary_en' are hidden from dropdown.
+    - 'umum.id' / 'umum.en' is always the first option, labeled 'Umum (Dokumenter Naratif)'.
+    - 'documentary_id', 'documentary_en', and 'umum' base IDs are hidden from dropdown.
     - Built-in niches matching language (or neutral) are shown.
     - Custom niches are shown with '(buatan sendiri)'.
     - '+ Niche baru…' is always appended at the end.
@@ -677,27 +687,31 @@ def get_available_niches_for_ui(language: str = "id-ID") -> Tuple[List[str], Dic
     custom_p = get_custom_presets()
 
     built_in_labels = {
-        "umum": "Umum (Dokumenter Naratif)",
+        "umum.id": "Umum (Dokumenter Naratif)",
+        "umum.en": "Umum (Dokumenter Naratif)",
         "automotive": "Otomotif & Rekayasa Mesin",
         "history": "Sejarah & Peradaban",
         "technology": "Teknologi & Sains",
         "true_crime": "Misteri & Investigasi",
     }
 
-    root_ids: List[str] = ["umum"]
-    labels: Dict[str, str] = {"umum": built_in_labels["umum"]}
+    primary_umum_id = "umum.en" if language.startswith("en") else "umum.id"
+    root_ids: List[str] = [primary_umum_id]
+    labels: Dict[str, str] = {primary_umum_id: "Umum (Dokumenter Naratif)"}
+
+    hidden_base_ids = {"umum", "umum.id", "umum.en", "documentary_id", "documentary_en"}
 
     for pid, p in sorted(all_p.items()):
-        # Hide base internal presets (G3)
-        if pid in ("umum", "documentary_id", "documentary_en"):
+        # Hide base internal presets (G3, H1)
+        if pid in hidden_base_ids:
             continue
 
         # Must be a root niche
-        is_root = (not p.extends) or (p.extends in ("documentary_id", "documentary_en", "umum") and p.kind == "niche")
+        is_root = (not p.extends) or (p.extends in ("documentary_id", "documentary_en", "umum", "umum.id", "umum.en") and p.kind == "niche")
         if not is_root:
             continue
 
-        # Language filter (G3)
+        # Language filter (G3, H1)
         p_lang = getattr(p, "language", "") or ""
         if language.startswith("id"):
             if p_lang.startswith("en"):

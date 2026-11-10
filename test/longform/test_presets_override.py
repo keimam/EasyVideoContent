@@ -31,15 +31,16 @@ def test_preset_override_layer(tmp_path, monkeypatch):
         # 1. Base preset initial state
         initial_preset = get_preset(preset_id)
         assert not has_preset_override(preset_id)
+        before_status = subprocess.run(["git", "status", "--porcelain", "resource/"], capture_output=True, text=True).stdout
 
         # 2. Apply override via set_capcut_text_size
         target_path = set_capcut_text_size(preset_id, 12)
         assert target_path == override_file
         assert override_file.is_file()
 
-        # Verify resource/ is completely untouched by checking git status of resource/
-        res = subprocess.run(["git", "status", "--porcelain", "resource/"], capture_output=True, text=True)
-        assert res.stdout.strip() == "", f"resource/ directory was modified: {res.stdout}"
+        # Verify resource/ is completely untouched by checking git status before vs after
+        after_status = subprocess.run(["git", "status", "--porcelain", "resource/"], capture_output=True, text=True).stdout
+        assert before_status == after_status, f"resource/ directory was modified by set_capcut_text_size: {after_status}"
 
         # 3. Verify override is detected and loaded
         assert has_preset_override(preset_id)
