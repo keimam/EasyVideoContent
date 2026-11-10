@@ -15,7 +15,8 @@ Tujuannya adalah menjaga kemudahan sinkronisasi (merge/rebase) dari repositori u
 | **Tahap 3** | Tidak Ada | 0 baris | Audio generation, alignment, subtitle ASS/SRT |
 | **Tahap 4** | Tidak Ada | 0 baris | Visual assets fetch, candidate scoring, contact sheet, review & replace |
 | **Tahap 5 & 5.1** | Tidak Ada | 0 baris | Render engine bab, subtitle burner, BGM ducking, concat final, font preflight |
-| **Tahap 6A** | Tidak Ada | 0 baris | Analisis template CapCut 8.9.0, doctor CLI, builder draft portable, smoke test |
+| **Tahap 6A & 6B** | Tidak Ada | 0 baris | Analisis template CapCut 8.9.0, doctor CLI, builder draft portable, multi-track export |
+| **Tahap 7A (G5)** | `webui/Main.py` | 6 baris | Entry hook tombol/link "🎬 Long Video" pada top bar header di samping Task Manager & Settings |
 
 ---
 
@@ -92,3 +93,23 @@ Tujuannya adalah menjaga kemudahan sinkronisasi (merge/rebase) dari repositori u
   - `resource/presets/*.json`: Penambahan `"capcut_text_size": 7` pada preset acuan (`documentary_en.json`, `automotive.muscle_car.json`, `automotive.json`).
   - `cli_longform.py`: Penambahan subperintah `capcut calibrate [id] [--no-install]` dan `capcut set-text-size <preset_id> <size>`.
   - `test/longform/test_capcut.py`: Penambahan 5 pengujian unit baru khusus Stage 6B.1 (C1: pemecahan baris tunggal maks 2 baris; C2: kalkulasi jangkar bawah; C3: pembuatan draft kalibrasi & penyetelan ukuran preset; C4: validasi registrasi media bin dan pencegahan integer overflow; C5: pembacaan ukuran preset pada smoke/export). Total 16 unit tests lolos 100%.
+
+### Tahap 7A.4 Addendum G5: Navigasi Dua Arah MoneyPrinterTurbo ↔ Long Video
+- **File Kode Upstream yang Disentuh:** `webui/Main.py` (6 baris penambahan pada `_render_top_bar()`).
+- **Lokasi Baris:** `webui/Main.py:1827–1832` di dalam container `top_bar_actions`.
+- **Kode yang Ditambahkan:**
+  ```python
+            try:
+                from app.services.longform.ui.nav import render_longform_entry
+                render_longform_entry()
+            except Exception:
+                pass
+  ```
+- **Alasan:**
+  * Halaman utama MoneyPrinterTurbo menyembunyikan header Streamlit bawaan (`header[data-testid="stHeader"] { display: none !important; }` di `webui/styles.css`), sehingga tombol panah/hamburger pembuka sidebar navigasi bawaan Streamlit hilang dari layar pengguna.
+  * Penambahan tombol/link `🎬 Long Video` di header `Main.py` (sebelah Task Manager dan Settings) memberikan jalan masuk langsung ke Studio Video Panjang tanpa merusak atau mengubah tata letak maupun perilaku halaman utama.
+  * Dibungkus blok `try...except` ketat sehingga `Main.py` tetap berjalan normal 100% tanpa risiko exception sekalipun modul longform belum terinisialisasi.
+- **Cara Melepas saat Merge Upstream:**
+  * Hapus 6 baris blok `try: from app.services.longform.ui.nav import render_longform_entry ... except Exception: pass` dari fungsi `_render_top_bar()` di `webui/Main.py`.
+  * Atau jalankan: `git checkout upstream/main -- webui/Main.py`.
+

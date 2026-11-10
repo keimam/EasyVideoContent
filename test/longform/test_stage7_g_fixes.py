@@ -262,3 +262,42 @@ def test_apptest_create_custom_niche_and_sub_niche(tmp_path, monkeypatch):
     assert not at2.exception
     sub_options = at2.selectbox(key="sel_sub_niche").options
     assert "Street food Jepang (buatan sendiri)" in sub_options
+
+
+# --- G5: Bidirectional Navigation Tests ---
+
+def test_g5_main_page_renders_long_video_link(monkeypatch):
+    """Verify MoneyPrinterTurbo Main.py loads without exception and renders '🎬 Long Video' link (G5)."""
+    import unittest.mock as mock
+
+    repo_root = Path(__file__).resolve().parents[2]
+    main_file = str(repo_root / "webui" / "Main.py")
+
+    # Mock version check to avoid external network delay
+    with mock.patch("app.services.version_checker.poll_available_update") as mock_update:
+        mock_update.return_value.complete = True
+        mock_update.return_value.available_version = None
+
+        at = AppTest.from_file(main_file)
+        at.run(timeout=25)
+
+        assert not at.exception, f"Main.py threw exceptions: {[e.value for e in at.exception]}"
+        page_link_labels = [pl.label for pl in at.page_link]
+        assert any("Long Video" in label for label in page_link_labels), f"No Long Video link found in: {page_link_labels}"
+
+
+def test_g5_long_video_page_renders_back_to_mpt_link(tmp_path, monkeypatch):
+    """Verify Long Video page renders '← MoneyPrinterTurbo (video pendek)' link/button without exception (G5)."""
+    monkeypatch.setattr("app.services.longform.store.get_projects_root", lambda: tmp_path)
+    monkeypatch.setattr("app.services.longform.ui.components.get_projects_root", lambda: tmp_path)
+
+    at = AppTest.from_file(get_long_video_app_file())
+    at.run(timeout=10)
+
+    assert not at.exception, f"Long Video threw exceptions: {[e.value for e in at.exception]}"
+    # Either page_link or button back to MPT
+    all_links = [pl.label for pl in at.page_link]
+    all_buttons = [b.label for b in at.button]
+    has_back_link = any("MoneyPrinterTurbo" in str(lbl) for lbl in all_links + all_buttons)
+    assert has_back_link, f"Back link to MoneyPrinterTurbo not found in links {all_links} or buttons {all_buttons}"
+

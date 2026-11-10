@@ -1824,6 +1824,12 @@ def _render_top_bar():
             gap="small",
             width="stretch",
         ):
+            try:
+                from app.services.longform.ui.nav import render_longform_entry
+                render_longform_entry()
+            except Exception:
+                pass
+
             _render_task_manager_entry()
 
             st.button(

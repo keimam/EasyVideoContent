@@ -241,7 +241,11 @@ def render_niche_management_section():
 
 
 def render_home_page():
-    """Render Beranda: Compact 2-column cards grid & quick creation (D5, D7, D8)."""
+    """Render Beranda: Compact 2-column cards grid & quick creation (D5, D7, D8, G5)."""
+    # G5: Return navigation link to MoneyPrinterTurbo Main
+    from app.services.longform.ui.nav import render_mpt_entry
+    render_mpt_entry()
+
     # 1. Top bar: Title + "📁 Kelola Niche" + "+ Proyek Baru" button at top right
     col_h, col_niche_mgmt, col_new = st.columns([3.5, 1.3, 1.2])
     with col_h:
