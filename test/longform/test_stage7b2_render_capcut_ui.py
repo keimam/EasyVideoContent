@@ -593,3 +593,199 @@ def test_capcut_running_rejection_and_untouched_draft(tmp_path):
     # Draft folder in CapCut must remain completely untouched (empty)
     items_in_capcut = list(mock_capcut_draft_root.iterdir())
     assert len(items_in_capcut) == 0, "No draft directories should be created when CapCut is running"
+
+
+def test_z1_force_rerender_checkbox_no_exception_and_button_states(tmp_path, monkeypatch):
+    """Test Z1: Force rerender confirmation checkbox causes zero UnboundLocalError and handles job running state."""
+    monkeypatch.setattr("app.services.longform.store.get_projects_root", lambda: tmp_path)
+    monkeypatch.setattr("app.services.longform.ui.components.get_projects_root", lambda: tmp_path)
+
+    test_pid = "proj_z1_rerender"
+    manifest, p_dir = create_project(
+        project_id=test_pid,
+        title="Z1 Force Rerender Project",
+        preset_id="automotive.muscle_car",
+        projects_root=tmp_path,
+    )
+
+    wav_path = p_dir / "assets" / "audio" / "chapters" / "chapter_01.wav"
+    wav_path.parent.mkdir(parents=True, exist_ok=True)
+    wav_path.write_bytes(b"RIFF" + b"\x00" * 100)
+
+    clip_path = p_dir / "assets" / "visual" / "shots" / "ch01_shot001.mp4"
+    clip_path.parent.mkdir(parents=True, exist_ok=True)
+    clip_path.write_bytes(b"dummy_clip")
+
+    manifest.chapters = [
+        Chapter(
+            chapter_index=1,
+            chapter_title="Chapter 1",
+            audio_file=str(wav_path.relative_to(p_dir)),
+            tts_groups=[
+                TtsGroup(
+                    group_index=1,
+                    paragraph_text="Narration test.",
+                    audio=AudioSpec(file_path=str(wav_path.relative_to(p_dir))),
+                )
+            ],
+            shots=[
+                Shot(
+                    shot_id="ch01_shot001",
+                    shot_index=1,
+                    chapter_index=1,
+                    rendered_clip=str(clip_path.relative_to(p_dir)),
+                )
+            ]
+        )
+    ]
+    save_manifest(manifest, p_dir)
+
+    app_file = get_long_video_app_file()
+
+    # Case A: Job NOT running, checkbox unchecked
+    at = AppTest.from_file(app_file, default_timeout=30)
+    at.query_params["project"] = test_pid
+    at.session_state[f"active_step_{test_pid}"] = "render"
+    at.run()
+    assert not at.exception, f"App crashed on render step: {at.exception}"
+
+    # Find the confirm checkbox and rerender button
+    chk = next(c for c in at.checkbox if c.key == f"chk_confirm_rerender_{test_pid}")
+    btn = next(b for b in at.button if b.key == f"btn_rerender_all_exp_{test_pid}")
+    assert chk.value is False
+    assert btn.disabled is True
+
+    # Case B: Job NOT running, checkbox CHECKED -> button must become enabled, NO exception!
+    chk.check().run()
+    assert not at.exception, f"App crashed when checking force rerender checkbox: {at.exception}"
+    btn_after = next(b for b in at.button if b.key == f"btn_rerender_all_exp_{test_pid}")
+    assert not btn_after.disabled, "Force rerender button must be enabled when checkbox is checked and job not running"
+
+    # Case C: Job IS running, checkbox CHECKED -> button must be disabled, NO exception!
+    monkeypatch.setattr("app.services.longform.ui.jobs.is_pid_alive", lambda pid: True)
+    job_running_state = {
+        "project_id": test_pid,
+        "step": "render_all",
+        "status": "running",
+        "pid": 99999,
+        "started_at": "2026-11-11T12:00:00",
+    }
+    (p_dir / "job_state.json").write_text(json.dumps(job_running_state), encoding="utf-8")
+
+    at_running = AppTest.from_file(app_file, default_timeout=30)
+    at_running.query_params["project"] = test_pid
+    at_running.session_state[f"active_step_{test_pid}"] = "render"
+    at_running.session_state[f"chk_confirm_rerender_{test_pid}"] = True
+    at_running.run()
+    assert not at_running.exception, f"App crashed during running job with checkbox checked: {at_running.exception}"
+
+    btn_running = next(b for b in at_running.button if b.key == f"btn_rerender_all_exp_{test_pid}")
+    assert btn_running.disabled is True, "Force rerender button must be disabled while a job is running"
+
+
+def test_z1_smoke_all_checkboxes_and_expanders_step4_and_step5(tmp_path, monkeypatch):
+    """Test Z1: Smoke test verifying all checkboxes, expanders, and toggles in Steps 4 and 5 run crash-free."""
+    monkeypatch.setattr("app.services.longform.store.get_projects_root", lambda: tmp_path)
+    monkeypatch.setattr("app.services.longform.ui.components.get_projects_root", lambda: tmp_path)
+
+    test_pid = "proj_z1_smoke"
+    manifest, p_dir = create_project(
+        project_id=test_pid,
+        title="Z1 Smoke Project",
+        preset_id="automotive.muscle_car",
+        projects_root=tmp_path,
+    )
+
+    wav_path = p_dir / "assets" / "audio" / "chapters" / "chapter_01.wav"
+    wav_path.parent.mkdir(parents=True, exist_ok=True)
+    wav_path.write_bytes(b"RIFF" + b"\x00" * 100)
+
+    clip_path = p_dir / "assets" / "visual" / "shots" / "ch01_shot001.mp4"
+    clip_path.parent.mkdir(parents=True, exist_ok=True)
+    clip_path.write_bytes(b"dummy_clip")
+
+    final_vid = p_dir / "export" / "final_video.mp4"
+    final_vid.parent.mkdir(parents=True, exist_ok=True)
+    final_vid.write_bytes(b"dummy_final_vid")
+
+    manifest.final_video_file = str(final_vid.relative_to(p_dir))
+    manifest.chapters = [
+        Chapter(
+            chapter_index=1,
+            chapter_title="Chapter 1",
+            audio_file=str(wav_path.relative_to(p_dir)),
+            tts_groups=[
+                TtsGroup(
+                    group_index=1,
+                    paragraph_text="Narration test.",
+                    audio=AudioSpec(file_path=str(wav_path.relative_to(p_dir))),
+                )
+            ],
+            shots=[
+                Shot(
+                    shot_id="ch01_shot001",
+                    shot_index=1,
+                    chapter_index=1,
+                    rendered_clip=str(clip_path.relative_to(p_dir)),
+                )
+            ]
+        )
+    ]
+    save_manifest(manifest, p_dir)
+
+    # Fake CapCut draft info
+    draft_meta = {
+        "project_id": test_pid,
+        "draft_name": f"MPT_{test_pid}",
+        "draft_dir": str(p_dir / "export" / "capcut" / f"MPT_{test_pid}"),
+        "exported_at": "2026-11-11 12:00:00",
+    }
+    (p_dir / "export" / "capcut" / f"MPT_{test_pid}").mkdir(parents=True, exist_ok=True)
+    (p_dir / "export" / "capcut" / f"MPT_{test_pid}" / "draft_info.json").write_text(json.dumps(draft_meta), encoding="utf-8")
+
+    app_file = get_long_video_app_file()
+
+    # 1. Test Step 4: Exercise all inputs and checkboxes
+    at4 = AppTest.from_file(app_file, default_timeout=30)
+    at4.query_params["project"] = test_pid
+    at4.session_state[f"active_step_{test_pid}"] = "render"
+    at4.run()
+    assert not at4.exception
+
+    # Toggle radio BGM mode
+    bgm_radios = [r for r in at4.radio if r.key == f"bgm_mode_{test_pid}"]
+    assert len(bgm_radios) == 1
+    bgm_radios[0].set_value("none").run()
+    assert not at4.exception
+
+    # Toggle check rerender
+    chk_rerender = next(c for c in at4.checkbox if c.key == f"chk_confirm_rerender_{test_pid}")
+    chk_rerender.check().run()
+    assert not at4.exception
+
+    # Change number inputs
+    fs_inputs = [n for n in at4.number_input if n.key == f"sub_fs_{test_pid}"]
+    if fs_inputs:
+        fs_inputs[0].set_value(24).run()
+        assert not at4.exception
+
+    # 2. Test Step 5: Exercise CapCut inputs and buttons
+    monkeypatch.setattr("app.services.longform.capcut.detector.is_capcut_running", lambda: False)
+    at5 = AppTest.from_file(app_file, default_timeout=30)
+    at5.query_params["project"] = test_pid
+    at5.session_state[f"active_step_{test_pid}"] = "capcut"
+    at5.run()
+    assert not at5.exception
+
+    # Click recheck button
+    btn_recheck = [b for b in at5.button if b.key == f"btn_recheck_capcut_{test_pid}"]
+    if btn_recheck:
+        btn_recheck[0].click().run()
+        assert not at5.exception
+
+    # Toggle calibration size input
+    sz_inputs = [n for n in at5.number_input if n.key == f"num_sz_{test_pid}"]
+    if sz_inputs:
+        sz_inputs[0].set_value(8).run()
+        assert not at5.exception
+

@@ -796,21 +796,31 @@ def render_project_page(project_id: str):
 
     with st.container(border=True):
         if active_step == "script":
-            render_script_step_flow(project_id, p_dir, manifest, active_info, is_job_running)
+            render_script_step_flow(project_id, p_dir, manifest, active_info, is_job_running=is_job_running)
         elif active_step == "voice":
-            render_voice_step_flow(project_id, p_dir, manifest, active_info, is_job_running)
+            render_voice_step_flow(project_id, p_dir, manifest, active_info, is_job_running=is_job_running)
         elif active_step == "visual":
-            render_visual_step_flow(project_id, p_dir, manifest, active_info, is_job_running)
+            render_visual_step_flow(project_id, p_dir, manifest, active_info, is_job_running=is_job_running)
         elif active_step == "render":
-            render_render_step_flow(project_id, p_dir, manifest, active_info)
+            render_render_step_flow(project_id, p_dir, manifest, active_info, is_job_running=is_job_running)
         elif active_step == "capcut":
-            render_capcut_step_flow(project_id, p_dir, manifest, active_info)
+            render_capcut_step_flow(project_id, p_dir, manifest, active_info, is_job_running=is_job_running)
 
 
 # --- Step 1: Naskah Flow (C4.3) ---
 
-def render_script_step_flow(project_id: str, p_dir: Path, manifest: ProjectManifest, step_info: Dict[str, Any], is_running: bool):
+def render_script_step_flow(
+    project_id: str,
+    p_dir: Path,
+    manifest: ProjectManifest,
+    step_info: Dict[str, Any],
+    is_job_running: bool = False,
+    is_running: bool = False,
+):
     """Render Step 1: Naskah with two clear side-by-side cards (D3)."""
+    job_state = jobs.get_job_state(project_id)
+    is_job_running = is_job_running or is_running or bool(job_state and job_state.get("status") == "running")
+
     status = step_info["status"]
     st.subheader("① Naskah Cerita & Pembagian Bab")
     st.write(f"**Status:** `{step_info['label']}`")
@@ -862,7 +872,7 @@ def render_script_step_flow(project_id: str, p_dir: Path, manifest: ProjectManif
                     "```"
                 )
 
-            if st.button("📥 Impor Naskah Ini", type="primary", key=f"btn_submit_import_{project_id}", disabled=is_running):
+            if st.button("📥 Impor Naskah Ini", type="primary", key=f"btn_submit_import_{project_id}", disabled=is_job_running):
                 content = ""
                 if uploaded_file is not None:
                     content = uploaded_file.getvalue().decode("utf-8", errors="replace")
@@ -904,8 +914,8 @@ def render_script_step_flow(project_id: str, p_dir: Path, manifest: ProjectManif
             if use_fake:
                 st.error("⚠️ **MODE PENGUJIAN FAKE AKTIF**: Naskah dibuat secara tiruan tanpa memanggil API AI nyata.")
 
-            ai_disabled = is_running or (not llm_ok and not use_fake)
-            ai_btn_label = "⏳ Sedang Menulis..." if is_running else ("✨ Mulai Tulis Naskah AI" if len(manifest.chapters) == 0 else "✨ Buat Ulang Naskah AI")
+            ai_disabled = is_job_running or (not llm_ok and not use_fake)
+            ai_btn_label = "⏳ Sedang Menulis..." if is_job_running else ("✨ Mulai Tulis Naskah AI" if len(manifest.chapters) == 0 else "✨ Buat Ulang Naskah AI")
             if st.button(ai_btn_label, type="primary" if not ai_disabled else "secondary", disabled=ai_disabled, key=f"btn_start_ai_{project_id}"):
                 provider_arg = ["--provider", "fake"] if use_fake else []
                 topic = custom_topic.strip() if custom_topic.strip() else (getattr(manifest, "topic", None) or manifest.title)
@@ -960,8 +970,18 @@ def render_script_step_flow(project_id: str, p_dir: Path, manifest: ProjectManif
 
 # --- Step 2: Suara Flow (C4.3) ---
 
-def render_voice_step_flow(project_id: str, p_dir: Path, manifest: ProjectManifest, step_info: Dict[str, Any], is_running: bool):
+def render_voice_step_flow(
+    project_id: str,
+    p_dir: Path,
+    manifest: ProjectManifest,
+    step_info: Dict[str, Any],
+    is_job_running: bool = False,
+    is_running: bool = False,
+):
     """Render Step 2: Suara with single adaptive primary button and voice options expander."""
+    job_state = jobs.get_job_state(project_id)
+    is_job_running = is_job_running or is_running or bool(job_state and job_state.get("status") == "running")
+
     status = step_info["status"]
     st.subheader("② Suara & Sintesis Narasi Audio")
     st.write(f"**Status:** `{step_info['label']}`")
@@ -969,7 +989,7 @@ def render_voice_step_flow(project_id: str, p_dir: Path, manifest: ProjectManife
     voice_svc = VoiceService(p_dir)
 
     # 1. Single Adaptive Primary Action Button (C4.3)
-    if is_running:
+    if is_job_running:
         st.button("⏳ Sedang Menyintesis Audio...", disabled=True, type="primary")
     elif status == "selesai":
         if st.button("Selesai ✔ — Lanjut ke Visual", type="primary", key=f"btn_next_visual_{project_id}"):
@@ -989,7 +1009,7 @@ def render_voice_step_flow(project_id: str, p_dir: Path, manifest: ProjectManife
             st.rerun()
     else:  # belum
         btn_label = "🎙️ Mulai Sintesis Audio"
-        btn_disabled = bool(len(manifest.chapters) == 0)
+        btn_disabled = bool(len(manifest.chapters) == 0) or is_job_running
         if st.button(btn_label, type="primary", disabled=btn_disabled, key=f"btn_start_voice_{project_id}"):
             cmd = [sys.executable, "cli_longform.py", "audio", "synth", project_id]
             jobs.start_job(project_id, "audio_synthesize", cmd)
@@ -1214,6 +1234,9 @@ def render_visual_step_flow(
     from app.services.longform.visual.cache import get_cache_status, prune_cache
     from app.services.longform.visual.local import LocalLibraryManager
     from app.services.longform.visual.service import VisualService
+
+    job_state = jobs.get_job_state(project_id)
+    is_job_running = is_job_running or bool(job_state and job_state.get("status") == "running")
 
     st.subheader("③ Alokasi & Penyiapan Klip Visual")
     st.write(f"**Status Saat Ini:** `{step_info['label']}`")
@@ -1692,9 +1715,18 @@ def _safe_open_path(path: Path | str, is_folder: bool = False):
 
 # --- Step 4: Render Flow (Stage 7B.2 R1-R5) ---
 
-def render_render_step_flow(project_id: str, p_dir: Path, manifest: ProjectManifest, step_info: Dict[str, Any]):
+def render_render_step_flow(
+    project_id: str,
+    p_dir: Path,
+    manifest: ProjectManifest,
+    step_info: Dict[str, Any],
+    is_job_running: bool = False,
+):
     """Render Step 4: Render Video Final + Subtitle + BGM (Stage 7B.2 R1-R5)."""
     from app.services.longform.render.service import RenderService
+
+    job_state = jobs.get_job_state(project_id)
+    is_job_running = is_job_running or bool(job_state and job_state.get("status") == "running")
 
     st.subheader("④ Render Video Final + Subtitle + BGM")
     st.write(f"**Status Saat Ini:** `{step_info['label']}`")
@@ -1815,7 +1847,7 @@ def render_render_step_flow(project_id: str, p_dir: Path, manifest: ProjectManif
 
         col_save_cfg, col_prev_sub = st.columns([1, 1])
         with col_save_cfg:
-            if st.button("💾 Simpan Pengaturan Render", key=f"btn_save_render_cfg_{project_id}"):
+            if st.button("💾 Simpan Pengaturan Render", disabled=is_job_running, key=f"btn_save_render_cfg_{project_id}"):
                 sub_style["font_size"] = int(new_fsize)
                 sub_style["margin_v"] = int(new_marginv)
                 preset_snap["subtitle_style"] = sub_style
@@ -1828,7 +1860,7 @@ def render_render_step_flow(project_id: str, p_dir: Path, manifest: ProjectManif
                 st.rerun()
 
         with col_prev_sub:
-            if st.button("🖼️ Pratinjau Subtitle (Frame Preview)", disabled=not visual_done, key=f"btn_prev_sub_{project_id}"):
+            if st.button("🖼️ Pratinjau Subtitle (Frame Preview)", disabled=(not visual_done or is_job_running), key=f"btn_prev_sub_{project_id}"):
                 with st.spinner("Merender frame pratinjau subtitle..."):
                     try:
                         rnd_svc = RenderService(p_dir)
@@ -1873,8 +1905,6 @@ def render_render_step_flow(project_id: str, p_dir: Path, manifest: ProjectManif
 
     # R3: Adaptive Action Button
     st_val = step_info["status"]
-    job_state = jobs.get_job_state(project_id)
-    is_job_running = bool(job_state and job_state.get("status") == "running")
 
     col_btn1, col_btn2 = st.columns([2, 1])
     with col_btn1:
@@ -2005,7 +2035,13 @@ def render_render_step_flow(project_id: str, p_dir: Path, manifest: ProjectManif
 
 # --- Step 5: CapCut Desktop Export Flow (Stage 7B.2 C1-C4) ---
 
-def render_capcut_step_flow(project_id: str, p_dir: Path, manifest: ProjectManifest, step_info: Dict[str, Any]):
+def render_capcut_step_flow(
+    project_id: str,
+    p_dir: Path,
+    manifest: ProjectManifest,
+    step_info: Dict[str, Any],
+    is_job_running: bool = False,
+):
     """Render Step 5: CapCut Desktop Export & Calibration (Stage 7B.2 C1-C4)."""
     from app.services.longform.capcut.detector import get_capcut_doctor_report
     from app.services.longform.capcut.service import (
@@ -2013,6 +2049,9 @@ def render_capcut_step_flow(project_id: str, p_dir: Path, manifest: ProjectManif
         resolve_capcut_text_size,
         set_capcut_text_size,
     )
+
+    job_state = jobs.get_job_state(project_id)
+    is_job_running = is_job_running or bool(job_state and job_state.get("status") == "running")
 
     st.subheader("⑤ Ekspor Proyek CapCut Desktop")
     st.write(f"**Status Saat Ini:** `{step_info['label']}`")
@@ -2061,7 +2100,7 @@ def render_capcut_step_flow(project_id: str, p_dir: Path, manifest: ProjectManif
 
         col_cal1, col_cal2 = st.columns([1, 1])
         with col_cal1:
-            if st.button("🛠️ Buat Draft Kalibrasi (MPT_CALIBRATE)", disabled=capcut_running or not visual_done, key=f"btn_calib_{project_id}"):
+            if st.button("🛠️ Buat Draft Kalibrasi (MPT_CALIBRATE)", disabled=(capcut_running or not visual_done or is_job_running), key=f"btn_calib_{project_id}"):
                 with st.spinner("Membuat draft kalibrasi di folder CapCut..."):
                     try:
                         calib_res = build_calibration_draft(project_id, install=True)
@@ -2078,7 +2117,7 @@ def render_capcut_step_flow(project_id: str, p_dir: Path, manifest: ProjectManif
                 step=1,
                 key=f"num_sz_{project_id}",
             )
-            if st.button("💾 Simpan Ukuran Teks", key=f"btn_save_sz_{project_id}"):
+            if st.button("💾 Simpan Ukuran Teks", disabled=is_job_running, key=f"btn_save_sz_{project_id}"):
                 try:
                     set_capcut_text_size(manifest.preset_id, new_sz_val)
                     manifest.preset_snapshot["capcut_text_size"] = new_sz_val
@@ -2101,9 +2140,6 @@ def render_capcut_step_flow(project_id: str, p_dir: Path, manifest: ProjectManif
     draft_info = step_info.get("draft_info") or find_latest_capcut_draft(p_dir, project_id)
     is_exported = bool(draft_info)
     btn_label = "🔄 Ekspor Ulang ke CapCut" if is_exported else "🚀 Ekspor ke CapCut (Install)"
-
-    job_state = jobs.get_job_state(project_id)
-    is_job_running = bool(job_state and job_state.get("status") == "running")
 
     if st.button(
         btn_label,
