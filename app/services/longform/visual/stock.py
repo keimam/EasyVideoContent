@@ -130,11 +130,18 @@ def normalize_tag(tag: str) -> str:
     return t
 
 
+_NON_AUTO_CAR_TERMS = {
+    "cable car", "cable cars", "rail car", "rail cars", "railway car", "railway cars",
+    "train car", "train cars", "dining car", "dining cars", "box car", "box cars",
+    "streetcar", "streetcars", "tramcar", "tramcars", "handcar", "handcars",
+}
+
+
 def term_matches_tags(term: str, candidate_tags: List[str]) -> bool:
-    """Check if term matches candidate tags using whole-word boundary and tag normalization (S5, T3).
+    """Check if term matches candidate tags using whole-word boundary and tag normalization (S5, T3, X4).
 
     'car' matches 'muscle car', 'car show', 'race car', 'car', 'cars'.
-    'car' does NOT match 'carpet', 'red carpet', 'cartoon'.
+    'car' does NOT match 'carpet', 'red carpet', 'cartoon', or non-automotive transit terms like 'cable car'.
     """
     term_clean = normalize_tag(term.strip().lower())
     if not term_clean or not candidate_tags:
@@ -143,6 +150,8 @@ def term_matches_tags(term: str, candidate_tags: List[str]) -> bool:
     for tag in candidate_tags:
         tag_clean = tag.strip().lower()
         tag_norm = normalize_tag(tag_clean)
+        if term_clean == "car" and (tag_clean in _NON_AUTO_CAR_TERMS or tag_norm in _NON_AUTO_CAR_TERMS):
+            continue
         if re.search(pattern, tag_clean) or re.search(pattern, tag_norm):
             return True
     return False

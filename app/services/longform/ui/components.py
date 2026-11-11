@@ -170,6 +170,14 @@ def _render_job_monitor_content(project_id: str, state: Dict[str, Any], current_
 
     elif status == "stopped":
         st.warning(f"⚠️ **Pekerjaan Terhenti**: `{step_display}` (Pekerjaan belum selesai). Klik tombol **Lanjutkan** di bawah untuk meneruskan.")
+        prog = jobs.get_project_progress(project_id, step)
+        if prog["total"] > 0 or prog.get("phase"):
+            phase_info = f" — Fase: {prog['phase']}" if prog.get("phase") else ""
+            tot = prog["total"] if prog["total"] > 0 else 0
+            st.progress(
+                prog["percentage"] / 100.0,
+                text=f"{prog['unit_label'].capitalize()}: {prog['completed']} / {tot} ({prog['percentage']}%){phase_info}",
+            )
         logs = jobs.get_job_logs(project_id, max_lines=20)
         if logs:
             with st.expander("📋 Log Terakhir Sebelum Terhenti", expanded=False):
@@ -189,6 +197,16 @@ def _render_job_monitor_content(project_id: str, state: Dict[str, Any], current_
             if st.button("✕", key=dismiss_key, help="Tutup pemberitahuan pekerjaan"):
                 jobs.dismiss_job(project_id)
                 st.rerun()
+
+        if status == "cancelled":
+            prog = jobs.get_project_progress(project_id, step)
+            if prog["total"] > 0 or prog.get("phase"):
+                phase_info = f" — Fase: {prog['phase']}" if prog.get("phase") else ""
+                tot = prog["total"] if prog["total"] > 0 else 0
+                st.progress(
+                    prog["percentage"] / 100.0,
+                    text=f"{prog['unit_label'].capitalize()}: {prog['completed']} / {tot} ({prog['percentage']}%){phase_info}",
+                )
 
         if status == "failed":
             logs = jobs.get_job_logs(project_id, max_lines=20)
@@ -1036,6 +1054,70 @@ def get_shot_thumbnail_path(project_dir: Path, shot: Shot) -> Optional[Path]:
     return None
 
 
+def get_candidate_thumbnail_path(project_dir: Path, candidate: Dict[str, Any]) -> Optional[Path]:
+    """Get or extract 320px cached thumbnail for an alternative visual candidate (X2)."""
+    cand_id = candidate.get("candidate_id") or str(abs(hash(candidate.get("url", ""))))
+    cand_t_dir = project_dir / "assets" / "visual" / "thumbnails" / "candidates"
+    cand_t_file = cand_t_dir / f"{cand_id}.jpg"
+    if cand_t_file.is_file() and cand_t_file.stat().st_size > 0:
+        return cand_t_file
+
+    cand_t_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. Local path
+    local_p = candidate.get("local_path") or candidate.get("file_path")
+    src = None
+    if local_p:
+        lp = Path(local_p)
+        if lp.is_file():
+            src = lp
+        elif (project_dir / local_p).is_file():
+            src = project_dir / local_p
+
+    url = candidate.get("url")
+    dur = float(candidate.get("duration_seconds") or 3.0)
+    ss = max(dur / 2.0, 0.5)
+
+    try:
+        if src:
+            ext = src.suffix.lower()
+            if ext in (".mp4", ".mov", ".mkv", ".webm", ".avi"):
+                cmd = [
+                    "ffmpeg", "-y",
+                    "-ss", f"{ss:.2f}",
+                    "-i", str(src),
+                    "-vframes", "1",
+                    "-vf", "scale=320:-1",
+                    str(cand_t_file),
+                ]
+                subprocess.run(cmd, capture_output=True, timeout=10)
+            elif ext in (".jpg", ".jpeg", ".png", ".webp", ".bmp"):
+                from PIL import Image
+                with Image.open(src) as im:
+                    im_rgb = im.convert("RGB")
+                    w, h = im_rgb.size
+                    new_h = int(h * (320 / w)) if w > 0 else 180
+                    im.resize((320, max(new_h, 1)), Image.Resampling.LANCZOS).save(cand_t_file, "JPEG", quality=85)
+        elif url:
+            cmd = [
+                "ffmpeg", "-y",
+                "-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+                "-ss", f"{ss:.2f}",
+                "-i", url,
+                "-vframes", "1",
+                "-vf", "scale=320:-1",
+                str(cand_t_file),
+            ]
+            subprocess.run(cmd, capture_output=True, timeout=10)
+
+        if cand_t_file.is_file() and cand_t_file.stat().st_size > 0:
+            return cand_t_file
+    except Exception as exc:
+        logger.warning(f"Could not generate candidate thumbnail for {cand_id}: {exc}")
+
+    return None
+
+
 def render_visual_step_flow(
     project_id: str,
     p_dir: Path,
@@ -1284,18 +1366,31 @@ def render_visual_step_flow(
                     st.markdown("##### 📺 Preview & Informasi Shot")
                     clip_p = (p_dir / target_shot.rendered_clip) if target_shot.rendered_clip else None
                     asset_p = (p_dir / target_shot.asset_path) if target_shot.asset_path else None
-                    if clip_p and clip_p.is_file():
-                        st.video(str(clip_p))
-                    elif asset_p and asset_p.is_file() and asset_p.suffix.lower() in (".mp4", ".mov", ".mkv", ".webm"):
-                        st.video(str(asset_p))
-                    elif asset_p and asset_p.is_file():
-                        st.image(str(asset_p), use_container_width=True)
-                    else:
-                        st.info("Klip belum dibuat. Jalankan penyusunan visual untuk merender klip.")
+                    with st.spinner("Memuat preview video..."):
+                        if clip_p and clip_p.is_file():
+                            st.video(str(clip_p))
+                        elif asset_p and asset_p.is_file() and asset_p.suffix.lower() in (".mp4", ".mov", ".mkv", ".webm"):
+                            st.video(str(asset_p))
+                        elif asset_p and asset_p.is_file():
+                            st.image(str(asset_p), use_container_width=True)
+                        else:
+                            st.info("Klip belum dibuat. Jalankan penyusunan visual untuk merender klip.")
 
                     target_narr = get_shot_narration(target_chapter, target_shot)
                     st.markdown(f"**Teks Narasi:**\n> {target_narr or '-'}")
-                    st.write(f"**Kata Kunci:** `{target_shot.search_query or target_shot.visual_prompt or '-'}`")
+
+                    from app.services.longform.visual.query_extractor import extract_short_search_query
+                    preset_snap = manifest.preset_snapshot or {}
+                    short_q = target_shot.search_query or ""
+                    if not short_q or len(short_q.split()) > 6 or short_q.strip() == (target_narr or "").strip():
+                        short_q = extract_short_search_query(
+                            target_narr,
+                            visual_keywords=preset_snap.get("visual_keywords"),
+                            topic_keywords=preset_snap.get("topic_keywords"),
+                            required_subject_terms=preset_snap.get("required_subject_terms"),
+                        )
+
+                    st.write(f"**Kata Kunci Pencarian:** `{short_q or '-'}`")
                     score_disp = f"{target_shot.relevance_score:.2f}" if target_shot.relevance_score is not None else "-"
                     st.write(f"**Skor Relevansi:** `{score_disp}`")
 
@@ -1314,33 +1409,92 @@ def render_visual_step_flow(
                     tab_cands, tab_srch, tab_up = st.tabs(["🎯 Pilih Kandidat Lain", "🔍 Cari Kata Lain", "📤 Unggah File"])
 
                     with tab_cands:
-                        cands = target_shot.candidates or []
-                        if not cands:
-                            st.caption("Tidak ada kandidat alternatif tersimpan untuk shot ini.")
+                        raw_cands = target_shot.candidates or []
+                        cur_asset_file = Path(target_shot.asset_path).name if target_shot.asset_path else ""
+
+                        unique_cands = []
+                        seen_ids = set()
+                        for orig_idx, cand in enumerate(raw_cands):
+                            cid = cand.get("candidate_id")
+                            curl = cand.get("url")
+                            # Skip if matches current active asset or duplicate (X2)
+                            if cid and cid in seen_ids:
+                                continue
+                            if curl and curl in seen_ids:
+                                continue
+                            if orig_idx == 0 and target_shot.asset_path and not getattr(target_shot, "is_replaced", False):
+                                continue
+                            if cid and cur_asset_file and cid in cur_asset_file:
+                                continue
+
+                            if cid:
+                                seen_ids.add(cid)
+                            if curl:
+                                seen_ids.add(curl)
+                            unique_cands.append((orig_idx, cand))
+
+                        if not unique_cands:
+                            st.caption("Tidak ada kandidat alternatif lain yang tersimpan untuk shot ini.")
                         else:
-                            st.write(f"Ditemukan **{len(cands)}** kandidat alternatif:")
-                            for c_i, c in enumerate(cands[:5]):
-                                score_txt = f"{c.get('relevance_score', 0):.2f}"
-                                st.markdown(f"**Kandidat #{c_i+1}** • Sumber: `{c.get('provider')}` • Skor: `{score_txt}` • `{c.get('source_type')}`")
-                                if st.button(f"👉 Pakai Kandidat #{c_i+1}", key=f"btn_use_cand_{project_id}_{target_shot.shot_id}_{c_i}"):
-                                    with st.spinner("Menerapkan kandidat & menyusun klip..."):
-                                        try:
-                                            vis_svc = VisualService(p_dir)
-                                            vis_svc.replace_shot(manifest, target_shot.shot_id, candidate_index=c_i+1, rebuild=True)
-                                            t_cache = p_dir / "assets" / "visual" / "thumbnails" / f"{target_shot.shot_id}.jpg"
-                                            t_cache.unlink(missing_ok=True)
-                                            save_manifest(manifest, p_dir)
-                                            get_shot_thumbnail_path(p_dir, target_shot)
-                                            st.success(f"Shot berhasil diganti ke kandidat #{c_i+1} dan terkunci.")
-                                            time.sleep(0.5)
-                                            st.rerun()
-                                        except Exception as exc:
-                                            st.error(f"Gagal mengganti kandidat: {exc}")
+                            st.write(f"Ditemukan **{len(unique_cands)}** kandidat alternatif:")
+
+                            # Optional Candidate Preview Player (X2)
+                            active_cp = st.session_state.get(f"preview_cand_url_{project_id}")
+                            if active_cp:
+                                with st.container(border=True):
+                                    st.markdown("##### 🎬 Pratinjau Video Kandidat")
+                                    with st.spinner("Memuat pratinjau kandidat..."):
+                                        st.video(active_cp)
+                                    if st.button("✕ Tutup Pratinjau", key=f"btn_close_cp_{project_id}"):
+                                        st.session_state[f"preview_cand_url_{project_id}"] = None
+                                        st.rerun()
+
+                            # 3-column candidate grid (X2)
+                            for r_i in range(0, len(unique_cands), 3):
+                                cand_cols = st.columns(3)
+                                for c_col_idx, (orig_idx, cand) in enumerate(unique_cands[r_i:r_i+3]):
+                                    with cand_cols[c_col_idx]:
+                                        with st.container(border=True):
+                                            c_thumb = get_candidate_thumbnail_path(p_dir, cand)
+                                            if c_thumb and c_thumb.is_file():
+                                                st.image(str(c_thumb), use_container_width=True)
+                                            else:
+                                                st.markdown("🖼️ *(Thumbnail)*")
+
+                                            score_txt = f"{cand.get('relevance_score', 0):.2f}"
+                                            dur_txt = f"{cand.get('duration_seconds', 0):.1f}s"
+                                            res_txt = f"{cand.get('width', 0)}x{cand.get('height', 0)}"
+                                            prov_txt = cand.get('provider', 'stock').capitalize()
+                                            st.caption(f"**{prov_txt}** • `{score_txt}`\n⏱️ {dur_txt} • 📐 {res_txt}")
+
+                                            c_url = cand.get("url") or cand.get("source_url")
+                                            btn_col1, btn_col2 = st.columns(2)
+                                            with btn_col1:
+                                                if c_url and st.button("▶ Preview", key=f"btn_prev_cand_{project_id}_{target_shot.shot_id}_{orig_idx}", use_container_width=True):
+                                                    st.session_state[f"preview_cand_url_{project_id}"] = c_url
+                                                    st.rerun()
+                                            with btn_col2:
+                                                if st.button("👉 Pakai ini", key=f"btn_apply_cand_{project_id}_{target_shot.shot_id}_{orig_idx}", type="primary", use_container_width=True):
+                                                    with st.spinner("Menerapkan kandidat baru & menyusun klip..."):
+                                                        try:
+                                                            vis_svc = VisualService(p_dir)
+                                                            vis_svc.replace_shot(manifest, target_shot.shot_id, candidate_index=orig_idx+1, rebuild=True)
+                                                            target_shot.is_replaced = True
+                                                            t_cache = p_dir / "assets" / "visual" / "thumbnails" / f"{target_shot.shot_id}.jpg"
+                                                            t_cache.unlink(missing_ok=True)
+                                                            save_manifest(manifest, p_dir)
+                                                            get_shot_thumbnail_path(p_dir, target_shot)
+                                                            st.session_state[f"preview_cand_url_{project_id}"] = None
+                                                            st.success(f"Shot berhasil diganti ke kandidat #{orig_idx+1} dan terkunci.")
+                                                            time.sleep(0.5)
+                                                            st.rerun()
+                                                        except Exception as exc:
+                                                            st.error(f"Gagal mengganti kandidat: {exc}")
 
                     with tab_srch:
                         q_input = st.text_input(
                             "Kata Kunci Pencarian Baru:",
-                            value=target_shot.search_query or target_shot.visual_prompt or "",
+                            value=short_q,
                             key=f"txt_srch_{project_id}_{target_shot.shot_id}",
                         )
                         p_opts = ["pixabay", "coverr"] if has_coverr else ["pixabay"]

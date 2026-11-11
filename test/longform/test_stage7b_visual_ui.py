@@ -550,3 +550,111 @@ def test_banner_dismissal_and_step_suppression(tmp_path, monkeypatch):
     assert jobs.dismiss_job(test_pid) is True
     updated_state = jobs.get_job_state(test_pid)
     assert updated_state["dismissed"] is True
+
+
+def test_interrupted_visual_build_status_is_terhenti_not_selesai(tmp_path, monkeypatch):
+    """Test that if visual build is interrupted, status is 'terhenti', not 'selesai' (X1)."""
+    monkeypatch.setattr("app.services.longform.store.get_projects_root", lambda: tmp_path)
+    monkeypatch.setattr("app.services.longform.ui.components.get_projects_root", lambda: tmp_path)
+
+    test_pid = "interrupted_build_test"
+    manifest, p_dir = create_project(
+        project_id=test_pid,
+        title="Interrupted Build Test",
+        preset_id="automotive.muscle_car",
+        projects_root=tmp_path,
+    )
+
+    # 4 shots, all have assets, but only 2 have built clips
+    shots = []
+    for i in range(1, 5):
+        asset_rel = f"assets/visual/shots/ch01_shot{i:03d}_asset.mp4"
+        clip_rel = f"assets/visual/shots/ch01_shot{i:03d}.mp4"
+
+        # Create dummy asset file for all 4 shots
+        af = p_dir / asset_rel
+        af.parent.mkdir(parents=True, exist_ok=True)
+        af.write_bytes(b"dummy asset data")
+
+        # Create rendered clip only for first 2 shots
+        if i <= 2:
+            cf = p_dir / clip_rel
+            cf.write_bytes(b"dummy clip data")
+            c_status = ItemStatus.completed
+        else:
+            c_status = ItemStatus.pending
+
+        shots.append(
+            Shot(
+                shot_id=f"ch01_shot{i:03d}",
+                chapter_index=1,
+                shot_index=i,
+                duration_seconds=3.0,
+                target_frames=75,
+                visual_prompt=f"Shot {i}",
+                asset_path=asset_rel,
+                rendered_clip=clip_rel if i <= 2 else None,
+                status=c_status,
+            )
+        )
+
+    # Add completed script and voice to chapter
+    wav_file = p_dir / "assets" / "audio" / "groups" / "ch1_g1.wav"
+    wav_file.parent.mkdir(parents=True, exist_ok=True)
+    wav_file.write_bytes(b"RIFF" + b"\x00" * 40 + b"WAVEfmt " + b"\x00" * 100)
+
+    ch = Chapter(
+        chapter_index=1,
+        chapter_title="Chapter 1",
+        audio_duration_seconds=12.0,
+        tts_groups=[
+            TtsGroup(
+                group_index=1,
+                paragraph_text="The muscle car era was defined by raw horsepower.",
+                audio=AudioSpec(file_path="assets/audio/groups/ch1_g1.wav", duration_seconds=12.0),
+                segments=[Segment(segment_index=1, narration_text="The muscle car era was defined by raw horsepower.")],
+            )
+        ],
+        shots=shots,
+    )
+    manifest.chapters = [ch]
+    save_manifest(manifest, p_dir)
+
+    st_info = compute_project_step_status(p_dir)
+    vis_step = st_info["steps"]["visual"]
+    assert vis_step["status"] == "terhenti", "Status must be 'terhenti' when build is interrupted"
+    assert "Terhenti di 2 dari 4 (fase: Menyusun klip)" in vis_step["label"]
+    assert vis_step["built_shots"] == 2
+    assert vis_step["fetched_shots"] == 4
+    assert vis_step["total"] == 4
+    assert st_info["next_step"] == "Visual", "Next step must be Visual when build is interrupted"
+
+
+def test_short_query_extractor():
+    """Test smart short keyword extractor (X3)."""
+    from app.services.longform.visual.query_extractor import extract_short_search_query
+
+    # 1. With explicit [search: ...] tag
+    t_tag = "The roaring engines shook Detroit [search: vintage dragstrip burnout smoke] as racers lined up."
+    assert extract_short_search_query(t_tag) == "vintage dragstrip burnout smoke"
+
+    # 2. Long sentence without tag -> extract 3-5 keywords without stopwords
+    t_long = "To this day, the true fate of the Lost Colony remains one of history's greatest unsolved riddles."
+    res = extract_short_search_query(t_long, visual_keywords=["ruins", "settlement"])
+    words = res.split()
+    assert 3 <= len(words) <= 6
+    assert "lost" in res.lower()
+    assert "colony" in res.lower()
+    assert "greatest" not in res.lower(), "Generic words like greatest should be excluded"
+    assert "the" not in res.lower(), "Stopwords should be excluded"
+
+
+def test_required_subject_term_excludes_cable_car():
+    """Test that 'cable car' does not falsely match automotive 'car' (X4)."""
+    from app.services.longform.visual.stock import term_matches_tags
+
+    # Cable car should NOT match car
+    assert term_matches_tags("car", ["cable car", "docklands", "london", "thames"]) is False
+    # Regular car or muscle car SHOULD match
+    assert term_matches_tags("car", ["highway", "road", "car", "speed"]) is True
+    assert term_matches_tags("car", ["vintage", "muscle car", "asphalt"]) is True

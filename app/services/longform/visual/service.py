@@ -525,7 +525,12 @@ class VisualService:
                 shot.chosen_rendition = selected_candidate.rendition_name
                 shot.is_low_res = getattr(selected_candidate, "is_low_res", False)
                 shot.effective_query = chosen_query
-                shot.needs_review = False
+                if req_terms:
+                    from app.services.longform.visual.stock import term_matches_tags
+                    has_subj = any(term_matches_tags(req, shot.tags or []) for req in req_terms)
+                    shot.needs_review = not has_subj
+                else:
+                    shot.needs_review = False
                 shot.status = ItemStatus.pending
                 save_manifest(manifest, self.project_dir)
 
@@ -1087,3 +1092,26 @@ class VisualService:
 
         target_shot.locked = locked
         return target_shot
+
+    def evaluate_needs_review(self, manifest: ProjectManifest) -> int:
+        """Scan manifest shots and flag any shot lacking required_subject_terms as needs_review (X4)."""
+        preset_snap = manifest.preset_snapshot or {}
+        req_terms = preset_snap.get("required_subject_terms") or []
+        if not req_terms:
+            return 0
+
+        from app.services.longform.visual.stock import term_matches_tags
+
+        flagged = 0
+        for ch in manifest.chapters:
+            for s in ch.shots:
+                if s.tags:
+                    has_subj = any(term_matches_tags(req, s.tags) for req in req_terms)
+                    if not has_subj and not s.needs_review:
+                        s.needs_review = True
+                        flagged += 1
+                elif s.asset_path and not s.locked:
+                    if not s.needs_review:
+                        s.needs_review = True
+                        flagged += 1
+        return flagged

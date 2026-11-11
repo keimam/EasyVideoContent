@@ -232,30 +232,41 @@ def compute_project_step_status(project_dir: str | Path) -> Dict[str, Any]:
 
     # --- Step 3: Visual ---
     total_shots = sum(len(ch.shots) for ch in manifest.chapters)
-    valid_shots = 0
+    built_shots = 0
+    fetched_shots = 0
     stale_shots = 0
     for ch in manifest.chapters:
         for sh in ch.shots:
             if sh.status == ItemStatus.stale:
                 stale_shots += 1
-            if (sh.rendered_clip and (p_dir / sh.rendered_clip).is_file()) or (sh.asset_path and (p_dir / sh.asset_path).is_file()):
-                valid_shots += 1
+            if sh.rendered_clip and (p_dir / sh.rendered_clip).is_file():
+                built_shots += 1
+            if sh.asset_path and (p_dir / sh.asset_path).is_file():
+                fetched_shots += 1
 
     if active_step in ("visual_generate", "visual_pipeline", "visual_fetch", "visual_build", "visual"):
         visual_status = "berjalan"
-        visual_label = f"Sedang memproses visual ({valid_shots}/{total_shots} shot)"
+        if total_shots == 0:
+            visual_label = "Sedang membagi shot"
+        elif fetched_shots < total_shots:
+            visual_label = f"Sedang mencari footage ({fetched_shots}/{total_shots} shot)"
+        else:
+            visual_label = f"Sedang menyusun klip ({built_shots}/{total_shots} klip)"
     elif total_shots == 0:
         visual_status = "belum"
         visual_label = "Belum dialokasikan"
     elif stale_shots > 0:
         visual_status = "perlu_diperbarui"
         visual_label = f"{stale_shots} shot perlu diperbarui"
-    elif valid_shots == total_shots and total_shots > 0:
+    elif built_shots == total_shots and total_shots > 0:
         visual_status = "selesai"
         visual_label = f"Selesai ({total_shots}/{total_shots} klip)"
-    elif valid_shots > 0:
+    elif built_shots > 0 or fetched_shots > 0:
         visual_status = "terhenti"
-        visual_label = f"Terhenti di {valid_shots} dari {total_shots} klip"
+        if fetched_shots < total_shots:
+            visual_label = f"Terhenti di {fetched_shots} dari {total_shots} (fase: Mencari footage)"
+        else:
+            visual_label = f"Terhenti di {built_shots} dari {total_shots} (fase: Menyusun klip)"
     else:
         visual_status = "belum"
         visual_label = f"Belum dibuat ({total_shots} shot)"
@@ -338,7 +349,9 @@ def compute_project_step_status(project_dir: str | Path) -> Dict[str, Any]:
             "visual": {
                 "status": visual_status,
                 "label": visual_label,
-                "completed": valid_shots,
+                "completed": built_shots,
+                "built_shots": built_shots,
+                "fetched_shots": fetched_shots,
                 "total": total_shots,
             },
             "render": {
