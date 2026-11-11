@@ -241,9 +241,9 @@ def compute_project_step_status(project_dir: str | Path) -> Dict[str, Any]:
             if (sh.rendered_clip and (p_dir / sh.rendered_clip).is_file()) or (sh.asset_path and (p_dir / sh.asset_path).is_file()):
                 valid_shots += 1
 
-    if active_step == "visual_generate":
+    if active_step in ("visual_generate", "visual_pipeline", "visual_fetch", "visual_build", "visual"):
         visual_status = "berjalan"
-        visual_label = f"Sedang mencari visual ({valid_shots}/{total_shots} shot)"
+        visual_label = f"Sedang memproses visual ({valid_shots}/{total_shots} shot)"
     elif total_shots == 0:
         visual_status = "belum"
         visual_label = "Belum dialokasikan"

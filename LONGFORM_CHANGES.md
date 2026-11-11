@@ -113,3 +113,30 @@ Tujuannya adalah menjaga kemudahan sinkronisasi (merge/rebase) dari repositori u
   * Hapus 6 baris blok `try: from app.services.longform.ui.nav import render_longform_entry ... except Exception: pass` dari fungsi `_render_top_bar()` di `webui/Main.py`.
   * Atau jalankan: `git checkout upstream/main -- webui/Main.py`.
 
+### Tahap 7B.1: WebUI Langkah ③ Visual, Contact Sheet Interaktif, & Visual Replace
+- **File Kode Upstream yang Disentuh:** **Nihil (0 berkas kode)**
+- **Pembaruan Komponen Long Video & WebUI:**
+  - `cli_longform.py`:
+    * Penambahan subperintah `visual pipeline <project_id> [--provider <name>] [--allow-fallback]`: mengeksekusi `visual fetch` lalu `visual build` secara berurutan dalam satu job background tanpa jeda manual.
+  - `app/services/longform/visual/local.py`:
+    * Penambahan method `add_file(file_content: bytes, filename: str)` pada `LocalLibraryManager` untuk menerima berkas video/gambar dari uploader UI, menyimpannya langsung ke `assets/visual/library/`, dan mengembalikan metadata lengkap (`content_hash`, `size_bytes`, `asset_type`).
+  - `app/services/longform/ui/jobs.py`:
+    * Dukungan pengecekan status selesai untuk langkah visual (`visual_pipeline`, `visual_build`, `visual_fetch`).
+    * Perhitungan progres visual multi-fase di `get_project_progress`: Fase 1 (0%–50%) "Mencari footage", Fase 2 (50%–100%) "Menyusun klip".
+  - `app/services/longform/status.py`:
+    * Penyesuaian `compute_project_step_status` agar mengenali langkah aktif visual background (`visual_pipeline`, `visual_build`, `visual_fetch`) sebagai status `"berjalan"`.
+  - `app/services/longform/ui/components.py`:
+    * Implementasi lengkap `render_visual_step_flow()` menggantikan placeholder sebelumnya.
+    * **V1 Ringkasan & Tombol Utama:** Metrik klip siap, perlu dicek, terkunci, sumber terpakai; checkbox pilihan sumber footage (Pixabay, Coverr, Pexels, File lokal, Gambar AI) dengan kunci tersamar (`mask_api_key`) dan alasan penonaktifan; tombol adaptif tunggal (`belum`, `terhenti`, `perlu_diperbarui`, `selesai`); integrasi monitor job dengan label fase.
+    * **V2 Galeri Visual / Contact Sheet Interaktif:** Tab per bab, grid thumbnail responsif 4 kolom menggunakan gambar kecil (.jpg dari cache, bukan video penuh) dengan waktu buka super cepat (< 5 ms untuk 112 shot); filter cepat (Semua, Perlu dicek, Terkunci, Placeholder); nomor shot, durasi, potongan teks narasi, sumber, dan badge status; tombol pemilihan shot untuk membuka panel detail.
+    * **V3 Panel Detail & Visual Replace:** Preview video potongan klip; teks narasi kalimat lengkap; kata kunci pencarian; skor relevansi; tombol toggle kunci/buka kunci shot; 3 sub-tab penggantian:
+      1) "Pilih kandidat lain": daftar kandidat tersimpan dengan skor & tombol "Pakai ini".
+      2) "Cari dengan kata lain": input query kustom + pemilihan provider + cari & terapkan.
+      3) "Unggah file sendiri": file uploader media video/gambar + simpan ke library lokal + pasang ke shot.
+      Setiap aksi penggantian otomatis mengunci shot (`locked = True`), merender ulang hanya 1 klip terkait, dan memperbarui cache thumbnail.
+    * **V4 Cache & Pemeliharaan:** Expander pengaturan lanjutan menampilkan ukuran cache global, total berkas, dan jumlah berkas terlindungi; tombol "Bersihkan Cache Lama" (prune) dengan konfirmasi, melindungi seluruh aset yang dipakai proyek aktif.
+  - `app/services/longform/store.py`:
+    * Verifikasi dan penegasan eksplisit kata kunci `"preset_recovery"` pada fungsi `migrate_umum_presets_and_projects()`.
+  - `test/longform/test_stage7b_visual_ui.py`:
+    * Pengujian komprehensif 7 test cases mencakup seluruh status WebUI Langkah ③, benchmark performa galeri 112 shot uji_nokey (< 5s), isolasi rebuild 1 shot pada kandidat baru, uploader file lokal ke library, penanda stop marker, proteksi cache, dan kata kunci preset_recovery.
+

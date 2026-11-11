@@ -631,7 +631,7 @@ def stage_local_visual_file(project_dir: str | Path, source_path: str | Path) ->
 
 
 def migrate_umum_presets_and_projects() -> List[str]:
-    """Migrate legacy 'umum' preset references to 'umum.id' / 'umum.en' and restore Tokyo project (H1, H2).
+    """Migrate legacy 'umum' preset references to 'umum.id' / 'umum.en' and restore Tokyo project (preset_recovery / H1, H2).
 
     Returns a list of log messages detailing all migrations performed.
     """
@@ -656,7 +656,7 @@ def migrate_umum_presets_and_projects() -> List[str]:
                     new_ext = "umum.en" if str(p_lang).startswith("en") else "umum.id"
                     data["extends"] = new_ext
                     f.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-                    msg = f"[MIGRASI PRESET H1] Preset kustom '{data.get('id', f.stem)}': extends diubah dari 'umum' ke '{new_ext}'"
+                    msg = f"[preset_recovery] [MIGRASI PRESET H1] Preset kustom '{data.get('id', f.stem)}': extends diubah dari 'umum' ke '{new_ext}'"
                     logger.info(msg)
                     logs.append(msg)
             except Exception as exc:
@@ -678,7 +678,7 @@ def migrate_umum_presets_and_projects() -> List[str]:
                     manifest.preset_inheritance_chain = ["documentary_id", "umum.id"]
                     manifest.preset_snapshot = get_preset("umum.id").model_dump()
                     save_manifest(manifest, p_dir)
-                    msg = f"[PEMULIHAN PROYEK H2] Proyek '{manifest.title}' ({manifest.project_id}): preset dipulihkan dari '{old_pid}' ke 'umum.id'"
+                    msg = f"[preset_recovery] [PEMULIHAN PROYEK H2] Proyek '{manifest.title}' ({manifest.project_id}): preset dipulihkan dari '{old_pid}' ke 'umum.id'"
                     logger.info(msg)
                     logs.append(msg)
                     continue
@@ -693,7 +693,7 @@ def migrate_umum_presets_and_projects() -> List[str]:
                     manifest.preset_inheritance_chain = get_preset_inheritance_chain(target_pid)
                     manifest.preset_snapshot = target_preset.model_dump()
                     save_manifest(manifest, p_dir)
-                    msg = f"[MIGRASI PROYEK H1] Proyek '{manifest.title}' ({manifest.project_id}): preset_id diubah dari '{old_pid}' ke '{target_pid}'"
+                    msg = f"[preset_recovery] [MIGRASI PROYEK H1] Proyek '{manifest.title}' ({manifest.project_id}): preset_id diubah dari '{old_pid}' ke '{target_pid}'"
                     logger.info(msg)
                     logs.append(msg)
                     continue
@@ -706,7 +706,7 @@ def migrate_umum_presets_and_projects() -> List[str]:
                     new_chain = [replacement if x == "umum" else x for x in chain]
                     manifest.preset_inheritance_chain = new_chain
                     save_manifest(manifest, p_dir)
-                    msg = f"[MIGRASI CHAIN H1] Proyek '{manifest.title}' ({manifest.project_id}): 'umum' diganti '{replacement}' pada inheritance chain"
+                    msg = f"[preset_recovery] [MIGRASI CHAIN H1] Proyek '{manifest.title}' ({manifest.project_id}): 'umum' diganti '{replacement}' pada inheritance chain"
                     logger.info(msg)
                     logs.append(msg)
 

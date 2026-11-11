@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 import time
@@ -42,7 +43,7 @@ from app.services.longform.presets import (
     suggest_niche_keywords,
 )
 from app.services.longform.quality_checker import ScriptQualityChecker
-from app.services.longform.schema import ItemStatus, ProjectManifest
+from app.services.longform.schema import ItemStatus, ProjectManifest, Shot
 from app.services.longform.script_import import estimate_script_duration, parse_markdown_script
 from app.services.longform.status import (
     compute_project_step_status,
@@ -115,6 +116,9 @@ def _render_job_monitor_content(project_id: str, state: Dict[str, Any]):
         "script_generate": "Penulisan Naskah Lengkap",
         "audio_synthesize": "Sintesis Narasi Suara",
         "visual_generate": "Pencarian & Penyiapan Visual",
+        "visual_pipeline": "Pencarian & Penyusunan Visual",
+        "visual_fetch": "Pencarian Footage Visual",
+        "visual_build": "Penyusunan Klip Visual",
         "render_final": "Render Video Final",
         "capcut_export": "Ekspor Proyek CapCut",
     }
@@ -124,9 +128,10 @@ def _render_job_monitor_content(project_id: str, state: Dict[str, Any]):
         st.info(f"⏳ **Pekerjaan Sedang Berjalan**: `{step_display}` (PID: {pid})")
         prog = jobs.get_project_progress(project_id, step)
         if prog["total"] > 0:
+            phase_info = f" — Fase: {prog['phase']}" if prog.get("phase") else ""
             st.progress(
                 prog["percentage"] / 100.0,
-                text=f"{prog['unit_label'].capitalize()} Selesai: {prog['completed']} / {prog['total']} ({prog['percentage']}%)",
+                text=f"{prog['unit_label'].capitalize()} Selesai: {prog['completed']} / {prog['total']} ({prog['percentage']}%){phase_info}",
             )
 
         col_cancel, col_space = st.columns([1, 4])
@@ -663,7 +668,7 @@ def render_project_page(project_id: str):
         elif active_step == "voice":
             render_voice_step_flow(project_id, p_dir, manifest, active_info, is_job_running)
         elif active_step == "visual":
-            render_visual_step_flow(project_id, p_dir, manifest, active_info)
+            render_visual_step_flow(project_id, p_dir, manifest, active_info, is_job_running)
         elif active_step == "render":
             render_render_step_flow(project_id, p_dir, manifest, active_info)
         elif active_step == "capcut":
@@ -925,16 +930,431 @@ def render_voice_step_flow(project_id: str, p_dir: Path, manifest: ProjectManife
                 st.video(cached_prev)
 
 
-# --- Step 3: Visual Flow (C4.3) ---
+# --- Step 3: Visual Flow (7B.1) ---
 
-def render_visual_step_flow(project_id: str, p_dir: Path, manifest: ProjectManifest, step_info: Dict[str, Any]):
-    """Render Step 3: Visual (C4.3)."""
+def get_shot_narration(chapter: Chapter, shot: Shot) -> str:
+    """Extract narration text associated with shot segment_indices or query (V2)."""
+    if shot.segment_indices and getattr(chapter, "tts_groups", None):
+        matched = []
+        for g in chapter.tts_groups:
+            for s in getattr(g, "segments", []):
+                if s.segment_index in shot.segment_indices and s.narration_text:
+                    matched.append(s.narration_text.strip())
+        if matched:
+            return " ".join(matched)
+    return shot.effective_query or shot.search_query or shot.visual_prompt or ""
+
+
+def get_shot_thumbnail_path(project_dir: Path, shot: Shot) -> Optional[Path]:
+    """Get fast thumbnail image path for gallery preview without loading full video (V2)."""
+    # 1. Project thumbnail directory
+    t_dir = project_dir / "assets" / "visual" / "thumbnails"
+    t_file = t_dir / f"{shot.shot_id}.jpg"
+    if t_file.is_file() and t_file.stat().st_size > 0:
+        return t_file
+
+    # 2. Existing shot asset JPG (e.g. from fake or cached image asset)
+    asset_jpg = project_dir / "assets" / "visual" / "shots" / f"{shot.shot_id}_asset.jpg"
+    if asset_jpg.is_file() and asset_jpg.stat().st_size > 0:
+        return asset_jpg
+
+    # 3. Direct image asset if shot.asset_path is an image
+    if shot.asset_path:
+        ap = project_dir / shot.asset_path
+        if ap.is_file() and ap.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp"):
+            return ap
+
+    # 4. Generate thumbnail once via ffmpeg if video exists (clip or asset)
+    v_src = None
+    if shot.rendered_clip:
+        vc = project_dir / shot.rendered_clip
+        if vc.is_file():
+            v_src = vc
+    if not v_src and shot.asset_path:
+        va = project_dir / shot.asset_path
+        if va.is_file() and va.suffix.lower() in (".mp4", ".mov", ".mkv", ".webm"):
+            v_src = va
+
+    if v_src:
+        try:
+            t_dir.mkdir(parents=True, exist_ok=True)
+            cmd = [
+                "ffmpeg", "-y",
+                "-ss", "0.5",
+                "-i", str(v_src),
+                "-vframes", "1",
+                "-vf", "scale=320:-1",
+                str(t_file),
+            ]
+            subprocess.run(cmd, capture_output=True, timeout=5)
+            if t_file.is_file() and t_file.stat().st_size > 0:
+                return t_file
+        except Exception:
+            pass
+
+    return None
+
+
+def render_visual_step_flow(
+    project_id: str,
+    p_dir: Path,
+    manifest: ProjectManifest,
+    step_info: Dict[str, Any],
+    is_job_running: bool = False,
+):
+    """Render Step 3: Visual pipeline, interactive gallery, replacement panel, and cache maintenance (7B.1)."""
+    from app.services.longform.visual.cache import get_cache_status, prune_cache
+    from app.services.longform.visual.local import LocalLibraryManager
+    from app.services.longform.visual.service import VisualService
+
     st.subheader("③ Alokasi & Penyiapan Klip Visual")
     st.write(f"**Status Saat Ini:** `{step_info['label']}`")
-    st.info(f"Proyek memiliki total **{step_info['total']}** shot terencana, dengan **{step_info['completed']}** klip visual valid.")
 
-    st.button("Langkah Visual (Tersedia di Tahap 7B)", disabled=True, type="primary", key=f"btn_vis_disabled_{project_id}")
-    st.caption("Pemilihan visual otomatis, pencarian stock video lokal/web, dan substitusi visual manual tersedia di Tahap 7B.")
+    # --- V1: Summary Metrics ---
+    total_shots = sum(len(ch.shots) for ch in manifest.chapters)
+    built_shots = sum(
+        1 for ch in manifest.chapters for s in ch.shots
+        if s.rendered_clip and (p_dir / s.rendered_clip).is_file()
+    )
+    needs_review_count = sum(
+        1 for ch in manifest.chapters for s in ch.shots
+        if getattr(s, "needs_review", False)
+    )
+    locked_count = sum(
+        1 for ch in manifest.chapters for s in ch.shots
+        if getattr(s, "locked", False)
+    )
+
+    used_sources_set = set()
+    for ch in manifest.chapters:
+        for s in ch.shots:
+            if s.asset_path or s.rendered_clip:
+                src = s.actual_source or s.requested_source or ("fake" if s.is_fake else "stock")
+                used_sources_set.add(src.capitalize())
+    sources_str = ", ".join(sorted(used_sources_set)) if used_sources_set else "Belum ada"
+
+    col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+    col_m1.metric("Klip Siap", f"{built_shots} / {total_shots}")
+    col_m2.metric("Perlu Dicek", f"{needs_review_count}")
+    col_m3.metric("Terkunci", f"{locked_count}")
+    col_m4.metric("Sumber Terpakai", sources_str)
+
+    # --- V1: Source Selection Checkboxes ---
+    st.write("##### 🌐 Pilihan Sumber Footage")
+    col_s1, col_s2, col_s3, col_s4, col_s5 = st.columns(5)
+
+    from app.config import config
+    pixabay_keys = config.app.get("pixabay_api_keys", []) or []
+    has_pixabay = bool((isinstance(pixabay_keys, list) and any(k.strip() for k in pixabay_keys)) or (isinstance(pixabay_keys, str) and pixabay_keys.strip()))
+    raw_pk = pixabay_keys[0] if (isinstance(pixabay_keys, list) and pixabay_keys) else str(pixabay_keys)
+    mask_pixabay = mask_api_key(raw_pk) if has_pixabay else ""
+
+    coverr_keys = config.app.get("coverr_api_keys", []) or []
+    has_coverr = bool((isinstance(coverr_keys, list) and any(k.strip() for k in coverr_keys)) or (isinstance(coverr_keys, str) and coverr_keys.strip()))
+    raw_ck = coverr_keys[0] if (isinstance(coverr_keys, list) and coverr_keys) else str(coverr_keys)
+    mask_coverr = mask_api_key(raw_ck) if has_coverr else ""
+
+    pexels_keys = config.app.get("pexels_api_keys", []) or []
+    has_pexels = bool((isinstance(pexels_keys, list) and any(k.strip() for k in pexels_keys)) or (isinstance(pexels_keys, str) and pexels_keys.strip()))
+
+    ai_image_keys = config.app.get("openai_image_api_keys", []) or []
+    has_ai_image = bool((isinstance(ai_image_keys, list) and any(k.strip() for k in ai_image_keys)) or (isinstance(ai_image_keys, str) and ai_image_keys.strip()))
+
+    cb_pixabay = col_s1.checkbox(
+        f"Pixabay ({mask_pixabay})" if has_pixabay else "Pixabay (Belum ada key)",
+        value=has_pixabay,
+        disabled=not has_pixabay,
+        key=f"cb_prov_pixabay_{project_id}",
+    )
+    cb_coverr = col_s2.checkbox(
+        f"Coverr ({mask_coverr})" if has_coverr else "Coverr (Belum ada key)",
+        value=has_coverr,
+        disabled=not has_coverr,
+        key=f"cb_prov_coverr_{project_id}",
+    )
+    col_s3.checkbox(
+        "Pexels (Belum ada key di config)",
+        value=False,
+        disabled=True,
+        key=f"cb_prov_pexels_{project_id}",
+    )
+    cb_local = col_s4.checkbox(
+        "File lokal (siap)",
+        value=True,
+        disabled=False,
+        key=f"cb_prov_local_{project_id}",
+    )
+    col_s5.checkbox(
+        "Gambar AI (Belum ada key OpenAI)",
+        value=False,
+        disabled=True,
+        key=f"cb_prov_ai_{project_id}",
+    )
+
+    # Determine provider flag
+    target_prov = None
+    if cb_pixabay:
+        target_prov = "pixabay"
+    elif cb_coverr:
+        target_prov = "coverr"
+    elif cb_local:
+        target_prov = "local"
+
+    # --- V1: Single Adaptive Button & Job Monitor ---
+    if is_job_running:
+        st.button("⏳ Sedang Menyusun Visual...", disabled=True, type="primary", key=f"btn_running_vis_{project_id}")
+        st.caption("Pekerjaan sedang berlangsung di latar belakang. Anda dapat memantau progres atau membatalkannya pada panel monitor di atas.")
+    else:
+        st_val = step_info["status"]
+        if st_val == "selesai":
+            if st.button("✅ Selesai ✔ — Lanjut ke Render", type="primary", key=f"btn_next_render_{project_id}"):
+                st.session_state[f"active_step_{project_id}"] = "render"
+                st.rerun()
+        elif st_val == "terhenti":
+            if st.button("▶️ Lanjutkan", type="primary", key=f"btn_resume_vis_{project_id}"):
+                cmd = [sys.executable, "cli_longform.py", "visual", "pipeline", project_id]
+                if target_prov:
+                    cmd.extend(["--provider", target_prov])
+                jobs.start_job(project_id, "visual_pipeline", cmd)
+                st.rerun()
+        elif st_val == "perlu_diperbarui":
+            if st.button("🔄 Perbarui Klip yang Berubah", type="primary", key=f"btn_update_vis_{project_id}"):
+                cmd = [sys.executable, "cli_longform.py", "visual", "pipeline", project_id]
+                if target_prov:
+                    cmd.extend(["--provider", target_prov])
+                jobs.start_job(project_id, "visual_pipeline", cmd)
+                st.rerun()
+        else:  # belum
+            btn_disabled = bool(total_shots == 0)
+            if st.button("🎬 Cari & Susun Visual", type="primary", disabled=btn_disabled, key=f"btn_start_vis_{project_id}"):
+                cmd = [sys.executable, "cli_longform.py", "visual", "pipeline", project_id]
+                if target_prov:
+                    cmd.extend(["--provider", target_prov])
+                jobs.start_job(project_id, "visual_pipeline", cmd)
+                st.rerun()
+            if btn_disabled:
+                st.caption("⚠️ Alokasi shot belum tersedia. Selesaikan langkah **① Naskah** dan **② Suara** terlebih dahulu.")
+
+    # --- V2: Galeri per bab / contact sheet interaktif ---
+    if total_shots > 0:
+        st.write("---")
+        st.write("#### 🖼️ Galeri Visual & Contact Sheet Interaktif")
+
+        filter_mode = st.radio(
+            "Filter Cepat:",
+            ["Semua", "Perlu dicek", "Terkunci", "Placeholder"],
+            horizontal=True,
+            key=f"vis_filter_{project_id}",
+        )
+
+        ch_tabs = st.tabs([f"Bab {ch.chapter_index}: {getattr(ch, 'chapter_title', f'Bab {ch.chapter_index}')[:25]}" for ch in manifest.chapters])
+        for ch_idx, ch in enumerate(manifest.chapters):
+            with ch_tabs[ch_idx]:
+                if filter_mode == "Perlu dicek":
+                    ch_shots = [s for s in ch.shots if getattr(s, "needs_review", False)]
+                elif filter_mode == "Terkunci":
+                    ch_shots = [s for s in ch.shots if getattr(s, "locked", False)]
+                elif filter_mode == "Placeholder":
+                    ch_shots = [s for s in ch.shots if getattr(s, "is_fake", False)]
+                else:
+                    ch_shots = ch.shots
+
+                if not ch_shots:
+                    st.caption("Tidak ada shot yang cocok dengan filter ini.")
+                else:
+                    for r_idx in range(0, len(ch_shots), 4):
+                        cols = st.columns(4)
+                        for c_idx, shot in enumerate(ch_shots[r_idx:r_idx+4]):
+                            with cols[c_idx]:
+                                thumb_p = get_shot_thumbnail_path(p_dir, shot)
+                                if thumb_p and thumb_p.is_file():
+                                    st.image(str(thumb_p), use_container_width=True)
+                                else:
+                                    st.markdown("🖼️ *(Belum ada thumbnail)*")
+
+                                badges = []
+                                if getattr(shot, "needs_review", False):
+                                    badges.append("⚠️ Perlu dicek")
+                                if getattr(shot, "locked", False):
+                                    badges.append("🔒 Terkunci")
+                                if getattr(shot, "is_fake", False):
+                                    badges.append("🎨 Placeholder")
+                                badge_str = f" {' '.join(badges)}" if badges else ""
+
+                                src = shot.actual_source or shot.requested_source or ("fake" if shot.is_fake else "stock")
+                                dur = f"{shot.duration_seconds:.1f}s" if shot.duration_seconds else ""
+                                st.caption(f"**#{shot.shot_index}** ({dur}) • `{src}`{badge_str}")
+
+                                narr = get_shot_narration(ch, shot)
+                                snippet = (narr[:45] + "...") if len(narr) > 45 else narr
+                                if snippet:
+                                    st.caption(f'"{snippet}"')
+
+                                is_sel = (st.session_state.get(f"selected_shot_{project_id}") == shot.shot_id)
+                                btn_type = "primary" if is_sel else "secondary"
+                                btn_lbl = "🔍 Terpilih" if is_sel else "🔍 Detail"
+                                if st.button(btn_lbl, key=f"btn_sh_{project_id}_{shot.shot_id}", type=btn_type, use_container_width=True):
+                                    st.session_state[f"selected_shot_{project_id}"] = shot.shot_id
+                                    st.rerun()
+
+    # --- V3: Detail Panel & Ganti Shot (Visual Replace) ---
+    sel_id = st.session_state.get(f"selected_shot_{project_id}")
+    if sel_id:
+        target_shot = None
+        target_chapter = None
+        for ch in manifest.chapters:
+            for s in ch.shots:
+                if s.shot_id == sel_id:
+                    target_shot = s
+                    target_chapter = ch
+                    break
+            if target_shot:
+                break
+
+        if target_shot and target_chapter:
+            st.write("---")
+            with st.container(border=True):
+                col_dh, col_close = st.columns([4, 1])
+                with col_dh:
+                    st.subheader(f"🎬 Detail Shot: `{target_shot.shot_id}` (Bab {target_shot.chapter_index}, Shot #{target_shot.shot_index})")
+                with col_close:
+                    if st.button("✕ Tutup Detail", key=f"btn_close_detail_{project_id}_{target_shot.shot_id}"):
+                        st.session_state[f"selected_shot_{project_id}"] = None
+                        st.rerun()
+
+                col_left, col_right = st.columns([1, 1])
+                with col_left:
+                    st.markdown("##### 📺 Preview & Informasi Shot")
+                    clip_p = (p_dir / target_shot.rendered_clip) if target_shot.rendered_clip else None
+                    asset_p = (p_dir / target_shot.asset_path) if target_shot.asset_path else None
+                    if clip_p and clip_p.is_file():
+                        st.video(str(clip_p))
+                    elif asset_p and asset_p.is_file() and asset_p.suffix.lower() in (".mp4", ".mov", ".mkv", ".webm"):
+                        st.video(str(asset_p))
+                    elif asset_p and asset_p.is_file():
+                        st.image(str(asset_p), use_container_width=True)
+                    else:
+                        st.info("Klip belum dibuat. Jalankan penyusunan visual untuk merender klip.")
+
+                    target_narr = get_shot_narration(target_chapter, target_shot)
+                    st.markdown(f"**Teks Narasi:**\n> {target_narr or '-'}")
+                    st.write(f"**Kata Kunci:** `{target_shot.search_query or target_shot.visual_prompt or '-'}`")
+                    score_disp = f"{target_shot.relevance_score:.2f}" if target_shot.relevance_score is not None else "-"
+                    st.write(f"**Skor Relevansi:** `{score_disp}`")
+
+                    is_locked = getattr(target_shot, "locked", False)
+                    lock_lbl = "🔓 Buka Kunci Shot" if is_locked else "🔒 Kunci Shot Ini"
+                    if st.button(lock_lbl, key=f"btn_lock_toggle_{project_id}_{target_shot.shot_id}", use_container_width=True):
+                        vis_svc = VisualService(p_dir)
+                        vis_svc.set_lock(manifest, target_shot.shot_id, not is_locked)
+                        save_manifest(manifest, p_dir)
+                        st.success(f"Status shot diubah menjadi {'Terkunci' if not is_locked else 'Terbuka'}.")
+                        time.sleep(0.3)
+                        st.rerun()
+
+                with col_right:
+                    st.markdown("##### 🔄 Penggantian Shot (Visual Replace)")
+                    tab_cands, tab_srch, tab_up = st.tabs(["🎯 Pilih Kandidat Lain", "🔍 Cari Kata Lain", "📤 Unggah File"])
+
+                    with tab_cands:
+                        cands = target_shot.candidates or []
+                        if not cands:
+                            st.caption("Tidak ada kandidat alternatif tersimpan untuk shot ini.")
+                        else:
+                            st.write(f"Ditemukan **{len(cands)}** kandidat alternatif:")
+                            for c_i, c in enumerate(cands[:5]):
+                                score_txt = f"{c.get('relevance_score', 0):.2f}"
+                                st.markdown(f"**Kandidat #{c_i+1}** • Sumber: `{c.get('provider')}` • Skor: `{score_txt}` • `{c.get('source_type')}`")
+                                if st.button(f"👉 Pakai Kandidat #{c_i+1}", key=f"btn_use_cand_{project_id}_{target_shot.shot_id}_{c_i}"):
+                                    with st.spinner("Menerapkan kandidat & menyusun klip..."):
+                                        try:
+                                            vis_svc = VisualService(p_dir)
+                                            vis_svc.replace_shot(manifest, target_shot.shot_id, candidate_index=c_i+1, rebuild=True)
+                                            t_cache = p_dir / "assets" / "visual" / "thumbnails" / f"{target_shot.shot_id}.jpg"
+                                            t_cache.unlink(missing_ok=True)
+                                            save_manifest(manifest, p_dir)
+                                            st.success(f"Shot berhasil diganti ke kandidat #{c_i+1} dan terkunci.")
+                                            time.sleep(0.5)
+                                            st.rerun()
+                                        except Exception as exc:
+                                            st.error(f"Gagal mengganti kandidat: {exc}")
+
+                    with tab_srch:
+                        q_input = st.text_input(
+                            "Kata Kunci Pencarian Baru:",
+                            value=target_shot.search_query or target_shot.visual_prompt or "",
+                            key=f"txt_srch_{project_id}_{target_shot.shot_id}",
+                        )
+                        p_opts = ["pixabay", "coverr"] if has_coverr else ["pixabay"]
+                        sel_p = st.selectbox("Provider:", p_opts, key=f"sel_p_{project_id}_{target_shot.shot_id}")
+                        if st.button("🔍 Cari & Pasang Footage Baru", key=f"btn_srch_apply_{project_id}_{target_shot.shot_id}"):
+                            with st.spinner("Mencari footage baru & menyusun klip..."):
+                                try:
+                                    vis_svc = VisualService(p_dir)
+                                    vis_svc.replace_shot(
+                                        manifest=manifest,
+                                        shot_id=target_shot.shot_id,
+                                        prompt=q_input,
+                                        provider_name=sel_p,
+                                        rebuild=True,
+                                    )
+                                    t_cache = p_dir / "assets" / "visual" / "thumbnails" / f"{target_shot.shot_id}.jpg"
+                                    t_cache.unlink(missing_ok=True)
+                                    save_manifest(manifest, p_dir)
+                                    st.success("Footage baru berhasil ditemukan, disusun, dan shot terkunci.")
+                                    time.sleep(0.5)
+                                    st.rerun()
+                                except Exception as exc:
+                                    st.error(f"Gagal mencari footage baru: {exc}")
+
+                    with tab_up:
+                        uploaded_f = st.file_uploader(
+                            "Unggah video (.mp4, .mov) atau gambar (.jpg, .png):",
+                            type=["mp4", "mov", "mkv", "webm", "jpg", "jpeg", "png", "webp"],
+                            key=f"up_f_{project_id}_{target_shot.shot_id}",
+                        )
+                        if uploaded_f:
+                            if st.button("📥 Simpan ke Library & Pasang ke Shot", key=f"btn_up_apply_{project_id}_{target_shot.shot_id}"):
+                                with st.spinner("Menyimpan ke library lokal & menyusun klip..."):
+                                    try:
+                                        mgr = LocalLibraryManager(p_dir)
+                                        asset_info = mgr.add_file(uploaded_f.getvalue(), uploaded_f.name)
+                                        vis_svc = VisualService(p_dir)
+                                        vis_svc.replace_shot(
+                                            manifest=manifest,
+                                            shot_id=target_shot.shot_id,
+                                            file_path=asset_info["file_path"],
+                                            rebuild=True,
+                                        )
+                                        t_cache = p_dir / "assets" / "visual" / "thumbnails" / f"{target_shot.shot_id}.jpg"
+                                        t_cache.unlink(missing_ok=True)
+                                        save_manifest(manifest, p_dir)
+                                        st.success(f"Berkas '{uploaded_f.name}' berhasil ditambahkan ke library lokal dan dipasang ke shot (terkunci).")
+                                        time.sleep(0.5)
+                                        st.rerun()
+                                    except Exception as exc:
+                                        st.error(f"Gagal mengunggah berkas: {exc}")
+
+    # --- V4: Cache & Pemeliharaan ---
+    with st.expander("⚙️ Pengaturan Lanjutan & Pemeliharaan Cache", expanded=False):
+        c_stat = get_cache_status()
+        col_c1, col_c2, col_c3 = st.columns(3)
+        col_c1.metric("Ukuran Cache Global", f"{c_stat['total_mb']} MB ({c_stat['total_gb']} GB)")
+        col_c2.metric("Total Berkas Cache", f"{c_stat['total_files']} berkas")
+        col_c3.metric("Berkas Terlindungi (Terkunci)", f"{c_stat['locked_files_count']} berkas")
+
+        st.caption("Cache media global menyimpan footage yang telah diunduh untuk menghindari pengunduhan ulang. Berkas yang dipakai oleh shot berstatus terkunci di seluruh proyek dilindungi secara ketat dari pembersihan.")
+
+        confirm_prune = st.checkbox("Saya yakin ingin membersihkan berkas cache lama yang tidak terkunci", key=f"confirm_prune_{project_id}")
+        if st.button("🧹 Bersihkan Cache Lama (Prune)", disabled=not confirm_prune, key=f"btn_prune_cache_{project_id}"):
+            with st.spinner("Membersihkan cache..."):
+                try:
+                    prune_res = prune_cache(older_than_days=14)
+                    st.success(f"Pembersihan berhasil! {prune_res['files_removed']} berkas dihapus ({prune_res['mb_freed']} MB dibebaskan). {prune_res['locked_files_skipped']} berkas terlindungi.")
+                    time.sleep(1)
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Gagal membersihkan cache: {exc}")
 
 
 # --- Step 4: Render Flow (C4.3) ---

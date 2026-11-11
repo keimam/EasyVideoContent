@@ -100,13 +100,22 @@ def is_job_step_completed(project_id: str, step: str) -> bool:
                 if g.audio and g.audio.file_path and (p_dir / g.audio.file_path).is_file() and (p_dir / g.audio.file_path).stat().st_size > 44
             )
             return done_g == total_g
-        elif step == "visual_generate":
+        elif step in ("visual_generate", "visual_pipeline", "visual", "visual_build"):
             total_s = sum(len(ch.shots) for ch in manifest.chapters)
             if total_s == 0:
                 return False
             done_s = sum(
                 1 for ch in manifest.chapters for sh in ch.shots
-                if (sh.rendered_clip and (p_dir / sh.rendered_clip).is_file()) or (sh.asset_path and (p_dir / sh.asset_path).is_file())
+                if sh.rendered_clip and (p_dir / sh.rendered_clip).is_file()
+            )
+            return done_s == total_s
+        elif step == "visual_fetch":
+            total_s = sum(len(ch.shots) for ch in manifest.chapters)
+            if total_s == 0:
+                return False
+            done_s = sum(
+                1 for ch in manifest.chapters for sh in ch.shots
+                if sh.asset_path and (p_dir / sh.asset_path).is_file()
             )
             return done_s == total_s
         elif step == "render_final":
@@ -358,7 +367,68 @@ def get_project_progress(project_id: str, step: Optional[str] = None) -> Dict[st
             "unit_label": "bab",
         }
 
-    # 2. Voice / Audio synthesize step
+    # 2. Visual step (7B.1)
+    if step in ("visual", "visual_pipeline", "visual_fetch", "visual_build"):
+        total_shots = sum(len(ch.shots) for ch in manifest.chapters)
+        if total_shots == 0:
+            return {
+                "completed": 0,
+                "total": 0,
+                "percentage": 0.0,
+                "unit_label": "shot",
+                "phase": "Menunggu naskah/audio",
+            }
+
+        fetched_shots = sum(
+            1 for ch in manifest.chapters for sh in ch.shots
+            if sh.asset_path and (p_dir / sh.asset_path).is_file()
+        )
+        built_shots = sum(
+            1 for ch in manifest.chapters for sh in ch.shots
+            if sh.rendered_clip and (p_dir / sh.rendered_clip).is_file()
+        )
+
+        if step == "visual_fetch":
+            pct = (fetched_shots / total_shots * 100.0) if total_shots > 0 else 0.0
+            return {
+                "completed": fetched_shots,
+                "total": total_shots,
+                "percentage": round(pct, 1),
+                "unit_label": "shot diunduh",
+                "phase": "Mencari footage",
+            }
+        elif step == "visual_build":
+            pct = (built_shots / total_shots * 100.0) if total_shots > 0 else 0.0
+            return {
+                "completed": built_shots,
+                "total": total_shots,
+                "percentage": round(pct, 1),
+                "unit_label": "klip dibuat",
+                "phase": "Menyusun klip",
+            }
+        else:  # visual_pipeline / visual
+            if fetched_shots < total_shots:
+                # Phase 1: Fetching (0% - 50%)
+                pct = (fetched_shots / total_shots * 50.0)
+                phase_label = "Mencari footage"
+                unit_label = f"footage ({fetched_shots}/{total_shots})"
+                completed_count = fetched_shots
+            else:
+                # Phase 2: Building (50% - 100%)
+                pct = 50.0 + (built_shots / total_shots * 50.0)
+                phase_label = "Menyusun klip"
+                unit_label = f"klip ({built_shots}/{total_shots})"
+                completed_count = built_shots
+
+            return {
+                "completed": completed_count,
+                "total": total_shots,
+                "percentage": round(min(pct, 100.0), 1),
+                "unit_label": unit_label,
+                "phase": phase_label,
+            }
+
+    # 3. Voice / Audio synthesize step
     total_groups = sum(len(ch.tts_groups) for ch in manifest.chapters)
     completed_groups = 0
     for ch in manifest.chapters:

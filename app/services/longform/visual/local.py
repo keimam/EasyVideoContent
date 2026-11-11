@@ -68,6 +68,29 @@ class LocalLibraryManager:
 
         return added_assets
 
+    def add_file(self, file_content: bytes, filename: str) -> Dict[str, Any]:
+        """Save a single file from raw bytes into the project library (V3)."""
+        clean_name = Path(filename).name
+        ext = Path(clean_name).suffix.lower()
+        if ext not in ALL_SUPPORTED_EXTS:
+            raise ValueError(f"Unsupported file extension '{ext}'. Supported: {sorted(ALL_SUPPORTED_EXTS)}")
+
+        target_path = self.library_dir / clean_name
+        target_path.write_bytes(file_content)
+        c_hash = compute_file_content_hash(target_path)
+        asset_type = "stock_video" if ext in SUPPORTED_VIDEO_EXTS else "stock_image"
+
+        asset_info = {
+            "filename": clean_name,
+            "relative_path": f"assets/visual/library/{clean_name}",
+            "asset_type": asset_type,
+            "size_bytes": target_path.stat().st_size,
+            "content_hash": c_hash,
+            "file_path": str(target_path),
+        }
+        logger.info(f"Saved uploaded file into library: {clean_name} ({asset_type})")
+        return asset_info
+
     def list_assets(self) -> List[Path]:
         """List all valid media files in the project library."""
         if not self.library_dir.is_dir():

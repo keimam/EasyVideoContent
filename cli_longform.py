@@ -845,6 +845,29 @@ def cmd_voice_test(args: argparse.Namespace) -> int:
 # Visual Commands (Stage 4)
 # ---------------------------------------------------------------------------
 
+def cmd_visual_pipeline(args: argparse.Namespace) -> int:
+    """Acquire visual assets and build shot clips sequentially in one job (7B.1)."""
+    from app.services.longform.store import is_stop_requested
+
+    proj_dir = get_project_dir(args.project_id)
+    if not proj_dir.is_dir():
+        print(f"Error: Project '{args.project_id}' not found at {proj_dir}", file=sys.stderr)
+        return 1
+
+    print(f"\n[Visual Pipeline] Step 1/2: Fetching visual assets for project '{args.project_id}'...")
+    rc_fetch = cmd_visual_fetch(args)
+    if rc_fetch != 0:
+        return rc_fetch
+
+    if is_stop_requested(proj_dir):
+        print(f"\n[Visual Pipeline] Stop requested for project '{args.project_id}'. Skipping clip building.")
+        return 0
+
+    print(f"\n[Visual Pipeline] Step 2/2: Building shot clips for project '{args.project_id}'...")
+    rc_build = cmd_visual_build(args)
+    return rc_build
+
+
 def cmd_visual_fetch(args: argparse.Namespace) -> int:
     """Acquire visual assets for project shots (4.1, 4.5, V1).
 
@@ -1925,6 +1948,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_visual = subparsers.add_parser("visual", help="Manage visual assets, stock footage, AI images, Ken Burns clips, and inspection")
     visual_subs = p_visual.add_subparsers(dest="visual_command", required=True)
 
+    # visual pipeline (7B.1)
+    p_v_pipe = visual_subs.add_parser("pipeline", help="Fetch visual assets and build shot clips sequentially")
+    p_v_pipe.add_argument("project_id", help="Project ID")
+    p_v_pipe.add_argument("--provider", default=None, help="Visual provider ('fake', 'pexels', 'pixabay', 'ai_image', 'local')")
+    p_v_pipe.add_argument("--allow-fallback", action="store_true", help="Allow fallback to fake provider if credentials missing")
+
     # visual fetch
     p_v_fetch = visual_subs.add_parser("fetch", help="Search and acquire visual assets (stock, AI, local, fake)")
     p_v_fetch.add_argument("project_id", help="Project ID")
@@ -2115,7 +2144,9 @@ def main() -> int:
             elif args.voice_command == "test":
                 return cmd_voice_test(args)
         elif args.command == "visual":
-            if args.visual_command == "fetch":
+            if args.visual_command == "pipeline":
+                return cmd_visual_pipeline(args)
+            elif args.visual_command == "fetch":
                 return cmd_visual_fetch(args)
             elif args.visual_command == "build":
                 return cmd_visual_build(args)
