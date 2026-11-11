@@ -20,9 +20,10 @@ from app.services.longform.render.bgm import BgmProcessor
 from app.services.longform.render.chapter_render import probe_media_file
 from app.services.longform.render.subtitle import generate_full_timeline_subtitles
 from app.services.longform.schema import Chapter, ItemStatus, ProjectManifest
+from app.services.longform.store import update_job_phase
 from app.services.longform.visual.credits import CreditsManager
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 
 def format_youtube_timestamp(seconds: float) -> str:
@@ -108,6 +109,7 @@ class FinalConcatenator:
         tmp_final_path = export_dir / "final_video.tmp.mp4"
 
         # 3. Concatenate video streams via -c copy
+        update_job_phase(self.project_dir, phase="Menggabungkan video…", percentage=82.0, is_indeterminate=True)
         concat_txt = temp_dir / "chapters_video_concat.txt"
         video_only_mp4 = temp_dir / "raw_video_concatenated.mp4"
 
@@ -154,6 +156,7 @@ class FinalConcatenator:
         audio_proc_time = time.perf_counter() - t0_audio
 
         # 5. Mux copy video + normalized audio into final video
+        update_job_phase(self.project_dir, phase="Menggabungkan video & audio final…", percentage=93.0, is_indeterminate=True)
         t0_mux = time.perf_counter()
         proc: Optional[subprocess.Popen] = None
         mux_cmd = [
@@ -225,6 +228,7 @@ class FinalConcatenator:
         boundary_offsets = self._validate_chapter_offsets(manifest)
 
         # 8. Generate YouTube Chapters Metadata (5.4)
+        update_job_phase(self.project_dir, phase="Menulis metadata YouTube & subtitle…", percentage=96.0, is_indeterminate=True)
         yt_chapters_file = self.generate_youtube_chapters(manifest, boundary_offsets)
 
         # 9. Generate Subtitles Full Timeline (SRT + ASS) (5.2)

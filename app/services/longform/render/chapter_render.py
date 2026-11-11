@@ -7,7 +7,6 @@ and stream parameters.
 from __future__ import annotations
 
 import json
-import logging
 import os
 from pathlib import Path
 import subprocess
@@ -15,14 +14,14 @@ import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
+from loguru import logger
+
 from app.services.longform.audio_preview import format_ass_timestamp
 from app.services.longform.config import load_longform_config
 from app.services.longform.hashing import compute_chapter_hash
 from app.services.longform.render.subtitle import generate_chapter_ass_and_srt
 from app.services.longform.schema import Chapter, ItemStatus, ProjectManifest, Shot
-from app.services.longform.store import is_stop_requested
-
-logger = logging.getLogger(__name__)
+from app.services.longform.store import is_stop_requested, update_job_phase
 
 
 def escape_ffmpeg_filter_path(path: Path | str) -> str:
@@ -170,9 +169,10 @@ class ChapterRenderer:
         video_enc, preset, crf = resolve_project_video_encoder(manifest)
         fps = float(getattr(manifest.encoder_settings, "fps", 25.0) or 25.0)
 
-        # 6. Build FFmpeg command
+        # 6. Build FFmpeg command with pipe:1 progress
         cmd = [
             "ffmpeg", "-y",
+            "-progress", "pipe:1",
             "-f", "concat",
             "-safe", "0",
             "-i", str(concat_txt_path.resolve()),
@@ -205,25 +205,74 @@ class ChapterRenderer:
             str(tmp_mp4_path),
         ])
 
-        # 7. Execute FFmpeg with Ctrl+C protection
+        # 7. Execute FFmpeg with Ctrl+C and cancellation protection
         if is_stop_requested(self.project_dir):
+            if tmp_mp4_path.is_file():
+                tmp_mp4_path.unlink(missing_ok=True)
             raise InterruptedError(f"Render interrupted: stop requested for project in {self.project_dir}")
 
         logger.info(f"Rendering chapter {chapter_index} -> {tmp_mp4_path}...")
         t0 = time.perf_counter()
         proc: Optional[subprocess.Popen] = None
+        total_duration = float(ch.audio_duration_seconds or sum((s.duration_seconds or 0.0) for s in ch.shots) or 10.0)
+        total_ch = len(manifest.chapters)
+
+        err_file = chapters_dir / f"chapter_{chapter_index:02d}_ffmpeg.err"
+        err_fp = open(err_file, "w", encoding="utf-8", errors="replace")
+
         try:
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stderr=err_fp,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
             )
-            stdout, stderr = proc.communicate()
+
+            last_update_t = 0.0
+            while True:
+                line = proc.stdout.readline() if proc.stdout else ""
+                if not line and proc.poll() is not None:
+                    break
+
+                if is_stop_requested(self.project_dir):
+                    logger.warning(f"Stop requested while rendering chapter {chapter_index}. Terminating ffmpeg.")
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=2.0)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                    if tmp_mp4_path.is_file():
+                        tmp_mp4_path.unlink(missing_ok=True)
+                    raise InterruptedError(f"Render interrupted: stop requested for project in {self.project_dir}")
+
+                if line.startswith("out_time_us="):
+                    try:
+                        us_val = int(line.split("=")[1].strip())
+                        curr_sec = us_val / 1_000_000.0
+                        now_t = time.time()
+                        if now_t - last_update_t >= 0.5:
+                            last_update_t = now_t
+                            ch_pct = int(min(99.0, max(0.0, (curr_sec / total_duration) * 100.0))) if total_duration > 0 else 0
+                            overall_pct = round((((chapter_index - 1) + (ch_pct / 100.0)) / total_ch) * 80.0, 1)
+                            update_job_phase(
+                                self.project_dir,
+                                phase=f"Bab {chapter_index} dari {total_ch} ({ch_pct}%)",
+                                percentage=overall_pct,
+                                current_unit=chapter_index - 1,
+                                total_units=total_ch,
+                                unit_label="bab",
+                            )
+                    except Exception:
+                        pass
+
+            err_fp.close()
             if proc.returncode != 0:
-                raise RuntimeError(f"FFmpeg failed (code {proc.returncode}):\n{stderr}")
+                err_text = err_file.read_text(encoding="utf-8", errors="replace") if err_file.is_file() else ""
+                raise RuntimeError(f"FFmpeg failed (code {proc.returncode}):\n{err_text}")
+
+            err_file.unlink(missing_ok=True)
 
             # Atomic rename on success
             if tmp_mp4_path.is_file():
@@ -232,6 +281,8 @@ class ChapterRenderer:
                 os.replace(tmp_mp4_path, final_mp4_path)
 
         except KeyboardInterrupt:
+            err_fp.close()
+            err_file.unlink(missing_ok=True)
             logger.warning(f"Render interrupted for Chapter {chapter_index}")
             if proc and proc.poll() is None:
                 proc.kill()
@@ -243,6 +294,8 @@ class ChapterRenderer:
             raise
 
         except Exception:
+            err_fp.close()
+            err_file.unlink(missing_ok=True)
             if tmp_mp4_path.is_file():
                 tmp_mp4_path.unlink(missing_ok=True)
             raise

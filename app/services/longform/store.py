@@ -714,3 +714,38 @@ def migrate_umum_presets_and_projects() -> List[str]:
                 logger.warning(f"Error migrating project at {p_dir}: {exc}")
 
     return logs
+
+
+def update_job_phase(
+    project_dir_or_id: Path | str,
+    phase: str,
+    percentage: Optional[float] = None,
+    current_unit: Optional[int] = None,
+    total_units: Optional[int] = None,
+    unit_label: Optional[str] = None,
+    is_indeterminate: bool = False,
+) -> None:
+    """Update active phase and fine-grained progress in job_state.json (Stage 7B.2 P)."""
+    p_dir = Path(project_dir_or_id) if isinstance(project_dir_or_id, Path) else get_project_dir(str(project_dir_or_id))
+    job_file = p_dir / "job_state.json"
+    if not job_file.is_file():
+        return
+    try:
+        data = json.loads(job_file.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or data.get("status") != "running":
+            return
+        prog = data.setdefault("progress", {})
+        prog["phase"] = phase
+        if percentage is not None:
+            prog["percentage"] = min(float(percentage), 99.0)  # Strictly capped at 99.0 while running (P)
+        if current_unit is not None:
+            prog["completed"] = int(current_unit)
+        if total_units is not None:
+            prog["total"] = int(total_units)
+        if unit_label is not None:
+            prog["unit_label"] = str(unit_label)
+        prog["is_indeterminate"] = bool(is_indeterminate)
+        job_file.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    except Exception as exc:
+        logger.debug(f"Failed to update job phase for '{p_dir.name}': {exc}")
+

@@ -146,13 +146,39 @@ def _render_job_monitor_content(project_id: str, state: Dict[str, Any], current_
     if status == "running":
         st.info(f"⏳ **Pekerjaan Sedang Berjalan**: `{step_display}` (PID: {pid})")
         prog = jobs.get_project_progress(project_id, step)
-        if prog["total"] > 0 or prog.get("phase"):
-            phase_info = f" — Fase: {prog['phase']}" if prog.get("phase") else ""
-            tot = prog["total"] if prog["total"] > 0 else 0
-            st.progress(
-                prog["percentage"] / 100.0,
-                text=f"{prog['unit_label'].capitalize()}: {prog['completed']} / {tot} ({prog['percentage']}%){phase_info}",
-            )
+
+        # Elapsed time formatting (Stage 7B.2 P)
+        started_at = state.get("started_at")
+        elapsed_str = ""
+        if started_at:
+            try:
+                dt = datetime.fromisoformat(started_at)
+                elapsed_sec = max(0, int((datetime.now() - dt).total_seconds()))
+                m = elapsed_sec // 60
+                s = elapsed_sec % 60
+                elapsed_str = f"⏱️ {m:02d}:{s:02d}"
+            except Exception:
+                pass
+
+        phase_txt = prog.get("phase") or step_display
+        pct_val = min(float(prog.get("percentage", 0.0)), 99.0)
+        is_indet = bool(prog.get("is_indeterminate"))
+
+        if is_indet:
+            display_txt = f"{phase_txt} • {elapsed_str}" if elapsed_str else phase_txt
+            # Indeterminate bar capped at max 95% (never 100% while running)
+            bar_val = min(max(pct_val / 100.0, 0.1), 0.95)
+            st.progress(bar_val, text=display_txt)
+        else:
+            tot = prog.get("total", 0)
+            comp = prog.get("completed", 0)
+            if tot > 0:
+                bar_text = f"{phase_txt} • {comp}/{tot} ({pct_val:.1f}%)"
+            else:
+                bar_text = f"{phase_txt} ({pct_val:.1f}%)"
+            if elapsed_str:
+                bar_text += f" • {elapsed_str}"
+            st.progress(min(pct_val / 100.0, 0.99), text=bar_text)
 
         col_cancel, col_space = st.columns([1, 4])
         with col_cancel:
@@ -172,13 +198,15 @@ def _render_job_monitor_content(project_id: str, state: Dict[str, Any], current_
     elif status == "stopped":
         st.warning(f"⚠️ **Pekerjaan Terhenti**: `{step_display}` (Pekerjaan belum selesai). Klik tombol **Lanjutkan** di bawah untuk meneruskan.")
         prog = jobs.get_project_progress(project_id, step)
-        if prog["total"] > 0 or prog.get("phase"):
-            phase_info = f" — Fase: {prog['phase']}" if prog.get("phase") else ""
-            tot = prog["total"] if prog["total"] > 0 else 0
-            st.progress(
-                prog["percentage"] / 100.0,
-                text=f"{prog['unit_label'].capitalize()}: {prog['completed']} / {tot} ({prog['percentage']}%){phase_info}",
-            )
+        phase_txt = prog.get("phase") or step_display
+        pct_val = min(float(prog.get("percentage", 0.0)), 99.0)
+        tot = prog.get("total", 0)
+        comp = prog.get("completed", 0)
+        if tot > 0:
+            bar_text = f"{phase_txt} • {comp}/{tot} ({pct_val:.1f}%)"
+        else:
+            bar_text = f"{phase_txt} ({pct_val:.1f}%)"
+        st.progress(min(pct_val / 100.0, 0.99), text=bar_text)
         logs = jobs.get_job_logs(project_id, max_lines=20)
         if logs:
             with st.expander("📋 Log Terakhir Sebelum Terhenti", expanded=False):
@@ -201,13 +229,15 @@ def _render_job_monitor_content(project_id: str, state: Dict[str, Any], current_
 
         if status == "cancelled":
             prog = jobs.get_project_progress(project_id, step)
-            if prog["total"] > 0 or prog.get("phase"):
-                phase_info = f" — Fase: {prog['phase']}" if prog.get("phase") else ""
-                tot = prog["total"] if prog["total"] > 0 else 0
-                st.progress(
-                    prog["percentage"] / 100.0,
-                    text=f"{prog['unit_label'].capitalize()}: {prog['completed']} / {tot} ({prog['percentage']}%){phase_info}",
-                )
+            phase_txt = prog.get("phase") or step_display
+            pct_val = min(float(prog.get("percentage", 0.0)), 99.0)
+            tot = prog.get("total", 0)
+            comp = prog.get("completed", 0)
+            if tot > 0:
+                bar_text = f"{phase_txt} • {comp}/{tot} ({pct_val:.1f}%)"
+            else:
+                bar_text = f"{phase_txt} ({pct_val:.1f}%)"
+            st.progress(min(pct_val / 100.0, 0.99), text=bar_text)
 
         if status == "failed":
             logs = jobs.get_job_logs(project_id, max_lines=20)
@@ -1825,6 +1855,22 @@ def render_render_step_flow(project_id: str, p_dir: Path, manifest: ProjectManif
                 st.session_state.pop(f"sub_prev_img_{project_id}", None)
                 st.rerun()
 
+        # Render Ulang Paksa Semua Bab (Stage 7B.2 U)
+        st.markdown("---")
+        st.markdown("##### 🔄 Render Ulang Paksa Semua Bab")
+        confirm_rerender_all = st.checkbox(
+            "Saya paham bahwa merender ulang semua bab akan memproses kembali seluruh bab video dari awal.",
+            key=f"chk_confirm_rerender_{project_id}",
+        )
+        if st.button(
+            "🔄 Render Ulang Semua Bab",
+            disabled=(not confirm_rerender_all or is_job_running),
+            key=f"btn_rerender_all_exp_{project_id}",
+        ):
+            jobs.start_job(project_id, "render_all", ["python", "cli_longform.py", "render", "all", project_id, "--force"])
+            time.sleep(0.5)
+            st.rerun()
+
     # R3: Adaptive Action Button
     st_val = step_info["status"]
     job_state = jobs.get_job_state(project_id)
@@ -1984,7 +2030,13 @@ def render_capcut_step_flow(project_id: str, p_dir: Path, manifest: ProjectManif
     draft_folder = doc_report.get("draft_folder")
 
     with st.container(border=True):
-        st.markdown("##### 🩺 Cek Status CapCut Desktop")
+        col_cch, col_cc_btn = st.columns([3, 1])
+        with col_cch:
+            st.markdown("##### 🩺 Cek Status CapCut Desktop")
+        with col_cc_btn:
+            if st.button("🔄 Cek ulang status CapCut", key=f"btn_recheck_capcut_{project_id}"):
+                st.rerun()
+
         col_d1, col_d2, col_d3 = st.columns(3)
         col_d1.metric("Status CapCut", "✅ Terpasang" if capcut_installed else "❌ Belum Terpasang")
         col_d2.metric("Versi CapCut", f"{installed_ver or 'N/A'}")

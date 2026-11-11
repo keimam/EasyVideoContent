@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -27,10 +28,18 @@ from app.services.longform.store import (
     is_stop_requested,
     load_manifest,
     request_job_stop,
+    update_job_phase,
 )
 
 # In-memory tracking of active process handles in this Python process
 _ACTIVE_PROCESSES: Dict[str, subprocess.Popen] = {}
+
+ANSI_REGEX = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+
+
+def strip_ansi_codes(text: str) -> str:
+    """Strip ANSI escape sequences from text for clean UI display (Stage 7B.2 P)."""
+    return ANSI_REGEX.sub("", text)
 
 
 def get_job_state_file(project_id: str) -> Path:
@@ -335,7 +344,7 @@ def dismiss_job(project_id: str) -> bool:
 
 
 def get_job_logs(project_id: str, max_lines: int = 30) -> List[str]:
-    """Read the last max_lines from the active or latest job log file."""
+    """Read the last max_lines from the active or latest job log file with ANSI codes stripped."""
     state = _read_job_state_from_disk(project_id)
     if not state:
         return []
@@ -351,13 +360,13 @@ def get_job_logs(project_id: str, max_lines: int = 30) -> List[str]:
     try:
         with open(log_path, "r", encoding="utf-8", errors="replace") as f:
             lines = f.readlines()
-            return [l.rstrip("\r\n") for l in lines[-max_lines:]]
+            return [strip_ansi_codes(l.rstrip("\r\n")) for l in lines[-max_lines:]]
     except Exception as exc:
         return [f"Error reading log file: {exc}"]
 
 
 def get_project_progress(project_id: str, step: Optional[str] = None) -> Dict[str, Any]:
-    """Compute progress of project pipeline steps from manifest (B2)."""
+    """Compute progress of project pipeline steps from manifest and live job state (B2, Stage 7B.2 P)."""
     p_dir = get_project_dir(project_id)
     if not p_dir.is_dir():
         return {"completed": 0, "total": 0, "percentage": 0.0, "unit_label": "unit"}
@@ -366,6 +375,12 @@ def get_project_progress(project_id: str, step: Optional[str] = None) -> Dict[st
         manifest = load_manifest(p_dir)
     except Exception:
         return {"completed": 0, "total": 0, "percentage": 0.0, "unit_label": "unit"}
+
+    state = _read_job_state_from_disk(project_id) or {}
+    job_status = state.get("status")
+    job_progress = state.get("progress") or {}
+    is_running = (job_status == "running")
+    is_completed = (job_status == "completed")
 
     total_chapters = len(manifest.chapters)
 
@@ -376,15 +391,25 @@ def get_project_progress(project_id: str, step: Optional[str] = None) -> Dict[st
             if any(g.paragraph_text and g.paragraph_text.strip() for g in ch.tts_groups)
             or (p_dir / "script" / f"chapter_{ch.chapter_index:02d}.md").is_file()
         )
-        pct = (completed_chapters / total_chapters * 100.0) if total_chapters > 0 else 0.0
+        if is_completed:
+            pct = 100.0
+            phase = "Selesai"
+        elif is_running:
+            pct = min((completed_chapters / total_chapters * 100.0) if total_chapters > 0 else 5.0, 99.0)
+            phase = job_progress.get("phase") or "Menulis naskah"
+        else:
+            pct = (completed_chapters / total_chapters * 100.0) if total_chapters > 0 else 0.0
+            phase = "Selesai" if (total_chapters > 0 and completed_chapters == total_chapters) else "Draft naskah"
         return {
             "completed": completed_chapters,
             "total": total_chapters,
             "percentage": round(pct, 1),
             "unit_label": "bab",
+            "phase": phase,
+            "is_indeterminate": False,
         }
 
-    # 2. Visual step (7B.1 v2)
+    # 2. Visual step (7B.1 v2, 7B.2 P)
     if step in ("visual", "visual_pipeline", "visual_fetch", "visual_build"):
         total_shots = sum(len(ch.shots) for ch in manifest.chapters)
         if total_shots == 0:
@@ -394,6 +419,7 @@ def get_project_progress(project_id: str, step: Optional[str] = None) -> Dict[st
                 "percentage": 5.0,
                 "unit_label": "shot",
                 "phase": "Membagi shot",
+                "is_indeterminate": True,
             }
 
         fetched_shots = sum(
@@ -405,86 +431,147 @@ def get_project_progress(project_id: str, step: Optional[str] = None) -> Dict[st
             if sh.rendered_clip and (p_dir / sh.rendered_clip).is_file()
         )
 
+        if is_completed:
+            return {
+                "completed": total_shots,
+                "total": total_shots,
+                "percentage": 100.0,
+                "unit_label": f"klip ({total_shots}/{total_shots})",
+                "phase": "Selesai",
+                "is_indeterminate": False,
+            }
+
         if step == "visual_fetch":
             pct = (fetched_shots / total_shots * 100.0) if total_shots > 0 else 0.0
+            if is_running:
+                pct = min(pct, 99.0)
             return {
                 "completed": fetched_shots,
                 "total": total_shots,
                 "percentage": round(pct, 1),
                 "unit_label": "shot diunduh",
-                "phase": "Mencari footage",
+                "phase": job_progress.get("phase") or "Mencari footage",
+                "is_indeterminate": bool(job_progress.get("is_indeterminate")),
             }
         elif step == "visual_build":
             pct = (built_shots / total_shots * 100.0) if total_shots > 0 else 0.0
+            if is_running:
+                pct = min(pct, 99.0)
             return {
                 "completed": built_shots,
                 "total": total_shots,
                 "percentage": round(pct, 1),
                 "unit_label": "klip dibuat",
-                "phase": "Menyusun klip",
+                "phase": job_progress.get("phase") or "Menyusun klip",
+                "is_indeterminate": bool(job_progress.get("is_indeterminate")),
             }
         else:  # visual_pipeline / visual
             if fetched_shots < total_shots:
-                # Phase 2: Fetching (5% - 50%)
                 pct = 5.0 + (fetched_shots / total_shots * 45.0) if total_shots > 0 else 5.0
-                phase_label = "Mencari footage"
+                phase_label = job_progress.get("phase") or "Mencari footage"
                 unit_label = f"footage ({fetched_shots}/{total_shots})"
                 completed_count = fetched_shots
             elif built_shots < total_shots:
-                # Phase 3: Building (50% - 100%)
                 pct = 50.0 + (built_shots / total_shots * 50.0) if total_shots > 0 else 50.0
-                phase_label = "Menyusun klip"
+                phase_label = job_progress.get("phase") or "Menyusun klip"
                 unit_label = f"klip ({built_shots}/{total_shots})"
                 completed_count = built_shots
             else:
-                pct = 100.0
-                phase_label = "Selesai"
+                pct = 99.0 if is_running else 100.0
+                phase_label = job_progress.get("phase") if is_running else "Selesai"
                 unit_label = f"klip ({total_shots}/{total_shots})"
                 completed_count = total_shots
+
+            if is_running:
+                pct = min(pct, 99.0)
+                if phase_label == "Selesai":
+                    phase_label = "Menyelesaikan visual"
 
             return {
                 "completed": completed_count,
                 "total": total_shots,
-                "percentage": round(min(pct, 100.0), 1),
+                "percentage": round(pct, 1),
                 "unit_label": unit_label,
                 "phase": phase_label,
+                "is_indeterminate": bool(job_progress.get("is_indeterminate")),
             }
 
-    # 3. Render step (Stage 7B.2 R3)
+    # 3. Render step (Stage 7B.2 R3 & P)
     if step in ("render", "render_all", "render_pipeline", "render_final"):
         rendered_chapters = sum(
             1 for ch in manifest.chapters
             if ch.output_file and (p_dir / ch.output_file).is_file() and ch.status == ItemStatus.completed
         )
-        has_final = bool(manifest.final_video_file and (p_dir / manifest.final_video_file).is_file())
-        if has_final:
+
+        if is_completed:
             return {
                 "completed": total_chapters,
                 "total": total_chapters,
                 "percentage": 100.0,
                 "unit_label": f"bab ({total_chapters}/{total_chapters})",
                 "phase": "Selesai",
+                "is_indeterminate": False,
             }
-        elif rendered_chapters < total_chapters:
-            pct = round((rendered_chapters / (total_chapters + 1)) * 80.0, 1) if total_chapters > 0 else 0.0
+
+        active_phase = job_progress.get("phase")
+        is_indet = bool(job_progress.get("is_indeterminate"))
+
+        if is_running:
+            if is_indet or rendered_chapters >= total_chapters:
+                pct = float(job_progress.get("percentage", 85.0))
+                pct = min(max(pct, 80.0), 95.0)  # Capped at 95% while running indeterminate final steps
+                return {
+                    "completed": total_chapters,
+                    "total": total_chapters,
+                    "percentage": round(pct, 1),
+                    "unit_label": "penggabungan",
+                    "phase": active_phase or "Menggabungkan video & audio final",
+                    "is_indeterminate": True,
+                }
+            else:
+                pct = float(job_progress.get("percentage", round((rendered_chapters / total_chapters) * 80.0, 1) if total_chapters > 0 else 0.0))
+                return {
+                    "completed": rendered_chapters,
+                    "total": total_chapters,
+                    "percentage": round(min(pct, 99.0), 1),
+                    "unit_label": f"bab ({rendered_chapters}/{total_chapters})",
+                    "phase": active_phase or f"Bab {rendered_chapters + 1} dari {total_chapters}",
+                    "is_indeterminate": False,
+                }
+        else:
+            # Stopped, cancelled, or not started
+            has_final = bool(manifest.final_video_file and (p_dir / manifest.final_video_file).is_file())
+            if has_final and rendered_chapters == total_chapters:
+                return {
+                    "completed": total_chapters,
+                    "total": total_chapters,
+                    "percentage": 100.0,
+                    "unit_label": f"bab ({total_chapters}/{total_chapters})",
+                    "phase": "Selesai",
+                    "is_indeterminate": False,
+                }
+            pct = round((rendered_chapters / total_chapters) * 80.0, 1) if total_chapters > 0 else 0.0
             return {
                 "completed": rendered_chapters,
                 "total": total_chapters,
-                "percentage": pct,
+                "percentage": round(min(pct, 95.0), 1),
                 "unit_label": f"bab ({rendered_chapters}/{total_chapters})",
-                "phase": f"Bab {rendered_chapters + 1} dari {total_chapters}",
-            }
-        else:
-            return {
-                "completed": rendered_chapters,
-                "total": total_chapters + 1,
-                "percentage": 90.0,
-                "unit_label": "penggabungan",
-                "phase": "Menggabungkan video & normalisasi audio",
+                "phase": f"Bab {rendered_chapters} dari {total_chapters}" if rendered_chapters > 0 else "Belum dirender",
+                "is_indeterminate": False,
             }
 
-    # 4. Pipeline Auto step (Stage 7B.2 A3)
+    # 4. Pipeline Auto step (Stage 7B.2 A3 & P)
     if step == "pipeline_auto":
+        if is_completed:
+            return {
+                "completed": 1,
+                "total": 1,
+                "percentage": 100.0,
+                "unit_label": "selesai",
+                "phase": "Selesai",
+                "is_indeterminate": False,
+            }
+
         # Check Voice
         total_groups = sum(len(ch.tts_groups) for ch in manifest.chapters)
         completed_groups = sum(
@@ -496,9 +583,10 @@ def get_project_progress(project_id: str, step: Optional[str] = None) -> Dict[st
             return {
                 "completed": completed_groups,
                 "total": total_groups,
-                "percentage": pct,
+                "percentage": min(pct, 25.0),
                 "unit_label": f"audio ({completed_groups}/{total_groups})",
-                "phase": "Langkah 2/4 · Suara · Menyintesis narasi",
+                "phase": job_progress.get("phase") or "Langkah 2/4 · Suara · Menyintesis narasi",
+                "is_indeterminate": False,
             }
 
         # Check Visual
@@ -514,20 +602,21 @@ def get_project_progress(project_id: str, step: Optional[str] = None) -> Dict[st
         if built_shots < total_shots:
             if fetched_shots < total_shots:
                 pct = 25.0 + ((fetched_shots / total_shots) * 20.0) if total_shots > 0 else 25.0
-                phase_label = f"Langkah 3/4 · Visual · Mencari footage ({fetched_shots}/{total_shots})"
+                phase_label = job_progress.get("phase") or f"Langkah 3/4 · Visual · Mencari footage ({fetched_shots}/{total_shots})"
                 unit_label = f"footage ({fetched_shots}/{total_shots})"
                 completed_count = fetched_shots
             else:
                 pct = 45.0 + ((built_shots / total_shots) * 25.0) if total_shots > 0 else 45.0
-                phase_label = f"Langkah 3/4 · Visual · Menyusun klip ({built_shots}/{total_shots})"
+                phase_label = job_progress.get("phase") or f"Langkah 3/4 · Visual · Menyusun klip ({built_shots}/{total_shots})"
                 unit_label = f"klip ({built_shots}/{total_shots})"
                 completed_count = built_shots
             return {
                 "completed": completed_count,
                 "total": total_shots,
-                "percentage": round(pct, 1),
+                "percentage": round(min(pct, 70.0), 1),
                 "unit_label": unit_label,
                 "phase": phase_label,
+                "is_indeterminate": False,
             }
 
         # Check Render
@@ -536,24 +625,26 @@ def get_project_progress(project_id: str, step: Optional[str] = None) -> Dict[st
             if ch.output_file and (p_dir / ch.output_file).is_file() and ch.status == ItemStatus.completed
         )
         has_final = bool(manifest.final_video_file and (p_dir / manifest.final_video_file).is_file())
-        if not has_final:
+        if not has_final or is_running:
             if rendered_chapters < total_chapters:
-                pct = 70.0 + ((rendered_chapters / (total_chapters + 1)) * 25.0) if total_chapters > 0 else 70.0
-                phase_label = f"Langkah 4/4 · Render · Bab {rendered_chapters + 1} dari {total_chapters}"
+                pct = 70.0 + ((rendered_chapters / total_chapters) * 20.0) if total_chapters > 0 else 70.0
+                phase_label = job_progress.get("phase") or f"Langkah 4/4 · Render · Bab {rendered_chapters + 1} dari {total_chapters}"
+                is_indet = False
             else:
-                pct = 95.0
-                phase_label = "Langkah 4/4 · Render · Menggabungkan & Normalisasi"
+                pct = min(float(job_progress.get("percentage", 92.0)), 95.0)
+                phase_label = job_progress.get("phase") or "Langkah 4/4 · Render · Menggabungkan & Normalisasi"
+                is_indet = True
             return {
                 "completed": rendered_chapters,
-                "total": total_chapters + 1,
+                "total": total_chapters,
                 "percentage": round(pct, 1),
                 "unit_label": f"bab ({rendered_chapters}/{total_chapters})",
                 "phase": phase_label,
+                "is_indeterminate": is_indet,
             }
 
         # Check CapCut if present in job command
-        job_state = _read_job_state_from_disk(project_id) or {}
-        cmd = job_state.get("command", [])
+        cmd = state.get("command", [])
         with_cc = any("capcut" in str(arg).lower() for arg in cmd)
         from app.services.longform.status import find_latest_capcut_draft
         cc_draft = find_latest_capcut_draft(p_dir, project_id)
@@ -563,27 +654,39 @@ def get_project_progress(project_id: str, step: Optional[str] = None) -> Dict[st
                 "total": 1,
                 "percentage": 98.0,
                 "unit_label": "draft",
-                "phase": "Langkah 5/5 · CapCut · Mengekspor draft",
+                "phase": job_progress.get("phase") or "Langkah 5/5 · CapCut · Mengekspor draft",
+                "is_indeterminate": True,
             }
 
         return {
             "completed": 1,
             "total": 1,
-            "percentage": 100.0,
+            "percentage": 99.0 if is_running else 100.0,
             "unit_label": "selesai",
-            "phase": "Selesai",
+            "phase": "Menyelesaikan auto pipeline" if is_running else "Selesai",
+            "is_indeterminate": False,
         }
 
-    # 5. CapCut step
-    if step == "capcut_export":
-        from app.services.longform.status import find_latest_capcut_draft
-        cc_draft = find_latest_capcut_draft(p_dir, project_id)
+    # 5. CapCut step (Stage 7B.2 C3 & P)
+    if step in ("capcut_export", "capcut"):
+        if is_completed:
+            return {
+                "completed": 1,
+                "total": 1,
+                "percentage": 100.0,
+                "unit_label": "draft",
+                "phase": "Selesai",
+                "is_indeterminate": False,
+            }
+        active_phase = job_progress.get("phase") or "Mengekspor draft CapCut"
+        pct = float(job_progress.get("percentage", 50.0))
         return {
-            "completed": 1 if cc_draft else 0,
+            "completed": 0,
             "total": 1,
-            "percentage": 100.0 if cc_draft else 50.0,
+            "percentage": round(min(pct, 95.0), 1),
             "unit_label": "draft",
-            "phase": "Selesai" if cc_draft else "Mengekspor draft",
+            "phase": active_phase,
+            "is_indeterminate": True,
         }
 
     # 6. Voice / Audio synthesize step
@@ -596,10 +699,29 @@ def get_project_progress(project_id: str, step: Optional[str] = None) -> Dict[st
                 if af.is_file() and af.stat().st_size > 0:
                     completed_groups += 1
 
+    if is_completed:
+        return {
+            "completed": total_groups,
+            "total": total_groups,
+            "percentage": 100.0,
+            "unit_label": "grup audio",
+            "phase": "Selesai",
+            "is_indeterminate": False,
+        }
+
     pct = (completed_groups / total_groups * 100.0) if total_groups > 0 else 0.0
+    if is_running:
+        pct = min(pct, 99.0)
+        phase_label = job_progress.get("phase") or f"Menyintesis narasi suara ({completed_groups}/{total_groups})"
+    else:
+        phase_label = "Selesai" if (total_groups > 0 and completed_groups == total_groups) else "Sintesis suara"
+
     return {
         "completed": completed_groups,
         "total": total_groups,
         "percentage": round(pct, 1),
         "unit_label": "grup audio",
+        "phase": phase_label,
+        "is_indeterminate": bool(job_progress.get("is_indeterminate")),
     }
+

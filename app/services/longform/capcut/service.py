@@ -25,7 +25,7 @@ from app.services.longform.capcut.detector import (
     is_capcut_running,
 )
 from app.services.longform.render.bgm import concatenate_wav_files, resolve_bgm_file
-from app.services.longform.store import get_project_dir, load_manifest
+from app.services.longform.store import get_project_dir, load_manifest, update_job_phase
 
 
 def parse_srt_entries(srt_path: Path, max_entries: int | None = None) -> list[dict[str, Any]]:
@@ -355,6 +355,7 @@ def export_full_project(
     - Backup Asset Pack: export/capcut_assets/ with numbered shots, audios, SRT, README
     """
     project_dir = get_project_dir(project_id)
+    update_job_phase(project_dir, phase="Membaca proyek…", percentage=10.0, is_indeterminate=True)
     manifest = load_manifest(project_dir)
 
     if not manifest.chapters:
@@ -378,6 +379,7 @@ def export_full_project(
     draft_name = get_unique_draft_name(base_draft_name, check_dirs)
 
     # --- 1. GATHER ALL VIDEO SHOTS (B1) ---
+    update_job_phase(project_dir, phase="Menyusun track…", percentage=40.0, is_indeterminate=True)
     all_video_clips = []
     total_timeline_duration = 0.0
     fps = float(getattr(manifest.encoder_settings, "fps", 30.0) or 30.0)
@@ -513,6 +515,7 @@ def export_full_project(
 
     # --- 7. BUILD CAPCUT DRAFT (B1, B2, C1, C2, C3) ---
     export_draft_dir = export_capcut_root / draft_name
+    update_job_phase(project_dir, phase="Menulis draft…", percentage=70.0, is_indeterminate=True)
 
     capcut_text_size = resolve_capcut_text_size(manifest)
     builder = CapCutDraftBuilder()
@@ -544,6 +547,8 @@ def export_full_project(
     if install:
         if is_capcut_running():
             raise RuntimeError("CapCut sedang berjalan. Tutup CapCut sebelum ekspor untuk mencegah korupsi draft.")
+
+        update_job_phase(project_dir, phase="Memasang ke folder CapCut…", percentage=90.0, is_indeterminate=True)
 
         if not draft_root or not draft_root.is_dir():
             raise RuntimeError("Could not locate CapCut draft directory (com.lveditor.draft).")

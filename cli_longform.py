@@ -1959,8 +1959,12 @@ def cmd_pipeline_auto(args: argparse.Namespace) -> int:
         # Step 5: CapCut (optional)
         if getattr(args, "with_capcut", False):
             from app.services.longform.status import find_latest_capcut_draft
+            from app.services.longform.capcut.detector import is_capcut_running
             cc_info = find_latest_capcut_draft(proj_dir, args.project_id)
             if not cc_info:
+                if is_capcut_running():
+                    print("\n[ERROR] CapCut sedang berjalan. Tutup CapCut sebelum ekspor untuk mencegah korupsi draft.", file=sys.stderr)
+                    return 1
                 print(f"\n>>> [4/4 CapCut] Exporting project to CapCut Desktop...")
                 export_full_project(args.project_id, install=True)
             else:

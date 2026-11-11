@@ -460,3 +460,136 @@ def test_render_cancellation_and_partial_cleanup(tmp_path):
         tmp_file.unlink(missing_ok=True)
 
     assert not tmp_file.exists()
+
+
+def test_bug_p_ansi_code_stripping(tmp_path):
+    """Test P: jobs.get_job_logs strips ANSI color escape sequences cleanly without modifying disk file."""
+    manifest, p_dir = create_project("ansi_proj", "ANSI Project", "automotive.muscle_car", projects_root=tmp_path)
+    logs_dir = p_dir / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    raw_log = logs_dir / "job_render.log"
+
+    raw_text = "\x1b[32m2026-11-11 14:00:00.123\x1b[0m | \x1b[34m\x1b[1mDEBUG\x1b[0m | Rendering chapter 1\n"
+    raw_log.write_text(raw_text, encoding="utf-8")
+
+    job_state = {
+        "project_id": "ansi_proj",
+        "step": "render_all",
+        "status": "running",
+        "log_file": str(raw_log),
+    }
+    (p_dir / "job_state.json").write_text(json.dumps(job_state), encoding="utf-8")
+
+    with patch("app.services.longform.ui.jobs.get_project_dir", return_value=p_dir):
+        lines = jobs.get_job_logs("ansi_proj", max_lines=10)
+        assert len(lines) == 1
+        assert "\x1b[" not in lines[0]
+        assert "2026-11-11 14:00:00.123 | DEBUG | Rendering chapter 1" == lines[0]
+
+    # Verify original file on disk is untouched
+    assert raw_log.read_text(encoding="utf-8") == raw_text
+
+
+def test_bug_p_running_progress_never_100_percent_or_selesai(tmp_path):
+    """Test P: Running jobs must NEVER return 100% or 'Selesai' even if final video exists on disk."""
+    manifest, p_dir = create_project("prog_proj", "Progress Project", "automotive.muscle_car", projects_root=tmp_path)
+
+    # Chapters and final video exist from a previous run
+    ch_out = p_dir / "assets" / "visual" / "chapters" / "chapter_01.mp4"
+    ch_out.parent.mkdir(parents=True, exist_ok=True)
+    ch_out.write_bytes(b"dummy_mp4")
+
+    final_out = p_dir / "export" / "final_video.mp4"
+    final_out.parent.mkdir(parents=True, exist_ok=True)
+    final_out.write_bytes(b"dummy_final_mp4")
+
+    manifest.final_video_file = str(final_out.relative_to(p_dir))
+    manifest.chapters = [
+        Chapter(
+            chapter_index=1,
+            chapter_title="Chapter 1",
+            status=ItemStatus.completed,
+            output_file=str(ch_out.relative_to(p_dir)),
+        )
+    ]
+    save_manifest(manifest, p_dir)
+
+    # 1. Job is actively RUNNING
+    state_running = {
+        "project_id": "prog_proj",
+        "step": "render_all",
+        "status": "running",
+        "progress": {
+            "phase": "Menggabungkan video & audio final…",
+            "is_indeterminate": True,
+            "percentage": 90.0,
+        },
+    }
+    (p_dir / "job_state.json").write_text(json.dumps(state_running), encoding="utf-8")
+
+    with patch("app.services.longform.ui.jobs.get_project_dir", return_value=p_dir):
+        prog = jobs.get_project_progress("prog_proj", "render_all")
+        assert prog["percentage"] <= 95.0, "Running indeterminate progress must be capped at 95%"
+        assert prog["phase"] != "Selesai", "Running job phase must NEVER be 'Selesai'"
+        assert prog["phase"] == "Menggabungkan video & audio final…"
+        assert prog["is_indeterminate"] is True
+
+    # 2. Job is COMPLETED (exit code 0)
+    state_completed = {
+        "project_id": "prog_proj",
+        "step": "render_all",
+        "status": "completed",
+        "exit_code": 0,
+    }
+    (p_dir / "job_state.json").write_text(json.dumps(state_completed), encoding="utf-8")
+
+    with patch("app.services.longform.ui.jobs.get_project_dir", return_value=p_dir):
+        prog_done = jobs.get_project_progress("prog_proj", "render_all")
+        assert prog_done["percentage"] == 100.0
+        assert prog_done["phase"] == "Selesai"
+
+
+def test_capcut_running_rejection_and_untouched_draft(tmp_path):
+    """Test K: When CapCut is running, export_full_project rejects immediately and leaves draft folder untouched."""
+    from app.services.longform.capcut.service import export_full_project
+
+    manifest, p_dir = create_project("cc_run_proj", "CapCut Running Project", "automotive.muscle_car", projects_root=tmp_path)
+    ch_out = p_dir / "assets" / "visual" / "shots" / "s1.mp4"
+    ch_out.parent.mkdir(parents=True, exist_ok=True)
+    ch_out.write_bytes(b"dummy")
+
+    ch_wav = p_dir / "assets" / "audio" / "narration" / "chapter_01.wav"
+    ch_wav.parent.mkdir(parents=True, exist_ok=True)
+    ch_wav.write_bytes(b"dummy_wav")
+
+    manifest.chapters = [
+        Chapter(
+            chapter_index=1,
+            chapter_title="Chapter 1",
+            audio_file=str(ch_wav.relative_to(p_dir)),
+            shots=[
+                Shot(
+                    shot_id="s1",
+                    shot_index=1,
+                    chapter_index=1,
+                    asset_path=str(ch_out.relative_to(p_dir)),
+                    duration_seconds=5.0,
+                )
+            ]
+        )
+    ]
+    save_manifest(manifest, p_dir)
+
+    mock_capcut_draft_root = tmp_path / "com.lveditor.draft"
+    mock_capcut_draft_root.mkdir(parents=True, exist_ok=True)
+
+    with patch("app.services.longform.capcut.service.get_project_dir", return_value=p_dir), \
+         patch("app.services.longform.capcut.service.detect_draft_folder", return_value=mock_capcut_draft_root), \
+         patch("app.services.longform.capcut.service.is_capcut_running", return_value=True):
+        
+        with pytest.raises(RuntimeError, match="CapCut sedang berjalan"):
+            export_full_project("cc_run_proj", install=True)
+
+    # Draft folder in CapCut must remain completely untouched (empty)
+    items_in_capcut = list(mock_capcut_draft_root.iterdir())
+    assert len(items_in_capcut) == 0, "No draft directories should be created when CapCut is running"
