@@ -122,6 +122,7 @@ def _render_job_monitor_content(project_id: str, state: Dict[str, Any], current_
         "visual_pipeline": 3, "visual_fetch": 3, "visual_build": 3, "visual_generate": 3, "visual": 3,
         "render_final": 4, "render": 4,
         "capcut_export": 5, "capcut": 5,
+        "pipeline_auto": 99,
     }
     if current_step and status in ("completed", "cancelled", "failed", "stopped"):
         job_rank = step_order.get(step, 0)
@@ -140,6 +141,7 @@ def _render_job_monitor_content(project_id: str, state: Dict[str, Any], current_
         "visual_build": "Penyusunan Klip Visual",
         "render_final": "Render Video Final",
         "capcut_export": "Ekspor Proyek CapCut",
+        "pipeline_auto": "Otomatis Sampai Selesai",
     }
     step_display = step_display_names.get(step, step)
 
@@ -220,7 +222,8 @@ def _render_job_monitor_content(project_id: str, state: Dict[str, Any], current_
             elif status == "cancelled":
                 st.warning(f"🛑 **Pekerjaan Dibatalkan**: `{step_display}`")
             elif status == "failed":
-                st.error(f"❌ **Pekerjaan Gagal**: `{step_display}` (Kode Keluar: {state.get('exit_code', 'unknown')})")
+                err_summary = f" — {state.get('error_message')}" if state.get("error_message") else f" (Kode Keluar: {state.get('exit_code', 'unknown')})"
+                st.error(f"❌ **Pekerjaan Gagal**: `{step_display}`{err_summary}")
         with col_x:
             dismiss_key = f"btn_dismiss_job_{project_id}_{state.get('finished_at', state.get('started_at', ''))}"
             if st.button("✕", key=dismiss_key, help="Tutup pemberitahuan pekerjaan"):
@@ -240,6 +243,20 @@ def _render_job_monitor_content(project_id: str, state: Dict[str, Any], current_
             st.progress(min(pct_val / 100.0, 0.99), text=bar_text)
 
         if status == "failed":
+            failed_step_name = state.get("failed_step")
+            if failed_step_name:
+                st.caption(f"⚠️ Langkah yang mengalami kegagalan: **{failed_step_name.capitalize()}**")
+
+            col_retry, _ = st.columns([1, 4])
+            with col_retry:
+                if st.button("🔄 Coba Lagi", key=f"btn_retry_job_{project_id}", type="primary"):
+                    cmd = state.get("command")
+                    if cmd:
+                        jobs.dismiss_job(project_id)
+                        jobs.start_job(project_id, state.get("step", "pipeline_auto"), cmd)
+                        time.sleep(0.5)
+                        st.rerun()
+
             logs = jobs.get_job_logs(project_id, max_lines=20)
             if logs:
                 with st.expander("Detail Error Log", expanded=False):
@@ -744,7 +761,8 @@ def render_project_page(project_id: str):
         )
 
         if is_review_paused:
-            st.warning("⚠️ **Pekerjaan Otomatis Terhenti**: Terdapat shot yang ditandai 'Perlu dicek' pada Langkah ③ Visual. Silakan tinjau visual di tab ③ atau klik tombol di bawah untuk melanjutkan render.")
+            phase_msg = f" ({job_state.get('phase')})" if job_state.get("phase") else ""
+            st.warning(f"⚠️ **Pekerjaan Otomatis Terhenti**{phase_msg}: Terdapat shot yang ditandai 'Perlu dicek' pada Langkah ③ Visual. Silakan tinjau visual di tab ③ atau klik tombol di bawah untuk melanjutkan render.")
             col_b1, _ = st.columns([2, 3])
             with col_b1:
                 if st.button("▶️ Lanjutkan Otomatis (Abaikan Pengecekan)", key=f"btn_resume_auto_{project_id}", type="primary", use_container_width=True):

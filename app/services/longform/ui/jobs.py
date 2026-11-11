@@ -162,17 +162,38 @@ def get_job_state(project_id: str) -> Optional[Dict[str, Any]]:
                 elif ret in (-1073741510, 3221225786, -signal.SIGINT, signal.SIGINT):
                     state["status"] = "cancelled"
                 else:
-                    state["status"] = "stopped" if not is_job_step_completed(project_id, step) else "completed"
+                    disk_state = _read_job_state_from_disk(project_id)
+                    if disk_state and disk_state.get("status") in ("failed", "stopped"):
+                        state["status"] = disk_state["status"]
+                        if disk_state.get("error_message"):
+                            state["error_message"] = disk_state["error_message"]
+                        if disk_state.get("failed_step"):
+                            state["failed_step"] = disk_state["failed_step"]
+                        if disk_state.get("phase"):
+                            state["phase"] = disk_state["phase"]
+                    elif ret == 2:
+                        state["status"] = "stopped"
+                    else:
+                        state["status"] = "failed" if not is_job_step_completed(project_id, step) else "completed"
                 _save_job_state_to_disk(project_id, state)
                 _ACTIVE_PROCESSES.pop(project_id, None)
         elif pid and not is_pid_alive(pid):
             # Process was not alive and not in _ACTIVE_PROCESSES
             state["finished_at"] = datetime.now().isoformat()
-            if is_job_step_completed(project_id, step):
+            disk_state = _read_job_state_from_disk(project_id)
+            if disk_state and disk_state.get("status") in ("failed", "stopped"):
+                state["status"] = disk_state["status"]
+                if disk_state.get("error_message"):
+                    state["error_message"] = disk_state["error_message"]
+                if disk_state.get("failed_step"):
+                    state["failed_step"] = disk_state["failed_step"]
+                if disk_state.get("phase"):
+                    state["phase"] = disk_state["phase"]
+            elif is_job_step_completed(project_id, step):
                 state["status"] = "completed"
                 state["exit_code"] = 0
             else:
-                state["status"] = "stopped"
+                state["status"] = "failed"
                 state["exit_code"] = state.get("exit_code") or -1
             _save_job_state_to_disk(project_id, state)
 

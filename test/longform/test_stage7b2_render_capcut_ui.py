@@ -789,3 +789,255 @@ def test_z1_smoke_all_checkboxes_and_expanders_step4_and_step5(tmp_path, monkeyp
         sz_inputs[0].set_value(8).run()
         assert not at5.exception
 
+
+def test_z2_status_resolver_matrix_no_exceptions(tmp_path):
+    """Test Z2: Matrix test verifying compute_project_step_status never crashes across all job types, statuses, and steps."""
+    job_types = [
+        "audio_synthesize",
+        "visual_pipeline",
+        "visual_fetch",
+        "visual_build",
+        "render_all",
+        "capcut_export",
+        "capcut_calibrate",
+        "pipeline_auto",
+    ]
+    job_statuses = ["running", "stopped", "cancelled", "completed", "failed"]
+    step_conditions = ["belum", "selesai"]
+
+    for cond in step_conditions:
+        test_pid = f"proj_matrix_{cond}"
+        manifest, p_dir = create_project(
+            project_id=test_pid,
+            title=f"Matrix {cond}",
+            preset_id="automotive.muscle_car",
+            projects_root=tmp_path,
+        )
+
+        if cond == "selesai":
+            wav_path = p_dir / "assets" / "audio" / "chapters" / "chapter_01.wav"
+            wav_path.parent.mkdir(parents=True, exist_ok=True)
+            wav_path.write_bytes(b"RIFF" + b"\x00" * 100)
+
+            clip_path = p_dir / "assets" / "visual" / "shots" / "ch01_shot001.mp4"
+            clip_path.parent.mkdir(parents=True, exist_ok=True)
+            clip_path.write_bytes(b"dummy_clip")
+
+            final_vid = p_dir / "export" / "final_video.mp4"
+            final_vid.parent.mkdir(parents=True, exist_ok=True)
+            final_vid.write_bytes(b"dummy_final_vid")
+
+            manifest.final_video_file = str(final_vid.relative_to(p_dir))
+            manifest.chapters = [
+                Chapter(
+                    chapter_index=1,
+                    chapter_title="Chapter 1",
+                    audio_file=str(wav_path.relative_to(p_dir)),
+                    tts_groups=[
+                        TtsGroup(
+                            group_index=1,
+                            paragraph_text="Narration test.",
+                            audio=AudioSpec(file_path=str(wav_path.relative_to(p_dir))),
+                        )
+                    ],
+                    shots=[
+                        Shot(
+                            shot_id="ch01_shot001",
+                            shot_index=1,
+                            chapter_index=1,
+                            rendered_clip=str(clip_path.relative_to(p_dir)),
+                        )
+                    ]
+                )
+            ]
+            save_manifest(manifest, p_dir)
+
+        for j_type in job_types:
+            for j_stat in job_statuses:
+                state_data = {
+                    "project_id": test_pid,
+                    "step": j_type,
+                    "status": j_stat,
+                    "pid": 99999,
+                    "failed_step": "visual" if j_stat == "failed" else None,
+                    "error_message": "Matrix error test" if j_stat == "failed" else None,
+                }
+                (p_dir / "job_state.json").write_text(json.dumps(state_data), encoding="utf-8")
+
+                st_info = compute_project_step_status(p_dir)
+                assert "steps" in st_info
+                for step_name in ("script", "voice", "visual", "render", "capcut"):
+                    step_dict = st_info["steps"][step_name]
+                    assert step_dict["status"] in ("belum", "berjalan", "terhenti", "perlu_diperbarui", "selesai")
+                    assert isinstance(step_dict["label"], str) and len(step_dict["label"]) > 0
+
+
+def test_z2_apptest_pipeline_auto_phases_and_failure(tmp_path, monkeypatch):
+    """Test Z2: AppTest project page during pipeline_auto in all phases, review paused, and failure."""
+    monkeypatch.setattr("app.services.longform.store.get_projects_root", lambda: tmp_path)
+    monkeypatch.setattr("app.services.longform.ui.components.get_projects_root", lambda: tmp_path)
+    monkeypatch.setattr("app.services.longform.ui.jobs.is_pid_alive", lambda pid: True)
+
+    test_pid = "proj_z2_phases"
+    manifest, p_dir = create_project(
+        project_id=test_pid,
+        title="Z2 Phases Test",
+        preset_id="automotive.muscle_car",
+        projects_root=tmp_path,
+    )
+    manifest.chapters = [
+        Chapter(
+            chapter_index=1,
+            chapter_title="Chapter 1",
+            tts_groups=[TtsGroup(group_index=1, paragraph_text="Test script.")],
+        )
+    ]
+    save_manifest(manifest, p_dir)
+
+    app_file = get_long_video_app_file()
+
+    # 1. Pipeline auto: Review Paused
+    paused_state = {
+        "project_id": test_pid,
+        "step": "pipeline_auto",
+        "status": "stopped",
+        "phase": "Menunggu pengecekan visual (3 shot)",
+        "error_message": "Menunggu pengecekan visual (3 shot)",
+    }
+    (p_dir / "job_state.json").write_text(json.dumps(paused_state), encoding="utf-8")
+
+    at_paused = AppTest.from_file(app_file, default_timeout=30)
+    at_paused.query_params["project"] = test_pid
+    at_paused.run()
+    assert not at_paused.exception
+    assert any("Menunggu pengecekan visual" in w.value for w in at_paused.warning)
+
+    # 2. Pipeline auto: Failed with clear error message and retry button
+    failed_state = {
+        "project_id": test_pid,
+        "step": "pipeline_auto",
+        "status": "failed",
+        "failed_step": "visual",
+        "error_message": "VisualService test failure",
+        "command": ["python", "cli_longform.py", "pipeline", "auto", test_pid],
+        "exit_code": 1,
+    }
+    (p_dir / "job_state.json").write_text(json.dumps(failed_state), encoding="utf-8")
+
+    at_failed = AppTest.from_file(app_file, default_timeout=30)
+    at_failed.query_params["project"] = test_pid
+    at_failed.run()
+    assert not at_failed.exception
+    assert any("VisualService test failure" in e.value for e in at_failed.error)
+    retry_btns = [b for b in at_failed.button if b.key == f"btn_retry_job_{test_pid}"]
+    assert len(retry_btns) == 1
+
+
+def test_z3_pipeline_auto_unmocked_integration(tmp_path, monkeypatch):
+    """Test Z3: End-to-end unmocked integration test of pipeline_auto across all 4 steps to CapCut draft."""
+    import argparse
+    from cli_longform import cmd_pipeline_auto
+
+    monkeypatch.setattr("app.services.longform.store.get_projects_root", lambda: tmp_path)
+    monkeypatch.setattr("app.services.longform.ui.components.get_projects_root", lambda: tmp_path)
+    monkeypatch.setattr("app.services.longform.capcut.detector.is_capcut_running", lambda: False)
+
+    mock_capcut_draft_root = tmp_path / "com.lveditor.draft"
+    mock_capcut_draft_root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr("app.services.longform.capcut.service.detect_draft_folder", lambda: mock_capcut_draft_root)
+
+    test_pid = "proj_z3_auto"
+    manifest, p_dir = create_project(
+        project_id=test_pid,
+        title="Z3 Unmocked Integration Project",
+        preset_id="automotive.muscle_car",
+        projects_root=tmp_path,
+    )
+
+    # Create 1 chapter with ready script and pre-synthesized audio WAV
+    ch_wav = p_dir / "assets" / "audio" / "chapters" / "chapter_01.wav"
+    ch_wav.parent.mkdir(parents=True, exist_ok=True)
+
+    # Generate valid 2-second 48kHz mono 16-bit PCM WAV
+    import wave
+    import struct
+    with wave.open(str(ch_wav), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(48000)
+        # 2 seconds of silence/tone
+        samples = [int(1000 * (i % 2)) for i in range(48000 * 2)]
+        wf.writeframes(struct.pack(f"<{len(samples)}h", *samples))
+
+    grp_wav = p_dir / "assets" / "audio" / "groups" / "ch1_g1.wav"
+    grp_wav.parent.mkdir(parents=True, exist_ok=True)
+    grp_wav.write_bytes(ch_wav.read_bytes())
+
+    from app.services.longform.schema import Segment
+    manifest.chapters = [
+        Chapter(
+            chapter_index=1,
+            chapter_title="Chapter 1",
+            audio_file=str(ch_wav.relative_to(p_dir)),
+            tts_groups=[
+                TtsGroup(
+                    group_index=1,
+                    paragraph_text="The fast muscle car roared down the Detroit highway.",
+                    audio=AudioSpec(file_path=str(grp_wav.relative_to(p_dir))),
+                    segments=[
+                        Segment(
+                            segment_index=1,
+                            narration_text="The fast muscle car",
+                            start_offset_seconds=0.0,
+                            end_offset_seconds=1.0,
+                            duration_seconds=1.0,
+                        ),
+                        Segment(
+                            segment_index=2,
+                            narration_text="roared down the Detroit highway.",
+                            start_offset_seconds=1.0,
+                            end_offset_seconds=2.0,
+                            duration_seconds=1.0,
+                        ),
+                    ]
+                )
+            ]
+        )
+    ]
+    save_manifest(manifest, p_dir)
+
+    # Execute cmd_pipeline_auto with fake visual provider (offline unmocked real FFmpeg clip builder)
+    args = argparse.Namespace(
+        project_id=test_pid,
+        with_capcut=True,
+        stop_on_review=False,
+        skip_review_check=True,
+        provider="fake",
+        allow_fallback=True,
+        no_bgm=True,
+    )
+
+    exit_code = cmd_pipeline_auto(args)
+    assert exit_code == 0, f"cmd_pipeline_auto failed with exit code {exit_code}"
+
+    # Verify manifest updated and all steps completed
+    final_manifest = load_manifest(p_dir)
+    assert final_manifest.final_video_file is not None
+    assert (p_dir / final_manifest.final_video_file).is_file()
+
+    # Verify visual clips were built
+    total_shots = sum(len(ch.shots) for ch in final_manifest.chapters)
+    assert total_shots >= 1
+    for ch in final_manifest.chapters:
+        for sh in ch.shots:
+            assert sh.rendered_clip is not None
+            assert (p_dir / sh.rendered_clip).is_file()
+
+    # Verify CapCut draft exported and installed
+    draft_folders = list(mock_capcut_draft_root.iterdir())
+    assert len(draft_folders) >= 1
+    assert any(f"MPT_{test_pid}" in d.name for d in draft_folders)
+    draft_content_file = draft_folders[0] / "draft_content.json"
+    assert draft_content_file.is_file()
+
+

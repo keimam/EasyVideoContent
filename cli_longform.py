@@ -846,13 +846,7 @@ def cmd_voice_test(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 def cmd_visual_pipeline(args: argparse.Namespace) -> int:
-    """Acquire visual assets and build shot clips sequentially in one job (7B.1 v2).
-
-    Phases:
-    1. Membagi shot (Shot allocation via prepare_shots if missing or stale)
-    2. Mencari footage (Fetch assets)
-    3. Menyusun klip (Build clips)
-    """
+    """Acquire visual assets and build shot clips sequentially in one job (7B.1 v2, Z3)."""
     from app.services.longform.store import (
         is_stop_requested,
         load_manifest,
@@ -868,43 +862,20 @@ def cmd_visual_pipeline(args: argparse.Namespace) -> int:
         return 1
 
     try:
-        # Phase 1: Membagi shot (Shot Allocation)
         with ProjectLock(proj_dir):
             manifest = load_manifest(proj_dir)
-            total_shots = sum(len(ch.shots) for ch in manifest.chapters)
-            if total_shots == 0:
-                print(f"\n[Visual Pipeline] Phase 1/3: Membagi shot untuk proyek '{args.project_id}'...")
-                service = VisualService(proj_dir)
-                effective_fps = getattr(getattr(manifest, "encoder_settings", None), "fps", 25) or 25
-                manifest = service.prepare_shots(manifest, fps=effective_fps)
-                save_manifest(manifest, proj_dir)
-                total_shots = sum(len(ch.shots) for ch in manifest.chapters)
-                print(f"  -> {total_shots} shot berhasil dialokasikan.")
-            else:
-                print(f"\n[Visual Pipeline] Phase 1/3: Shot sudah teralokasi ({total_shots} shot).")
-
-        if is_stop_requested(proj_dir):
-            print(f"\n[Visual Pipeline] Stop requested after shot allocation; exiting.")
+            service = VisualService(proj_dir)
+            manifest, stats = service.run_pipeline(
+                manifest=manifest,
+                provider_name=getattr(args, "provider", None),
+                allow_fallback=getattr(args, "allow_fallback", True),
+            )
             return 0
-
-        # Phase 2: Mencari footage (Fetch Assets)
-        print(f"\n[Visual Pipeline] Phase 2/3: Mencari footage untuk proyek '{args.project_id}'...")
-        rc_fetch = cmd_visual_fetch(args)
-        if rc_fetch != 0:
-            return rc_fetch
-
-        if is_stop_requested(proj_dir):
-            print(f"\n[Visual Pipeline] Stop requested after footage search; skipping clip building.")
-            return 0
-
-        # Phase 3: Menyusun klip (Build Clips)
-        print(f"\n[Visual Pipeline] Phase 3/3: Menyusun klip visual untuk proyek '{args.project_id}'...")
-        rc_build = cmd_visual_build(args)
-        return rc_build
 
     except ProjectLockedError:
         print(f"Error: Project '{args.project_id}' is locked by another process.", file=sys.stderr)
         return 1
+
 
 
 def cmd_visual_fetch(args: argparse.Namespace) -> int:
@@ -1853,8 +1824,25 @@ def cmd_capcut_set_text_size(args: argparse.Namespace) -> int:
         return 1
 
 
+def _update_pipeline_auto_phase(proj_dir: Path, phase_name: str):
+    """Update active phase display in job_state.json for real-time WebUI display (Z2, Z3)."""
+    job_state_file = proj_dir / "job_state.json"
+    if job_state_file.is_file():
+        try:
+            import json
+            st_data = json.loads(job_state_file.read_text(encoding="utf-8"))
+            if st_data.get("status") == "running":
+                st_data["phase"] = phase_name
+                if "progress" not in st_data:
+                    st_data["progress"] = {}
+                st_data["progress"]["phase"] = phase_name
+                job_state_file.write_text(json.dumps(st_data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        except Exception:
+            pass
+
+
 def cmd_pipeline_auto(args: argparse.Namespace) -> int:
-    """Run pipeline automatically to completion: Voice -> Visual -> Render -> (optional) CapCut (Stage 7B.2 A1-A3)."""
+    """Run pipeline automatically to completion: Voice -> Visual -> Render -> (optional) CapCut (Stage 7B.2 A1-A3, Z3)."""
     from app.services.longform.voice_service import VoiceService
     from app.services.longform.visual.service import VisualService
     from app.services.longform.render.service import RenderService
@@ -1866,6 +1854,7 @@ def cmd_pipeline_auto(args: argparse.Namespace) -> int:
         print(f"Error: Project '{args.project_id}' not found at {proj_dir}", file=sys.stderr)
         return 1
 
+    current_phase_step = "init"
     try:
         manifest = load_manifest(proj_dir)
         total_chapters = len(manifest.chapters)
@@ -1887,12 +1876,14 @@ def cmd_pipeline_auto(args: argparse.Namespace) -> int:
         print("=" * 80)
 
         # Step 2: Voice
+        current_phase_step = "voice"
         total_groups = sum(len(ch.tts_groups) for ch in manifest.chapters)
         done_groups = sum(
             1 for ch in manifest.chapters for g in ch.tts_groups
             if g.audio and g.audio.file_path and (proj_dir / g.audio.file_path).is_file() and (proj_dir / g.audio.file_path).stat().st_size > 44
         )
         if done_groups < total_groups:
+            _update_pipeline_auto_phase(proj_dir, f"[1/4 Voice] Menyintesis narasi audio ({done_groups}/{total_groups})...")
             print(f"\n>>> [1/4 Voice] Synthesizing narration audio ({done_groups}/{total_groups} done)...")
             voice_svc = VoiceService(proj_dir)
             manifest = voice_svc.synthesize_all()
@@ -1904,18 +1895,21 @@ def cmd_pipeline_auto(args: argparse.Namespace) -> int:
             print(f"\n>>> [1/4 Voice] Already completed ({done_groups}/{total_groups} groups). Skipping.")
 
         # Step 3: Visual
+        current_phase_step = "visual"
         total_shots = sum(len(ch.shots) for ch in manifest.chapters)
         built_shots = sum(
             1 for ch in manifest.chapters for sh in ch.shots
             if sh.rendered_clip and (proj_dir / sh.rendered_clip).is_file()
         )
         if built_shots < total_shots or total_shots == 0:
+            _update_pipeline_auto_phase(proj_dir, f"[2/4 Visual] Mencari footage & menyusun klip ({built_shots}/{total_shots})...")
             print(f"\n>>> [2/4 Visual] Building visual assets & clips ({built_shots}/{total_shots} done)...")
             vis_svc = VisualService(proj_dir)
-            if total_shots == 0:
-                manifest = vis_svc.form_all_chapter_shots(manifest)
-                save_manifest(manifest, proj_dir)
-            manifest, _ = vis_svc.pipeline(manifest)
+            manifest, _ = vis_svc.run_pipeline(
+                manifest=manifest,
+                provider_name=getattr(args, "provider", None),
+                allow_fallback=getattr(args, "allow_fallback", True),
+            )
             save_manifest(manifest, proj_dir)
             if is_stop_requested(proj_dir):
                 print("\n[PIPELINE INTERRUPTED] Stop requested during Visual pipeline.", file=sys.stderr)
@@ -1944,11 +1938,13 @@ def cmd_pipeline_auto(args: argparse.Namespace) -> int:
             return 2
 
         # Step 4: Render
+        current_phase_step = "render"
         has_final_vid = bool(manifest.final_video_file and (proj_dir / manifest.final_video_file).is_file())
         if not has_final_vid or manifest.status == ItemStatus.stale:
+            _update_pipeline_auto_phase(proj_dir, "[3/4 Render] Merender bab & video final...")
             print(f"\n>>> [3/4 Render] Rendering chapters and assembling final video...")
             rnd_svc = RenderService(proj_dir)
-            manifest, _ = rnd_svc.render_all(manifest, no_bgm=getattr(args, "no_bgm", False))
+            manifest, _ = rnd_svc.render_all(manifest, no_bgm=getattr(args, "no_bgm", False), force=False)
             save_manifest(manifest, proj_dir)
             if is_stop_requested(proj_dir):
                 print("\n[PIPELINE INTERRUPTED] Stop requested during Render.", file=sys.stderr)
@@ -1958,13 +1954,15 @@ def cmd_pipeline_auto(args: argparse.Namespace) -> int:
 
         # Step 5: CapCut (optional)
         if getattr(args, "with_capcut", False):
+            current_phase_step = "capcut"
             from app.services.longform.status import find_latest_capcut_draft
             from app.services.longform.capcut.detector import is_capcut_running
             cc_info = find_latest_capcut_draft(proj_dir, args.project_id)
             if not cc_info:
                 if is_capcut_running():
                     print("\n[ERROR] CapCut sedang berjalan. Tutup CapCut sebelum ekspor untuk mencegah korupsi draft.", file=sys.stderr)
-                    return 1
+                    raise RuntimeError("CapCut Desktop sedang aktif. Harap tutup CapCut sebelum ekspor.")
+                _update_pipeline_auto_phase(proj_dir, "[4/4 CapCut] Mengekspor draft CapCut...")
                 print(f"\n>>> [4/4 CapCut] Exporting project to CapCut Desktop...")
                 export_full_project(args.project_id, install=True)
             else:
@@ -1981,7 +1979,22 @@ def cmd_pipeline_auto(args: argparse.Namespace) -> int:
         print(f"\n[PIPELINE INTERRUPTED] KeyboardInterrupt received.\n", file=sys.stderr)
         return 130
     except Exception as exc:
-        print(f"Error in automated pipeline: {exc}", file=sys.stderr)
+        err_msg = str(exc)
+        logger.error(f"Error in automated pipeline at step '{current_phase_step}': {err_msg}")
+        job_state_file = proj_dir / "job_state.json"
+        if job_state_file.is_file():
+            try:
+                import json
+                st_data = json.loads(job_state_file.read_text(encoding="utf-8"))
+                st_data["status"] = "failed"
+                st_data["failed_step"] = current_phase_step
+                st_data["error_message"] = err_msg
+                st_data["finished_at"] = datetime.now().isoformat()
+                st_data["exit_code"] = 1
+                job_state_file.write_text(json.dumps(st_data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            except Exception:
+                pass
+        print(f"Error in automated pipeline at step '{current_phase_step}': {err_msg}", file=sys.stderr)
         return 1
 
 

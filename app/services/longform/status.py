@@ -174,6 +174,18 @@ def compute_project_step_status(project_dir: str | Path) -> Dict[str, Any]:
         except Exception:
             pass
 
+    # Baseline defaults (Z2): Ensure no step status or label is ever unassociated with a value
+    script_status: str = "belum"
+    script_label: str = "Belum dibuat"
+    voice_status: str = "belum"
+    voice_label: str = "Belum disintesis"
+    visual_status: str = "belum"
+    visual_label: str = "Belum dialokasikan"
+    render_status: str = "belum"
+    render_label: str = "Belum dirender"
+    capcut_status: str = "belum"
+    capcut_label: str = "Belum diekspor"
+
     # --- Step 1: Naskah (Script) ---
     total_chapters = len(manifest.chapters)
     completed_chapters = sum(
@@ -181,14 +193,18 @@ def compute_project_step_status(project_dir: str | Path) -> Dict[str, Any]:
         if (any(g.paragraph_text and g.paragraph_text.strip() for g in ch.tts_groups)
             or (p_dir / "script" / f"chapter_{ch.chapter_index:02d}.md").is_file())
     )
+    script_done = (completed_chapters == total_chapters and total_chapters > 0)
 
     if active_step in ("script_outline", "script_generate"):
         script_status = "berjalan"
         script_label = f"Sedang menulis ({completed_chapters}/{total_chapters} bab)"
+    elif active_step == "pipeline_auto" and not script_done:
+        script_status = "berjalan"
+        script_label = "Otomatis: Sedang menulis naskah"
     elif total_chapters == 0:
         script_status = "belum"
         script_label = "Belum dibuat"
-    elif completed_chapters == total_chapters and total_chapters > 0:
+    elif script_done:
         script_status = "selesai"
         script_label = f"Selesai ({total_chapters} bab)"
     elif completed_chapters > 0:
@@ -210,17 +226,21 @@ def compute_project_step_status(project_dir: str | Path) -> Dict[str, Any]:
                 af = p_dir / g.audio.file_path
                 if af.is_file() and af.stat().st_size > 44:
                     completed_groups += 1
+    voice_done = (completed_groups == total_groups and total_groups > 0)
 
-    if active_step == "audio_synthesize":
+    if active_step in ("audio_synthesize", "audio_synth", "audio"):
         voice_status = "berjalan"
         voice_label = f"Sedang menyintesis ({completed_groups}/{total_groups} grup)"
+    elif active_step == "pipeline_auto" and script_done and not voice_done:
+        voice_status = "berjalan"
+        voice_label = f"Otomatis: Sedang menyintesis ({completed_groups}/{total_groups} grup)"
     elif total_groups == 0:
         voice_status = "belum"
         voice_label = "Belum ada naskah"
     elif stale_groups > 0:
         voice_status = "perlu_diperbarui"
         voice_label = f"{stale_groups} grup perlu diperbarui"
-    elif completed_groups == total_groups and total_groups > 0:
+    elif voice_done:
         voice_status = "selesai"
         voice_label = f"Selesai ({total_groups}/{total_groups} grup)"
     elif completed_groups > 0:
@@ -243,6 +263,7 @@ def compute_project_step_status(project_dir: str | Path) -> Dict[str, Any]:
                 built_shots += 1
             if sh.asset_path and (p_dir / sh.asset_path).is_file():
                 fetched_shots += 1
+    visual_done = (built_shots == total_shots and total_shots > 0)
 
     if active_step in ("visual_generate", "visual_pipeline", "visual_fetch", "visual_build", "visual"):
         visual_status = "berjalan"
@@ -252,13 +273,21 @@ def compute_project_step_status(project_dir: str | Path) -> Dict[str, Any]:
             visual_label = f"Sedang mencari footage ({fetched_shots}/{total_shots} shot)"
         else:
             visual_label = f"Sedang menyusun klip ({built_shots}/{total_shots} klip)"
+    elif active_step == "pipeline_auto" and voice_done and not visual_done:
+        visual_status = "berjalan"
+        if total_shots == 0:
+            visual_label = "Otomatis: Sedang membagi shot"
+        elif fetched_shots < total_shots:
+            visual_label = f"Otomatis: Sedang mencari footage ({fetched_shots}/{total_shots} shot)"
+        else:
+            visual_label = f"Otomatis: Sedang menyusun klip ({built_shots}/{total_shots} klip)"
     elif total_shots == 0:
         visual_status = "belum"
         visual_label = "Belum dialokasikan"
     elif stale_shots > 0:
         visual_status = "perlu_diperbarui"
         visual_label = f"{stale_shots} shot perlu diperbarui"
-    elif built_shots == total_shots and total_shots > 0:
+    elif visual_done:
         visual_status = "selesai"
         visual_label = f"Selesai ({total_shots}/{total_shots} klip)"
     elif built_shots > 0 or fetched_shots > 0:
@@ -285,22 +314,12 @@ def compute_project_step_status(project_dir: str | Path) -> Dict[str, Any]:
             render_label = f"Sedang merender ({rendered_chapters}/{total_chapters} bab)"
         else:
             render_label = "Sedang menggabungkan video & audio"
-    elif active_step == "pipeline_auto":
-        if script_status != "selesai":
-            pass
-        elif voice_status != "selesai":
-            pass
-        elif visual_status != "selesai":
-            pass
-        elif not has_final_video:
-            render_status = "berjalan"
-            if rendered_chapters < total_chapters:
-                render_label = f"Sedang merender ({rendered_chapters}/{total_chapters} bab)"
-            else:
-                render_label = "Sedang menggabungkan video & audio"
+    elif active_step == "pipeline_auto" and visual_done and not has_final_video:
+        render_status = "berjalan"
+        if rendered_chapters < total_chapters:
+            render_label = f"Otomatis: Sedang merender ({rendered_chapters}/{total_chapters} bab)"
         else:
-            render_status = "selesai"
-            render_label = "Selesai (Video final siap)"
+            render_label = "Otomatis: Sedang menggabungkan video & audio"
     elif has_final_video and manifest.status != ItemStatus.stale:
         render_status = "selesai"
         render_label = "Selesai (Video final siap)"
@@ -316,18 +335,39 @@ def compute_project_step_status(project_dir: str | Path) -> Dict[str, Any]:
 
     # --- Step 5: CapCut ---
     capcut_info = find_latest_capcut_draft(p_dir, p_id)
-    if active_step == "capcut_export":
+    if active_step in ("capcut_export", "capcut_calibrate", "capcut"):
         capcut_status = "berjalan"
         capcut_label = "Sedang mengekspor draft CapCut"
     elif active_step == "pipeline_auto" and has_final_video and not capcut_info:
         capcut_status = "berjalan"
-        capcut_label = "Sedang mengekspor draft CapCut"
+        capcut_label = "Otomatis: Sedang mengekspor draft CapCut"
     elif capcut_info:
         capcut_status = "selesai"
         capcut_label = f"Selesai ({capcut_info['draft_name']})"
     else:
         capcut_status = "belum"
         capcut_label = "Belum diekspor"
+
+    # Overlay failed step from job state (Z3)
+    if job_state and job_state.get("status") == "failed" and job_state.get("failed_step"):
+        f_step = job_state.get("failed_step")
+        f_err = job_state.get("error_message") or "Pekerjaan gagal"
+        short_err = (f_err[:30] + "…") if len(f_err) > 30 else f_err
+        if f_step == "script":
+            script_status = "terhenti"
+            script_label = f"Gagal: {short_err}"
+        elif f_step == "voice":
+            voice_status = "terhenti"
+            voice_label = f"Gagal: {short_err}"
+        elif f_step == "visual":
+            visual_status = "terhenti"
+            visual_label = f"Gagal: {short_err}"
+        elif f_step == "render":
+            render_status = "terhenti"
+            render_label = f"Gagal: {short_err}"
+        elif f_step == "capcut":
+            capcut_status = "terhenti"
+            capcut_label = f"Gagal: {short_err}"
 
     # Determine next recommended step (first uncompleted step)
     steps_order = [
