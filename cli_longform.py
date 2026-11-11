@@ -846,26 +846,65 @@ def cmd_voice_test(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 def cmd_visual_pipeline(args: argparse.Namespace) -> int:
-    """Acquire visual assets and build shot clips sequentially in one job (7B.1)."""
-    from app.services.longform.store import is_stop_requested
+    """Acquire visual assets and build shot clips sequentially in one job (7B.1 v2).
+
+    Phases:
+    1. Membagi shot (Shot allocation via prepare_shots if missing or stale)
+    2. Mencari footage (Fetch assets)
+    3. Menyusun klip (Build clips)
+    """
+    from app.services.longform.store import (
+        is_stop_requested,
+        load_manifest,
+        save_manifest,
+        ProjectLock,
+        ProjectLockedError,
+    )
+    from app.services.longform.visual.service import VisualService
 
     proj_dir = get_project_dir(args.project_id)
     if not proj_dir.is_dir():
         print(f"Error: Project '{args.project_id}' not found at {proj_dir}", file=sys.stderr)
         return 1
 
-    print(f"\n[Visual Pipeline] Step 1/2: Fetching visual assets for project '{args.project_id}'...")
-    rc_fetch = cmd_visual_fetch(args)
-    if rc_fetch != 0:
-        return rc_fetch
+    try:
+        # Phase 1: Membagi shot (Shot Allocation)
+        with ProjectLock(proj_dir):
+            manifest = load_manifest(proj_dir)
+            total_shots = sum(len(ch.shots) for ch in manifest.chapters)
+            if total_shots == 0:
+                print(f"\n[Visual Pipeline] Phase 1/3: Membagi shot untuk proyek '{args.project_id}'...")
+                service = VisualService(proj_dir)
+                effective_fps = getattr(getattr(manifest, "encoder_settings", None), "fps", 25) or 25
+                manifest = service.prepare_shots(manifest, fps=effective_fps)
+                save_manifest(manifest, proj_dir)
+                total_shots = sum(len(ch.shots) for ch in manifest.chapters)
+                print(f"  -> {total_shots} shot berhasil dialokasikan.")
+            else:
+                print(f"\n[Visual Pipeline] Phase 1/3: Shot sudah teralokasi ({total_shots} shot).")
 
-    if is_stop_requested(proj_dir):
-        print(f"\n[Visual Pipeline] Stop requested for project '{args.project_id}'. Skipping clip building.")
-        return 0
+        if is_stop_requested(proj_dir):
+            print(f"\n[Visual Pipeline] Stop requested after shot allocation; exiting.")
+            return 0
 
-    print(f"\n[Visual Pipeline] Step 2/2: Building shot clips for project '{args.project_id}'...")
-    rc_build = cmd_visual_build(args)
-    return rc_build
+        # Phase 2: Mencari footage (Fetch Assets)
+        print(f"\n[Visual Pipeline] Phase 2/3: Mencari footage untuk proyek '{args.project_id}'...")
+        rc_fetch = cmd_visual_fetch(args)
+        if rc_fetch != 0:
+            return rc_fetch
+
+        if is_stop_requested(proj_dir):
+            print(f"\n[Visual Pipeline] Stop requested after footage search; skipping clip building.")
+            return 0
+
+        # Phase 3: Menyusun klip (Build Clips)
+        print(f"\n[Visual Pipeline] Phase 3/3: Menyusun klip visual untuk proyek '{args.project_id}'...")
+        rc_build = cmd_visual_build(args)
+        return rc_build
+
+    except ProjectLockedError:
+        print(f"Error: Project '{args.project_id}' is locked by another process.", file=sys.stderr)
+        return 1
 
 
 def cmd_visual_fetch(args: argparse.Namespace) -> int:

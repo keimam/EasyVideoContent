@@ -253,6 +253,7 @@ def start_job(
         "log_file": str(log_file),
         "command": command,
         "error_message": None,
+        "dismissed": False,
     }
     _save_job_state_to_disk(project_id, state)
     logger.info(f"Started background job '{step}' for project '{project_id}' (PID {proc.pid}) -> {log_file}")
@@ -317,6 +318,17 @@ def cancel_job(project_id: str, timeout_seconds: float = 15.0) -> bool:
     return True
 
 
+def dismiss_job(project_id: str) -> bool:
+    """Mark the current job as dismissed in job_state.json so it is no longer shown in UI (W3)."""
+    state = _read_job_state_from_disk(project_id)
+    if not state:
+        return False
+    state["dismissed"] = True
+    _save_job_state_to_disk(project_id, state)
+    logger.info(f"Dismissed completed/finished job notification for project '{project_id}'")
+    return True
+
+
 def get_job_logs(project_id: str, max_lines: int = 30) -> List[str]:
     """Read the last max_lines from the active or latest job log file."""
     state = _read_job_state_from_disk(project_id)
@@ -367,16 +379,16 @@ def get_project_progress(project_id: str, step: Optional[str] = None) -> Dict[st
             "unit_label": "bab",
         }
 
-    # 2. Visual step (7B.1)
+    # 2. Visual step (7B.1 v2)
     if step in ("visual", "visual_pipeline", "visual_fetch", "visual_build"):
         total_shots = sum(len(ch.shots) for ch in manifest.chapters)
         if total_shots == 0:
             return {
                 "completed": 0,
                 "total": 0,
-                "percentage": 0.0,
+                "percentage": 5.0,
                 "unit_label": "shot",
-                "phase": "Menunggu naskah/audio",
+                "phase": "Membagi shot",
             }
 
         fetched_shots = sum(
@@ -408,17 +420,22 @@ def get_project_progress(project_id: str, step: Optional[str] = None) -> Dict[st
             }
         else:  # visual_pipeline / visual
             if fetched_shots < total_shots:
-                # Phase 1: Fetching (0% - 50%)
-                pct = (fetched_shots / total_shots * 50.0)
+                # Phase 2: Fetching (5% - 50%)
+                pct = 5.0 + (fetched_shots / total_shots * 45.0) if total_shots > 0 else 5.0
                 phase_label = "Mencari footage"
                 unit_label = f"footage ({fetched_shots}/{total_shots})"
                 completed_count = fetched_shots
-            else:
-                # Phase 2: Building (50% - 100%)
-                pct = 50.0 + (built_shots / total_shots * 50.0)
+            elif built_shots < total_shots:
+                # Phase 3: Building (50% - 100%)
+                pct = 50.0 + (built_shots / total_shots * 50.0) if total_shots > 0 else 50.0
                 phase_label = "Menyusun klip"
                 unit_label = f"klip ({built_shots}/{total_shots})"
                 completed_count = built_shots
+            else:
+                pct = 100.0
+                phase_label = "Selesai"
+                unit_label = f"klip ({total_shots}/{total_shots})"
+                completed_count = total_shots
 
             return {
                 "completed": completed_count,

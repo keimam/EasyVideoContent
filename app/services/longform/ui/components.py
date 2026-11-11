@@ -106,10 +106,28 @@ def get_project_summaries() -> List[Dict[str, Any]]:
 
 # --- Job Monitor Widget with Fragment (D1) ---
 
-def _render_job_monitor_content(project_id: str, state: Dict[str, Any]):
+def _render_job_monitor_content(project_id: str, state: Dict[str, Any], current_step: Optional[str] = None):
     status = state.get("status")
     step = state.get("step", "")
     pid = state.get("pid")
+
+    if state.get("dismissed"):
+        return
+
+    # Check if this job belongs to an earlier workflow step (W3)
+    step_order = {
+        "script_outline": 1, "script_generate": 1, "script": 1,
+        "audio_synthesize": 2, "voice": 2,
+        "visual_pipeline": 3, "visual_fetch": 3, "visual_build": 3, "visual_generate": 3, "visual": 3,
+        "render_final": 4, "render": 4,
+        "capcut_export": 5, "capcut": 5,
+    }
+    if current_step and status in ("completed", "cancelled", "failed", "stopped"):
+        job_rank = step_order.get(step, 0)
+        curr_rank = step_order.get(current_step, 0)
+        if curr_rank > job_rank:
+            # Job belongs to an earlier step and user is already on a subsequent step
+            return
 
     step_display_names = {
         "script_outline": "Penulisan Kerangka Naskah (Outline)",
@@ -127,11 +145,12 @@ def _render_job_monitor_content(project_id: str, state: Dict[str, Any]):
     if status == "running":
         st.info(f"⏳ **Pekerjaan Sedang Berjalan**: `{step_display}` (PID: {pid})")
         prog = jobs.get_project_progress(project_id, step)
-        if prog["total"] > 0:
+        if prog["total"] > 0 or prog.get("phase"):
             phase_info = f" — Fase: {prog['phase']}" if prog.get("phase") else ""
+            tot = prog["total"] if prog["total"] > 0 else 0
             st.progress(
                 prog["percentage"] / 100.0,
-                text=f"{prog['unit_label'].capitalize()} Selesai: {prog['completed']} / {prog['total']} ({prog['percentage']}%){phase_info}",
+                text=f"{prog['unit_label'].capitalize()}: {prog['completed']} / {tot} ({prog['percentage']}%){phase_info}",
             )
 
         col_cancel, col_space = st.columns([1, 4])
@@ -156,20 +175,30 @@ def _render_job_monitor_content(project_id: str, state: Dict[str, Any]):
             with st.expander("📋 Log Terakhir Sebelum Terhenti", expanded=False):
                 st.code("\n".join(logs), language="text")
 
-    elif status == "completed":
-        st.success(f"✅ **Pekerjaan Selesai**: `{step_display}`")
-    elif status == "cancelled":
-        st.warning(f"🛑 **Pekerjaan Dibatalkan**: `{step_display}`")
-    elif status == "failed":
-        st.error(f"❌ **Pekerjaan Gagal**: `{step_display}` (Kode Keluar: {state.get('exit_code', 'unknown')})")
-        logs = jobs.get_job_logs(project_id, max_lines=20)
-        if logs:
-            with st.expander("Detail Error Log", expanded=False):
-                st.code("\n".join(logs), language="text")
+    elif status in ("completed", "cancelled", "failed"):
+        col_msg, col_x = st.columns([12, 1])
+        with col_msg:
+            if status == "completed":
+                st.success(f"✅ **Pekerjaan Selesai**: `{step_display}`")
+            elif status == "cancelled":
+                st.warning(f"🛑 **Pekerjaan Dibatalkan**: `{step_display}`")
+            elif status == "failed":
+                st.error(f"❌ **Pekerjaan Gagal**: `{step_display}` (Kode Keluar: {state.get('exit_code', 'unknown')})")
+        with col_x:
+            dismiss_key = f"btn_dismiss_job_{project_id}_{state.get('finished_at', state.get('started_at', ''))}"
+            if st.button("✕", key=dismiss_key, help="Tutup pemberitahuan pekerjaan"):
+                jobs.dismiss_job(project_id)
+                st.rerun()
+
+        if status == "failed":
+            logs = jobs.get_job_logs(project_id, max_lines=20)
+            if logs:
+                with st.expander("Detail Error Log", expanded=False):
+                    st.code("\n".join(logs), language="text")
 
 
 @st.fragment(run_every=2)
-def _active_job_monitor_fragment(project_id: str):
+def _active_job_monitor_fragment(project_id: str, current_step: Optional[str] = None):
     """Auto-refreshing fragment monitor that polls job state while running (D1)."""
     state = jobs.get_job_state(project_id)
     if not state or state.get("status") != "running":
@@ -178,20 +207,20 @@ def _active_job_monitor_fragment(project_id: str):
         st.rerun(scope="app")
         return
 
-    _render_job_monitor_content(project_id, state)
+    _render_job_monitor_content(project_id, state, current_step=current_step)
 
 
-def render_job_monitor_widget(project_id: str):
-    """Real-time background job monitor widget (D1)."""
+def render_job_monitor_widget(project_id: str, current_step: Optional[str] = None):
+    """Real-time background job monitor widget (D1, W3)."""
     state = jobs.get_job_state(project_id)
     if not state:
         return
 
     status = state.get("status")
     if status == "running":
-        _active_job_monitor_fragment(project_id)
+        _active_job_monitor_fragment(project_id, current_step=current_step)
     else:
-        _render_job_monitor_content(project_id, state)
+        _render_job_monitor_content(project_id, state, current_step=current_step)
 
 
 # --- Beranda (Home Page) Components (D5) ---
@@ -605,11 +634,6 @@ def render_project_page(project_id: str):
                 else:
                     st.info("Preset yang dipilih sama dengan preset proyek saat ini.")
 
-    # Always Visible Top Job Monitor (C1, C4.3)
-    render_job_monitor_widget(project_id)
-
-    st.write("---")
-
     # Stepper 5 Langkah (C4.3)
     step_keys = ["script", "voice", "visual", "render", "capcut"]
     step_labels = {
@@ -639,6 +663,11 @@ def render_project_page(project_id: str):
         st.session_state[session_key] = default_active_step
 
     current_active_step = st.session_state[session_key]
+
+    # Always Visible Top Job Monitor (C1, C4.3, W3)
+    render_job_monitor_widget(project_id, current_step=current_active_step)
+
+    st.write("---")
 
     # Render horizontal stepper pill selector
     stepper_cols = st.columns(5)
@@ -946,51 +975,63 @@ def get_shot_narration(chapter: Chapter, shot: Shot) -> str:
 
 
 def get_shot_thumbnail_path(project_dir: Path, shot: Shot) -> Optional[Path]:
-    """Get fast thumbnail image path for gallery preview without loading full video (V2)."""
-    # 1. Project thumbnail directory
+    """Get fast real thumbnail image path for gallery preview (W2).
+
+    1. Checks project cache: assets/visual/thumbnails/<shot_id>.jpg
+    2. If missing, extracts a real frame at the middle of duration (width 320 px)
+       from shot.rendered_clip (or shot.asset_path if clip not built yet).
+    3. Cached once and reused across subsequent gallery opens.
+    """
     t_dir = project_dir / "assets" / "visual" / "thumbnails"
     t_file = t_dir / f"{shot.shot_id}.jpg"
     if t_file.is_file() and t_file.stat().st_size > 0:
         return t_file
 
-    # 2. Existing shot asset JPG (e.g. from fake or cached image asset)
-    asset_jpg = project_dir / "assets" / "visual" / "shots" / f"{shot.shot_id}_asset.jpg"
-    if asset_jpg.is_file() and asset_jpg.stat().st_size > 0:
-        return asset_jpg
-
-    # 3. Direct image asset if shot.asset_path is an image
-    if shot.asset_path:
-        ap = project_dir / shot.asset_path
-        if ap.is_file() and ap.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp"):
-            return ap
-
-    # 4. Generate thumbnail once via ffmpeg if video exists (clip or asset)
-    v_src = None
+    # 1. Primary source: rendered clip
+    src_file = None
     if shot.rendered_clip:
         vc = project_dir / shot.rendered_clip
         if vc.is_file():
-            v_src = vc
-    if not v_src and shot.asset_path:
-        va = project_dir / shot.asset_path
-        if va.is_file() and va.suffix.lower() in (".mp4", ".mov", ".mkv", ".webm"):
-            v_src = va
+            src_file = vc
 
-    if v_src:
-        try:
-            t_dir.mkdir(parents=True, exist_ok=True)
+    # 2. Secondary source: raw asset
+    if not src_file and shot.asset_path:
+        va = project_dir / shot.asset_path
+        if va.is_file():
+            src_file = va
+
+    if not src_file:
+        return None
+
+    try:
+        t_dir.mkdir(parents=True, exist_ok=True)
+        ext = src_file.suffix.lower()
+        if ext in (".mp4", ".mov", ".mkv", ".webm", ".avi"):
+            dur = shot.duration_seconds if shot.duration_seconds and shot.duration_seconds > 0 else 3.0
+            ss = max(dur / 2.0, 0.1)
             cmd = [
                 "ffmpeg", "-y",
-                "-ss", "0.5",
-                "-i", str(v_src),
+                "-ss", f"{ss:.2f}",
+                "-i", str(src_file),
                 "-vframes", "1",
                 "-vf", "scale=320:-1",
                 str(t_file),
             ]
-            subprocess.run(cmd, capture_output=True, timeout=5)
+            subprocess.run(cmd, capture_output=True, timeout=10)
             if t_file.is_file() and t_file.stat().st_size > 0:
                 return t_file
-        except Exception:
-            pass
+        elif ext in (".jpg", ".jpeg", ".png", ".webp", ".bmp"):
+            from PIL import Image
+            with Image.open(src_file) as im:
+                im_rgb = im.convert("RGB")
+                w, h = im_rgb.size
+                if w > 0:
+                    new_h = int(h * (320 / w))
+                    im_resized = im_rgb.resize((320, max(new_h, 1)), Image.Resampling.LANCZOS)
+                    im_resized.save(t_file, "JPEG", quality=85)
+                    return t_file
+    except Exception as exc:
+        logger.warning(f"Failed to extract thumbnail for {shot.shot_id} from {src_file}: {exc}")
 
     return None
 
@@ -1112,28 +1153,44 @@ def render_visual_step_flow(
                 st.rerun()
         elif st_val == "terhenti":
             if st.button("▶️ Lanjutkan", type="primary", key=f"btn_resume_vis_{project_id}"):
-                cmd = [sys.executable, "cli_longform.py", "visual", "pipeline", project_id]
+                cmd = [sys.executable, "cli_longform.py", "visual", "pipeline", project_id, "--allow-fallback"]
                 if target_prov:
                     cmd.extend(["--provider", target_prov])
                 jobs.start_job(project_id, "visual_pipeline", cmd)
                 st.rerun()
         elif st_val == "perlu_diperbarui":
             if st.button("🔄 Perbarui Klip yang Berubah", type="primary", key=f"btn_update_vis_{project_id}"):
-                cmd = [sys.executable, "cli_longform.py", "visual", "pipeline", project_id]
+                cmd = [sys.executable, "cli_longform.py", "visual", "pipeline", project_id, "--allow-fallback"]
                 if target_prov:
                     cmd.extend(["--provider", target_prov])
                 jobs.start_job(project_id, "visual_pipeline", cmd)
                 st.rerun()
         else:  # belum
-            btn_disabled = bool(total_shots == 0)
+            # W1: Button is active if Script & Voice steps are completed, regardless of total_shots
+            st_all = compute_project_step_status(p_dir)
+            script_st = st_all["steps"]["script"]["status"]
+            voice_st = st_all["steps"]["voice"]["status"]
+            script_done = (script_st == "selesai")
+            voice_done = (voice_st == "selesai")
+            btn_disabled = not (script_done and voice_done)
+
+            if btn_disabled:
+                if not script_done and not voice_done:
+                    st.warning(f"⚠️ Alokasi visual belum dapat dimulai. Langkah **① Naskah** (status: `{script_st}`) dan **② Suara** (status: `{voice_st}`) harus selesai terlebih dahulu.")
+                elif not script_done:
+                    st.warning(f"⚠️ Alokasi visual belum dapat dimulai. Selesaikan langkah **① Naskah** terlebih dahulu (status: `{script_st}`).")
+                else:
+                    st.warning(f"⚠️ Alokasi visual belum dapat dimulai. Selesaikan langkah **② Suara** terlebih dahulu (status: `{voice_st}`).")
+            else:
+                if total_shots == 0:
+                    st.info("💡 Langkah **① Naskah** dan **② Suara** sudah siap. Klik tombol di bawah untuk membagi shot dan mencari footage otomatis.")
+
             if st.button("🎬 Cari & Susun Visual", type="primary", disabled=btn_disabled, key=f"btn_start_vis_{project_id}"):
-                cmd = [sys.executable, "cli_longform.py", "visual", "pipeline", project_id]
+                cmd = [sys.executable, "cli_longform.py", "visual", "pipeline", project_id, "--allow-fallback"]
                 if target_prov:
                     cmd.extend(["--provider", target_prov])
                 jobs.start_job(project_id, "visual_pipeline", cmd)
                 st.rerun()
-            if btn_disabled:
-                st.caption("⚠️ Alokasi shot belum tersedia. Selesaikan langkah **① Naskah** dan **② Suara** terlebih dahulu.")
 
     # --- V2: Galeri per bab / contact sheet interaktif ---
     if total_shots > 0:
@@ -1155,7 +1212,7 @@ def render_visual_step_flow(
                 elif filter_mode == "Terkunci":
                     ch_shots = [s for s in ch.shots if getattr(s, "locked", False)]
                 elif filter_mode == "Placeholder":
-                    ch_shots = [s for s in ch.shots if getattr(s, "is_fake", False)]
+                    ch_shots = [s for s in ch.shots if (getattr(s, "is_fake", False) or getattr(s, "actual_source", "") == "fake")]
                 else:
                     ch_shots = ch.shots
 
@@ -1177,7 +1234,7 @@ def render_visual_step_flow(
                                     badges.append("⚠️ Perlu dicek")
                                 if getattr(shot, "locked", False):
                                     badges.append("🔒 Terkunci")
-                                if getattr(shot, "is_fake", False):
+                                if getattr(shot, "is_fake", False) or (getattr(shot, "actual_source", "") == "fake"):
                                     badges.append("🎨 Placeholder")
                                 badge_str = f" {' '.join(badges)}" if badges else ""
 
@@ -1273,6 +1330,7 @@ def render_visual_step_flow(
                                             t_cache = p_dir / "assets" / "visual" / "thumbnails" / f"{target_shot.shot_id}.jpg"
                                             t_cache.unlink(missing_ok=True)
                                             save_manifest(manifest, p_dir)
+                                            get_shot_thumbnail_path(p_dir, target_shot)
                                             st.success(f"Shot berhasil diganti ke kandidat #{c_i+1} dan terkunci.")
                                             time.sleep(0.5)
                                             st.rerun()
@@ -1301,6 +1359,7 @@ def render_visual_step_flow(
                                     t_cache = p_dir / "assets" / "visual" / "thumbnails" / f"{target_shot.shot_id}.jpg"
                                     t_cache.unlink(missing_ok=True)
                                     save_manifest(manifest, p_dir)
+                                    get_shot_thumbnail_path(p_dir, target_shot)
                                     st.success("Footage baru berhasil ditemukan, disusun, dan shot terkunci.")
                                     time.sleep(0.5)
                                     st.rerun()
@@ -1329,6 +1388,7 @@ def render_visual_step_flow(
                                         t_cache = p_dir / "assets" / "visual" / "thumbnails" / f"{target_shot.shot_id}.jpg"
                                         t_cache.unlink(missing_ok=True)
                                         save_manifest(manifest, p_dir)
+                                        get_shot_thumbnail_path(p_dir, target_shot)
                                         st.success(f"Berkas '{uploaded_f.name}' berhasil ditambahkan ke library lokal dan dipasang ke shot (terkunci).")
                                         time.sleep(0.5)
                                         st.rerun()

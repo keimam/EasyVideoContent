@@ -527,6 +527,7 @@ class VisualService:
                 shot.effective_query = chosen_query
                 shot.needs_review = False
                 shot.status = ItemStatus.pending
+                save_manifest(manifest, self.project_dir)
 
         return manifest
 
@@ -608,6 +609,7 @@ class VisualService:
                 )
                 shot.rendered_clip = clip_rel
                 shot.status = ItemStatus.completed
+                save_manifest(manifest, self.project_dir)
 
             # Update chapter duration & frames
             ch.visual_duration_seconds = round(sum(s.duration_seconds for s in ch.shots), 3)

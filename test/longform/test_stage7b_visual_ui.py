@@ -430,3 +430,123 @@ def test_preset_recovery_keyword_in_store():
     store_file = repo_root / "app" / "services" / "longform" / "store.py"
     content = store_file.read_text(encoding="utf-8")
     assert "preset_recovery" in content, "Keyword 'preset_recovery' must be present in store.py"
+
+
+def test_dodge_case_script_and_audio_done_zero_shots_activates_button_and_allocates_shots(tmp_path, monkeypatch):
+    """Reproduce Dodge Charger case: Naskah+Audio done, 0 shots -> button active -> pipeline allocates shots (W1, W4.7)."""
+    import argparse
+    from cli_longform import cmd_visual_pipeline
+
+    monkeypatch.setattr("app.services.longform.store.get_projects_root", lambda: tmp_path)
+    monkeypatch.setattr("app.services.longform.ui.components.get_projects_root", lambda: tmp_path)
+
+    test_pid = "dodge_repro_test"
+    manifest, p_dir = create_project(
+        project_id=test_pid,
+        title="Dodge Repro Test",
+        preset_id="automotive.muscle_car",
+        projects_root=tmp_path,
+    )
+
+    # 1. Setup Script and Audio as 100% completed, but 0 shots
+    wav_file = p_dir / "assets" / "audio" / "groups" / "ch1_g1.wav"
+    wav_file.parent.mkdir(parents=True, exist_ok=True)
+    wav_file.write_bytes(b"RIFF" + b"\x00" * 40 + b"WAVEfmt " + b"\x00" * 100)  # > 44 bytes
+
+    ch = Chapter(
+        chapter_index=1,
+        chapter_title="Chapter 1: The Legend",
+        audio_duration_seconds=5.0,
+        tts_groups=[
+            TtsGroup(
+                group_index=1,
+                paragraph_text="The 1969 Dodge Charger was a high-performance icon.",
+                audio=AudioSpec(file_path="assets/audio/groups/ch1_g1.wav", duration_seconds=5.0),
+                segments=[Segment(segment_index=1, narration_text="The 1969 Dodge Charger was a high-performance icon.")],
+            ),
+        ],
+        shots=[],  # 0 shots!
+    )
+    manifest.chapters = [ch]
+    save_manifest(manifest, p_dir)
+
+    # Verify status: script and voice are selesai, visual is belum with 0 shots
+    st_info = compute_project_step_status(p_dir)
+    assert st_info["steps"]["script"]["status"] == "selesai"
+    assert st_info["steps"]["voice"]["status"] == "selesai"
+    assert st_info["steps"]["visual"]["status"] == "belum"
+    assert sum(len(c.shots) for c in manifest.chapters) == 0
+
+    # 2. Check AppTest: Step 3 button "Cari & Susun Visual" MUST BE ACTIVE (disabled == False)
+    at = AppTest.from_file(get_long_video_app_file())
+    at.query_params["project"] = test_pid
+    at.run(timeout=15)
+    assert not at.exception
+
+    # Switch to visual step
+    btn_vis_stepper = None
+    for b in at.button:
+        if "③ Visual" in b.label:
+            btn_vis_stepper = b
+            break
+    assert btn_vis_stepper is not None
+    btn_vis_stepper.click()
+    at.run(timeout=15)
+    assert not at.exception
+
+    # Button "🎬 Cari & Susun Visual" should exist and NOT be disabled
+    start_vis_btn = None
+    for b in at.button:
+        if "Cari & Susun Visual" in b.label:
+            start_vis_btn = b
+            break
+    assert start_vis_btn is not None, "Button '🎬 Cari & Susun Visual' must be present"
+    assert start_vis_btn.disabled is False, "Button must be ACTIVE when script and voice are done, even with 0 shots"
+
+    # 3. Run visual pipeline CLI: Phase 1/3 must allocate shots
+    args = argparse.Namespace(
+        project_id=test_pid,
+        provider="fake",
+        allow_fallback=True,
+    )
+    rc = cmd_visual_pipeline(args)
+    assert rc == 0
+
+    # Reload manifest and verify shots were allocated and built
+    manifest_after = load_manifest(p_dir)
+    shots_after = manifest_after.chapters[0].shots
+    assert len(shots_after) > 0, "Phase 1/3 must allocate shots when total_shots == 0"
+    assert all(s.rendered_clip is not None for s in shots_after), "All allocated shots must have rendered clips"
+
+
+def test_banner_dismissal_and_step_suppression(tmp_path, monkeypatch):
+    """Test job monitor dismissal button (✕) and suppression across workflow steps (W3)."""
+    monkeypatch.setattr("app.services.longform.store.get_projects_root", lambda: tmp_path)
+    monkeypatch.setattr("app.services.longform.ui.components.get_projects_root", lambda: tmp_path)
+
+    test_pid = "banner_test_proj"
+    manifest, p_dir = create_project(
+        project_id=test_pid,
+        title="Banner Test Project",
+        preset_id="automotive.muscle_car",
+        projects_root=tmp_path,
+    )
+
+    from app.services.longform.ui import jobs
+
+    # 1. Simulate a completed audio_synthesize job
+    job_state = {
+        "project_id": test_pid,
+        "step": "audio_synthesize",
+        "status": "completed",
+        "pid": 12345,
+        "started_at": "2026-11-10T10:00:00",
+        "finished_at": "2026-11-10T10:05:00",
+        "dismissed": False,
+    }
+    jobs._save_job_state_to_disk(test_pid, job_state)
+
+    # Check banner dismissal function
+    assert jobs.dismiss_job(test_pid) is True
+    updated_state = jobs.get_job_state(test_pid)
+    assert updated_state["dismissed"] is True
