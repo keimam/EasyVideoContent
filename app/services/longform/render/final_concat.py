@@ -268,6 +268,15 @@ class FinalConcatenator:
             "full_timeline_srt": str(full_srt),
             "full_timeline_ass": str(full_ass),
         }
+
+        try:
+            (export_dir / "render_stats.json").write_text(
+                json.dumps(stats, indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            logger.warning(f"Failed to write render_stats.json: {exc}")
+
         return final_video_path, stats
 
     def _validate_chapter_offsets(self, manifest: ProjectManifest) -> List[Tuple[int, str, float]]:

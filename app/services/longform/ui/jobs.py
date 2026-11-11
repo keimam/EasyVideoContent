@@ -118,7 +118,7 @@ def is_job_step_completed(project_id: str, step: str) -> bool:
                 if sh.asset_path and (p_dir / sh.asset_path).is_file()
             )
             return done_s == total_s
-        elif step == "render_final":
+        elif step in ("render_final", "render_all", "render_pipeline", "render", "pipeline_auto"):
             return bool(manifest.final_video_file and (p_dir / manifest.final_video_file).is_file())
         elif step == "capcut_export":
             from app.services.longform.status import find_latest_capcut_draft
@@ -223,12 +223,17 @@ def start_job(
 
     repo_root = cwd or Path(__file__).resolve().parents[4]
 
+    # Normalize command to use active python interpreter (sys.executable)
+    cmd_list = list(command)
+    if cmd_list and cmd_list[0] in ("python", "python3"):
+        cmd_list[0] = sys.executable
+
     # Open log file handle for child process
     fp = open(log_file, "a", encoding="utf-8", buffering=1)
 
     try:
         proc = subprocess.Popen(
-            command,
+            cmd_list,
             stdin=subprocess.DEVNULL,
             stdout=fp,
             stderr=subprocess.STDOUT,
@@ -445,7 +450,143 @@ def get_project_progress(project_id: str, step: Optional[str] = None) -> Dict[st
                 "phase": phase_label,
             }
 
-    # 3. Voice / Audio synthesize step
+    # 3. Render step (Stage 7B.2 R3)
+    if step in ("render", "render_all", "render_pipeline", "render_final"):
+        rendered_chapters = sum(
+            1 for ch in manifest.chapters
+            if ch.output_file and (p_dir / ch.output_file).is_file() and ch.status == ItemStatus.completed
+        )
+        has_final = bool(manifest.final_video_file and (p_dir / manifest.final_video_file).is_file())
+        if has_final:
+            return {
+                "completed": total_chapters,
+                "total": total_chapters,
+                "percentage": 100.0,
+                "unit_label": f"bab ({total_chapters}/{total_chapters})",
+                "phase": "Selesai",
+            }
+        elif rendered_chapters < total_chapters:
+            pct = round((rendered_chapters / (total_chapters + 1)) * 80.0, 1) if total_chapters > 0 else 0.0
+            return {
+                "completed": rendered_chapters,
+                "total": total_chapters,
+                "percentage": pct,
+                "unit_label": f"bab ({rendered_chapters}/{total_chapters})",
+                "phase": f"Bab {rendered_chapters + 1} dari {total_chapters}",
+            }
+        else:
+            return {
+                "completed": rendered_chapters,
+                "total": total_chapters + 1,
+                "percentage": 90.0,
+                "unit_label": "penggabungan",
+                "phase": "Menggabungkan video & normalisasi audio",
+            }
+
+    # 4. Pipeline Auto step (Stage 7B.2 A3)
+    if step == "pipeline_auto":
+        # Check Voice
+        total_groups = sum(len(ch.tts_groups) for ch in manifest.chapters)
+        completed_groups = sum(
+            1 for ch in manifest.chapters for g in ch.tts_groups
+            if g.audio and g.audio.file_path and (p_dir / g.audio.file_path).is_file() and (p_dir / g.audio.file_path).stat().st_size > 44
+        )
+        if completed_groups < total_groups:
+            pct = round((completed_groups / total_groups) * 25.0, 1) if total_groups > 0 else 5.0
+            return {
+                "completed": completed_groups,
+                "total": total_groups,
+                "percentage": pct,
+                "unit_label": f"audio ({completed_groups}/{total_groups})",
+                "phase": "Langkah 2/4 · Suara · Menyintesis narasi",
+            }
+
+        # Check Visual
+        total_shots = sum(len(ch.shots) for ch in manifest.chapters)
+        built_shots = sum(
+            1 for ch in manifest.chapters for sh in ch.shots
+            if sh.rendered_clip and (p_dir / sh.rendered_clip).is_file()
+        )
+        fetched_shots = sum(
+            1 for ch in manifest.chapters for sh in ch.shots
+            if sh.asset_path and (p_dir / sh.asset_path).is_file()
+        )
+        if built_shots < total_shots:
+            if fetched_shots < total_shots:
+                pct = 25.0 + ((fetched_shots / total_shots) * 20.0) if total_shots > 0 else 25.0
+                phase_label = f"Langkah 3/4 · Visual · Mencari footage ({fetched_shots}/{total_shots})"
+                unit_label = f"footage ({fetched_shots}/{total_shots})"
+                completed_count = fetched_shots
+            else:
+                pct = 45.0 + ((built_shots / total_shots) * 25.0) if total_shots > 0 else 45.0
+                phase_label = f"Langkah 3/4 · Visual · Menyusun klip ({built_shots}/{total_shots})"
+                unit_label = f"klip ({built_shots}/{total_shots})"
+                completed_count = built_shots
+            return {
+                "completed": completed_count,
+                "total": total_shots,
+                "percentage": round(pct, 1),
+                "unit_label": unit_label,
+                "phase": phase_label,
+            }
+
+        # Check Render
+        rendered_chapters = sum(
+            1 for ch in manifest.chapters
+            if ch.output_file and (p_dir / ch.output_file).is_file() and ch.status == ItemStatus.completed
+        )
+        has_final = bool(manifest.final_video_file and (p_dir / manifest.final_video_file).is_file())
+        if not has_final:
+            if rendered_chapters < total_chapters:
+                pct = 70.0 + ((rendered_chapters / (total_chapters + 1)) * 25.0) if total_chapters > 0 else 70.0
+                phase_label = f"Langkah 4/4 · Render · Bab {rendered_chapters + 1} dari {total_chapters}"
+            else:
+                pct = 95.0
+                phase_label = "Langkah 4/4 · Render · Menggabungkan & Normalisasi"
+            return {
+                "completed": rendered_chapters,
+                "total": total_chapters + 1,
+                "percentage": round(pct, 1),
+                "unit_label": f"bab ({rendered_chapters}/{total_chapters})",
+                "phase": phase_label,
+            }
+
+        # Check CapCut if present in job command
+        job_state = _read_job_state_from_disk(project_id) or {}
+        cmd = job_state.get("command", [])
+        with_cc = any("capcut" in str(arg).lower() for arg in cmd)
+        from app.services.longform.status import find_latest_capcut_draft
+        cc_draft = find_latest_capcut_draft(p_dir, project_id)
+        if with_cc and not cc_draft:
+            return {
+                "completed": 0,
+                "total": 1,
+                "percentage": 98.0,
+                "unit_label": "draft",
+                "phase": "Langkah 5/5 · CapCut · Mengekspor draft",
+            }
+
+        return {
+            "completed": 1,
+            "total": 1,
+            "percentage": 100.0,
+            "unit_label": "selesai",
+            "phase": "Selesai",
+        }
+
+    # 5. CapCut step
+    if step == "capcut_export":
+        from app.services.longform.status import find_latest_capcut_draft
+        cc_draft = find_latest_capcut_draft(p_dir, project_id)
+        return {
+            "completed": 1 if cc_draft else 0,
+            "total": 1,
+            "percentage": 100.0 if cc_draft else 50.0,
+            "unit_label": "draft",
+            "phase": "Selesai" if cc_draft else "Mengekspor draft",
+        }
+
+    # 6. Voice / Audio synthesize step
     total_groups = sum(len(ch.tts_groups) for ch in manifest.chapters)
     completed_groups = 0
     for ch in manifest.chapters:

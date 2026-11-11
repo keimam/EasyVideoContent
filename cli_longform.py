@@ -1853,6 +1853,134 @@ def cmd_capcut_set_text_size(args: argparse.Namespace) -> int:
         return 1
 
 
+def cmd_pipeline_auto(args: argparse.Namespace) -> int:
+    """Run pipeline automatically to completion: Voice -> Visual -> Render -> (optional) CapCut (Stage 7B.2 A1-A3)."""
+    from app.services.longform.voice_service import VoiceService
+    from app.services.longform.visual.service import VisualService
+    from app.services.longform.render.service import RenderService
+    from app.services.longform.capcut.service import export_full_project
+    from app.services.longform.store import is_stop_requested
+
+    proj_dir = get_project_dir(args.project_id)
+    if not proj_dir.is_dir():
+        print(f"Error: Project '{args.project_id}' not found at {proj_dir}", file=sys.stderr)
+        return 1
+
+    try:
+        manifest = load_manifest(proj_dir)
+        total_chapters = len(manifest.chapters)
+        if total_chapters == 0:
+            print("Error: Proyek belum memiliki naskah bab.", file=sys.stderr)
+            return 1
+
+        # Check script completion
+        script_done = all(
+            any(g.paragraph_text and g.paragraph_text.strip() for g in ch.tts_groups)
+            or (proj_dir / "script" / f"chapter_{ch.chapter_index:02d}.md").is_file()
+            for ch in manifest.chapters
+        )
+        if not script_done:
+            print("Error: Naskah belum selesai ditulis.", file=sys.stderr)
+            return 1
+
+        print(f"\n[PIPELINE AUTO] Starting automated run for project '{args.project_id}'...")
+        print("=" * 80)
+
+        # Step 2: Voice
+        total_groups = sum(len(ch.tts_groups) for ch in manifest.chapters)
+        done_groups = sum(
+            1 for ch in manifest.chapters for g in ch.tts_groups
+            if g.audio and g.audio.file_path and (proj_dir / g.audio.file_path).is_file() and (proj_dir / g.audio.file_path).stat().st_size > 44
+        )
+        if done_groups < total_groups:
+            print(f"\n>>> [1/4 Voice] Synthesizing narration audio ({done_groups}/{total_groups} done)...")
+            voice_svc = VoiceService(proj_dir)
+            manifest = voice_svc.synthesize_all()
+            save_manifest(manifest, proj_dir)
+            if is_stop_requested(proj_dir):
+                print("\n[PIPELINE INTERRUPTED] Stop requested during Voice synthesis.", file=sys.stderr)
+                return 130
+        else:
+            print(f"\n>>> [1/4 Voice] Already completed ({done_groups}/{total_groups} groups). Skipping.")
+
+        # Step 3: Visual
+        total_shots = sum(len(ch.shots) for ch in manifest.chapters)
+        built_shots = sum(
+            1 for ch in manifest.chapters for sh in ch.shots
+            if sh.rendered_clip and (proj_dir / sh.rendered_clip).is_file()
+        )
+        if built_shots < total_shots or total_shots == 0:
+            print(f"\n>>> [2/4 Visual] Building visual assets & clips ({built_shots}/{total_shots} done)...")
+            vis_svc = VisualService(proj_dir)
+            if total_shots == 0:
+                manifest = vis_svc.form_all_chapter_shots(manifest)
+                save_manifest(manifest, proj_dir)
+            manifest, _ = vis_svc.pipeline(manifest)
+            save_manifest(manifest, proj_dir)
+            if is_stop_requested(proj_dir):
+                print("\n[PIPELINE INTERRUPTED] Stop requested during Visual pipeline.", file=sys.stderr)
+                return 130
+        else:
+            print(f"\n>>> [2/4 Visual] Already completed ({built_shots}/{total_shots} clips). Skipping.")
+
+        # Check needs_review (A2)
+        needs_review_count = sum(
+            1 for ch in manifest.chapters for s in ch.shots
+            if getattr(s, "needs_review", False)
+        )
+        if args.stop_on_review and not getattr(args, "skip_review_check", False) and needs_review_count > 0:
+            print(f"\n[PAUSED] Menunggu pengecekan visual ({needs_review_count} shot perlu dicek).", file=sys.stderr)
+            job_state_file = proj_dir / "job_state.json"
+            if job_state_file.is_file():
+                try:
+                    import json
+                    st_data = json.loads(job_state_file.read_text(encoding="utf-8"))
+                    st_data["status"] = "stopped"
+                    st_data["phase"] = f"Menunggu pengecekan visual ({needs_review_count} shot)"
+                    st_data["error_message"] = f"Menunggu pengecekan visual ({needs_review_count} shot)"
+                    job_state_file.write_text(json.dumps(st_data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+                except Exception:
+                    pass
+            return 2
+
+        # Step 4: Render
+        has_final_vid = bool(manifest.final_video_file and (proj_dir / manifest.final_video_file).is_file())
+        if not has_final_vid or manifest.status == ItemStatus.stale:
+            print(f"\n>>> [3/4 Render] Rendering chapters and assembling final video...")
+            rnd_svc = RenderService(proj_dir)
+            manifest, _ = rnd_svc.render_all(manifest, no_bgm=getattr(args, "no_bgm", False))
+            save_manifest(manifest, proj_dir)
+            if is_stop_requested(proj_dir):
+                print("\n[PIPELINE INTERRUPTED] Stop requested during Render.", file=sys.stderr)
+                return 130
+        else:
+            print(f"\n>>> [3/4 Render] Final video already exists ({manifest.final_video_file}). Skipping.")
+
+        # Step 5: CapCut (optional)
+        if getattr(args, "with_capcut", False):
+            from app.services.longform.status import find_latest_capcut_draft
+            cc_info = find_latest_capcut_draft(proj_dir, args.project_id)
+            if not cc_info:
+                print(f"\n>>> [4/4 CapCut] Exporting project to CapCut Desktop...")
+                export_full_project(args.project_id, install=True)
+            else:
+                print(f"\n>>> [4/4 CapCut] Draft already exists ({cc_info['draft_name']}). Skipping.")
+
+        print("\n" + "=" * 80)
+        print(f"SUCCESS: Pipeline auto completed successfully for project '{args.project_id}'!")
+        print("=" * 80 + "\n")
+        return 0
+    except ProjectLockedError:
+        print(f"Error: Project '{args.project_id}' is locked by another process.", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print(f"\n[PIPELINE INTERRUPTED] KeyboardInterrupt received.\n", file=sys.stderr)
+        return 130
+    except Exception as exc:
+        print(f"Error in automated pipeline: {exc}", file=sys.stderr)
+        return 1
+
+
 def re_slugify(text: str) -> str:
     """Create a URL/folder-safe slug from title."""
     import re
@@ -2128,6 +2256,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_c_set_sz.add_argument("preset_id", help="Preset ID (e.g. automotive.muscle_car or documentary_en)")
     p_c_set_sz.add_argument("size", type=int, help="CapCut subtitle font size (e.g. 5, 6, 7, 8, etc.)")
 
+    # 10. pipeline (Stage 7B.2 A1)
+    p_pipe = subparsers.add_parser("pipeline", help="Automated multi-step pipeline execution")
+    pipe_subs = p_pipe.add_subparsers(dest="pipeline_command", required=True)
+    p_pipe_auto = pipe_subs.add_parser("auto", help="Run uncompleted steps automatically to completion")
+    p_pipe_auto.add_argument("project_id", help="Project ID")
+    p_pipe_auto.add_argument("--with-capcut", action="store_true", help="Include CapCut export after render")
+    p_pipe_auto.add_argument("--stop-on-review", action="store_true", default=True, help="Pause if shots have needs_review=True")
+    p_pipe_auto.add_argument("--skip-review-check", action="store_true", help="Do not pause on needs_review (resume past review)")
+    p_pipe_auto.add_argument("--no-bgm", action="store_true", help="Disable BGM during render")
+
     return parser
 
 
@@ -2233,6 +2371,9 @@ def main() -> int:
                 return cmd_capcut_calibrate(args)
             elif args.capcut_command == "set-text-size":
                 return cmd_capcut_set_text_size(args)
+        elif args.command == "pipeline":
+            if args.pipeline_command == "auto":
+                return cmd_pipeline_auto(args)
 
         parser.print_help()
         return 1

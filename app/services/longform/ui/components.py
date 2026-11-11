@@ -11,6 +11,7 @@ Implements step-flow UX:
 
 from __future__ import annotations
 
+from datetime import datetime
 import json
 import os
 import re
@@ -685,6 +686,60 @@ def render_project_page(project_id: str):
     # Always Visible Top Job Monitor (C1, C4.3, W3)
     render_job_monitor_widget(project_id, current_step=current_active_step)
 
+    # Automated Pipeline Section ("Otomatis Sampai Selesai" - A1, A2, A3)
+    script_done = (st_info["steps"]["script"]["status"] == "selesai")
+    all_done = (
+        st_info["steps"]["script"]["status"] == "selesai"
+        and st_info["steps"]["voice"]["status"] == "selesai"
+        and st_info["steps"]["visual"]["status"] == "selesai"
+        and st_info["steps"]["render"]["status"] == "selesai"
+    )
+
+    with st.container(border=True):
+        col_a1, col_a2, col_a3 = st.columns([3, 1, 1])
+        with col_a1:
+            st.markdown("##### 🚀 Otomatis Sampai Selesai")
+            st.caption("Jalankan langkah yang tersisa secara berurutan dalam satu antrean pekerjaan latar belakang (Suara → Visual → Render → CapCut).")
+        with col_a2:
+            auto_with_capcut = st.checkbox("Sertakan CapCut", value=False, key=f"auto_cc_{project_id}")
+        with col_a3:
+            auto_stop_review = st.checkbox("Berhenti jika Perlu Dicek", value=True, key=f"auto_rev_{project_id}")
+
+        job_state = jobs.get_job_state(project_id)
+        is_job_running = bool(job_state and job_state.get("status") == "running")
+        is_review_paused = bool(
+            job_state
+            and job_state.get("status") == "stopped"
+            and "Menunggu pengecekan visual" in (job_state.get("phase") or "")
+        )
+
+        if is_review_paused:
+            st.warning("⚠️ **Pekerjaan Otomatis Terhenti**: Terdapat shot yang ditandai 'Perlu dicek' pada Langkah ③ Visual. Silakan tinjau visual di tab ③ atau klik tombol di bawah untuk melanjutkan render.")
+            col_b1, _ = st.columns([2, 3])
+            with col_b1:
+                if st.button("▶️ Lanjutkan Otomatis (Abaikan Pengecekan)", key=f"btn_resume_auto_{project_id}", type="primary", use_container_width=True):
+                    cmd = ["python", "cli_longform.py", "pipeline", "auto", project_id, "--skip-review-check"]
+                    if auto_with_capcut:
+                        cmd.append("--with-capcut")
+                    jobs.start_job(project_id, "pipeline_auto", cmd)
+                    time.sleep(0.5)
+                    st.rerun()
+        elif not script_done:
+            st.caption("🔒 *Langkah ① Naskah harus selesai terlebih dahulu sebelum dapat menjalankan otomatisasi.*")
+            st.button("🚀 Jalankan Otomatis Sampai Selesai", disabled=True, key=f"btn_auto_dis_{project_id}")
+        elif all_done and not auto_with_capcut:
+            st.button("✅ Semua Langkah Selesai ✔", disabled=True, key=f"btn_auto_done_{project_id}")
+        else:
+            if st.button("🚀 Jalankan Otomatis Sampai Selesai", disabled=is_job_running, type="primary", key=f"btn_start_auto_{project_id}"):
+                cmd = ["python", "cli_longform.py", "pipeline", "auto", project_id]
+                if auto_with_capcut:
+                    cmd.append("--with-capcut")
+                if auto_stop_review:
+                    cmd.append("--stop-on-review")
+                jobs.start_job(project_id, "pipeline_auto", cmd)
+                time.sleep(0.5)
+                st.rerun()
+
     st.write("---")
 
     # Render horizontal stepper pill selector
@@ -1151,9 +1206,14 @@ def render_visual_step_flow(
     used_sources_set = set()
     for ch in manifest.chapters:
         for s in ch.shots:
-            if s.asset_path or s.rendered_clip:
-                src = s.actual_source or s.requested_source or ("fake" if s.is_fake else "stock")
-                used_sources_set.add(src.capitalize())
+            has_asset = bool(s.asset_path and (p_dir / s.asset_path).is_file())
+            has_clip = bool(s.rendered_clip and (p_dir / s.rendered_clip).is_file())
+            if has_asset or has_clip:
+                if getattr(s, "is_fake", False) or s.actual_source == "fake":
+                    used_sources_set.add("Placeholder")
+                else:
+                    src = s.actual_source or s.requested_source or "stock"
+                    used_sources_set.add(src.capitalize())
     sources_str = ", ".join(sorted(used_sources_set)) if used_sources_set else "Belum ada"
 
     col_m1, col_m2, col_m3, col_m4 = st.columns(4)
@@ -1412,25 +1472,36 @@ def render_visual_step_flow(
                         raw_cands = target_shot.candidates or []
                         cur_asset_file = Path(target_shot.asset_path).name if target_shot.asset_path else ""
 
+                        # Extract active asset base numeric ID if available (X2)
+                        active_base_id = ""
+                        m_act = re.search(r"(\d{4,})", f"{target_shot.asset_path or ''} {getattr(target_shot, 'source_candidate_id', '')}")
+                        if m_act:
+                            active_base_id = m_act.group(1)
+
                         unique_cands = []
                         seen_ids = set()
                         for orig_idx, cand in enumerate(raw_cands):
-                            cid = cand.get("candidate_id")
-                            curl = cand.get("url")
-                            # Skip if matches current active asset or duplicate (X2)
-                            if cid and cid in seen_ids:
+                            cid = str(cand.get("candidate_id") or "")
+                            curl = str(cand.get("url") or cand.get("source_url") or "")
+                            m_base = re.search(r"(\d{4,})", f"{cid} {curl}")
+                            base_id = m_base.group(1) if m_base else (cid or curl)
+
+                            if not base_id:
                                 continue
-                            if curl and curl in seen_ids:
+
+                            # Skip if matches current active asset base ID (X2)
+                            if active_base_id and base_id == active_base_id:
                                 continue
                             if orig_idx == 0 and target_shot.asset_path and not getattr(target_shot, "is_replaced", False):
                                 continue
-                            if cid and cur_asset_file and cid in cur_asset_file:
+                            if cur_asset_file and base_id in cur_asset_file:
                                 continue
 
-                            if cid:
-                                seen_ids.add(cid)
-                            if curl:
-                                seen_ids.add(curl)
+                            # Skip duplicates across renditions/resolutions
+                            if base_id in seen_ids:
+                                continue
+
+                            seen_ids.add(base_id)
                             unique_cands.append((orig_idx, cand))
 
                         if not unique_cands:
@@ -1571,36 +1642,461 @@ def render_visual_step_flow(
                     st.error(f"Gagal membersihkan cache: {exc}")
 
 
-# --- Step 4: Render Flow (C4.3) ---
+def _safe_open_path(path: Path | str, is_folder: bool = False):
+    """Safely open a file or directory using the OS default shell handler."""
+    p = Path(path).resolve()
+    if sys.platform == "win32":
+        try:
+            if is_folder and p.is_file():
+                subprocess.Popen(["explorer.exe", f"/select,{str(p)}"])
+            else:
+                os.startfile(str(p))
+        except Exception as exc:
+            logger.warning(f"Could not open path {p}: {exc}")
+    else:
+        try:
+            subprocess.Popen(["xdg-open", str(p)])
+        except Exception:
+            pass
+
+
+# --- Step 4: Render Flow (Stage 7B.2 R1-R5) ---
 
 def render_render_step_flow(project_id: str, p_dir: Path, manifest: ProjectManifest, step_info: Dict[str, Any]):
-    """Render Step 4: Render Video Final (C4.3)."""
+    """Render Step 4: Render Video Final + Subtitle + BGM (Stage 7B.2 R1-R5)."""
+    from app.services.longform.render.service import RenderService
+
     st.subheader("④ Render Video Final + Subtitle + BGM")
     st.write(f"**Status Saat Ini:** `{step_info['label']}`")
 
-    final_vid = step_info.get("final_video_file")
-    if final_vid and (p_dir / final_vid).is_file():
-        st.success(f"Video final siap: `{final_vid}`")
-        st.video(str(p_dir / final_vid))
+    st_info = compute_project_step_status(p_dir)
+    voice_done = (st_info["steps"]["voice"]["status"] == "selesai")
+    visual_done = (st_info["steps"]["visual"]["status"] == "selesai")
+    can_render = voice_done and visual_done
 
-    st.button("Langkah Render (Tersedia di Tahap 7B)", disabled=True, type="primary", key=f"btn_rnd_disabled_{project_id}")
-    st.caption("Penyusunan transisi bab, pembakaran subtitle ASS gaya documentary, ducking musik latar, dan rendering akhir tersedia di Tahap 7B.")
+    # R1: Prerequisite Check & Messaging
+    if not can_render:
+        if not voice_done and not visual_done:
+            st.warning("⚠️ **Langkah Prasyarat Belum Selesai**: Langkah ② Suara dan ③ Visual harus diselesaikan terlebih dahulu sebelum dapat merender video final.")
+        elif not voice_done:
+            st.warning("⚠️ **Langkah Prasyarat Belum Selesai**: Langkah ② Suara harus diselesaikan terlebih dahulu.")
+        elif not visual_done:
+            st.warning(f"⚠️ **Langkah Prasyarat Belum Selesai**: Langkah ③ Visual belum selesai ({st_info['steps']['visual']['completed']}/{st_info['steps']['visual']['total']} klip siap). Selesaikan penyusunan visual terlebih dahulu.")
+
+    # R2: Render Settings Expander
+    preset_snap = dict(manifest.preset_snapshot or {})
+    sub_style = dict(preset_snap.get("subtitle_style", {}))
+
+    with st.expander("⚙️ Pengaturan Render (Musik Latar & Subtitle)", expanded=False):
+        st.markdown("##### 🎵 Musik Latar (BGM)")
+
+        # Available BGM from resource/songs and project assets
+        songs_dir = Path("resource/songs")
+        available_bgm = []
+        if songs_dir.is_dir():
+            available_bgm = sorted([f.name for f in songs_dir.glob("*.mp3")])
+
+        local_bgm_dir = p_dir / "assets" / "audio" / "bgm"
+        local_bgm_files = []
+        if local_bgm_dir.is_dir():
+            local_bgm_files = [f.name for f in local_bgm_dir.iterdir() if f.is_file() and f.suffix.lower() in (".mp3", ".wav", ".m4a")]
+
+        curr_bgm_choice = "preset"
+        if preset_snap.get("default_bgm") is None and not local_bgm_files:
+            curr_bgm_choice = "none"
+        elif local_bgm_files:
+            curr_bgm_choice = "upload"
+
+        bgm_mode = st.radio(
+            "Pilihan Sumber Musik Latar:",
+            options=["preset", "none", "upload"],
+            format_func=lambda x: {
+                "preset": "Pilih dari Folder Musik (resource/songs)",
+                "none": "Tanpa Musik (Hanya Narasi)",
+                "upload": "Unggah Berkas Musik Sendiri",
+            }[x],
+            index=["preset", "none", "upload"].index(curr_bgm_choice),
+            key=f"bgm_mode_{project_id}",
+        )
+
+        selected_bgm_name = preset_snap.get("default_bgm") or (available_bgm[0] if available_bgm else None)
+        if bgm_mode == "preset":
+            if available_bgm:
+                selected_bgm_name = st.selectbox(
+                    "Pilih Lagu Musik Latar:",
+                    options=available_bgm,
+                    index=available_bgm.index(selected_bgm_name) if selected_bgm_name in available_bgm else 0,
+                    key=f"sel_bgm_{project_id}",
+                )
+            else:
+                st.caption("Tidak ada berkas musik di `resource/songs`.")
+        elif bgm_mode == "upload":
+            up_bgm = st.file_uploader("Unggah berkas musik (.mp3, .wav, .m4a):", type=["mp3", "wav", "m4a"], key=f"up_bgm_{project_id}")
+            if up_bgm:
+                local_bgm_dir.mkdir(parents=True, exist_ok=True)
+                target_bgm = local_bgm_dir / up_bgm.name
+                target_bgm.write_bytes(up_bgm.getvalue())
+                st.success(f"Musik '{up_bgm.name}' berhasil disimpan ke folder proyek.")
+                selected_bgm_name = up_bgm.name
+            elif local_bgm_files:
+                st.info(f"Berkas musik proyek aktif: `{local_bgm_files[0]}`")
+        else:
+            selected_bgm_name = None
+
+        col_v1, col_v2 = st.columns(2)
+        with col_v1:
+            bgm_volume = st.slider(
+                "Volume Musik Latar:",
+                min_value=0.0,
+                max_value=1.0,
+                value=float(preset_snap.get("bgm_volume", 0.20)),
+                step=0.05,
+                key=f"sl_bgm_vol_{project_id}",
+            )
+        with col_v2:
+            st.caption("ℹ️ **Sidechain Ducking Otomatis**:")
+            st.caption("Volume musik otomatis diturunkan (ducking) saat narator berbicara dan kembali normal saat hening (threshold: 0.03, ratio: 4.0, attack: 200ms, release: 1000ms).")
+
+        st.markdown("---")
+        st.markdown("##### 📝 Gaya Subtitle (Burned ASS)")
+        col_st1, col_st2 = st.columns(2)
+        with col_st1:
+            curr_fsize = int(sub_style.get("font_size", 20))
+            new_fsize = st.number_input(
+                "Ukuran Font Subtitle (pt):",
+                min_value=10,
+                max_value=120,
+                value=min(max(10, curr_fsize), 120),
+                step=1,
+                key=f"sub_fs_{project_id}",
+            )
+            st.caption(f"Font: `{sub_style.get('font_name', 'BeVietnamPro-Bold')}` | Warna: `{sub_style.get('primary_color', '&H00FFFFFF')}`")
+        with col_st2:
+            curr_marginv = int(sub_style.get("margin_v", 40))
+            new_marginv = st.number_input(
+                "Margin Vertikal Bawah (px):",
+                min_value=10,
+                max_value=300,
+                value=min(max(10, curr_marginv), 300),
+                step=5,
+                key=f"sub_mv_{project_id}",
+            )
+            st.caption(f"Outline: `{sub_style.get('outline_color', '&H00000000')}` (Lebar: `{sub_style.get('outline_width', 2)}`)")
+
+        col_save_cfg, col_prev_sub = st.columns([1, 1])
+        with col_save_cfg:
+            if st.button("💾 Simpan Pengaturan Render", key=f"btn_save_render_cfg_{project_id}"):
+                sub_style["font_size"] = int(new_fsize)
+                sub_style["margin_v"] = int(new_marginv)
+                preset_snap["subtitle_style"] = sub_style
+                preset_snap["bgm_volume"] = bgm_volume
+                preset_snap["default_bgm"] = selected_bgm_name
+                manifest.preset_snapshot = preset_snap
+                save_manifest(manifest, p_dir)
+                st.success("Pengaturan render berhasil disimpan. Hash bab diperbarui.")
+                time.sleep(0.5)
+                st.rerun()
+
+        with col_prev_sub:
+            if st.button("🖼️ Pratinjau Subtitle (Frame Preview)", disabled=not visual_done, key=f"btn_prev_sub_{project_id}"):
+                with st.spinner("Merender frame pratinjau subtitle..."):
+                    try:
+                        rnd_svc = RenderService(p_dir)
+                        prev_pngs = rnd_svc.preview_subtitles(
+                            manifest=manifest,
+                            chapter_index=1,
+                            timestamps_seconds=[5.0, 10.0],
+                            font_size=new_fsize,
+                            margin_v=new_marginv,
+                        )
+                        if prev_pngs and prev_pngs[0].is_file():
+                            st.session_state[f"sub_prev_img_{project_id}"] = str(prev_pngs[0])
+                            st.rerun()
+                        else:
+                            st.warning("Tidak ada frame yang dihasilkan pada timestamp tersebut.")
+                    except Exception as exc:
+                        st.error(f"Gagal membuat pratinjau subtitle: {exc}")
+
+        sub_prev_path = st.session_state.get(f"sub_prev_img_{project_id}")
+        if sub_prev_path and Path(sub_prev_path).is_file():
+            st.markdown("###### 🖼️ Pratinjau Tampilan Subtitle:")
+            st.image(sub_prev_path, use_container_width=True)
+            if st.button("✕ Tutup Pratinjau Subtitle", key=f"btn_close_sub_prev_{project_id}"):
+                st.session_state.pop(f"sub_prev_img_{project_id}", None)
+                st.rerun()
+
+    # R3: Adaptive Action Button
+    st_val = step_info["status"]
+    job_state = jobs.get_job_state(project_id)
+    is_job_running = bool(job_state and job_state.get("status") == "running")
+
+    col_btn1, col_btn2 = st.columns([2, 1])
+    with col_btn1:
+        if st_val == "belum":
+            btn_label = "🎬 Render Video Final"
+        elif st_val == "terhenti":
+            btn_label = "▶️ Lanjutkan Render Video"
+        elif st_val == "perlu_diperbarui":
+            btn_label = "🔄 Render Ulang yang Berubah"
+        else:
+            btn_label = "✅ Selesai ✔ — Lanjut ke CapCut"
+
+        if st.button(
+            btn_label,
+            disabled=(not can_render or is_job_running),
+            type="primary",
+            key=f"btn_render_main_{project_id}",
+            use_container_width=True,
+        ):
+            if st_val == "selesai":
+                st.session_state[f"active_step_{project_id}"] = "capcut"
+                st.rerun()
+            else:
+                jobs.start_job(project_id, "render_all", ["python", "cli_longform.py", "render", "all", project_id])
+                time.sleep(0.5)
+                st.rerun()
+
+    with col_btn2:
+        if st_val == "selesai":
+            if st.button("🔄 Render Ulang (Force)", disabled=is_job_running, key=f"btn_force_render_{project_id}", use_container_width=True):
+                jobs.start_job(project_id, "render_all", ["python", "cli_longform.py", "render", "all", project_id, "--force"])
+                time.sleep(0.5)
+                st.rerun()
+
+    # R5: Results Display & Player
+    final_vid = step_info.get("final_video_file") or manifest.final_video_file
+    final_vid_path = (p_dir / final_vid) if final_vid else None
+
+    if final_vid_path and final_vid_path.is_file():
+        st.write("---")
+        st.markdown("##### 📊 Hasil Video Final")
+
+        # Load render_stats.json if present
+        stats_file = p_dir / "export" / "render_stats.json"
+        stats: Dict[str, Any] = {}
+        if stats_file.is_file():
+            try:
+                stats = json.loads(stats_file.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+
+        vid_size_bytes = final_vid_path.stat().st_size
+        vid_size_mb = vid_size_bytes / (1024 * 1024)
+        dur_sec = float(stats.get("final_video_duration") or 0.0)
+
+        # Fallback ffprobe if duration not in stats
+        if dur_sec <= 0:
+            try:
+                pres = subprocess.run(
+                    ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(final_vid_path)],
+                    capture_output=True, text=True, check=True
+                )
+                dur_sec = float(pres.stdout.strip())
+            except Exception:
+                dur_sec = 0.0
+
+        dur_fmt = f"{int(dur_sec // 60):02d}:{int(dur_sec % 60):02d} ({dur_sec:.1f}s)" if dur_sec > 0 else "N/A"
+        lufs_val = stats.get("integrated_lufs")
+        tp_val = stats.get("true_peak_dbtp")
+        lufs_fmt = f"{lufs_val:.1f} LUFS" if lufs_val is not None else "-14.0 LUFS"
+        tp_fmt = f"{tp_val:.1f} dBTP" if tp_val is not None else "-1.0 dBTP"
+
+        fps = float(getattr(manifest.encoder_settings, "fps", 25.0) or 25.0)
+        total_frames = int(dur_sec * fps) if dur_sec > 0 else 0
+
+        col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+        col_m1.metric("Durasi Video", dur_fmt)
+        col_m2.metric("Ukuran Berkas", f"{vid_size_mb:.1f} MB")
+        col_m3.metric("Loudness (EBU R128)", f"{lufs_fmt} • {tp_fmt}")
+        col_m4.metric("Jumlah Frame", f"{total_frames} frames ({fps:.0f} fps)")
+
+        # Action Buttons: System player, Folder explorer, Download SRT & YT chapters
+        col_a1, col_a2, col_a3, col_a4 = st.columns(4)
+        with col_a1:
+            if st.button("▶ Buka di Pemutar Sistem", key=f"btn_play_sys_{project_id}", use_container_width=True):
+                _safe_open_path(final_vid_path)
+
+        with col_a2:
+            if st.button("📂 Buka Folder Export", key=f"btn_open_exp_{project_id}", use_container_width=True):
+                _safe_open_path(final_vid_path.parent, is_folder=True)
+
+        srt_path = p_dir / "export" / "subtitles" / "full_timeline.srt"
+        with col_a3:
+            if srt_path.is_file():
+                srt_data = srt_path.read_text(encoding="utf-8", errors="replace")
+                st.download_button(
+                    "📥 Unduh Subtitle (.srt)",
+                    data=srt_data,
+                    file_name=f"{project_id}_subtitles.srt",
+                    mime="text/plain",
+                    use_container_width=True,
+                    key=f"dl_srt_{project_id}",
+                )
+            else:
+                st.button("📥 Subtitle Belum Ada", disabled=True, use_container_width=True, key=f"dl_srt_dis_{project_id}")
+
+        yt_path = p_dir / "export" / "youtube_chapters.txt"
+        with col_a4:
+            if yt_path.is_file():
+                yt_data = yt_path.read_text(encoding="utf-8", errors="replace")
+                st.download_button(
+                    "📥 Unduh Bab YouTube",
+                    data=yt_data,
+                    file_name=f"{project_id}_youtube_chapters.txt",
+                    mime="text/plain",
+                    use_container_width=True,
+                    key=f"dl_yt_{project_id}",
+                )
+            else:
+                st.button("📥 Bab YouTube Belum Ada", disabled=True, use_container_width=True, key=f"dl_yt_dis_{project_id}")
+
+        # Browser player condition: < 200 MB
+        if vid_size_mb < 200.0:
+            st.video(str(final_vid_path.resolve()))
+        else:
+            st.info(f"ℹ️ Ukuran video final ({vid_size_mb:.1f} MB) melebihi batas pratinjau browser (200 MB). Gunakan tombol **'▶ Buka di Pemutar Sistem'** di atas untuk memutar video dengan performa penuh.")
 
 
-# --- Step 5: CapCut Flow (C4.3) ---
+# --- Step 5: CapCut Desktop Export Flow (Stage 7B.2 C1-C4) ---
 
 def render_capcut_step_flow(project_id: str, p_dir: Path, manifest: ProjectManifest, step_info: Dict[str, Any]):
-    """Render Step 5: CapCut Export (C4.3)."""
+    """Render Step 5: CapCut Desktop Export & Calibration (Stage 7B.2 C1-C4)."""
+    from app.services.longform.capcut.detector import get_capcut_doctor_report
+    from app.services.longform.capcut.service import (
+        build_calibration_draft,
+        resolve_capcut_text_size,
+        set_capcut_text_size,
+    )
+
     st.subheader("⑤ Ekspor Proyek CapCut Desktop")
     st.write(f"**Status Saat Ini:** `{step_info['label']}`")
 
-    draft_info = step_info.get("draft_info")
-    if draft_info:
-        st.success(f"Draft CapCut Terdeteksi: **{draft_info['draft_name']}** (diekspor {draft_info['exported_at']})")
-        st.caption(f"Lokasi: `{draft_info['draft_dir']}`")
+    st_info = compute_project_step_status(p_dir)
+    voice_done = (st_info["steps"]["voice"]["status"] == "selesai")
+    visual_done = (st_info["steps"]["visual"]["status"] == "selesai")
 
-    st.button("Langkah Ekspor CapCut (Tersedia di Tahap 7B)", disabled=True, type="primary", key=f"btn_cc_disabled_{project_id}")
-    st.caption("Ekspor timeline CapCut draft_content.json otomatis ke folder draft pengguna tersedia di Tahap 7B.")
+    # C1: CapCut Doctor Diagnostic Panel
+    doc_report = get_capcut_doctor_report()
+    capcut_running = doc_report.get("is_running", False)
+    capcut_installed = doc_report.get("installed", False)
+    installed_ver = doc_report.get("installed_version")
+    tmpl_ver = doc_report.get("template_version", "8.9.0")
+    draft_folder = doc_report.get("draft_folder")
+
+    with st.container(border=True):
+        st.markdown("##### 🩺 Cek Status CapCut Desktop")
+        col_d1, col_d2, col_d3 = st.columns(3)
+        col_d1.metric("Status CapCut", "✅ Terpasang" if capcut_installed else "❌ Belum Terpasang")
+        col_d2.metric("Versi CapCut", f"{installed_ver or 'N/A'}")
+        col_d3.metric("Status Aplikasi", "⚠️ Sedang Berjalan" if capcut_running else "✅ Tertutup (Aman)")
+
+        if draft_folder:
+            st.caption(f"📁 Folder Draft: `{draft_folder}`")
+        else:
+            st.caption("📁 Folder Draft: Tidak ditemukan secara otomatis di AppData Local.")
+
+        if capcut_installed and installed_ver != tmpl_ver:
+            st.warning(f"⚠️ Versi CapCut terpasang (`{installed_ver}`) berbeda dari template teruji (`{tmpl_ver}`). Kompatibilitas draft sebagian besar tetap terjaga.")
+
+        if capcut_running:
+            st.error("⚠️ **CapCut Desktop sedang aktif**. Tutup aplikasi CapCut sebelum mengekspor untuk mencegah korupsi berkas draft!")
+
+    # C2: Text Size Calibration Expander
+    current_sz = resolve_capcut_text_size(manifest)
+    with st.expander("📏 Kalibrasi Ukuran Teks Subtitle CapCut", expanded=False):
+        st.write(f"Ukuran teks subtitle saat ini: **{current_sz}** (Preset: `{manifest.preset_id}`)")
+        st.caption("Draft kalibrasi menghasilkan kalimat uji ukuran 5 sampai 10 di CapCut Desktop. Buka draft di CapCut untuk menentukan ukuran yang paling proporsional tanpa terpotong untuk rasio proyek Anda.")
+
+        col_cal1, col_cal2 = st.columns([1, 1])
+        with col_cal1:
+            if st.button("🛠️ Buat Draft Kalibrasi (MPT_CALIBRATE)", disabled=capcut_running or not visual_done, key=f"btn_calib_{project_id}"):
+                with st.spinner("Membuat draft kalibrasi di folder CapCut..."):
+                    try:
+                        calib_res = build_calibration_draft(project_id, install=True)
+                        st.success(f"Draft kalibrasi '{calib_res['draft_name']}' berhasil dipasang ke CapCut! Buka CapCut untuk melihat perbandingannya.")
+                    except Exception as exc:
+                        st.error(f"Gagal membuat draft kalibrasi: {exc}")
+
+        with col_cal2:
+            new_sz_val = st.number_input(
+                "Pilih Ukuran Teks (5 - 10):",
+                min_value=5,
+                max_value=10,
+                value=int(current_sz),
+                step=1,
+                key=f"num_sz_{project_id}",
+            )
+            if st.button("💾 Simpan Ukuran Teks", key=f"btn_save_sz_{project_id}"):
+                try:
+                    set_capcut_text_size(manifest.preset_id, new_sz_val)
+                    manifest.preset_snapshot["capcut_text_size"] = new_sz_val
+                    save_manifest(manifest, p_dir)
+                    st.success(f"Ukuran teks {new_sz_val} berhasil disimpan untuk preset '{manifest.preset_id}'.")
+                    time.sleep(0.5)
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Gagal menyimpan ukuran teks: {exc}")
+
+    # C4: Prerequisite Verification
+    can_export = voice_done and visual_done and not capcut_running
+    if not can_export:
+        if not voice_done or not visual_done:
+            st.warning("⚠️ **Langkah Prasyarat Belum Selesai**: Langkah ② Suara dan ③ Visual harus diselesaikan terlebih dahulu sebelum dapat mengekspor timeline CapCut Desktop.")
+        elif capcut_running:
+            st.warning("⚠️ **CapCut Sedang Aktif**: Harap tutup aplikasi CapCut Desktop terlebih dahulu sebelum menekan tombol ekspor.")
+
+    # C3: Main Adaptive Export Button
+    draft_info = step_info.get("draft_info") or find_latest_capcut_draft(p_dir, project_id)
+    is_exported = bool(draft_info)
+    btn_label = "🔄 Ekspor Ulang ke CapCut" if is_exported else "🚀 Ekspor ke CapCut (Install)"
+
+    job_state = jobs.get_job_state(project_id)
+    is_job_running = bool(job_state and job_state.get("status") == "running")
+
+    if st.button(
+        btn_label,
+        disabled=(not can_export or is_job_running),
+        type="primary",
+        key=f"btn_capcut_main_{project_id}",
+    ):
+        jobs.start_job(project_id, "capcut_export", ["python", "cli_longform.py", "capcut", "export", project_id, "--install"])
+        time.sleep(0.5)
+        st.rerun()
+
+    # C3: Results Display
+    if draft_info:
+        st.write("---")
+        st.markdown("##### 📦 Informasi Draft CapCut Terpasang")
+
+        draft_name = draft_info["draft_name"]
+        draft_dir_path = Path(draft_info["draft_dir"])
+
+        col_i1, col_i2, col_i3 = st.columns(3)
+        col_i1.metric("Nama Draft", draft_name)
+        col_i2.metric("Waktu Ekspor", draft_info.get("exported_at") or "Baru saja")
+
+        total_shots = sum(len(ch.shots) for ch in manifest.chapters)
+        col_i3.metric("Total Klip Video", f"{total_shots} klip")
+
+        st.caption(f"Lokasi Draft: `{draft_dir_path}`")
+
+        col_b1, _ = st.columns([1, 2])
+        with col_b1:
+            if st.button("📂 Buka Folder Draft CapCut", key=f"btn_open_draft_{project_id}"):
+                _safe_open_path(draft_dir_path, is_folder=True)
+
+        # Export History List
+        exp_root = p_dir / "export" / "capcut"
+        prev_exports = []
+        if exp_root.is_dir():
+            for d in sorted(exp_root.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
+                if d.is_dir() and d.name.startswith("MPT_"):
+                    mtime_str = datetime.fromtimestamp(d.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+                    prev_exports.append({"Draft": d.name, "Waktu Pembuatan": mtime_str, "Path": str(d)})
+
+        if prev_exports:
+            with st.expander(f"📜 Riwayat Ekspor CapCut ({len(prev_exports)} draft)", expanded=False):
+                st.table(prev_exports)
 
 
 # --- Backwards Compatibility Helpers ---

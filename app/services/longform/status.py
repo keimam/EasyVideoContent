@@ -274,23 +274,55 @@ def compute_project_step_status(project_dir: str | Path) -> Dict[str, Any]:
     # --- Step 4: Render ---
     final_video = manifest.final_video_file
     has_final_video = bool(final_video and (p_dir / final_video).is_file())
+    rendered_chapters = sum(
+        1 for ch in manifest.chapters
+        if ch.output_file and (p_dir / ch.output_file).is_file() and ch.status == ItemStatus.completed
+    )
 
-    if active_step == "render_final":
+    if active_step in ("render_all", "render_final", "render_pipeline", "render"):
         render_status = "berjalan"
-        render_label = "Sedang merender video final"
+        if rendered_chapters < total_chapters:
+            render_label = f"Sedang merender ({rendered_chapters}/{total_chapters} bab)"
+        else:
+            render_label = "Sedang menggabungkan video & audio"
+    elif active_step == "pipeline_auto":
+        if script_status != "selesai":
+            pass
+        elif voice_status != "selesai":
+            pass
+        elif visual_status != "selesai":
+            pass
+        elif not has_final_video:
+            render_status = "berjalan"
+            if rendered_chapters < total_chapters:
+                render_label = f"Sedang merender ({rendered_chapters}/{total_chapters} bab)"
+            else:
+                render_label = "Sedang menggabungkan video & audio"
+        else:
+            render_status = "selesai"
+            render_label = "Selesai (Video final siap)"
     elif has_final_video and manifest.status != ItemStatus.stale:
         render_status = "selesai"
         render_label = "Selesai (Video final siap)"
     elif has_final_video and manifest.status == ItemStatus.stale:
         render_status = "perlu_diperbarui"
         render_label = "Perlu render ulang"
+    elif rendered_chapters > 0:
+        render_status = "terhenti"
+        render_label = f"Terhenti di {rendered_chapters} dari {total_chapters} bab"
     else:
         render_status = "belum"
         render_label = "Belum dirender"
 
     # --- Step 5: CapCut ---
     capcut_info = find_latest_capcut_draft(p_dir, p_id)
-    if capcut_info:
+    if active_step == "capcut_export":
+        capcut_status = "berjalan"
+        capcut_label = "Sedang mengekspor draft CapCut"
+    elif active_step == "pipeline_auto" and has_final_video and not capcut_info:
+        capcut_status = "berjalan"
+        capcut_label = "Sedang mengekspor draft CapCut"
+    elif capcut_info:
         capcut_status = "selesai"
         capcut_label = f"Selesai ({capcut_info['draft_name']})"
     else:
@@ -357,6 +389,8 @@ def compute_project_step_status(project_dir: str | Path) -> Dict[str, Any]:
             "render": {
                 "status": render_status,
                 "label": render_label,
+                "completed": rendered_chapters,
+                "total": total_chapters,
                 "final_video_file": final_video if has_final_video else None,
             },
             "capcut": {
