@@ -17,6 +17,7 @@ Tujuannya adalah menjaga kemudahan sinkronisasi (merge/rebase) dari repositori u
 | **Tahap 5 & 5.1** | Tidak Ada | 0 baris | Render engine bab, subtitle burner, BGM ducking, concat final, font preflight |
 | **Tahap 6A & 6B** | Tidak Ada | 0 baris | Analisis template CapCut 8.9.0, doctor CLI, builder draft portable, multi-track export |
 | **Tahap 7A (G5)** | `webui/Main.py` | 6 baris | Entry hook tombol/link "🎬 Long Video" pada top bar header di samping Task Manager & Settings |
+| **Tahap 7.9** | Tidak Ada berkas upstream diubah di luar merge | 0 baris baru | Sinkronisasi upstream v1.3.10 (merge clean, hook G5 di Main.py & .gitignore tetap utuh) |
 
 ---
 
@@ -139,4 +140,26 @@ Tujuannya adalah menjaga kemudahan sinkronisasi (merge/rebase) dari repositori u
     * Verifikasi dan penegasan eksplisit kata kunci `"preset_recovery"` pada fungsi `migrate_umum_presets_and_projects()`.
   - `test/longform/test_stage7b_visual_ui.py`:
     * Pengujian komprehensif 7 test cases mencakup seluruh status WebUI Langkah ③, benchmark performa galeri 112 shot uji_nokey (< 5s), isolasi rebuild 1 shot pada kandidat baru, uploader file lokal ke library, penanda stop marker, proteksi cache, dan kata kunci preset_recovery.
+
+### Tahap 7.9: Sinkronisasi Pembaruan Upstream MoneyPrinterTurbo v1.3.10
+- **File Kode Upstream yang Disentuh di Luar Merge:** **Nihil (0 berkas kode)**
+- **Hasil Merge Upstream:**
+  - Merge clean via 'ort' strategy menggabungkan tag rilis resmi upstream `v1.3.10` (commit `8b0206b`) ke branch `stage/7.9-upstream`.
+  - Berkas upstream yang diperbarui secara otomatis:
+    * `app/__init__.py`: versi dinaikkan ke `1.3.10`.
+    * `app/models/llm_provider.py`: penambahan provider `cheapaimodel`.
+    * `app/services/material.py`: preservasi topik berulang pada pencarian term yang sama.
+    * `app/services/subtitle.py`: normalisasi bounded similarity $[0, 1]$ pada case-folding/string kosong.
+    * `app/services/video.py`: interpolasi sub-pixel precision affine warp (`_smooth_zoom_clip`) untuk menghilangkan getaran zoom gambar.
+    * `app/services/voice.py`: dukungan script subtag pada Edge TTS (mis. `iu-Cans-CA-*`).
+    * `pyproject.toml` & `uv.lock`: versi paket `mpt` menjadi `1.3.10`.
+    * `docs/release-notes-v1.3.10.md` dan test suite upstream baru (`test_subtitle_similarity.py`, `test_image_motion.py`).
+- **Integritas Modifikasi Fork:**
+  * Hook G5 pada `webui/Main.py` (6 baris di `_render_top_bar()`) tetap utuh tanpa modifikasi atau penimpaan.
+  * Pengecualian `.gitignore` (`!test/longform/*.py`) tetap dipertahankan.
+  * File konfigurasi pengguna `config.toml` tetap aman dan tidak tersentuh.
+- **Hasil Verifikasi Pasca-Merge:**
+  * Seluruh rangkaian 227 pengujian di `test/longform` lulus 100%.
+  * Banner *"Update available: v1.3.10"* pada antarmuka WebUI hilang secara alami karena versi aplikasi telah mutakhir (`v1.3.10`).
+
 

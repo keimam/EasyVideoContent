@@ -268,25 +268,64 @@ def test_apptest_create_custom_niche_and_sub_niche(tmp_path, monkeypatch):
 # --- G5: Bidirectional Navigation Tests ---
 
 def test_g5_main_page_renders_long_video_link(monkeypatch):
-    """Verify MoneyPrinterTurbo Main.py loads without exception and renders '🎬 Long Video' link (G5, Z4)."""
+    """Verify MoneyPrinterTurbo Main.py loads without exception and renders '🎬 Long Video' link (G5, Z4, Z5)."""
+    import shutil
+    import subprocess
     import unittest.mock as mock
     from app.services.codex_models import Catalog
 
     repo_root = Path(__file__).resolve().parents[2]
     main_file = str(repo_root / "webui" / "Main.py")
 
-    # Mock all external network calls to eliminate external network delay (Z4)
+    # Mock all external network calls and agent CLI probes (Z4, Z5)
     mock_resp = mock.MagicMock()
     mock_resp.status_code = 200
     mock_resp.json.return_value = {}
     mock_resp.text = "{}"
     mock_resp.content = b"{}"
 
+    # Selective shutil.which to prevent probing agent CLIs (gemini, copilot, claude, codex, cursor)
+    real_which = shutil.which
+    def safe_which(cmd, *args, **kwargs):
+        if cmd in {"gemini", "copilot", "claude", "codex", "cursor", "gh"}:
+            return None
+        return real_which(cmd, *args, **kwargs)
+
+    # Selective subprocess to intercept any agent CLI execution
+    real_subproc_run = subprocess.run
+    def safe_subproc_run(cmd, *args, **kwargs):
+        cmd_name = cmd[0] if isinstance(cmd, (list, tuple)) else str(cmd).split()[0]
+        if any(agent in str(cmd_name).lower() for agent in ["gemini", "copilot", "claude", "codex", "cursor"]):
+            res = mock.MagicMock()
+            res.returncode = 1
+            res.stdout = b""
+            res.stderr = b"mocked agent"
+            return res
+        return real_subproc_run(cmd, *args, **kwargs)
+
+    real_subproc_popen = subprocess.Popen
+    def safe_subproc_popen(cmd, *args, **kwargs):
+        cmd_name = cmd[0] if isinstance(cmd, (list, tuple)) else str(cmd).split()[0]
+        if any(agent in str(cmd_name).lower() for agent in ["gemini", "copilot", "claude", "codex", "cursor"]):
+            proc = mock.MagicMock()
+            proc.poll.return_value = 1
+            proc.wait.return_value = 1
+            proc.communicate.return_value = (b"", b"mocked agent")
+            return proc
+        return real_subproc_popen(cmd, *args, **kwargs)
+
     with mock.patch("app.services.version_checker.poll_available_update") as mock_update, \
          mock.patch("app.services.version_checker.get_available_update", return_value=None), \
          mock.patch("app.services.codex_models.get_catalog", return_value=Catalog(models=(), fetched_at=0.0)), \
+         mock.patch("app.services.chatgpt_models.get_catalog", return_value=Catalog(models=(), fetched_at=0.0)), \
          mock.patch("requests.get", return_value=mock_resp), \
-         mock.patch("requests.post", return_value=mock_resp):
+         mock.patch("requests.post", return_value=mock_resp), \
+         mock.patch("httpx.get", return_value=mock_resp), \
+         mock.patch("httpx.post", return_value=mock_resp), \
+         mock.patch("httpx.Client.send", return_value=mock_resp), \
+         mock.patch("shutil.which", side_effect=safe_which), \
+         mock.patch("subprocess.run", side_effect=safe_subproc_run), \
+         mock.patch("subprocess.Popen", side_effect=safe_subproc_popen):
 
         mock_update.return_value.complete = True
         mock_update.return_value.available_version = None
