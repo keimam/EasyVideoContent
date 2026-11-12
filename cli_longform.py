@@ -14,11 +14,15 @@ Zero modifications to upstream files.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
+
+from loguru import logger
 
 # Reconfigure stdout/stderr for UTF-8 on Windows console
 if sys.platform == "win32":
@@ -66,6 +70,25 @@ from app.services.longform.store import (
     save_manifest,
     update_project_script,
 )
+
+
+def _record_job_failure(proj_dir: Path, step_name: str, error_message: str, exit_code: int = 1) -> None:
+    """Safely record failure status into job_state.json without throwing exceptions (Z4)."""
+    try:
+        job_state_file = proj_dir / "job_state.json"
+        if job_state_file.is_file():
+            st_data = json.loads(job_state_file.read_text(encoding="utf-8"))
+            st_data["status"] = "failed"
+            st_data["failed_step"] = step_name
+            st_data["error_message"] = error_message
+            st_data["finished_at"] = datetime.now().isoformat()
+            st_data["exit_code"] = exit_code
+            job_state_file.write_text(json.dumps(st_data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    except Exception as exc:
+        try:
+            logger.warning(f"Could not update job_state.json with failure: {exc}")
+        except Exception:
+            pass
 
 
 def cmd_presets_list(args: argparse.Namespace) -> int:
@@ -671,12 +694,14 @@ def cmd_audio_synth(args: argparse.Namespace) -> int:
         )
     except TTSConfigurationError as exc:
         print(f"\n[CONFIGURATION ERROR] {exc}\n", file=sys.stderr)
+        _record_job_failure(project_dir, "voice", str(exc), 1)
         return 1
     except KeyboardInterrupt:
         print("\n[AUDIO SYNTH INTERRUPTED] KeyboardInterrupt received. Safely halting. Incomplete groups remain pending for next resume.\n", file=sys.stderr)
         return 130
     except Exception as exc:
         print(f"Error synthesizing audio: {exc}", file=sys.stderr)
+        _record_job_failure(project_dir, "voice", str(exc), 1)
         return 1
 
     print(f"\nAudio Synthesis Completed Successfully for Project: {args.project_id}")
@@ -873,7 +898,17 @@ def cmd_visual_pipeline(args: argparse.Namespace) -> int:
             return 0
 
     except ProjectLockedError:
-        print(f"Error: Project '{args.project_id}' is locked by another process.", file=sys.stderr)
+        err_msg = f"Project '{args.project_id}' is locked by another process."
+        print(f"Error: {err_msg}", file=sys.stderr)
+        _record_job_failure(proj_dir, "visual", err_msg, 1)
+        return 1
+    except KeyboardInterrupt:
+        print("\n[VISUAL PIPELINE INTERRUPTED] KeyboardInterrupt received.\n", file=sys.stderr)
+        return 130
+    except Exception as exc:
+        err_msg = str(exc)
+        print(f"Error in visual pipeline: {err_msg}", file=sys.stderr)
+        _record_job_failure(proj_dir, "visual", err_msg, 1)
         return 1
 
 
@@ -933,7 +968,17 @@ def cmd_visual_fetch(args: argparse.Namespace) -> int:
         print(f"\nCONFIGURATION ERROR: {conf_err}", file=sys.stderr)
         return 1
     except ProjectLockedError:
-        print(f"Error: Project '{args.project_id}' is locked by another process.", file=sys.stderr)
+        err_msg = f"Project '{args.project_id}' is locked by another process."
+        print(f"Error: {err_msg}", file=sys.stderr)
+        _record_job_failure(proj_dir, "visual", err_msg, 1)
+        return 1
+    except KeyboardInterrupt:
+        print("\n[VISUAL PIPELINE INTERRUPTED] KeyboardInterrupt received.\n", file=sys.stderr)
+        return 130
+    except Exception as exc:
+        err_msg = str(exc)
+        print(f"Error in visual pipeline: {err_msg}", file=sys.stderr)
+        _record_job_failure(proj_dir, "visual", err_msg, 1)
         return 1
     except KeyboardInterrupt:
         print("\n[VISUAL FETCH INTERRUPTED] KeyboardInterrupt received. Fetched assets up to this point are preserved.\n", file=sys.stderr)
@@ -970,7 +1015,17 @@ def cmd_visual_build(args: argparse.Namespace) -> int:
             return 0
 
     except ProjectLockedError:
-        print(f"Error: Project '{args.project_id}' is locked by another process.", file=sys.stderr)
+        err_msg = f"Project '{args.project_id}' is locked by another process."
+        print(f"Error: {err_msg}", file=sys.stderr)
+        _record_job_failure(proj_dir, "visual", err_msg, 1)
+        return 1
+    except KeyboardInterrupt:
+        print("\n[VISUAL PIPELINE INTERRUPTED] KeyboardInterrupt received.\n", file=sys.stderr)
+        return 130
+    except Exception as exc:
+        err_msg = str(exc)
+        print(f"Error in visual pipeline: {err_msg}", file=sys.stderr)
+        _record_job_failure(proj_dir, "visual", err_msg, 1)
         return 1
     except KeyboardInterrupt:
         print("\n[VISUAL BUILD INTERRUPTED] KeyboardInterrupt received. Completed clips are saved; partial clip discarded.\n", file=sys.stderr)
@@ -1474,13 +1529,17 @@ def cmd_render_chapter(args: argparse.Namespace) -> int:
                 print(f"File size:     {stats['file_size_bytes'] / (1024*1024):.2f} MB\n")
             return 0
     except ProjectLockedError:
-        print(f"Error: Project '{args.project_id}' is locked by another process.", file=sys.stderr)
+        err_msg = f"Project '{args.project_id}' is locked by another process."
+        print(f"Error: {err_msg}", file=sys.stderr)
+        _record_job_failure(proj_dir, "render", err_msg, 1)
         return 1
     except KeyboardInterrupt:
         print(f"\n[RENDER INTERRUPTED] KeyboardInterrupt received during Chapter {args.chapter} render. Partial file removed.\n", file=sys.stderr)
         return 130
     except Exception as exc:
-        print(f"Error rendering chapter: {exc}", file=sys.stderr)
+        err_msg = str(exc)
+        print(f"Error rendering chapter: {err_msg}", file=sys.stderr)
+        _record_job_failure(proj_dir, "render", err_msg, 1)
         return 1
 
 
@@ -1512,13 +1571,17 @@ def cmd_render_all(args: argparse.Namespace) -> int:
             print(f"Subtitles:     {f_stats['full_timeline_srt']} and .ass\n")
             return 0
     except ProjectLockedError:
-        print(f"Error: Project '{args.project_id}' is locked by another process.", file=sys.stderr)
+        err_msg = f"Project '{args.project_id}' is locked by another process."
+        print(f"Error: {err_msg}", file=sys.stderr)
+        _record_job_failure(proj_dir, "render", err_msg, 1)
         return 1
     except KeyboardInterrupt:
         print(f"\n[RENDER ALL INTERRUPTED] KeyboardInterrupt received. Completed chapters are saved.\n", file=sys.stderr)
         return 130
     except Exception as exc:
-        print(f"Error rendering project: {exc}", file=sys.stderr)
+        err_msg = str(exc)
+        print(f"Error rendering project: {err_msg}", file=sys.stderr)
+        _record_job_failure(proj_dir, "render", err_msg, 1)
         return 1
 
 
@@ -1548,11 +1611,18 @@ def cmd_render_final(args: argparse.Namespace) -> int:
             print(f"Subtitles:     {f_stats['full_timeline_srt']}\n")
             return 0
     except ProjectLockedError:
-        print(f"Error: Project '{args.project_id}' is locked by another process.", file=sys.stderr)
+        err_msg = f"Project '{args.project_id}' is locked by another process."
+        print(f"Error: {err_msg}", file=sys.stderr)
+        _record_job_failure(proj_dir, "render", err_msg, 1)
         return 1
     except KeyboardInterrupt:
         print(f"\n[RENDER FINAL INTERRUPTED] KeyboardInterrupt received. Partial files removed.\n", file=sys.stderr)
         return 130
+    except Exception as exc:
+        err_msg = str(exc)
+        print(f"Error assembling final video: {err_msg}", file=sys.stderr)
+        _record_job_failure(proj_dir, "render", err_msg, 1)
+        return 1
     except Exception as exc:
         print(f"Error assembling final video: {exc}", file=sys.stderr)
         return 1
@@ -1762,7 +1832,9 @@ def cmd_capcut_export(args: argparse.Namespace) -> int:
         print("=" * 70 + "\n")
         return 0
     except Exception as exc:
-        print(f"Error exporting CapCut draft: {exc}", file=sys.stderr)
+        err_msg = str(exc)
+        print(f"Error exporting CapCut draft: {err_msg}", file=sys.stderr)
+        _record_job_failure(proj_dir, "capcut", err_msg, 1)
         return 1
 
 
@@ -1800,7 +1872,11 @@ def cmd_capcut_calibrate(args: argparse.Namespace) -> int:
         print("=" * 70 + "\n")
         return 0
     except Exception as exc:
-        print(f"Error creating CapCut calibration draft: {exc}", file=sys.stderr)
+        err_msg = str(exc)
+        print(f"Error creating CapCut calibration draft: {err_msg}", file=sys.stderr)
+        p_dir = get_project_dir(proj_id)
+        if p_dir.is_dir():
+            _record_job_failure(p_dir, "capcut", err_msg, 1)
         return 1
 
 
@@ -1973,7 +2049,9 @@ def cmd_pipeline_auto(args: argparse.Namespace) -> int:
         print("=" * 80 + "\n")
         return 0
     except ProjectLockedError:
-        print(f"Error: Project '{args.project_id}' is locked by another process.", file=sys.stderr)
+        err_msg = f"Project '{args.project_id}' is locked by another process."
+        print(f"Error: {err_msg}", file=sys.stderr)
+        _record_job_failure(proj_dir, current_phase_step, err_msg, 1)
         return 1
     except KeyboardInterrupt:
         print(f"\n[PIPELINE INTERRUPTED] KeyboardInterrupt received.\n", file=sys.stderr)
@@ -1981,19 +2059,7 @@ def cmd_pipeline_auto(args: argparse.Namespace) -> int:
     except Exception as exc:
         err_msg = str(exc)
         logger.error(f"Error in automated pipeline at step '{current_phase_step}': {err_msg}")
-        job_state_file = proj_dir / "job_state.json"
-        if job_state_file.is_file():
-            try:
-                import json
-                st_data = json.loads(job_state_file.read_text(encoding="utf-8"))
-                st_data["status"] = "failed"
-                st_data["failed_step"] = current_phase_step
-                st_data["error_message"] = err_msg
-                st_data["finished_at"] = datetime.now().isoformat()
-                st_data["exit_code"] = 1
-                job_state_file.write_text(json.dumps(st_data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-            except Exception:
-                pass
+        _record_job_failure(proj_dir, current_phase_step, err_msg, 1)
         print(f"Error in automated pipeline at step '{current_phase_step}': {err_msg}", file=sys.stderr)
         return 1
 

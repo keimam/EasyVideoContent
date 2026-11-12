@@ -268,14 +268,26 @@ def test_apptest_create_custom_niche_and_sub_niche(tmp_path, monkeypatch):
 # --- G5: Bidirectional Navigation Tests ---
 
 def test_g5_main_page_renders_long_video_link(monkeypatch):
-    """Verify MoneyPrinterTurbo Main.py loads without exception and renders '🎬 Long Video' link (G5)."""
+    """Verify MoneyPrinterTurbo Main.py loads without exception and renders '🎬 Long Video' link (G5, Z4)."""
     import unittest.mock as mock
+    from app.services.codex_models import Catalog
 
     repo_root = Path(__file__).resolve().parents[2]
     main_file = str(repo_root / "webui" / "Main.py")
 
-    # Mock version check to avoid external network delay
-    with mock.patch("app.services.version_checker.poll_available_update") as mock_update:
+    # Mock all external network calls to eliminate external network delay (Z4)
+    mock_resp = mock.MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {}
+    mock_resp.text = "{}"
+    mock_resp.content = b"{}"
+
+    with mock.patch("app.services.version_checker.poll_available_update") as mock_update, \
+         mock.patch("app.services.version_checker.get_available_update", return_value=None), \
+         mock.patch("app.services.codex_models.get_catalog", return_value=Catalog(models=(), fetched_at=0.0)), \
+         mock.patch("requests.get", return_value=mock_resp), \
+         mock.patch("requests.post", return_value=mock_resp):
+
         mock_update.return_value.complete = True
         mock_update.return_value.available_version = None
 

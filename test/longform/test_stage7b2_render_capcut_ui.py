@@ -1041,3 +1041,94 @@ def test_z3_pipeline_auto_unmocked_integration(tmp_path, monkeypatch):
     assert draft_content_file.is_file()
 
 
+def test_z4_pipeline_auto_fails_safely_when_capcut_running(tmp_path, monkeypatch):
+    """Test Z4: cmd_pipeline_auto fails safely when CapCut is running without crashing or NameError."""
+    import argparse
+    from cli_longform import cmd_pipeline_auto
+
+    monkeypatch.setattr("app.services.longform.store.get_projects_root", lambda: tmp_path)
+    monkeypatch.setattr("app.services.longform.ui.components.get_projects_root", lambda: tmp_path)
+
+    # Force is_capcut_running to return True (CapCut is open)
+    monkeypatch.setattr("app.services.longform.capcut.detector.is_capcut_running", lambda: True)
+    monkeypatch.setattr("app.services.longform.capcut.service.is_capcut_running", lambda: True)
+
+    test_pid = "proj_z4_capcut_running"
+    manifest, p_dir = create_project(
+        project_id=test_pid,
+        title="Z4 CapCut Running Test",
+        preset_id="automotive.muscle_car",
+        projects_root=tmp_path,
+    )
+
+    # Setup project with script and audio already done, 1 chapter with fake video
+    ch_wav = p_dir / "assets" / "audio" / "chapters" / "chapter_01.wav"
+    ch_wav.parent.mkdir(parents=True, exist_ok=True)
+    ch_wav.write_bytes(b"RIFF" + b"\x00" * 100)
+
+    grp_wav = p_dir / "assets" / "audio" / "groups" / "ch1_g1.wav"
+    grp_wav.parent.mkdir(parents=True, exist_ok=True)
+    grp_wav.write_bytes(b"RIFF" + b"\x00" * 100)
+
+    final_vid = p_dir / "export" / "final.mp4"
+    final_vid.parent.mkdir(parents=True, exist_ok=True)
+    final_vid.write_bytes(b"dummy_video_data")
+
+    clip = p_dir / "assets" / "visual" / "shots" / "ch01_s001.mp4"
+    clip.parent.mkdir(parents=True, exist_ok=True)
+    clip.write_bytes(b"dummy_clip_data")
+
+    manifest.final_video_file = str(final_vid.relative_to(p_dir))
+    manifest.chapters = [
+        Chapter(
+            chapter_index=1,
+            chapter_title="Chapter 1",
+            audio_file=str(ch_wav.relative_to(p_dir)),
+            shots=[
+                Shot(
+                    shot_id="ch01_s001",
+                    shot_index=1,
+                    chapter_index=1,
+                    rendered_clip=str(clip.relative_to(p_dir)),
+                )
+            ],
+            tts_groups=[
+                TtsGroup(
+                    group_index=1,
+                    paragraph_text="Ready chapter text.",
+                    audio=AudioSpec(file_path=str(grp_wav.relative_to(p_dir))),
+                )
+            ]
+        )
+    ]
+    save_manifest(manifest, p_dir)
+
+    # Initialize job state file so it can record failure
+    job_state_file = p_dir / "job_state.json"
+    job_state_file.write_text(json.dumps({
+        "project_id": test_pid,
+        "step": "pipeline_auto",
+        "status": "running",
+    }), encoding="utf-8")
+
+    args = argparse.Namespace(
+        project_id=test_pid,
+        with_capcut=True,
+        stop_on_review=False,
+        skip_review_check=True,
+        no_bgm=True,
+    )
+
+    exit_code = cmd_pipeline_auto(args)
+    assert exit_code != 0, "cmd_pipeline_auto should return non-zero when CapCut is running"
+
+    # Verify job_state.json recorded failure properly
+    assert job_state_file.is_file()
+    job_st = json.loads(job_state_file.read_text(encoding="utf-8"))
+    assert job_st.get("status") == "failed"
+    assert job_st.get("failed_step") == "capcut"
+    assert "CapCut" in job_st.get("error_message", "")
+    assert job_st.get("exit_code") == 1
+
+
+

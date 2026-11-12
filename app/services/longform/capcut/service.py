@@ -19,11 +19,17 @@ from app.services.longform.capcut.builder import (
     calculate_bottom_anchored_y,
     format_capcut_subtitle,
 )
+from app.services.longform.capcut import detector
 from app.services.longform.capcut.detector import (
     detect_draft_folder,
     get_capcut_doctor_report,
-    is_capcut_running,
 )
+
+
+def is_capcut_running() -> bool:
+    """Forwarder to detector.is_capcut_running so patches to either module work reliably (Z4)."""
+    return detector.is_capcut_running()
+
 from app.services.longform.render.bgm import concatenate_wav_files, resolve_bgm_file
 from app.services.longform.store import get_project_dir, load_manifest, update_job_phase
 
