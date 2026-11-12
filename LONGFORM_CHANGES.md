@@ -15,7 +15,8 @@ Tujuannya adalah menjaga kemudahan sinkronisasi (merge/rebase) dari repositori u
 | **Tahap 3** | Tidak Ada | 0 baris | Audio generation, alignment, subtitle ASS/SRT |
 | **Tahap 4** | Tidak Ada | 0 baris | Visual assets fetch, candidate scoring, contact sheet, review & replace |
 | **Tahap 5 & 5.1** | Tidak Ada | 0 baris | Render engine bab, subtitle burner, BGM ducking, concat final, font preflight |
-| **Tahap 6A** | Tidak Ada | 0 baris | Analisis template CapCut 8.9.0, doctor CLI, builder draft portable, smoke test |
+| **Tahap 6A & 6B** | Tidak Ada | 0 baris | Analisis template CapCut 8.9.0, doctor CLI, builder draft portable, multi-track export |
+| **Tahap 7A (G5)** | `webui/Main.py` | 6 baris | Entry hook tombol/link "🎬 Long Video" pada top bar header di samping Task Manager & Settings |
 
 ---
 
@@ -92,3 +93,50 @@ Tujuannya adalah menjaga kemudahan sinkronisasi (merge/rebase) dari repositori u
   - `resource/presets/*.json`: Penambahan `"capcut_text_size": 7` pada preset acuan (`documentary_en.json`, `automotive.muscle_car.json`, `automotive.json`).
   - `cli_longform.py`: Penambahan subperintah `capcut calibrate [id] [--no-install]` dan `capcut set-text-size <preset_id> <size>`.
   - `test/longform/test_capcut.py`: Penambahan 5 pengujian unit baru khusus Stage 6B.1 (C1: pemecahan baris tunggal maks 2 baris; C2: kalkulasi jangkar bawah; C3: pembuatan draft kalibrasi & penyetelan ukuran preset; C4: validasi registrasi media bin dan pencegahan integer overflow; C5: pembacaan ukuran preset pada smoke/export). Total 16 unit tests lolos 100%.
+
+### Tahap 7A.4 Addendum G5: Navigasi Dua Arah MoneyPrinterTurbo ↔ Long Video
+- **File Kode Upstream yang Disentuh:** `webui/Main.py` (6 baris penambahan pada `_render_top_bar()`).
+- **Lokasi Baris:** `webui/Main.py:1827–1832` di dalam container `top_bar_actions`.
+- **Kode yang Ditambahkan:**
+  ```python
+            try:
+                from app.services.longform.ui.nav import render_longform_entry
+                render_longform_entry()
+            except Exception:
+                pass
+  ```
+- **Alasan:**
+  * Halaman utama MoneyPrinterTurbo menyembunyikan header Streamlit bawaan (`header[data-testid="stHeader"] { display: none !important; }` di `webui/styles.css`), sehingga tombol panah/hamburger pembuka sidebar navigasi bawaan Streamlit hilang dari layar pengguna.
+  * Penambahan tombol/link `🎬 Long Video` di header `Main.py` (sebelah Task Manager dan Settings) memberikan jalan masuk langsung ke Studio Video Panjang tanpa merusak atau mengubah tata letak maupun perilaku halaman utama.
+  * Dibungkus blok `try...except` ketat sehingga `Main.py` tetap berjalan normal 100% tanpa risiko exception sekalipun modul longform belum terinisialisasi.
+- **Cara Melepas saat Merge Upstream:**
+  * Hapus 6 baris blok `try: from app.services.longform.ui.nav import render_longform_entry ... except Exception: pass` dari fungsi `_render_top_bar()` di `webui/Main.py`.
+  * Atau jalankan: `git checkout upstream/main -- webui/Main.py`.
+
+### Tahap 7B.1: WebUI Langkah ③ Visual, Contact Sheet Interaktif, & Visual Replace
+- **File Kode Upstream yang Disentuh:** **Nihil (0 berkas kode)**
+- **Pembaruan Komponen Long Video & WebUI:**
+  - `cli_longform.py`:
+    * Penambahan subperintah `visual pipeline <project_id> [--provider <name>] [--allow-fallback]`: mengeksekusi `visual fetch` lalu `visual build` secara berurutan dalam satu job background tanpa jeda manual.
+  - `app/services/longform/visual/local.py`:
+    * Penambahan method `add_file(file_content: bytes, filename: str)` pada `LocalLibraryManager` untuk menerima berkas video/gambar dari uploader UI, menyimpannya langsung ke `assets/visual/library/`, dan mengembalikan metadata lengkap (`content_hash`, `size_bytes`, `asset_type`).
+  - `app/services/longform/ui/jobs.py`:
+    * Dukungan pengecekan status selesai untuk langkah visual (`visual_pipeline`, `visual_build`, `visual_fetch`).
+    * Perhitungan progres visual multi-fase di `get_project_progress`: Fase 1 (0%–50%) "Mencari footage", Fase 2 (50%–100%) "Menyusun klip".
+  - `app/services/longform/status.py`:
+    * Penyesuaian `compute_project_step_status` agar mengenali langkah aktif visual background (`visual_pipeline`, `visual_build`, `visual_fetch`) sebagai status `"berjalan"`.
+  - `app/services/longform/ui/components.py`:
+    * Implementasi lengkap `render_visual_step_flow()` menggantikan placeholder sebelumnya.
+    * **V1 Ringkasan & Tombol Utama:** Metrik klip siap, perlu dicek, terkunci, sumber terpakai; checkbox pilihan sumber footage (Pixabay, Coverr, Pexels, File lokal, Gambar AI) dengan kunci tersamar (`mask_api_key`) dan alasan penonaktifan; tombol adaptif tunggal (`belum`, `terhenti`, `perlu_diperbarui`, `selesai`); integrasi monitor job dengan label fase.
+    * **V2 Galeri Visual / Contact Sheet Interaktif:** Tab per bab, grid thumbnail responsif 4 kolom menggunakan gambar kecil (.jpg dari cache, bukan video penuh) dengan waktu buka super cepat (< 5 ms untuk 112 shot); filter cepat (Semua, Perlu dicek, Terkunci, Placeholder); nomor shot, durasi, potongan teks narasi, sumber, dan badge status; tombol pemilihan shot untuk membuka panel detail.
+    * **V3 Panel Detail & Visual Replace:** Preview video potongan klip; teks narasi kalimat lengkap; kata kunci pencarian; skor relevansi; tombol toggle kunci/buka kunci shot; 3 sub-tab penggantian:
+      1) "Pilih kandidat lain": daftar kandidat tersimpan dengan skor & tombol "Pakai ini".
+      2) "Cari dengan kata lain": input query kustom + pemilihan provider + cari & terapkan.
+      3) "Unggah file sendiri": file uploader media video/gambar + simpan ke library lokal + pasang ke shot.
+      Setiap aksi penggantian otomatis mengunci shot (`locked = True`), merender ulang hanya 1 klip terkait, dan memperbarui cache thumbnail.
+    * **V4 Cache & Pemeliharaan:** Expander pengaturan lanjutan menampilkan ukuran cache global, total berkas, dan jumlah berkas terlindungi; tombol "Bersihkan Cache Lama" (prune) dengan konfirmasi, melindungi seluruh aset yang dipakai proyek aktif.
+  - `app/services/longform/store.py`:
+    * Verifikasi dan penegasan eksplisit kata kunci `"preset_recovery"` pada fungsi `migrate_umum_presets_and_projects()`.
+  - `test/longform/test_stage7b_visual_ui.py`:
+    * Pengujian komprehensif 7 test cases mencakup seluruh status WebUI Langkah ③, benchmark performa galeri 112 shot uji_nokey (< 5s), isolasi rebuild 1 shot pada kandidat baru, uploader file lokal ke library, penanda stop marker, proteksi cache, dan kata kunci preset_recovery.
+

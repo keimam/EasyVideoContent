@@ -19,13 +19,19 @@ from app.services.longform.capcut.builder import (
     calculate_bottom_anchored_y,
     format_capcut_subtitle,
 )
+from app.services.longform.capcut import detector
 from app.services.longform.capcut.detector import (
     detect_draft_folder,
     get_capcut_doctor_report,
-    is_capcut_running,
 )
+
+
+def is_capcut_running() -> bool:
+    """Forwarder to detector.is_capcut_running so patches to either module work reliably (Z4)."""
+    return detector.is_capcut_running()
+
 from app.services.longform.render.bgm import concatenate_wav_files, resolve_bgm_file
-from app.services.longform.store import get_project_dir, load_manifest
+from app.services.longform.store import get_project_dir, load_manifest, update_job_phase
 
 
 def parse_srt_entries(srt_path: Path, max_entries: int | None = None) -> list[dict[str, Any]]:
@@ -87,47 +93,55 @@ def resolve_capcut_text_size(manifest: Any) -> int:
 
     preset_id = getattr(manifest, "preset_id", None)
     if preset_id:
+        try:
+            from app.services.longform.presets import get_preset
+            p = get_preset(preset_id)
+            if p.capcut_text_size is not None:
+                return int(p.capcut_text_size)
+        except Exception:
+            pass
         repo_root = Path(__file__).resolve().parents[4]
         for p_dir in [repo_root / "storage" / "presets", repo_root / "resource" / "presets"]:
-            p_file = p_dir / f"{preset_id}.json"
-            if p_file.is_file():
-                try:
-                    data = json.loads(p_file.read_text(encoding="utf-8"))
-                    if data.get("capcut_text_size"):
-                        return int(data["capcut_text_size"])
-                except Exception:
-                    pass
+            for p_file in [p_dir / f"{preset_id}.override.json", p_dir / f"{preset_id}.json"]:
+                if p_file.is_file():
+                    try:
+                        data = json.loads(p_file.read_text(encoding="utf-8"))
+                        if data.get("capcut_text_size"):
+                            return int(data["capcut_text_size"])
+                    except Exception:
+                        pass
 
     return 7
 
 
 def set_capcut_text_size(preset_id: str, size: int) -> Path:
     """
-    Update capcut_text_size in preset file (C3).
+    Update capcut_text_size in storage/presets/<preset_id>.override.json (B1).
+    Leaves resource/presets/ completely untouched.
     """
     if not (4 <= size <= 24):
         raise ValueError(f"capcut_text_size must be between 4 and 24, got {size}")
 
-    repo_root = Path(__file__).resolve().parents[4]
-    candidate_paths = [
-        repo_root / "storage" / "presets" / f"{preset_id}.json",
-        repo_root / "resource" / "presets" / f"{preset_id}.json",
-    ]
+    from app.services.longform.presets import get_preset, get_preset_directories
+    # Validate that the preset actually exists
+    get_preset(preset_id)
 
-    target_path = None
-    for cp in candidate_paths:
-        if cp.is_file():
-            target_path = cp
-            break
+    _, storage_dir = get_preset_directories()
+    storage_dir.mkdir(parents=True, exist_ok=True)
+    override_path = storage_dir / f"{preset_id}.override.json"
 
-    if not target_path:
-        raise FileNotFoundError(f"Preset '{preset_id}' not found in storage/presets or resource/presets.")
+    if override_path.is_file():
+        try:
+            data = json.loads(override_path.read_text(encoding="utf-8"))
+        except Exception:
+            data = {"id": preset_id}
+    else:
+        data = {"id": preset_id}
 
-    data = json.loads(target_path.read_text(encoding="utf-8"))
     data["capcut_text_size"] = int(size)
-    target_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    logger.info(f"Updated preset '{preset_id}' with capcut_text_size = {size} at {target_path}")
-    return target_path
+    override_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    logger.info(f"Updated preset override for '{preset_id}' with capcut_text_size = {size} at {override_path}")
+    return override_path
 
 
 def render_ducked_bgm_stem(
@@ -347,6 +361,7 @@ def export_full_project(
     - Backup Asset Pack: export/capcut_assets/ with numbered shots, audios, SRT, README
     """
     project_dir = get_project_dir(project_id)
+    update_job_phase(project_dir, phase="Membaca proyek…", percentage=10.0, is_indeterminate=True)
     manifest = load_manifest(project_dir)
 
     if not manifest.chapters:
@@ -370,6 +385,7 @@ def export_full_project(
     draft_name = get_unique_draft_name(base_draft_name, check_dirs)
 
     # --- 1. GATHER ALL VIDEO SHOTS (B1) ---
+    update_job_phase(project_dir, phase="Menyusun track…", percentage=40.0, is_indeterminate=True)
     all_video_clips = []
     total_timeline_duration = 0.0
     fps = float(getattr(manifest.encoder_settings, "fps", 30.0) or 30.0)
@@ -505,6 +521,7 @@ def export_full_project(
 
     # --- 7. BUILD CAPCUT DRAFT (B1, B2, C1, C2, C3) ---
     export_draft_dir = export_capcut_root / draft_name
+    update_job_phase(project_dir, phase="Menulis draft…", percentage=70.0, is_indeterminate=True)
 
     capcut_text_size = resolve_capcut_text_size(manifest)
     builder = CapCutDraftBuilder()
@@ -536,6 +553,8 @@ def export_full_project(
     if install:
         if is_capcut_running():
             raise RuntimeError("CapCut sedang berjalan. Tutup CapCut sebelum ekspor untuk mencegah korupsi draft.")
+
+        update_job_phase(project_dir, phase="Memasang ke folder CapCut…", percentage=90.0, is_indeterminate=True)
 
         if not draft_root or not draft_root.is_dir():
             raise RuntimeError("Could not locate CapCut draft directory (com.lveditor.draft).")

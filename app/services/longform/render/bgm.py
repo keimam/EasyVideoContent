@@ -15,6 +15,8 @@ import subprocess
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
+from app.services.longform.store import update_job_phase
+
 logger = logging.getLogger(__name__)
 
 
@@ -198,6 +200,7 @@ class BgmProcessor:
         target_lra = 11.0
 
         # Pass 1: Measure
+        update_job_phase(self.project_dir, phase="Normalisasi audio (pass 1)…", percentage=86.0, is_indeterminate=True)
         pass1_cmd = [
             "ffmpeg", "-y",
             "-i", str(input_wav.resolve()),
@@ -229,6 +232,7 @@ class BgmProcessor:
                 pass2_filter = f"loudnorm=I={target_i}:LRA={target_lra}:TP={target_tp}"
 
         # Pass 2: Apply
+        update_job_phase(self.project_dir, phase="Normalisasi audio (pass 2)…", percentage=90.0, is_indeterminate=True)
         pass2_cmd = [
             "ffmpeg", "-y",
             "-i", str(input_wav.resolve()),

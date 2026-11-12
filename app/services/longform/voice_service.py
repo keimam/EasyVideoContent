@@ -32,6 +32,8 @@ from app.services.longform.schema import ItemStatus, ProjectManifest, TtsGroup
 from app.services.longform.store import (
     ProjectLock,
     ProjectLockedError,
+    clear_stop_request,
+    is_stop_requested,
     load_manifest,
     save_manifest,
 )
@@ -90,7 +92,12 @@ class VoiceService:
                 f"Total audio groups to process: {len(audio_units)} (Provider: {adapter.provider}, Voice: {preset_voice})"
             )
 
+            stop_requested = False
             for ch in manifest.chapters:
+                if is_stop_requested(self.project_dir):
+                    logger.info(f"Stop requested for project '{manifest.project_id}'. Exiting audio synthesis gracefully.")
+                    stop_requested = True
+                    break
                 ch_idx = ch.chapter_index
                 effective_voice = ch.voice_override or preset_voice
 
@@ -175,6 +182,10 @@ class VoiceService:
                             save_manifest(manifest, self.project_dir)
                 else:
                     for item in groups_to_synth:
+                        if is_stop_requested(self.project_dir):
+                            logger.info(f"Stop requested for project '{manifest.project_id}'. Exiting audio synthesis gracefully.")
+                            stop_requested = True
+                            break
                         grp, u_id, exp_hash, res = _synth_worker(item)
                         grp.audio.file_path = f"assets/audio/groups/ch{ch_idx}_g{grp.group_index}.wav"
                         grp.audio.audio_hash = exp_hash
@@ -191,6 +202,9 @@ class VoiceService:
                         grp.status = ItemStatus.completed
                         grp.segments = res.updated_segments
                         save_manifest(manifest, self.project_dir)
+
+                if stop_requested:
+                    break
 
                 all_groups_done = all(g.status == ItemStatus.completed for g in ch.tts_groups)
                 if all_groups_done:

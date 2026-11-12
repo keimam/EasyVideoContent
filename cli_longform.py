@@ -14,11 +14,15 @@ Zero modifications to upstream files.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
+
+from loguru import logger
 
 # Reconfigure stdout/stderr for UTF-8 on Windows console
 if sys.platform == "win32":
@@ -43,15 +47,19 @@ from app.services.longform.hashing import (
 from app.services.longform.planner import compute_plan
 from app.services.longform.presets import (
     format_preset_tree,
+    get_all_preset_overrides,
     get_preset,
     get_preset_directories,
     get_preset_inheritance_chain,
+    get_preset_override_path,
+    has_preset_override,
     list_presets,
     load_preset_file,
     validate_preset_file,
 )
 from app.services.longform.schema import ItemStatus, ProjectManifest
 from app.services.longform.script_import import estimate_script_duration, parse_markdown_script
+from app.services.longform.status import compute_project_step_status
 from app.services.longform.store import (
     ProjectLock,
     ProjectLockedError,
@@ -62,6 +70,25 @@ from app.services.longform.store import (
     save_manifest,
     update_project_script,
 )
+
+
+def _record_job_failure(proj_dir: Path, step_name: str, error_message: str, exit_code: int = 1) -> None:
+    """Safely record failure status into job_state.json without throwing exceptions (Z4)."""
+    try:
+        job_state_file = proj_dir / "job_state.json"
+        if job_state_file.is_file():
+            st_data = json.loads(job_state_file.read_text(encoding="utf-8"))
+            st_data["status"] = "failed"
+            st_data["failed_step"] = step_name
+            st_data["error_message"] = error_message
+            st_data["finished_at"] = datetime.now().isoformat()
+            st_data["exit_code"] = exit_code
+            job_state_file.write_text(json.dumps(st_data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    except Exception as exc:
+        try:
+            logger.warning(f"Could not update job_state.json with failure: {exc}")
+        except Exception:
+            pass
 
 
 def cmd_presets_list(args: argparse.Namespace) -> int:
@@ -82,6 +109,8 @@ def cmd_presets_validate(args: argparse.Namespace) -> int:
     if is_valid:
         preset = load_preset_file(path)
         chain = get_preset_inheritance_chain(preset.id)
+        has_ovr = has_preset_override(preset.id)
+        ovr_str = f"Active ({get_preset_override_path(preset.id).name})" if has_ovr else "None"
         print(f"SUCCESS: Preset '{path.name}' is valid.")
         print(f"  - ID:          {preset.id}")
         print(f"  - Name:        {preset.name}")
@@ -90,6 +119,7 @@ def cmd_presets_validate(args: argparse.Namespace) -> int:
         print(f"  - Chain:       {' -> '.join(chain)}")
         print(f"  - Language:    {preset.language}")
         print(f"  - WPM:         {preset.words_per_minute}")
+        print(f"  - Override:    {ovr_str}")
         if preset.topic_keywords:
             print(f"  - Keywords:    {len(preset.topic_keywords)} topic, {len(preset.visual_keywords)} visual")
         return 0
@@ -127,6 +157,7 @@ def cmd_project_create(args: argparse.Namespace) -> int:
             script_markdown=script_markdown,
             aspect_ratio=args.aspect_ratio or "16:9",
             sub_niche_focus=args.focus,
+            topic=getattr(args, "topic", None) or args.title,
         )
     except Exception as exc:
         print(f"Error creating project: {exc}", file=sys.stderr)
@@ -169,14 +200,15 @@ def cmd_project_create(args: argparse.Namespace) -> int:
 
 
 def cmd_project_show(args: argparse.Namespace) -> int:
-    """Display information about an existing project."""
+    """Display information about an existing project using unified status resolver (C2, C3)."""
     project_dir = get_project_dir(args.project_id)
     if not project_dir.is_dir():
         print(f"Error: Project directory not found at {project_dir}", file=sys.stderr)
         return 1
 
     try:
-        manifest = load_manifest(project_dir)
+        st_info = compute_project_step_status(project_dir)
+        manifest = st_info["manifest"]
     except Exception as exc:
         print(f"Error loading project: {exc}", file=sys.stderr)
         return 1
@@ -187,6 +219,8 @@ def cmd_project_show(args: argparse.Namespace) -> int:
     print(f"\nProject Overview: {manifest.project_id}")
     print("=" * 65)
     print(f"  Title:          {manifest.title}")
+    if getattr(manifest, "topic", None):
+        print(f"  Topic:          \"{manifest.topic}\"")
     print(f"  Status:         {manifest.status.value}")
     print(f"  Preset:         {manifest.preset_id}")
     if manifest.preset_inheritance_chain:
@@ -197,11 +231,45 @@ def cmd_project_show(args: argparse.Namespace) -> int:
     print(f"  Pipeline Ver:   {manifest.pipeline_version}")
     print(f"  Schema Ver:     {manifest.schema_version}")
     print(f"  Est. Duration:  {duration_stats['estimated_duration_seconds']:.1f}s ({duration_stats['estimated_duration_seconds']/60:.1f} min)")
-    print(f"  Chapters ({len(manifest.chapters)}):")
+
+    print(f"\n  Alur Langkah & Status (5 Tahap):")
+    steps = st_info["steps"]
+    step_icons = {
+        "selesai": "✔",
+        "berjalan": "⏳",
+        "terhenti": "⚠",
+        "perlu_diperbarui": "🔄",
+        "belum": "○",
+    }
+
+    sc = steps["script"]
+    print(f"    1. Naskah:  [{step_icons.get(sc['status'], '○')} {sc['status'].upper()}] {sc['label']}")
+    vc = steps["voice"]
+    print(f"    2. Suara:   [{step_icons.get(vc['status'], '○')} {vc['status'].upper()}] {vc['label']}")
+    vs = steps["visual"]
+    print(f"    3. Visual:  [{step_icons.get(vs['status'], '○')} {vs['status'].upper()}] {vs['label']}")
+    rd = steps["render"]
+    print(f"    4. Render:  [{step_icons.get(rd['status'], '○')} {rd['status'].upper()}] {rd['label']}")
+    cc = steps["capcut"]
+    cc_extra = ""
+    if cc.get("draft_info"):
+        cc_extra = f" -> {cc['draft_info']['draft_name']} ({cc['draft_info']['exported_at']})"
+    print(f"    5. CapCut:  [{step_icons.get(cc['status'], '○')} {cc['status'].upper()}] {cc['label']}{cc_extra}")
+
+    print(f"\n  Langkah Berikutnya: {st_info['next_step_name']}")
+
+    if st_info["preset_has_impactful_diff"]:
+        print(f"\n  [PERINGATAN] Preset berubah pada pengaturan penting (jalankan refresh-preset?):")
+        for diff in st_info["preset_diff_details"]:
+            print(f"    - {diff['field']}: {diff['description']}")
+            print(f"      (proyek: {diff['snapshot_val']} vs preset: {diff['current_val']})")
+
+    print(f"\n  Chapters ({len(manifest.chapters)}):")
     for ch in manifest.chapters:
         num_g = len(ch.tts_groups)
         num_s = sum(len(g.segments) for g in ch.tts_groups)
         print(f"    - Ch {ch.chapter_index}: {ch.chapter_title} [{ch.status.value}] ({num_g} groups, {num_s} segs)")
+
     print("=" * 65 + "\n")
     return 0
 
@@ -278,13 +346,19 @@ def cmd_project_update_script(args: argparse.Namespace) -> int:
 
 
 def cmd_project_refresh_preset(args: argparse.Namespace) -> int:
-    """Refresh project preset snapshot from disk and mark dependencies stale (B2)."""
+    """Refresh project preset snapshot from disk and mark dependencies stale (B2, G2)."""
     project_dir = get_project_dir(args.project_id)
     if not project_dir.is_dir():
         print(f"Error: Project '{args.project_id}' not found at {project_dir}", file=sys.stderr)
         return 1
 
     try:
+        new_pid = getattr(args, "preset_id", None)
+        if new_pid:
+            manifest = load_manifest(project_dir)
+            manifest.preset_id = new_pid
+            save_manifest(manifest, project_dir)
+
         manifest, details = refresh_project_preset(project_dir)
     except Exception as exc:
         print(f"Error refreshing preset: {exc}", file=sys.stderr)
@@ -447,9 +521,12 @@ def cmd_script_outline(args: argparse.Namespace) -> int:
     print(f"\n[LLM Configuration] Provider: {prov_str} | Model: {generator.adapter.model or '(default)'}")
     sys.stdout.flush()
 
+    manifest = load_manifest(project_dir)
+    eff_topic = args.topic or getattr(manifest, "topic", None) or manifest.title
+
     try:
         outline = generator.generate_outline(
-            topic=args.topic,
+            topic=eff_topic,
             target_duration_minutes=args.minutes,
         )
     except LLMConfigurationError as exc:
@@ -617,12 +694,14 @@ def cmd_audio_synth(args: argparse.Namespace) -> int:
         )
     except TTSConfigurationError as exc:
         print(f"\n[CONFIGURATION ERROR] {exc}\n", file=sys.stderr)
+        _record_job_failure(project_dir, "voice", str(exc), 1)
         return 1
     except KeyboardInterrupt:
         print("\n[AUDIO SYNTH INTERRUPTED] KeyboardInterrupt received. Safely halting. Incomplete groups remain pending for next resume.\n", file=sys.stderr)
         return 130
     except Exception as exc:
         print(f"Error synthesizing audio: {exc}", file=sys.stderr)
+        _record_job_failure(project_dir, "voice", str(exc), 1)
         return 1
 
     print(f"\nAudio Synthesis Completed Successfully for Project: {args.project_id}")
@@ -791,6 +870,49 @@ def cmd_voice_test(args: argparse.Namespace) -> int:
 # Visual Commands (Stage 4)
 # ---------------------------------------------------------------------------
 
+def cmd_visual_pipeline(args: argparse.Namespace) -> int:
+    """Acquire visual assets and build shot clips sequentially in one job (7B.1 v2, Z3)."""
+    from app.services.longform.store import (
+        is_stop_requested,
+        load_manifest,
+        save_manifest,
+        ProjectLock,
+        ProjectLockedError,
+    )
+    from app.services.longform.visual.service import VisualService
+
+    proj_dir = get_project_dir(args.project_id)
+    if not proj_dir.is_dir():
+        print(f"Error: Project '{args.project_id}' not found at {proj_dir}", file=sys.stderr)
+        return 1
+
+    try:
+        with ProjectLock(proj_dir):
+            manifest = load_manifest(proj_dir)
+            service = VisualService(proj_dir)
+            manifest, stats = service.run_pipeline(
+                manifest=manifest,
+                provider_name=getattr(args, "provider", None),
+                allow_fallback=getattr(args, "allow_fallback", True),
+            )
+            return 0
+
+    except ProjectLockedError:
+        err_msg = f"Project '{args.project_id}' is locked by another process."
+        print(f"Error: {err_msg}", file=sys.stderr)
+        _record_job_failure(proj_dir, "visual", err_msg, 1)
+        return 1
+    except KeyboardInterrupt:
+        print("\n[VISUAL PIPELINE INTERRUPTED] KeyboardInterrupt received.\n", file=sys.stderr)
+        return 130
+    except Exception as exc:
+        err_msg = str(exc)
+        print(f"Error in visual pipeline: {err_msg}", file=sys.stderr)
+        _record_job_failure(proj_dir, "visual", err_msg, 1)
+        return 1
+
+
+
 def cmd_visual_fetch(args: argparse.Namespace) -> int:
     """Acquire visual assets for project shots (4.1, 4.5, V1).
 
@@ -846,7 +968,17 @@ def cmd_visual_fetch(args: argparse.Namespace) -> int:
         print(f"\nCONFIGURATION ERROR: {conf_err}", file=sys.stderr)
         return 1
     except ProjectLockedError:
-        print(f"Error: Project '{args.project_id}' is locked by another process.", file=sys.stderr)
+        err_msg = f"Project '{args.project_id}' is locked by another process."
+        print(f"Error: {err_msg}", file=sys.stderr)
+        _record_job_failure(proj_dir, "visual", err_msg, 1)
+        return 1
+    except KeyboardInterrupt:
+        print("\n[VISUAL PIPELINE INTERRUPTED] KeyboardInterrupt received.\n", file=sys.stderr)
+        return 130
+    except Exception as exc:
+        err_msg = str(exc)
+        print(f"Error in visual pipeline: {err_msg}", file=sys.stderr)
+        _record_job_failure(proj_dir, "visual", err_msg, 1)
         return 1
     except KeyboardInterrupt:
         print("\n[VISUAL FETCH INTERRUPTED] KeyboardInterrupt received. Fetched assets up to this point are preserved.\n", file=sys.stderr)
@@ -883,7 +1015,17 @@ def cmd_visual_build(args: argparse.Namespace) -> int:
             return 0
 
     except ProjectLockedError:
-        print(f"Error: Project '{args.project_id}' is locked by another process.", file=sys.stderr)
+        err_msg = f"Project '{args.project_id}' is locked by another process."
+        print(f"Error: {err_msg}", file=sys.stderr)
+        _record_job_failure(proj_dir, "visual", err_msg, 1)
+        return 1
+    except KeyboardInterrupt:
+        print("\n[VISUAL PIPELINE INTERRUPTED] KeyboardInterrupt received.\n", file=sys.stderr)
+        return 130
+    except Exception as exc:
+        err_msg = str(exc)
+        print(f"Error in visual pipeline: {err_msg}", file=sys.stderr)
+        _record_job_failure(proj_dir, "visual", err_msg, 1)
         return 1
     except KeyboardInterrupt:
         print("\n[VISUAL BUILD INTERRUPTED] KeyboardInterrupt received. Completed clips are saved; partial clip discarded.\n", file=sys.stderr)
@@ -1387,13 +1529,17 @@ def cmd_render_chapter(args: argparse.Namespace) -> int:
                 print(f"File size:     {stats['file_size_bytes'] / (1024*1024):.2f} MB\n")
             return 0
     except ProjectLockedError:
-        print(f"Error: Project '{args.project_id}' is locked by another process.", file=sys.stderr)
+        err_msg = f"Project '{args.project_id}' is locked by another process."
+        print(f"Error: {err_msg}", file=sys.stderr)
+        _record_job_failure(proj_dir, "render", err_msg, 1)
         return 1
     except KeyboardInterrupt:
         print(f"\n[RENDER INTERRUPTED] KeyboardInterrupt received during Chapter {args.chapter} render. Partial file removed.\n", file=sys.stderr)
         return 130
     except Exception as exc:
-        print(f"Error rendering chapter: {exc}", file=sys.stderr)
+        err_msg = str(exc)
+        print(f"Error rendering chapter: {err_msg}", file=sys.stderr)
+        _record_job_failure(proj_dir, "render", err_msg, 1)
         return 1
 
 
@@ -1425,13 +1571,17 @@ def cmd_render_all(args: argparse.Namespace) -> int:
             print(f"Subtitles:     {f_stats['full_timeline_srt']} and .ass\n")
             return 0
     except ProjectLockedError:
-        print(f"Error: Project '{args.project_id}' is locked by another process.", file=sys.stderr)
+        err_msg = f"Project '{args.project_id}' is locked by another process."
+        print(f"Error: {err_msg}", file=sys.stderr)
+        _record_job_failure(proj_dir, "render", err_msg, 1)
         return 1
     except KeyboardInterrupt:
         print(f"\n[RENDER ALL INTERRUPTED] KeyboardInterrupt received. Completed chapters are saved.\n", file=sys.stderr)
         return 130
     except Exception as exc:
-        print(f"Error rendering project: {exc}", file=sys.stderr)
+        err_msg = str(exc)
+        print(f"Error rendering project: {err_msg}", file=sys.stderr)
+        _record_job_failure(proj_dir, "render", err_msg, 1)
         return 1
 
 
@@ -1461,11 +1611,18 @@ def cmd_render_final(args: argparse.Namespace) -> int:
             print(f"Subtitles:     {f_stats['full_timeline_srt']}\n")
             return 0
     except ProjectLockedError:
-        print(f"Error: Project '{args.project_id}' is locked by another process.", file=sys.stderr)
+        err_msg = f"Project '{args.project_id}' is locked by another process."
+        print(f"Error: {err_msg}", file=sys.stderr)
+        _record_job_failure(proj_dir, "render", err_msg, 1)
         return 1
     except KeyboardInterrupt:
         print(f"\n[RENDER FINAL INTERRUPTED] KeyboardInterrupt received. Partial files removed.\n", file=sys.stderr)
         return 130
+    except Exception as exc:
+        err_msg = str(exc)
+        print(f"Error assembling final video: {err_msg}", file=sys.stderr)
+        _record_job_failure(proj_dir, "render", err_msg, 1)
+        return 1
     except Exception as exc:
         print(f"Error assembling final video: {exc}", file=sys.stderr)
         return 1
@@ -1675,7 +1832,9 @@ def cmd_capcut_export(args: argparse.Namespace) -> int:
         print("=" * 70 + "\n")
         return 0
     except Exception as exc:
-        print(f"Error exporting CapCut draft: {exc}", file=sys.stderr)
+        err_msg = str(exc)
+        print(f"Error exporting CapCut draft: {err_msg}", file=sys.stderr)
+        _record_job_failure(proj_dir, "capcut", err_msg, 1)
         return 1
 
 
@@ -1713,7 +1872,11 @@ def cmd_capcut_calibrate(args: argparse.Namespace) -> int:
         print("=" * 70 + "\n")
         return 0
     except Exception as exc:
-        print(f"Error creating CapCut calibration draft: {exc}", file=sys.stderr)
+        err_msg = str(exc)
+        print(f"Error creating CapCut calibration draft: {err_msg}", file=sys.stderr)
+        p_dir = get_project_dir(proj_id)
+        if p_dir.is_dir():
+            _record_job_failure(p_dir, "capcut", err_msg, 1)
         return 1
 
 
@@ -1734,6 +1897,170 @@ def cmd_capcut_set_text_size(args: argparse.Namespace) -> int:
         return 0
     except Exception as exc:
         print(f"Error setting preset text size: {exc}", file=sys.stderr)
+        return 1
+
+
+def _update_pipeline_auto_phase(proj_dir: Path, phase_name: str):
+    """Update active phase display in job_state.json for real-time WebUI display (Z2, Z3)."""
+    job_state_file = proj_dir / "job_state.json"
+    if job_state_file.is_file():
+        try:
+            import json
+            st_data = json.loads(job_state_file.read_text(encoding="utf-8"))
+            if st_data.get("status") == "running":
+                st_data["phase"] = phase_name
+                if "progress" not in st_data:
+                    st_data["progress"] = {}
+                st_data["progress"]["phase"] = phase_name
+                job_state_file.write_text(json.dumps(st_data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        except Exception:
+            pass
+
+
+def cmd_pipeline_auto(args: argparse.Namespace) -> int:
+    """Run pipeline automatically to completion: Voice -> Visual -> Render -> (optional) CapCut (Stage 7B.2 A1-A3, Z3)."""
+    from app.services.longform.voice_service import VoiceService
+    from app.services.longform.visual.service import VisualService
+    from app.services.longform.render.service import RenderService
+    from app.services.longform.capcut.service import export_full_project
+    from app.services.longform.store import is_stop_requested
+
+    proj_dir = get_project_dir(args.project_id)
+    if not proj_dir.is_dir():
+        print(f"Error: Project '{args.project_id}' not found at {proj_dir}", file=sys.stderr)
+        return 1
+
+    current_phase_step = "init"
+    try:
+        manifest = load_manifest(proj_dir)
+        total_chapters = len(manifest.chapters)
+        if total_chapters == 0:
+            print("Error: Proyek belum memiliki naskah bab.", file=sys.stderr)
+            return 1
+
+        # Check script completion
+        script_done = all(
+            any(g.paragraph_text and g.paragraph_text.strip() for g in ch.tts_groups)
+            or (proj_dir / "script" / f"chapter_{ch.chapter_index:02d}.md").is_file()
+            for ch in manifest.chapters
+        )
+        if not script_done:
+            print("Error: Naskah belum selesai ditulis.", file=sys.stderr)
+            return 1
+
+        print(f"\n[PIPELINE AUTO] Starting automated run for project '{args.project_id}'...")
+        print("=" * 80)
+
+        # Step 2: Voice
+        current_phase_step = "voice"
+        total_groups = sum(len(ch.tts_groups) for ch in manifest.chapters)
+        done_groups = sum(
+            1 for ch in manifest.chapters for g in ch.tts_groups
+            if g.audio and g.audio.file_path and (proj_dir / g.audio.file_path).is_file() and (proj_dir / g.audio.file_path).stat().st_size > 44
+        )
+        if done_groups < total_groups:
+            _update_pipeline_auto_phase(proj_dir, f"[1/4 Voice] Menyintesis narasi audio ({done_groups}/{total_groups})...")
+            print(f"\n>>> [1/4 Voice] Synthesizing narration audio ({done_groups}/{total_groups} done)...")
+            voice_svc = VoiceService(proj_dir)
+            manifest = voice_svc.synthesize_all()
+            save_manifest(manifest, proj_dir)
+            if is_stop_requested(proj_dir):
+                print("\n[PIPELINE INTERRUPTED] Stop requested during Voice synthesis.", file=sys.stderr)
+                return 130
+        else:
+            print(f"\n>>> [1/4 Voice] Already completed ({done_groups}/{total_groups} groups). Skipping.")
+
+        # Step 3: Visual
+        current_phase_step = "visual"
+        total_shots = sum(len(ch.shots) for ch in manifest.chapters)
+        built_shots = sum(
+            1 for ch in manifest.chapters for sh in ch.shots
+            if sh.rendered_clip and (proj_dir / sh.rendered_clip).is_file()
+        )
+        if built_shots < total_shots or total_shots == 0:
+            _update_pipeline_auto_phase(proj_dir, f"[2/4 Visual] Mencari footage & menyusun klip ({built_shots}/{total_shots})...")
+            print(f"\n>>> [2/4 Visual] Building visual assets & clips ({built_shots}/{total_shots} done)...")
+            vis_svc = VisualService(proj_dir)
+            manifest, _ = vis_svc.run_pipeline(
+                manifest=manifest,
+                provider_name=getattr(args, "provider", None),
+                allow_fallback=getattr(args, "allow_fallback", True),
+            )
+            save_manifest(manifest, proj_dir)
+            if is_stop_requested(proj_dir):
+                print("\n[PIPELINE INTERRUPTED] Stop requested during Visual pipeline.", file=sys.stderr)
+                return 130
+        else:
+            print(f"\n>>> [2/4 Visual] Already completed ({built_shots}/{total_shots} clips). Skipping.")
+
+        # Check needs_review (A2)
+        needs_review_count = sum(
+            1 for ch in manifest.chapters for s in ch.shots
+            if getattr(s, "needs_review", False)
+        )
+        if args.stop_on_review and not getattr(args, "skip_review_check", False) and needs_review_count > 0:
+            print(f"\n[PAUSED] Menunggu pengecekan visual ({needs_review_count} shot perlu dicek).", file=sys.stderr)
+            job_state_file = proj_dir / "job_state.json"
+            if job_state_file.is_file():
+                try:
+                    import json
+                    st_data = json.loads(job_state_file.read_text(encoding="utf-8"))
+                    st_data["status"] = "stopped"
+                    st_data["phase"] = f"Menunggu pengecekan visual ({needs_review_count} shot)"
+                    st_data["error_message"] = f"Menunggu pengecekan visual ({needs_review_count} shot)"
+                    job_state_file.write_text(json.dumps(st_data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+                except Exception:
+                    pass
+            return 2
+
+        # Step 4: Render
+        current_phase_step = "render"
+        has_final_vid = bool(manifest.final_video_file and (proj_dir / manifest.final_video_file).is_file())
+        if not has_final_vid or manifest.status == ItemStatus.stale:
+            _update_pipeline_auto_phase(proj_dir, "[3/4 Render] Merender bab & video final...")
+            print(f"\n>>> [3/4 Render] Rendering chapters and assembling final video...")
+            rnd_svc = RenderService(proj_dir)
+            manifest, _ = rnd_svc.render_all(manifest, no_bgm=getattr(args, "no_bgm", False), force=False)
+            save_manifest(manifest, proj_dir)
+            if is_stop_requested(proj_dir):
+                print("\n[PIPELINE INTERRUPTED] Stop requested during Render.", file=sys.stderr)
+                return 130
+        else:
+            print(f"\n>>> [3/4 Render] Final video already exists ({manifest.final_video_file}). Skipping.")
+
+        # Step 5: CapCut (optional)
+        if getattr(args, "with_capcut", False):
+            current_phase_step = "capcut"
+            from app.services.longform.status import find_latest_capcut_draft
+            from app.services.longform.capcut.detector import is_capcut_running
+            cc_info = find_latest_capcut_draft(proj_dir, args.project_id)
+            if not cc_info:
+                if is_capcut_running():
+                    print("\n[ERROR] CapCut sedang berjalan. Tutup CapCut sebelum ekspor untuk mencegah korupsi draft.", file=sys.stderr)
+                    raise RuntimeError("CapCut Desktop sedang aktif. Harap tutup CapCut sebelum ekspor.")
+                _update_pipeline_auto_phase(proj_dir, "[4/4 CapCut] Mengekspor draft CapCut...")
+                print(f"\n>>> [4/4 CapCut] Exporting project to CapCut Desktop...")
+                export_full_project(args.project_id, install=True)
+            else:
+                print(f"\n>>> [4/4 CapCut] Draft already exists ({cc_info['draft_name']}). Skipping.")
+
+        print("\n" + "=" * 80)
+        print(f"SUCCESS: Pipeline auto completed successfully for project '{args.project_id}'!")
+        print("=" * 80 + "\n")
+        return 0
+    except ProjectLockedError:
+        err_msg = f"Project '{args.project_id}' is locked by another process."
+        print(f"Error: {err_msg}", file=sys.stderr)
+        _record_job_failure(proj_dir, current_phase_step, err_msg, 1)
+        return 1
+    except KeyboardInterrupt:
+        print(f"\n[PIPELINE INTERRUPTED] KeyboardInterrupt received.\n", file=sys.stderr)
+        return 130
+    except Exception as exc:
+        err_msg = str(exc)
+        logger.error(f"Error in automated pipeline at step '{current_phase_step}': {err_msg}")
+        _record_job_failure(proj_dir, current_phase_step, err_msg, 1)
+        print(f"Error in automated pipeline at step '{current_phase_step}': {err_msg}", file=sys.stderr)
         return 1
 
 
@@ -1767,7 +2094,7 @@ def build_parser() -> argparse.ArgumentParser:
     # project create
     p_create = proj_subs.add_parser("create", help="Create a new longform project")
     p_create.add_argument("--title", required=True, help="Title of the project")
-    p_create.add_argument("--preset", required=True, help="Preset ID to use")
+    p_create.add_argument("--preset", default="umum", help="Preset ID to use (default: umum)")
     p_create.add_argument("--script", help="Path to Markdown script file (optional if --topic is provided)")
     p_create.add_argument("--topic", help="Video topic for automated AI script generation")
     p_create.add_argument("--id", help="Optional custom project ID")
@@ -1790,6 +2117,7 @@ def build_parser() -> argparse.ArgumentParser:
     # project refresh-preset
     p_ref = proj_subs.add_parser("refresh-preset", help="Refresh preset snapshot from disk")
     p_ref.add_argument("project_id", help="Project ID")
+    p_ref.add_argument("--preset-id", dest="preset_id", default=None, help="Optionally change preset ID before refreshing (G2)")
 
     # project set-voice (3.5, 3.7)
     p_set_voice = proj_subs.add_parser("set-voice", help="Change project default voice (marks audio stale)")
@@ -1811,7 +2139,7 @@ def build_parser() -> argparse.ArgumentParser:
     # script outline
     p_s_outline = script_subs.add_parser("outline", help="Generate structured outline with candidate titles")
     p_s_outline.add_argument("project_id", help="Project ID")
-    p_s_outline.add_argument("--topic", required=True, help="Video topic")
+    p_s_outline.add_argument("--topic", default=None, help="Video topic (defaults to project topic/title)")
     p_s_outline.add_argument("--minutes", type=float, default=12.0, help="Target duration in minutes (default: 12)")
     p_s_outline.add_argument("--provider", default=None, help="LLM provider (defaults to upstream config.toml; pass 'fake' for offline test mock)")
     p_s_outline.add_argument("--model", help="Optional model name override")
@@ -1869,6 +2197,12 @@ def build_parser() -> argparse.ArgumentParser:
     # 6. visual (Stage 4)
     p_visual = subparsers.add_parser("visual", help="Manage visual assets, stock footage, AI images, Ken Burns clips, and inspection")
     visual_subs = p_visual.add_subparsers(dest="visual_command", required=True)
+
+    # visual pipeline (7B.1)
+    p_v_pipe = visual_subs.add_parser("pipeline", help="Fetch visual assets and build shot clips sequentially")
+    p_v_pipe.add_argument("project_id", help="Project ID")
+    p_v_pipe.add_argument("--provider", default=None, help="Visual provider ('fake', 'pexels', 'pixabay', 'ai_image', 'local')")
+    p_v_pipe.add_argument("--allow-fallback", action="store_true", help="Allow fallback to fake provider if credentials missing")
 
     # visual fetch
     p_v_fetch = visual_subs.add_parser("fetch", help="Search and acquire visual assets (stock, AI, local, fake)")
@@ -2005,6 +2339,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_c_set_sz.add_argument("preset_id", help="Preset ID (e.g. automotive.muscle_car or documentary_en)")
     p_c_set_sz.add_argument("size", type=int, help="CapCut subtitle font size (e.g. 5, 6, 7, 8, etc.)")
 
+    # 10. pipeline (Stage 7B.2 A1)
+    p_pipe = subparsers.add_parser("pipeline", help="Automated multi-step pipeline execution")
+    pipe_subs = p_pipe.add_subparsers(dest="pipeline_command", required=True)
+    p_pipe_auto = pipe_subs.add_parser("auto", help="Run uncompleted steps automatically to completion")
+    p_pipe_auto.add_argument("project_id", help="Project ID")
+    p_pipe_auto.add_argument("--with-capcut", action="store_true", help="Include CapCut export after render")
+    p_pipe_auto.add_argument("--stop-on-review", action="store_true", default=True, help="Pause if shots have needs_review=True")
+    p_pipe_auto.add_argument("--skip-review-check", action="store_true", help="Do not pause on needs_review (resume past review)")
+    p_pipe_auto.add_argument("--no-bgm", action="store_true", help="Disable BGM during render")
+
     return parser
 
 
@@ -2060,7 +2404,9 @@ def main() -> int:
             elif args.voice_command == "test":
                 return cmd_voice_test(args)
         elif args.command == "visual":
-            if args.visual_command == "fetch":
+            if args.visual_command == "pipeline":
+                return cmd_visual_pipeline(args)
+            elif args.visual_command == "fetch":
                 return cmd_visual_fetch(args)
             elif args.visual_command == "build":
                 return cmd_visual_build(args)
@@ -2108,6 +2454,9 @@ def main() -> int:
                 return cmd_capcut_calibrate(args)
             elif args.capcut_command == "set-text-size":
                 return cmd_capcut_set_text_size(args)
+        elif args.command == "pipeline":
+            if args.pipeline_command == "auto":
+                return cmd_pipeline_auto(args)
 
         parser.print_help()
         return 1

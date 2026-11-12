@@ -1,0 +1,24 @@
+{
+  "id": "umum.id",
+  "name": "Umum (Dokumenter Naratif)",
+  "schema_version": "1.0.0",
+  "kind": "niche",
+  "extends": "documentary_id",
+  "language": "id-ID",
+  "audience": "Penonton umum, penikmat cerita, eksplorasi topik populer dan dokumenter di YouTube",
+  "narration_style": "Ekspositori, mengalir, engaging, jelas, mudah dipahami penonton luas",
+  "chapter_structure": [
+    "Pengenalan Topik & Hook",
+    "Latar Belakang & Pembahasan Utama",
+    "Fakta Menarik & Perkembangan Kunci",
+    "Kesimpulan & Refleksi"
+  ],
+  "hook_rules": "Buka dengan pertanyaan memikat atau fakta menarik dalam 10-15 detik pertama.",
+  "words_per_minute": 130,
+  "default_voice": "id-ID-ArdiNeural",
+  "recommended_visual_sources": {
+    "stock": 0.7,
+    "ai_image": 0.3
+  },
+  "capcut_text_size": 8
+}

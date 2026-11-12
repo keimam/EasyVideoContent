@@ -555,25 +555,31 @@ def test_c3_set_and_resolve_capcut_text_size(temp_draft_dir):
     with pytest.raises(ValueError, match="between 4 and 24"):
         set_capcut_text_size("automotive.muscle_car", 30)
 
-    # Test update and resolve
-    preset_file = set_capcut_text_size("automotive.muscle_car", 6)
-    assert preset_file.is_file()
+    try:
+        # Test update and resolve
+        preset_file = set_capcut_text_size("automotive.muscle_car", 6)
+        assert preset_file.is_file()
 
-    class MockManifest:
-        preset_id = "automotive.muscle_car"
-        preset_snapshot = {}
+        class MockManifest:
+            preset_id = "automotive.muscle_car"
+            preset_snapshot = {}
 
-    m = MockManifest()
-    assert resolve_capcut_text_size(m) == 6
+        m = MockManifest()
+        assert resolve_capcut_text_size(m) == 6
 
-    # Test snapshot override
-    m.preset_snapshot = {"capcut_text_size": 9}
-    assert resolve_capcut_text_size(m) == 9
+        # Test snapshot override
+        m.preset_snapshot = {"capcut_text_size": 9}
+        assert resolve_capcut_text_size(m) == 9
 
-    # Restore preset to 7
-    set_capcut_text_size("automotive.muscle_car", 7)
-    m.preset_snapshot = {}
-    assert resolve_capcut_text_size(m) == 7
+        # Restore preset to 7
+        set_capcut_text_size("automotive.muscle_car", 7)
+        m.preset_snapshot = {}
+        assert resolve_capcut_text_size(m) == 7
+    finally:
+        from app.services.longform.presets import get_preset_override_path
+        ovr = get_preset_override_path("automotive.muscle_car")
+        if ovr.is_file():
+            ovr.unlink()
 
 
 def test_c4_media_panel_bin_and_timestamp_overflow_protection(temp_draft_dir, mock_media_files):

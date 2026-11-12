@@ -5,18 +5,18 @@ assemble final video, and query render status.
 """
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 import time
 from typing import Any, Dict, List, Optional, Tuple
+
+from loguru import logger
 
 from app.services.longform.hashing import compute_chapter_hash, compute_final_concat_hash
 from app.services.longform.planner import compute_plan
 from app.services.longform.render.chapter_render import ChapterRenderer
 from app.services.longform.render.final_concat import FinalConcatenator
 from app.services.longform.schema import Chapter, ItemStatus, ProjectManifest
-
-logger = logging.getLogger(__name__)
+from app.services.longform.store import is_stop_requested, save_manifest, update_job_phase
 
 
 class RenderService:
@@ -50,7 +50,7 @@ class RenderService:
 
         out_file = ch.output_file and (self.project_dir / ch.output_file).is_file()
         if not force and out_file and ch.chapter_hash == expected_hash and ch.status == ItemStatus.completed:
-            logger.info(f"Chapter {chapter_index} is up-to-date, skipping render")
+            logger.info(f"Bab {chapter_index} dari {len(manifest.chapters)}: dilewati (sudah valid)")
             return manifest, {
                 "chapter_index": chapter_index,
                 "status": "skipped",
@@ -77,18 +77,35 @@ class RenderService:
 
         # Render chapters in sequence (resume per chapter)
         for ch in sorted(manifest.chapters, key=lambda c: c.chapter_index):
+            if is_stop_requested(self.project_dir):
+                logger.info(f"Stop requested for project in {self.project_dir}. Halting chapter renders.")
+                break
             manifest, c_stats = self.render_chapter(manifest, ch.chapter_index, force=force)
             if c_stats.get("status") == "rendered":
                 rendered_count += 1
             else:
                 skipped_count += 1
+                update_job_phase(
+                    self.project_dir,
+                    phase=f"Bab {ch.chapter_index} dari {total_chapters}: dilewati (sudah valid)",
+                    percentage=round((ch.chapter_index / total_chapters) * 80.0, 1),
+                    current_unit=ch.chapter_index,
+                    total_units=total_chapters,
+                    unit_label="bab",
+                )
             chapter_stats.append(c_stats)
+            save_manifest(manifest, self.project_dir)
 
         # Final video assembly
-        final_mp4, final_stats = self.final_concatenator.concatenate_final_video(
-            manifest=manifest,
-            no_bgm=no_bgm,
-        )
+        if is_stop_requested(self.project_dir):
+            logger.info(f"Stop requested for project in {self.project_dir}. Skipping final concat.")
+            final_stats = {"status": "stopped", "reason": "Stop requested"}
+        else:
+            final_mp4, final_stats = self.final_concatenator.concatenate_final_video(
+                manifest=manifest,
+                no_bgm=no_bgm,
+            )
+            save_manifest(manifest, self.project_dir)
 
         total_elapsed = time.perf_counter() - t0
         summary = {

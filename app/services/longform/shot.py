@@ -100,13 +100,19 @@ def form_chapter_shots(
         start = seg.chapter_start_seconds or 0.0
         end = seg.chapter_end_seconds or (start + dur)
 
+        # Extract short query if search_keywords not explicitly set (X3)
+        short_q = seg.visual.search_keywords if (seg.visual and seg.visual.search_keywords) else ""
+        if not short_q:
+            from app.services.longform.visual.query_extractor import extract_short_search_query
+            short_q = extract_short_search_query(seg.narration_text)
+
         curr_group = {
             "segment_indices": [seg.segment_index],
             "start_seconds": start,
             "end_seconds": end,
             "duration_seconds": dur,
             "visual_prompt": seg.visual.prompt if (seg.visual and seg.visual.prompt) else "",
-            "search_query": seg.visual.search_keywords if (seg.visual and seg.visual.search_keywords) else seg.narration_text,
+            "search_query": short_q,
             "motion": seg.visual.motion if seg.visual else MotionType.zoom_in,
             "requested_source": (seg.visual.requested_source if seg.visual and seg.visual.requested_source else default_source),
         }

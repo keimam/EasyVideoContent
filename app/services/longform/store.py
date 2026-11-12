@@ -158,6 +158,32 @@ class ProjectLock:
         self.release()
 
 
+STOP_MARKER_FILENAME = ".stop_requested"
+
+
+def request_job_stop(project_dir: str | Path) -> Path:
+    """Write an advisory stop marker file in the project directory (D2)."""
+    p_dir = Path(project_dir).resolve()
+    p_dir.mkdir(parents=True, exist_ok=True)
+    stop_file = p_dir / STOP_MARKER_FILENAME
+    stop_file.write_text(f"stop_requested_at: {datetime.now().isoformat()}\n", encoding="utf-8")
+    return stop_file
+
+
+def is_stop_requested(project_dir: str | Path) -> bool:
+    """Check if a stop has been requested for this project (D2)."""
+    p_dir = Path(project_dir).resolve()
+    return (p_dir / STOP_MARKER_FILENAME).is_file()
+
+
+def clear_stop_request(project_dir: str | Path) -> None:
+    """Remove any advisory stop marker file in the project directory (D2)."""
+    p_dir = Path(project_dir).resolve()
+    stop_file = p_dir / STOP_MARKER_FILENAME
+    if stop_file.is_file():
+        stop_file.unlink(missing_ok=True)
+
+
 def get_projects_root() -> Path:
     """Return the absolute path to storage/longform_projects/."""
     repo_root = Path(__file__).resolve().parent.parent.parent.parent
@@ -244,8 +270,11 @@ def load_manifest(project_dir: str | Path) -> ProjectManifest:
 
     try:
         manifest = ProjectManifest.model_validate(data)
-        # Synchronize paragraph_text with segments if present (A1)
+        # Synchronize paragraph_text with segments (A1) and clean chapter title prefixes (E1)
+        from app.services.longform.script_import import clean_chapter_title
         for ch in manifest.chapters:
+            if ch.chapter_title:
+                ch.chapter_title = clean_chapter_title(ch.chapter_title, fallback_index=ch.chapter_index)
             for g in ch.tts_groups:
                 if g.segments:
                     g.paragraph_text = g.get_effective_paragraph_text()
@@ -266,11 +295,14 @@ def create_project(
     script_markdown: Optional[str] = None,
     aspect_ratio: str = "16:9",
     sub_niche_focus: Optional[str] = None,
+    topic: Optional[str] = None,
+    target_duration_minutes: Optional[int] = None,
+    language: Optional[str] = None,
     projects_root: Optional[Path] = None,
 ) -> Tuple[ProjectManifest, Path]:
     """Create a new longform project folder with directory structure and manifest.
 
-    Copies preset snapshot and inheritance chain into manifest (K2, B2, B3).
+    Copies preset snapshot and inheritance chain into manifest (K2, B2, B3, D7).
     """
     clean_id = project_id.strip()
     if not clean_id or not clean_id.replace("_", "").replace("-", "").isalnum():
@@ -294,6 +326,10 @@ def create_project(
     for d in subdirs:
         d.mkdir(parents=True, exist_ok=True)
 
+    # Resolve generic "umum" to language-specific preset (H1)
+    if preset_id == "umum":
+        preset_id = "umum.en" if (language and language.startswith("en")) else "umum.id"
+
     # Fetch preset & snapshot
     preset = get_preset(preset_id)
     preset_snapshot = preset.model_dump()
@@ -310,6 +346,8 @@ def create_project(
         schema_version="1.0.0",
         project_id=clean_id,
         title=title,
+        topic=topic.strip() if topic else None,
+        target_duration_minutes=target_duration_minutes,
         aspect_ratio=aspect_ratio,
         preset_id=preset_id,
         preset_inheritance_chain=preset_chain,
@@ -526,6 +564,20 @@ def refresh_project_preset(project_dir: str | Path) -> Tuple[ProjectManifest, di
         old_snapshot = dict(manifest.preset_snapshot)
 
         latest_preset = get_preset(manifest.preset_id)
+
+        # Guard: check language compatibility between project and target preset (H1)
+        from app.services.longform.presets import PresetValidationError
+        proj_lang = (manifest.preset_snapshot or {}).get("language")
+        preset_lang = getattr(latest_preset, "language", None)
+        if proj_lang and preset_lang:
+            proj_norm = "en" if str(proj_lang).lower().startswith("en") else ("id" if str(proj_lang).lower().startswith("id") else "")
+            preset_norm = "en" if str(preset_lang).lower().startswith("en") else ("id" if str(preset_lang).lower().startswith("id") else "")
+            if proj_norm and preset_norm and proj_norm != preset_norm:
+                raise PresetValidationError(
+                    f"Tidak dapat memperbarui preset: perbedaan bahasa terdeteksi (proyek: '{proj_lang}' vs preset: '{preset_lang}'). "
+                    f"Perubahan bahasa narasi harus dilakukan secara eksplisit terpisah."
+                )
+
         latest_chain = get_preset_inheritance_chain(manifest.preset_id)
         latest_snapshot = latest_preset.model_dump()
 
@@ -576,3 +628,124 @@ def stage_local_visual_file(project_dir: str | Path, source_path: str | Path) ->
 
     rel_path = f"assets/visual/raw/{safe_name}"
     return rel_path, content_hash
+
+
+def migrate_umum_presets_and_projects() -> List[str]:
+    """Migrate legacy 'umum' preset references to 'umum.id' / 'umum.en' and restore Tokyo project (preset_recovery / H1, H2).
+
+    Returns a list of log messages detailing all migrations performed.
+    """
+    from app.services.longform.presets import (
+        get_preset,
+        get_preset_directories,
+        get_preset_inheritance_chain,
+    )
+
+    logs: List[str] = []
+    _, storage_dir = get_preset_directories()
+
+    # 1. Migrate custom presets in storage/presets/
+    if storage_dir.is_dir():
+        for f in sorted(storage_dir.glob("*.json")):
+            if f.name.endswith(".override.json"):
+                continue
+            try:
+                data = json.loads(f.read_text(encoding="utf-8"))
+                if data.get("extends") == "umum":
+                    p_lang = data.get("language", "")
+                    new_ext = "umum.en" if str(p_lang).startswith("en") else "umum.id"
+                    data["extends"] = new_ext
+                    f.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+                    msg = f"[preset_recovery] [MIGRASI PRESET H1] Preset kustom '{data.get('id', f.stem)}': extends diubah dari 'umum' ke '{new_ext}'"
+                    logger.info(msg)
+                    logs.append(msg)
+            except Exception as exc:
+                logger.warning(f"Error checking preset file {f}: {exc}")
+
+    # 2. Migrate projects in storage/longform_projects/
+    root = get_projects_root()
+    if root.is_dir():
+        for p_dir in sorted(root.iterdir()):
+            if not p_dir.is_dir() or not (p_dir / "manifest.json").is_file():
+                continue
+            try:
+                manifest = load_manifest(p_dir)
+
+                # H2: Restore history_of_street_food_in_tokyo
+                if manifest.project_id == "history_of_street_food_in_tokyo" and manifest.sub_niche_focus is None and manifest.preset_id == "custom.kuliner.street_food_jepang":
+                    old_pid = manifest.preset_id
+                    manifest.preset_id = "umum.id"
+                    manifest.preset_inheritance_chain = ["documentary_id", "umum.id"]
+                    manifest.preset_snapshot = get_preset("umum.id").model_dump()
+                    save_manifest(manifest, p_dir)
+                    msg = f"[preset_recovery] [PEMULIHAN PROYEK H2] Proyek '{manifest.title}' ({manifest.project_id}): preset dipulihkan dari '{old_pid}' ke 'umum.id'"
+                    logger.info(msg)
+                    logs.append(msg)
+                    continue
+
+                # H1: Migrate projects with preset_id == "umum"
+                if manifest.preset_id == "umum":
+                    old_pid = manifest.preset_id
+                    proj_lang = getattr(manifest, "language", None) or (manifest.preset_snapshot or {}).get("language", "")
+                    target_pid = "umum.en" if str(proj_lang).startswith("en") else "umum.id"
+                    manifest.preset_id = target_pid
+                    target_preset = get_preset(target_pid)
+                    manifest.preset_inheritance_chain = get_preset_inheritance_chain(target_pid)
+                    manifest.preset_snapshot = target_preset.model_dump()
+                    save_manifest(manifest, p_dir)
+                    msg = f"[preset_recovery] [MIGRASI PROYEK H1] Proyek '{manifest.title}' ({manifest.project_id}): preset_id diubah dari '{old_pid}' ke '{target_pid}'"
+                    logger.info(msg)
+                    logs.append(msg)
+                    continue
+
+                # Clean inheritance chain containing "umum"
+                chain = list(getattr(manifest, "preset_inheritance_chain", []) or [])
+                if "umum" in chain:
+                    proj_lang = getattr(manifest, "language", None) or (manifest.preset_snapshot or {}).get("language", "")
+                    replacement = "umum.en" if str(proj_lang).startswith("en") else "umum.id"
+                    new_chain = [replacement if x == "umum" else x for x in chain]
+                    manifest.preset_inheritance_chain = new_chain
+                    save_manifest(manifest, p_dir)
+                    msg = f"[preset_recovery] [MIGRASI CHAIN H1] Proyek '{manifest.title}' ({manifest.project_id}): 'umum' diganti '{replacement}' pada inheritance chain"
+                    logger.info(msg)
+                    logs.append(msg)
+
+            except Exception as exc:
+                logger.warning(f"Error migrating project at {p_dir}: {exc}")
+
+    return logs
+
+
+def update_job_phase(
+    project_dir_or_id: Path | str,
+    phase: str,
+    percentage: Optional[float] = None,
+    current_unit: Optional[int] = None,
+    total_units: Optional[int] = None,
+    unit_label: Optional[str] = None,
+    is_indeterminate: bool = False,
+) -> None:
+    """Update active phase and fine-grained progress in job_state.json (Stage 7B.2 P)."""
+    p_dir = Path(project_dir_or_id) if isinstance(project_dir_or_id, Path) else get_project_dir(str(project_dir_or_id))
+    job_file = p_dir / "job_state.json"
+    if not job_file.is_file():
+        return
+    try:
+        data = json.loads(job_file.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or data.get("status") != "running":
+            return
+        prog = data.setdefault("progress", {})
+        prog["phase"] = phase
+        if percentage is not None:
+            prog["percentage"] = min(float(percentage), 99.0)  # Strictly capped at 99.0 while running (P)
+        if current_unit is not None:
+            prog["completed"] = int(current_unit)
+        if total_units is not None:
+            prog["total"] = int(total_units)
+        if unit_label is not None:
+            prog["unit_label"] = str(unit_label)
+        prog["is_indeterminate"] = bool(is_indeterminate)
+        job_file.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    except Exception as exc:
+        logger.debug(f"Failed to update job phase for '{p_dir.name}': {exc}")
+

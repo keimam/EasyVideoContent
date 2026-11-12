@@ -161,6 +161,29 @@ def estimate_script_duration(
     }
 
 
+CHAPTER_PREFIX_RE = re.compile(r"^(?:chapter|bab|ch)[.\s]*\d+[\s:.-]*", re.IGNORECASE)
+
+
+def clean_chapter_title(title: str, fallback_index: Optional[int] = None) -> str:
+    """Strip repeated 'Chapter 1:', 'Bab 2 -', 'Ch 3.' prefixes from a chapter heading (E1).
+
+    Repeatedly applies stripping until no prefix matches.
+    If the stripped title is non-empty, returns it.
+    If empty (e.g. heading was literally '## Chapter 1' or 'Ch1'), returns original.
+    """
+    if not title:
+        return f"Chapter {fallback_index}" if fallback_index else ""
+    cleaned = title.strip()
+    while True:
+        m = CHAPTER_PREFIX_RE.match(cleaned)
+        if not m:
+            break
+        cleaned = cleaned[m.end():].strip()
+    if not cleaned:
+        return title.strip()
+    return cleaned
+
+
 def parse_markdown_script(
     script_markdown: str,
     preset: Preset,
@@ -325,7 +348,8 @@ def parse_markdown_script(
         if stripped.startswith("## "):
             _flush_para()
             _flush_chapter()
-            current_chapter_title = stripped[3:].strip()
+            raw_title = stripped[3:].strip()
+            current_chapter_title = clean_chapter_title(raw_title, fallback_index=len(chapters) + 1)
             current_paragraphs = []
             continue
 

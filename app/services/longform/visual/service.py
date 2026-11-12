@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from loguru import logger
 
 from app.services.longform.schema import Chapter, ItemStatus, MotionType, ProjectManifest, Shot
-from app.services.longform.store import load_manifest, save_manifest
+from app.services.longform.store import is_stop_requested, load_manifest, save_manifest
 from app.services.longform.shot import (
     compute_shot_hash,
     form_chapter_shots,
@@ -359,8 +359,17 @@ class VisualService:
             except Exception as e:
                 logger.warning(f"Could not backfill preset snapshot for preset '{manifest.preset_id}': {e}")
 
+        stop_requested = False
         for ch in manifest.chapters:
+            if is_stop_requested(self.project_dir):
+                logger.info(f"Stop requested for project '{manifest.project_id}'. Exiting visual matching gracefully.")
+                stop_requested = True
+                break
             for shot in ch.shots:
+                if is_stop_requested(self.project_dir):
+                    logger.info(f"Stop requested for project '{manifest.project_id}'. Exiting visual matching gracefully.")
+                    stop_requested = True
+                    break
                 # Skip locked shots
                 if shot.locked:
                     logger.info(f"Skipping locked shot: {shot.shot_id}")
@@ -516,8 +525,14 @@ class VisualService:
                 shot.chosen_rendition = selected_candidate.rendition_name
                 shot.is_low_res = getattr(selected_candidate, "is_low_res", False)
                 shot.effective_query = chosen_query
-                shot.needs_review = False
+                if req_terms:
+                    from app.services.longform.visual.stock import term_matches_tags
+                    has_subj = any(term_matches_tags(req, shot.tags or []) for req in req_terms)
+                    shot.needs_review = not has_subj
+                else:
+                    shot.needs_review = False
                 shot.status = ItemStatus.pending
+                save_manifest(manifest, self.project_dir)
 
         return manifest
 
@@ -536,8 +551,17 @@ class VisualService:
         skipped_count = 0
         total_time = 0.0
 
+        stop_requested = False
         for ch in manifest.chapters:
+            if is_stop_requested(self.project_dir):
+                logger.info(f"Stop requested for project '{manifest.project_id}'. Exiting visual matching gracefully.")
+                stop_requested = True
+                break
             for shot in ch.shots:
+                if is_stop_requested(self.project_dir):
+                    logger.info(f"Stop requested for project '{manifest.project_id}'. Exiting visual matching gracefully.")
+                    stop_requested = True
+                    break
                 if not shot.asset_path:
                     raise VisualError(f"Cannot build shot {shot.shot_id}: asset_path is missing. Run visual fetch first.")
 
@@ -590,6 +614,7 @@ class VisualService:
                 )
                 shot.rendered_clip = clip_rel
                 shot.status = ItemStatus.completed
+                save_manifest(manifest, self.project_dir)
 
             # Update chapter duration & frames
             ch.visual_duration_seconds = round(sum(s.duration_seconds for s in ch.shots), 3)
@@ -1067,3 +1092,88 @@ class VisualService:
 
         target_shot.locked = locked
         return target_shot
+
+    def evaluate_needs_review(self, manifest: ProjectManifest) -> int:
+        """Scan manifest shots and flag any shot lacking required_subject_terms as needs_review (X4)."""
+        preset_snap = manifest.preset_snapshot or {}
+        req_terms = preset_snap.get("required_subject_terms") or []
+        if not req_terms:
+            return 0
+
+        from app.services.longform.visual.stock import term_matches_tags
+
+        flagged = 0
+        for ch in manifest.chapters:
+            for s in ch.shots:
+                if s.tags:
+                    has_subj = any(term_matches_tags(req, s.tags) for req in req_terms)
+                    if not has_subj and not s.needs_review:
+                        s.needs_review = True
+                        flagged += 1
+                elif s.asset_path and not s.locked:
+                    if not s.needs_review:
+                        s.needs_review = True
+                        flagged += 1
+        return flagged
+
+    def run_pipeline(
+        self,
+        manifest: Optional[ProjectManifest] = None,
+        provider_name: Optional[str] = None,
+        allow_fallback: bool = True,
+    ) -> Tuple[ProjectManifest, Dict[str, Any]]:
+        """Execute the full 3-phase visual pipeline sequentially (Allocation -> Fetch -> Build).
+
+        Single canonical implementation used identically by CLI `visual pipeline`, WebUI button ③,
+        and `pipeline_auto` (Stage 7B.2 Z3).
+        """
+        if manifest is None:
+            manifest = load_manifest(self.project_dir)
+
+        stats: Dict[str, Any] = {
+            "allocated_shots": 0,
+            "fetched_count": 0,
+            "built_count": 0,
+            "skipped_count": 0,
+        }
+
+        # Phase 1: Membagi shot (Shot Allocation) if 0 shots
+        total_shots = sum(len(ch.shots) for ch in manifest.chapters)
+        if total_shots == 0:
+            print(f"\n[Visual Pipeline] Phase 1/3: Membagi shot untuk proyek '{manifest.project_id}'...")
+            effective_fps = getattr(getattr(manifest, "encoder_settings", None), "fps", 25) or 25
+            manifest = self.prepare_shots(manifest, fps=effective_fps)
+            save_manifest(manifest, self.project_dir)
+            stats["allocated_shots"] = sum(len(ch.shots) for ch in manifest.chapters)
+            print(f"  -> {stats['allocated_shots']} shot berhasil dialokasikan.")
+        else:
+            print(f"\n[Visual Pipeline] Phase 1/3: Shot sudah teralokasi ({total_shots} shot).")
+
+        if is_stop_requested(self.project_dir):
+            print(f"\n[Visual Pipeline] Stop requested after shot allocation; exiting.")
+            return manifest, stats
+
+        # Phase 2: Mencari footage (Fetch Assets)
+        print(f"\n[Visual Pipeline] Phase 2/3: Mencari footage untuk proyek '{manifest.project_id}'...")
+        manifest = self.fetch_all(
+            manifest=manifest,
+            provider_name=provider_name,
+            allow_fallback=allow_fallback,
+        )
+        save_manifest(manifest, self.project_dir)
+
+        if is_stop_requested(self.project_dir):
+            print(f"\n[Visual Pipeline] Stop requested after footage search; skipping clip building.")
+            return manifest, stats
+
+        # Phase 3: Menyusun klip (Build Clips)
+        print(f"\n[Visual Pipeline] Phase 3/3: Menyusun klip visual untuk proyek '{manifest.project_id}'...")
+        manifest, build_stats = self.build_all(manifest)
+        save_manifest(manifest, self.project_dir)
+        stats.update(build_stats)
+
+        return manifest, stats
+
+    # Alias pipeline to run_pipeline for backwards compatibility
+    pipeline = run_pipeline
+
