@@ -1,4 +1,4 @@
-"""Sidebar navigation and branding components for EasyFaceless Studio (B3)."""
+"""Sidebar navigation and branding components for EasyFaceless Studio (B3, R1, R2)."""
 
 from __future__ import annotations
 
@@ -62,7 +62,6 @@ def show_niche_dialog():
     st.caption("Niche mendefinisikan gaya narasi, kata kunci footage, musik, dan istilah negatif.")
 
     presets = list_presets()
-    roots = [p for p in presets if not p.get("extends")]
 
     col1, col2 = st.columns([1.2, 1.8])
     with col1:
@@ -94,44 +93,44 @@ def show_niche_dialog():
 
 
 def _inject_sidebar_styles():
-    """Inject styling specific to EasyFaceless sidebar."""
+    """Inject styling specific to EasyFaceless sidebar (R2: matches mockup)."""
     css = """
     <style id="efs-sidebar-styles">
-    /* Header Brand */
+    /* Header Brand matching mockup (logo left, name + STUDIO subtitle stacked) */
     .efs-sb-header {
         display: flex;
         align-items: center;
-        gap: 10px;
-        padding: 0.5rem 0.25rem 1rem 0.25rem;
+        gap: 12px;
+        padding: 0.25rem 0.25rem 1.25rem 0.25rem;
         margin-bottom: 0.5rem;
-        border-bottom: 1px solid var(--efs-border);
     }
     .efs-sb-header__logo {
-        width: 32px;
-        height: 32px;
+        width: 36px;
+        height: 36px;
         border-radius: 8px;
         flex-shrink: 0;
     }
     .efs-sb-header__text {
         display: flex;
-        align-items: baseline;
-        gap: 6px;
+        flex-direction: column;
+        gap: 1px;
     }
     .efs-sb-header__title {
+        font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
         font-size: 1.15rem;
         font-weight: 700;
         color: var(--efs-text);
         letter-spacing: -0.01em;
+        line-height: 1.2;
     }
-    .efs-sb-header__tag {
+    .efs-sb-header__subtitle {
+        font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
         font-size: 0.65rem;
-        font-weight: 800;
-        letter-spacing: 0.08em;
-        padding: 2px 5px;
-        border-radius: 4px;
-        background-color: var(--efs-accent);
-        color: var(--efs-text-on-accent);
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        color: var(--efs-dim);
         text-transform: uppercase;
+        line-height: 1;
     }
 
     /* Section Headers */
@@ -146,47 +145,114 @@ def _inject_sidebar_styles():
         padding-left: 0.35rem;
     }
 
-    /* Navigation items active highlighting */
+    /* R2: Active item: background #1F2633 + accent icon, NO left border line */
     [data-testid="stSidebar"] div.stPageLink a:has(strong),
     [data-testid="stSidebar"] div.stPageLink a:has(b),
     [data-testid="stSidebar"] div.stPageLink a[data-testid="stPageLink-NavLink"]:has(strong),
     [data-testid="stSidebar"] div.stPageLink a[data-testid="stPageLink-NavLink"]:has(b) {
         background-color: var(--efs-nav-active) !important;
-        border-left: 3px solid var(--efs-accent) !important;
+        border-left: none !important;
+        border: none !important;
         color: var(--efs-text) !important;
-        padding-left: 10px !important;
-        border-radius: 6px !important;
+        padding: 8px 12px !important;
+        border-radius: 8px !important;
         font-weight: 600 !important;
     }
 
+    /* Active icon gets accent color #8FA6FF */
+    [data-testid="stSidebar"] div.stPageLink a:has(strong) [data-testid="stIconMaterial"],
+    [data-testid="stSidebar"] div.stPageLink a:has(b) [data-testid="stIconMaterial"],
+    [data-testid="stSidebar"] div.stPageLink a:has(strong) [class*="material-symbols"],
+    [data-testid="stSidebar"] div.stPageLink a:has(b) [class*="material-symbols"] {
+        color: var(--efs-accent) !important;
+    }
+
+    /* Inactive nav items */
     [data-testid="stSidebar"] div.stPageLink a {
-        border-radius: 6px !important;
+        border-radius: 8px !important;
+        border: none !important;
         transition: all 0.15s ease-in-out !important;
-        padding: 6px 10px !important;
+        padding: 8px 12px !important;
+        color: var(--efs-text-2) !important;
+    }
+
+    [data-testid="stSidebar"] div.stPageLink a [data-testid="stIconMaterial"],
+    [data-testid="stSidebar"] div.stPageLink a [class*="material-symbols"] {
+        color: var(--efs-dim) !important;
+        margin-right: 4px !important;
     }
 
     [data-testid="stSidebar"] div.stPageLink a:hover {
         background-color: var(--efs-surface) !important;
+        color: var(--efs-text) !important;
     }
 
-    /* Sidebar Footer */
+    [data-testid="stSidebar"] div.stPageLink a:hover [data-testid="stIconMaterial"],
+    [data-testid="stSidebar"] div.stPageLink a:hover [class*="material-symbols"] {
+        color: var(--efs-text) !important;
+    }
+
+    /* Sidebar Action Buttons styled like nav items */
+    [data-testid="stSidebar"] div.stButton > button {
+        background-color: transparent !important;
+        border: none !important;
+        color: var(--efs-text-2) !important;
+        text-align: left !important;
+        justify-content: flex-start !important;
+        padding: 8px 12px !important;
+        min-height: 40px !important;
+        border-radius: 8px !important;
+        font-weight: 500 !important;
+        transition: all 0.15s ease-in-out !important;
+    }
+
+    [data-testid="stSidebar"] div.stButton > button:hover {
+        background-color: var(--efs-surface) !important;
+        color: var(--efs-text) !important;
+    }
+
+    [data-testid="stSidebar"] div.stButton > button [data-testid="stIconMaterial"],
+    [data-testid="stSidebar"] div.stButton > button [class*="material-symbols"] {
+        color: var(--efs-dim) !important;
+        margin-right: 4px !important;
+    }
+
+    [data-testid="stSidebar"] div.stButton > button:hover [data-testid="stIconMaterial"],
+    [data-testid="stSidebar"] div.stButton > button:hover [class*="material-symbols"] {
+        color: var(--efs-text) !important;
+    }
+
+    /* Fallback button active styling */
+    [data-testid="stSidebar"] div.stButton > button[kind="primary"] {
+        background-color: var(--efs-nav-active) !important;
+        color: var(--efs-text) !important;
+        border: none !important;
+    }
+
+    [data-testid="stSidebar"] div.stButton > button[kind="primary"] [data-testid="stIconMaterial"],
+    [data-testid="stSidebar"] div.stButton > button[kind="primary"] [class*="material-symbols"] {
+        color: var(--efs-accent) !important;
+    }
+
+    /* Sidebar Footer matching mockup: subtle card at bottom */
     .efs-sb-footer {
-        margin-top: 2rem;
-        padding-top: 1rem;
-        border-top: 1px solid var(--efs-border);
+        margin-top: 2.5rem;
+        padding: 12px 14px;
+        border-radius: 10px;
+        background-color: var(--efs-surface);
+        border: 1px solid var(--efs-border);
         font-size: 0.75rem;
-        color: var(--efs-muted);
         line-height: 1.4;
+        color: var(--efs-muted);
     }
     .efs-sb-footer__version {
         font-weight: 600;
         color: var(--efs-text-2);
-        margin-bottom: 2px;
+        margin-bottom: 3px;
     }
     .efs-sb-footer__mit {
-        font-size: 0.72rem;
         color: var(--efs-dim);
-        margin-bottom: 8px;
+        font-size: 0.72rem;
     }
     </style>
     """
@@ -194,7 +260,7 @@ def _inject_sidebar_styles():
 
 
 def render_brand_sidebar(current_page: str = "main"):
-    """Render unified EasyFaceless Studio sidebar (B3).
+    """Render unified EasyFaceless Studio sidebar (B3, R2).
 
     :param current_page: 'main' (video pendek) or 'longform' (video panjang).
     """
@@ -202,14 +268,14 @@ def render_brand_sidebar(current_page: str = "main"):
     logo_uri = get_logo_data_uri()
 
     with st.sidebar:
-        # 1. Header (Logo + EasyFaceless + STUDIO tag)
+        # 1. Header (Logo + EasyFaceless + STUDIO subtitle, matching mockup)
         st.markdown(
             f"""
             <div class="efs-sb-header">
                 <img class="efs-sb-header__logo" src="{logo_uri}" alt="{APP_NAME}" />
                 <div class="efs-sb-header__text">
                     <span class="efs-sb-header__title">{APP_SHORT}</span>
-                    <span class="efs-sb-header__tag">{APP_TAGLINE}</span>
+                    <span class="efs-sb-header__subtitle">{APP_TAGLINE}</span>
                 </div>
             </div>
             """,
@@ -322,12 +388,12 @@ def render_brand_sidebar(current_page: str = "main"):
                 except Exception:
                     pass
 
-        # 4. Footer
+        # 4. Footer (matching mockup)
         st.markdown(
             f"""
             <div class="efs-sb-footer">
                 <div class="efs-sb-footer__version">{VERSION_STRING}</div>
-                <div class="efs-sb-footer__mit">{MIT_ATTRIBUTION}</div>
+                <div class="efs-sb-footer__mit">Dibangun di atas<br>MoneyPrinterTurbo (MIT)</div>
             </div>
             """,
             unsafe_allow_html=True,

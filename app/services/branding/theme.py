@@ -1,18 +1,14 @@
-"""Global theme, typography, and visual style helpers for EasyFaceless Studio (B2)."""
+"""Global theme, typography, and visual style helpers for EasyFaceless Studio (B2, R1, R2)."""
 
 from __future__ import annotations
 
-import base64
 import html
-import functools
-from pathlib import Path
 from typing import Optional
 
 import streamlit as st
 
 from app.services.branding.constants import (
     APP_NAME,
-    FONT_TTF_PATH,
     PALETTE,
     RADII,
     CONTROL_MIN_HEIGHT,
@@ -22,33 +18,25 @@ from app.services.branding.constants import (
 )
 
 
-@functools.lru_cache(maxsize=1)
-def get_font_base64() -> str:
-    """Read local Plus Jakarta Sans font and return as base64 string."""
-    if FONT_TTF_PATH.is_file():
-        data = FONT_TTF_PATH.read_bytes()
-        return base64.b64encode(data).decode("ascii")
-    return ""
-
-
 def get_global_css() -> str:
-    """Generate self-contained, offline CSS stylesheet for EasyFaceless Studio."""
-    font_b64 = get_font_base64()
-    font_face_rule = ""
-    if font_b64:
-        font_face_rule = f"""
-        @font-face {{
-            font-family: 'Plus Jakarta Sans';
-            src: url('data:font/ttf;base64,{font_b64}') format('truetype');
-            font-weight: 200 800;
-            font-style: normal;
-            font-display: swap;
-        }}
-        """
+    """Generate self-contained, offline CSS stylesheet for EasyFaceless Studio (R1, R2).
 
+    Uses static font serving at '/app/static/fonts/PlusJakartaSans[wght].ttf' to avoid
+    re-transmitting heavy base64 strings on every Streamlit rerun.
+    Explicitly protects Streamlit's bundled offline Material Symbols from being overridden.
+    """
     css = f"""
     <style id="efs-brand-theme">
-    {font_face_rule}
+    /* --- Local Offline Font Definition (R2: Static URL serving) --- */
+    @font-face {{
+        font-family: 'Plus Jakarta Sans';
+        src: local('Plus Jakarta Sans'),
+             local('PlusJakartaSans'),
+             url('/app/static/fonts/PlusJakartaSans[wght].ttf') format('truetype');
+        font-weight: 200 800;
+        font-style: normal;
+        font-display: swap;
+    }}
 
     /* --- Root Design Tokens (B2) --- */
     :root {{
@@ -77,12 +65,53 @@ def get_global_css() -> str:
         --efs-control-height: {CONTROL_MIN_HEIGHT};
     }}
 
-    /* Global Typography Override: 100% Offline Plus Jakarta Sans */
-    html, body, [class*="css"], .stApp,
+    /* --- Base Typography: Plus Jakarta Sans for UI text only (R1) --- */
+    html, body, .stApp,
     div[data-testid="stAppViewContainer"],
-    [data-testid="stSidebar"],
-    input, textarea, select, button, p, h1, h2, h3, h4, h5, h6, span, label {{
+    [data-testid="stSidebar"] {{
         font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+    }}
+
+    /* Scope font specifically to text elements, never wildcard or override icons (R1) */
+    h1, h2, h3, h4, h5, h6,
+    p, label,
+    textarea, select,
+    .stMarkdown,
+    [data-testid="stMarkdownContainer"] p,
+    [data-testid="stMarkdownContainer"] span:not([data-testid="stIconMaterial"]):not([class*="material-symbols"]),
+    div.stButton > button p,
+    div.stButton > button span:not([data-testid="stIconMaterial"]):not([class*="material-symbols"]),
+    div.stPageLink a span:not([data-testid="stIconMaterial"]):not([class*="material-symbols"]),
+    div.stPageLink p,
+    .efs-main-brand__name,
+    .efs-main-brand__badge,
+    .efs-main-brand__update {{
+        font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+    }}
+
+    /* --- R1: Strictly preserve Streamlit's bundled offline Material Symbols --- */
+    [data-testid="stIconMaterial"],
+    [class*="material-symbols"],
+    .material-symbols-rounded,
+    .material-symbols-outlined,
+    .material-symbols-sharp,
+    i.material-icons,
+    [data-testid="stExpandSidebarButton"] span,
+    [data-testid="stSidebarCollapseButton"] span {{
+        font-family: 'Material Symbols Rounded', 'Material Symbols Outlined', 'Material Icons', sans-serif !important;
+        font-style: normal !important;
+        font-weight: normal !important;
+        font-variant: normal !important;
+        text-transform: none !important;
+        line-height: 1 !important;
+        letter-spacing: normal !important;
+        word-wrap: normal !important;
+        white-space: nowrap !important;
+        direction: ltr !important;
+        -webkit-font-smoothing: antialiased !important;
+        text-rendering: optimizeLegibility !important;
+        -moz-osx-font-smoothing: grayscale !important;
+        font-feature-settings: 'liga' !important;
     }}
 
     /* App Background & Surfaces */
@@ -93,7 +122,7 @@ def get_global_css() -> str:
         color: var(--efs-text) !important;
     }}
 
-    /* Sidebar Styling */
+    /* Sidebar Base Styling */
     section[data-testid="stSidebar"] {{
         background-color: var(--efs-sidebar) !important;
         border-right: 1px solid var(--efs-border) !important;
@@ -136,8 +165,8 @@ def get_global_css() -> str:
         display: none !important;
     }}
 
-    /* Controls: Buttons (min height 44px, radius 10px) */
-    div.stButton > button {{
+    /* Controls: Buttons (min height 44px, radius 10px) in main content */
+    div[data-testid="stMainBlockContainer"] div.stButton > button {{
         min-height: var(--efs-control-height) !important;
         border-radius: var(--efs-radius-button) !important;
         font-weight: 600 !important;
@@ -153,19 +182,19 @@ def get_global_css() -> str:
     }}
     div.stButton > button[kind="primary"]:hover,
     div.stButton > button[data-testid="baseButton-primary"]:hover {{
-        filter: brightness(1.1) !important;
+        filter: brightness(1.08) !important;
         box-shadow: 0 4px 12px rgba(143, 166, 255, 0.25) !important;
     }}
 
     /* Secondary Buttons */
-    div.stButton > button[kind="secondary"],
-    div.stButton > button[data-testid="baseButton-secondary"] {{
+    div[data-testid="stMainBlockContainer"] div.stButton > button[kind="secondary"],
+    div[data-testid="stMainBlockContainer"] div.stButton > button[data-testid="baseButton-secondary"] {{
         background-color: var(--efs-surface) !important;
         color: var(--efs-text) !important;
         border: 1px solid var(--efs-border) !important;
     }}
-    div.stButton > button[kind="secondary"]:hover,
-    div.stButton > button[data-testid="baseButton-secondary"]:hover {{
+    div[data-testid="stMainBlockContainer"] div.stButton > button[kind="secondary"]:hover,
+    div[data-testid="stMainBlockContainer"] div.stButton > button[data-testid="baseButton-secondary"]:hover {{
         background-color: var(--efs-surface-2) !important;
         border-color: var(--efs-border-strong) !important;
     }}
@@ -216,6 +245,7 @@ def get_global_css() -> str:
     }}
 
     .efs-main-brand__name {{
+        font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
         font-size: 1.55rem;
         font-weight: 700;
         color: var(--efs-text);

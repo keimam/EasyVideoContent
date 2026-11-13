@@ -57,21 +57,42 @@ def test_branding_constants():
 
 
 def test_font_offline_bundling():
-    """Verify B2 font bundling: local TrueType font exists, CSS is 100% offline without googleapis."""
+    """Verify B2/R2 font bundling: static URL serving, zero base64 bloat, 100% offline."""
     assert FONT_TTF_PATH.is_file(), f"Plus Jakarta Sans TTF missing at {FONT_TTF_PATH}"
     assert FONT_OFL_PATH.is_file(), f"OFL license file missing at {FONT_OFL_PATH}"
     assert FONT_TTF_PATH.stat().st_size > 50000, "Font file seems suspiciously small"
 
+    webui_static_font = Path("webui/static/fonts/PlusJakartaSans[wght].ttf")
+    assert webui_static_font.is_file(), f"Static served font missing at {webui_static_font}"
+
     css = get_global_css()
     assert "@font-face" in css
     assert "Plus Jakarta Sans" in css
-    assert "data:font/ttf;base64," in css
+    assert "/app/static/fonts/PlusJakartaSans[wght].ttf" in css
+    # R2: No base64 bloat embedded in CSS on rerun
+    assert "data:font/ttf;base64," not in css
+    assert len(css) < 20000, f"CSS payload too large ({len(css)} bytes), expected lightweight static ref"
 
     # Strict offline guarantee: ZERO calls to external font CDNs or web URLs
     assert "fonts.googleapis.com" not in css
     assert "fonts.gstatic.com" not in css
     assert "http://" not in css
     assert "https://" not in css
+
+
+def test_material_symbols_protection():
+    """Verify R1: Material Symbols are explicitly protected and not overridden by Plus Jakarta Sans."""
+    css = get_global_css()
+
+    # R1: Never use universal wildcard !important override
+    assert "* { font-family" not in css
+    assert "*{" not in css
+
+    # R1: Explicit Material Symbols preservation rule
+    assert '[data-testid="stIconMaterial"]' in css
+    assert '[class*="material-symbols"]' in css
+    assert "Material Symbols Rounded" in css
+
 
 
 def test_capcut_draft_prefix_and_backward_compatibility(tmp_path, monkeypatch):

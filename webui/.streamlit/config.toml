@@ -7,6 +7,9 @@ toolbarMode = "minimal"
 [logger]
 hideWelcomeMessage = true
 
+[server]
+enableStaticServing = true
+
 [theme]
 base = "dark"
 primaryColor = "#8FA6FF"
