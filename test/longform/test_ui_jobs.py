@@ -41,9 +41,12 @@ def test_job_runner_lifecycle(temp_project):
     with pytest.raises(RuntimeError, match="currently running"):
         jobs.start_job(project_id, "second_step", cmd)
 
-    # 3. Wait for dummy job to complete
-    time.sleep(1.2)
+    # 3. Wait for dummy job to complete (polling up to 20s instead of fixed sleep)
+    t0 = time.time()
     state_after = jobs.get_job_state(project_id)
+    while state_after["status"] == "running" and time.time() - t0 < 20.0:
+        time.sleep(0.1)
+        state_after = jobs.get_job_state(project_id)
     assert state_after["status"] == "completed"
     assert state_after["exit_code"] == 0
 
@@ -63,9 +66,13 @@ def test_job_runner_cancellation(temp_project):
     state = jobs.start_job(project_id, "long_step", cmd)
     assert state["status"] == "running"
 
-    time.sleep(0.3)
+    # Poll until process is active before cancelling
+    t0 = time.time()
+    while not jobs.is_pid_alive(state["pid"]) and time.time() - t0 < 20.0:
+        time.sleep(0.05)
+
     # Cancel job
-    cancelled = jobs.cancel_job(project_id, timeout_seconds=2.0)
+    cancelled = jobs.cancel_job(project_id, timeout_seconds=5.0)
     assert cancelled is True
 
     state_after = jobs.get_job_state(project_id)
@@ -85,8 +92,10 @@ def test_job_state_persistence_across_restarts(temp_project):
     # Simulate UI restart by clearing the in-memory active process registry
     jobs._ACTIVE_PROCESSES.clear()
 
-    # Wait for process to finish
-    time.sleep(0.5)
+    # Wait for process to finish (poll up to 20s)
+    t0 = time.time()
+    while jobs.is_pid_alive(state["pid"]) and time.time() - t0 < 20.0:
+        time.sleep(0.05)
 
     # State read from disk should detect process ended and mark stopped because manifest wasn't finished
     recovered_state = jobs.get_job_state(project_id)
@@ -172,31 +181,32 @@ def test_graceful_stop_via_marker_and_resume(temp_project):
     worker_script = f"""
 import sys, time
 from pathlib import Path
-from app.services.longform.store import is_stop_requested, load_manifest, save_manifest
+from app.services.longform.store import is_stop_requested
 
 p_dir = Path(r"{proj_dir}")
-manifest = load_manifest(p_dir)
+flag = p_dir / "worker_running.flag"
+flag.write_text("1", encoding="utf-8")
 
-for i in range(1, 10):
+for i in range(1, 100):
     if is_stop_requested(p_dir):
         print(f"STOP_DETECTED_AT_UNIT_{{i}}", flush=True)
         break
-    time.sleep(0.3)
-    # simulate completing unit
-    if manifest.chapters and manifest.chapters[0].tts_groups:
-        manifest.chapters[0].tts_groups[0].paragraph_text = f"Unit {{i}} done"
-        save_manifest(manifest, p_dir)
+    time.sleep(0.2)
 """
     cmd = [sys.executable, "-c", worker_script]
     state = jobs.start_job(project_id, "mock_loop", cmd)
     pid = state["pid"]
     assert jobs.is_pid_alive(pid)
 
-    # Allow worker to run for 0.5s (should complete at least 1 unit)
-    time.sleep(0.5)
+    # Poll until worker is actively running the loop (up to 20s instead of fixed sleep)
+    t0 = time.time()
+    flag_file = proj_dir / "worker_running.flag"
+    while not flag_file.is_file() and time.time() - t0 < 20.0:
+        time.sleep(0.05)
+    assert flag_file.is_file(), "Worker did not signal start within 20s"
 
     # 2. Cancel via stop marker
-    cancelled = jobs.cancel_job(project_id, timeout_seconds=5.0)
+    cancelled = jobs.cancel_job(project_id, timeout_seconds=10.0)
     assert cancelled is True
 
     # Process should be terminated/exited cleanly

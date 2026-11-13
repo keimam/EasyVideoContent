@@ -187,7 +187,7 @@ Tujuannya adalah menjaga kemudahan sinkronisasi (merge/rebase) dari repositori u
   - `app/services/branding/`:
     * `constants.py`: Identitas merek (`APP_NAME = "EasyFaceless Studio"`, `APP_VERSION = "1.0.0"`, `CORE_VERSION = "1.3.10"`, `MIT_ATTRIBUTION = "Dibangun di atas MoneyPrinterTurbo (MIT)"`, palet warna HEX token B2).
     * `theme.py`: Pengendali CSS tema global offline, proteksi font ikon Material Symbols, token CSS global, penyembunyian tombol redundant bilah atas via CSS, dan helper gaya 8A.2.
-    * `sidebar.py`: Sidebar terpadu B3 dengan header brand mockup, grup PRODUKSI (Video Panjang, Video Pendek), grup PENGATURAN seragam borderless (Kelola Niche, API & Penyedia AI, Cache & Penyimpanan), footer versi, dan dialog "Tentang".
+    * `sidebar.py`: Sidebar terpadu B3 dengan header brand mockup, grup PRODUKSI (Video Panjang, Video Pendek), grup PENGATURAN seragam borderless dan rata kiri menyamai PRODUKSI (Kelola Niche, API & Penyedia AI, Cache & Penyimpanan, tinggi 44 px, padding 12 px, gap ikon 8 px), footer versi, dan tombol berbingkai "Tentang" di bagian bawah.
   - `resource/branding/`: `logo.svg`, `logo.png` (256x256), `favicon.png` (64x64).
   - `resource/fonts/plus-jakarta-sans/` serta `webui/static/fonts/`: Berkas font `PlusJakartaSans[wght].ttf` dan lisensi `OFL.txt` (100% luring, 0 panggilan ke `fonts.googleapis.com`).
   - `docs/branding/mockup/`: Acuan visual UI (1_beranda.png, 2_proyek.png, 3_selesai.png).
@@ -196,6 +196,7 @@ Tujuannya adalah menjaga kemudahan sinkronisasi (merge/rebase) dari repositori u
   - `app/services/longform/capcut/service.py`: Awalan ekspor draft baru beralih ke `EFS_` (mis. `EFS_<project_id>_<timestamp>`).
   - `app/services/longform/status.py` & `components.py`: Dukungan pembacaan draft ganda (`EFS_` dan legacy `MPT_`) untuk kompatibilitas riwayat dan deteksi draft terbaru.
   - `test/longform/test_branding.py`: 9 pengujian unit & AppTest memverifikasi konstanta merek, proteksi font Material Symbols, font luring tanpa CDN / static serving, backward compatibility prefix CapCut, AppTest Main.py, AppTest Long Video, alur submit video pendek, dan interaksi klik seluruh item sidebar di kedua halaman.
+  - `test/longform/test_ui_jobs.py`: Menghapus *fixed sleep* dan menggantinya dengan polling berbasis kondisi dan batas waktu 20 detik untuk kehandalan tes saat beban CPU tinggi (R4).
 
 
 

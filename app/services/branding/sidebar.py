@@ -174,15 +174,10 @@ def _inject_sidebar_styles():
         padding-left: 0.35rem;
     }
 
-    /* R2: Uniform Sidebar Navigation Items (PRODUKSI and PENGATURAN match mockup exactly) */
+    /* R2 & R4: Uniform Sidebar Navigation Items (PRODUKSI and PENGATURAN match mockup exactly) */
     [data-testid="stSidebar"] div.stPageLink a,
     [data-testid="stSidebar"] div.stPageLink a[data-testid="stPageLink-NavLink"],
-    [data-testid="stSidebar"] button,
-    [data-testid="stSidebar"] div.stButton > button,
-    [data-testid="stSidebar"] button[kind="secondary"],
-    [data-testid="stSidebar"] button[data-testid="baseButton-secondary"],
-    [data-testid="stSidebar"] div.stButton > button[kind="secondary"],
-    [data-testid="stSidebar"] div.stButton > button[data-testid="baseButton-secondary"] {
+    [data-testid="stSidebar"] div.stElementContainer:not([class*="efs_btn_about"]) div.stButton button {
         background-color: transparent !important;
         border: none !important;
         border-width: 0 !important;
@@ -191,16 +186,43 @@ def _inject_sidebar_styles():
         outline: none !important;
         box-shadow: none !important;
         color: var(--efs-text-2) !important;
-        text-align: left !important;
+        display: flex !important;
+        align-items: center !important;
         justify-content: flex-start !important;
-        padding: 8px 12px !important;
-        min-height: 40px !important;
-        height: 40px !important;
+        text-align: left !important;
+        padding: 0 12px !important;
+        min-height: 44px !important;
+        height: 44px !important;
         border-radius: 8px !important;
         font-weight: 500 !important;
         font-size: 0.88rem !important;
         width: 100% !important;
+        gap: 8px !important;
         transition: background-color 0.15s ease, color 0.15s ease !important;
+    }
+
+    /* R4: Ensure inner button container and text are left-aligned with 8px icon gap */
+    [data-testid="stSidebar"] div.stElementContainer:not([class*="efs_btn_about"]) div.stButton button > div,
+    [data-testid="stSidebar"] div.stElementContainer:not([class*="efs_btn_about"]) div.stButton button > div > span,
+    [data-testid="stSidebar"] div.stElementContainer:not([class*="efs_btn_about"]) div.stButton button [data-testid="stMarkdownContainer"] {
+        display: flex !important;
+        justify-content: flex-start !important;
+        align-items: center !important;
+        text-align: left !important;
+        width: 100% !important;
+        gap: 8px !important;
+    }
+
+    [data-testid="stSidebar"] div.stButton button p,
+    [data-testid="stSidebar"] div.stButton button [data-testid="stMarkdownContainer"] > p,
+    [data-testid="stSidebar"] div.stPageLink a p {
+        margin: 0 !important;
+        text-align: left !important;
+        display: inline-block !important;
+        font-weight: 500 !important;
+        font-size: 0.88rem !important;
+        line-height: 1.2 !important;
+        color: inherit !important;
     }
 
     /* Vertical rhythm between sidebar items */
@@ -209,12 +231,9 @@ def _inject_sidebar_styles():
         margin-bottom: 2px !important;
     }
 
-    /* Hover state for ALL sidebar items */
+    /* Hover state for sidebar items */
     [data-testid="stSidebar"] div.stPageLink a:hover,
-    [data-testid="stSidebar"] button:hover,
-    [data-testid="stSidebar"] div.stButton > button:hover,
-    [data-testid="stSidebar"] button[kind="secondary"]:hover,
-    [data-testid="stSidebar"] div.stButton > button[kind="secondary"]:hover {
+    [data-testid="stSidebar"] div.stElementContainer:not([class*="efs_btn_about"]) div.stButton button:hover {
         background-color: var(--efs-surface) !important;
         color: var(--efs-text) !important;
         border: none !important;
@@ -223,10 +242,8 @@ def _inject_sidebar_styles():
     }
 
     /* Focus & active outline removal */
-    [data-testid="stSidebar"] button:focus,
-    [data-testid="stSidebar"] button:active,
-    [data-testid="stSidebar"] div.stButton > button:focus,
-    [data-testid="stSidebar"] div.stButton > button:active {
+    [data-testid="stSidebar"] div.stButton button:focus,
+    [data-testid="stSidebar"] div.stButton button:active {
         border: none !important;
         outline: none !important;
         box-shadow: none !important;
@@ -235,22 +252,26 @@ def _inject_sidebar_styles():
     /* Icon styling for ALL sidebar items */
     [data-testid="stSidebar"] div.stPageLink a [data-testid="stIconMaterial"],
     [data-testid="stSidebar"] div.stPageLink a [class*="material-symbols"],
-    [data-testid="stSidebar"] div.stButton > button [data-testid="stIconMaterial"],
-    [data-testid="stSidebar"] div.stButton > button [class*="material-symbols"],
-    [data-testid="stSidebar"] button [data-testid="stIconMaterial"],
-    [data-testid="stSidebar"] button [class*="material-symbols"] {
+    [data-testid="stSidebar"] div.stButton button [data-testid="stIconMaterial"],
+    [data-testid="stSidebar"] div.stButton button [class*="material-symbols"] {
         color: var(--efs-dim) !important;
-        margin-right: 8px !important;
-        font-size: 1.15rem !important;
+        margin: 0 !important;
+        margin-right: 0 !important;
+        padding: 0 !important;
+        font-size: 1.2rem !important;
+        width: 1.25rem !important;
+        height: 1.25rem !important;
+        display: inline-flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        flex-shrink: 0 !important;
         transition: color 0.15s ease !important;
     }
 
     [data-testid="stSidebar"] div.stPageLink a:hover [data-testid="stIconMaterial"],
     [data-testid="stSidebar"] div.stPageLink a:hover [class*="material-symbols"],
-    [data-testid="stSidebar"] div.stButton > button:hover [data-testid="stIconMaterial"],
-    [data-testid="stSidebar"] div.stButton > button:hover [class*="material-symbols"],
-    [data-testid="stSidebar"] button:hover [data-testid="stIconMaterial"],
-    [data-testid="stSidebar"] button:hover [class*="material-symbols"] {
+    [data-testid="stSidebar"] div.stElementContainer:not([class*="efs_btn_about"]) div.stButton button:hover [data-testid="stIconMaterial"],
+    [data-testid="stSidebar"] div.stElementContainer:not([class*="efs_btn_about"]) div.stButton button:hover [class*="material-symbols"] {
         color: var(--efs-text) !important;
     }
 
@@ -259,10 +280,8 @@ def _inject_sidebar_styles():
     [data-testid="stSidebar"] div.stPageLink a:has(b),
     [data-testid="stSidebar"] div.stPageLink a[data-testid="stPageLink-NavLink"]:has(strong),
     [data-testid="stSidebar"] div.stPageLink a[data-testid="stPageLink-NavLink"]:has(b),
-    [data-testid="stSidebar"] button[kind="primary"],
-    [data-testid="stSidebar"] button[data-testid="baseButton-primary"],
-    [data-testid="stSidebar"] div.stButton > button[kind="primary"],
-    [data-testid="stSidebar"] div.stButton > button[data-testid="baseButton-primary"] {
+    [data-testid="stSidebar"] div.stButton button[kind="primary"],
+    [data-testid="stSidebar"] div.stButton button[data-testid*="primary"] {
         background-color: var(--efs-nav-active) !important;
         border: none !important;
         border-left: none !important;
@@ -272,9 +291,48 @@ def _inject_sidebar_styles():
 
     [data-testid="stSidebar"] div.stPageLink a:has(strong) [data-testid="stIconMaterial"],
     [data-testid="stSidebar"] div.stPageLink a:has(b) [data-testid="stIconMaterial"],
-    [data-testid="stSidebar"] button[kind="primary"] [data-testid="stIconMaterial"],
-    [data-testid="stSidebar"] div.stButton > button[kind="primary"] [data-testid="stIconMaterial"] {
+    [data-testid="stSidebar"] div.stButton button[kind="primary"] [data-testid="stIconMaterial"] {
         color: var(--efs-accent) !important;
+    }
+
+    /* R4: "Tentang" button at bottom remains framed */
+    [data-testid="stSidebar"] div.stElementContainer[class*="efs_btn_about"] div.stButton button,
+    [data-testid="stSidebar"] div[class*="efs_btn_about"] button {
+        border: 1px solid var(--efs-border) !important;
+        background-color: var(--efs-surface) !important;
+        border-radius: 8px !important;
+        justify-content: center !important;
+        text-align: center !important;
+        margin-top: 8px !important;
+        min-height: 40px !important;
+        height: 40px !important;
+        width: 100% !important;
+    }
+
+    [data-testid="stSidebar"] div[class*="efs_btn_about"] button > div,
+    [data-testid="stSidebar"] div[class*="efs_btn_about"] button > div > span {
+        justify-content: center !important;
+        text-align: center !important;
+        gap: 8px !important;
+    }
+
+    [data-testid="stSidebar"] div[class*="efs_btn_about"] button:hover {
+        background-color: var(--efs-nav-active) !important;
+        border-color: var(--efs-accent) !important;
+        color: var(--efs-text) !important;
+    }
+
+    [data-testid="stSidebar"] div.stButton[class*="efs_btn_about"] button > div,
+    [data-testid="stSidebar"] div.stButton[class*="efs_btn_about"] button > div > span {
+        justify-content: center !important;
+        text-align: center !important;
+        gap: 8px !important;
+    }
+
+    [data-testid="stSidebar"] div.stButton[class*="efs_btn_about"] button:hover {
+        background-color: var(--efs-nav-active) !important;
+        border-color: var(--efs-accent) !important;
+        color: var(--efs-text) !important;
     }
 
     /* Sidebar Footer matching mockup: subtle card at bottom */

@@ -47,6 +47,7 @@ def run_verification():
 
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
+    server_log = open(SCREENS_DIR / "streamlit_server.log", "w", encoding="utf-8")
     server_proc = subprocess.Popen(
         [
             sys.executable,
@@ -61,14 +62,14 @@ def run_verification():
         ],
         cwd=str(REPO_ROOT),
         env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stdout=server_log,
+        stderr=server_log,
     )
 
     try:
         if not wait_for_server(base_url, timeout=35.0):
-            stdout, stderr = server_proc.communicate(timeout=5)
-            raise RuntimeError(f"Streamlit failed to start on {base_url}.\nSTDOUT: {stdout.decode()}\nSTDERR: {stderr.decode()}")
+            server_log.flush()
+            raise RuntimeError(f"Streamlit failed to start on {base_url}.")
         print("[1/5] Streamlit server is healthy and ready.")
 
         print("[2/5] Launching headless browser (Edge/Chromium)...")
@@ -85,9 +86,20 @@ def run_verification():
             print(f"[3/5] Navigating to Main.py at {base_url}...")
             page.goto(base_url, wait_until="networkidle")
             # Wait for brand header to ensure full script execution
-            page.wait_for_selector('.efs-main-brand', timeout=30000)
-            page.wait_for_selector('.efs-sb-header', timeout=30000)
+            page.wait_for_selector('.efs-sb-header', timeout=45000)
+            page.wait_for_selector('.efs-main-brand', timeout=45000)
             page.wait_for_timeout(2000)  # Allow fonts and styles to settle
+
+            # Dismiss onboarding tour if present so sidebar is completely unobstructed
+            try:
+                page.keyboard.press("Escape")
+                page.wait_for_timeout(300)
+                popover_close = page.query_selector('.driver-popover-close-btn, button[aria-label="Close"]')
+                if popover_close:
+                    popover_close.click()
+                    page.wait_for_timeout(500)
+            except Exception:
+                pass
 
             # Capture main.png and sidebar.png
             main_png = SCREENS_DIR / "main.png"
@@ -207,6 +219,10 @@ def run_verification():
             server_proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             server_proc.kill()
+        try:
+            server_log.close()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

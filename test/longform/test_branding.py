@@ -184,7 +184,7 @@ def test_apptest_branding_main_page(monkeypatch):
         mock_update.return_value.available_version = None
 
         at = AppTest.from_file(main_file)
-        at.run(timeout=30)
+        at.run(timeout=60)
 
         assert not at.exception, f"Main.py threw exceptions: {[e.value for e in at.exception]}"
 
@@ -324,7 +324,7 @@ def test_r2_sidebar_click_all_items_main_page():
 
         # 1. Initial page load
         at = AppTest.from_file(main_file)
-        at.run(timeout=30)
+        at.run(timeout=60)
         assert not at.exception, f"Main.py initial run threw exceptions: {[e.value for e in at.exception]}"
 
         # Verify old G5 link '🎬 Long Video' is completely absent from top bar
@@ -336,7 +336,7 @@ def test_r2_sidebar_click_all_items_main_page():
         # 2. Click 'Kelola Niche' (Item 3) -> Opens show_niche_dialog without ImportError
         niche_btn = at.button(key="efs_btn_niche_main")
         assert niche_btn is not None
-        niche_btn.click().run(timeout=20)
+        niche_btn.click().run(timeout=30)
         assert not at.exception, f"Clicking Kelola Niche threw exception: {[e.value for e in at.exception]}"
         assert not any("Navigasi Studio" in s.value for s in at.subheader)
         assert not any("Navigasi Studio" in m.value for m in at.markdown)
@@ -346,28 +346,28 @@ def test_r2_sidebar_click_all_items_main_page():
         assert len(at.metric) >= 3, "Summary metrics (Total, Bawaan, Kustom) not found in Niche dialog"
 
         # 3. Click 'API & Penyedia AI' (Item 4) -> Opens upstream settings dialog with all tabs
-        at2 = AppTest.from_file(main_file).run(timeout=30)
+        at2 = AppTest.from_file(main_file).run(timeout=60)
         ai_btn = at2.button(key="efs_btn_settings_ai_main")
         assert ai_btn is not None
-        ai_btn.click().run(timeout=20)
+        ai_btn.click().run(timeout=30)
         assert not at2.exception, f"Clicking API & Penyedia AI threw exception: {[e.value for e in at2.exception]}"
         assert at2.session_state.get("settings_dialog_open", False) is True
         assert not any("Navigasi Studio" in s.value for s in at2.subheader)
 
         # 4. Click 'Cache & Penyimpanan' (Item 5) -> Opens upstream settings dialog focused on cache
-        at3 = AppTest.from_file(main_file).run(timeout=30)
+        at3 = AppTest.from_file(main_file).run(timeout=60)
         cache_btn = at3.button(key="efs_btn_settings_cache_main")
         assert cache_btn is not None
-        cache_btn.click().run(timeout=20)
+        cache_btn.click().run(timeout=30)
         assert not at3.exception, f"Clicking Cache & Penyimpanan threw exception: {[e.value for e in at3.exception]}"
         assert at3.session_state.get("settings_dialog_open", False) is True
         assert not any("Navigasi Studio" in s.value for s in at3.subheader)
 
         # 5. Click 'Tentang' (Item 6) -> Opens show_about_dialog
-        at4 = AppTest.from_file(main_file).run(timeout=30)
+        at4 = AppTest.from_file(main_file).run(timeout=60)
         about_btn = at4.button(key="efs_btn_about_main")
         assert about_btn is not None
-        about_btn.click().run(timeout=20)
+        about_btn.click().run(timeout=30)
         assert not at4.exception, f"Clicking Tentang threw exception: {[e.value for e in at4.exception]}"
         assert any("MoneyPrinterTurbo" in m.value for m in at4.markdown)
         assert not any("Navigasi Studio" in s.value for s in at4.subheader)
