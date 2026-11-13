@@ -156,6 +156,17 @@ def test_apptest_branding_main_page(monkeypatch):
             return res
         return real_subproc_run(cmd, *args, **kwargs)
 
+    real_subproc_popen = subprocess.Popen
+    def safe_subproc_popen(cmd, *args, **kwargs):
+        cmd_name = cmd[0] if isinstance(cmd, (list, tuple)) else str(cmd).split()[0]
+        if any(agent in str(cmd_name).lower() for agent in ["gemini", "copilot", "claude", "codex", "cursor"]):
+            proc = MagicMock()
+            proc.poll.return_value = 1
+            proc.wait.return_value = 1
+            proc.communicate.return_value = (b"", b"mocked agent")
+            return proc
+        return real_subproc_popen(cmd, *args, **kwargs)
+
     with patch("app.services.version_checker.poll_available_update") as mock_update, \
          patch("app.services.version_checker.get_available_update", return_value=None), \
          patch("app.services.codex_models.get_catalog", return_value=Catalog(models=(), fetched_at=0.0)), \
@@ -166,7 +177,8 @@ def test_apptest_branding_main_page(monkeypatch):
          patch("httpx.post", return_value=mock_resp), \
          patch("httpx.Client.send", return_value=mock_resp), \
          patch("shutil.which", side_effect=safe_which), \
-         patch("subprocess.run", side_effect=safe_subproc_run):
+         patch("subprocess.run", side_effect=safe_subproc_run), \
+         patch("subprocess.Popen", side_effect=safe_subproc_popen):
 
         mock_update.return_value.complete = True
         mock_update.return_value.available_version = None
@@ -244,4 +256,175 @@ def test_short_video_flow_submission():
         submitted_id = webui_task.submit_generation(task_id, params)
         assert submitted_id == task_id
         assert webui_task.is_generation_active(task_id) or submitted_id == task_id
+
+
+def test_r2_sidebar_click_all_items_main_page():
+    """Verify R2: clicking all sidebar items on Main.py operates without exception,
+
+    dialogs open without ImportError, redundant top-bar links are absent,
+    and 'Navigasi Studio' never appears anywhere.
+    """
+    import shutil
+    import subprocess
+    from app.services.codex_models import Catalog
+
+    repo_root = Path(__file__).resolve().parents[2]
+    main_file = str(repo_root / "webui" / "Main.py")
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {}
+    mock_resp.text = "{}"
+    mock_resp.content = b"{}"
+
+    real_which = shutil.which
+    def safe_which(cmd, *args, **kwargs):
+        if cmd in {"gemini", "copilot", "claude", "codex", "cursor", "gh"}:
+            return None
+        return real_which(cmd, *args, **kwargs)
+
+    real_subproc_run = subprocess.run
+    def safe_subproc_run(cmd, *args, **kwargs):
+        cmd_name = cmd[0] if isinstance(cmd, (list, tuple)) else str(cmd).split()[0]
+        if any(agent in str(cmd_name).lower() for agent in ["gemini", "copilot", "claude", "codex", "cursor"]):
+            res = MagicMock()
+            res.returncode = 1
+            res.stdout = b""
+            res.stderr = b"mocked agent"
+            return res
+        return real_subproc_run(cmd, *args, **kwargs)
+
+    real_subproc_popen = subprocess.Popen
+    def safe_subproc_popen(cmd, *args, **kwargs):
+        cmd_name = cmd[0] if isinstance(cmd, (list, tuple)) else str(cmd).split()[0]
+        if any(agent in str(cmd_name).lower() for agent in ["gemini", "copilot", "claude", "codex", "cursor"]):
+            proc = MagicMock()
+            proc.poll.return_value = 1
+            proc.wait.return_value = 1
+            proc.communicate.return_value = (b"", b"mocked agent")
+            return proc
+        return real_subproc_popen(cmd, *args, **kwargs)
+
+    with patch("app.services.version_checker.poll_available_update") as mock_update, \
+         patch("app.services.version_checker.get_available_update", return_value=None), \
+         patch("app.services.codex_models.get_catalog", return_value=Catalog(models=(), fetched_at=0.0)), \
+         patch("app.services.chatgpt_models.get_catalog", return_value=Catalog(models=(), fetched_at=0.0)), \
+         patch("requests.get", return_value=mock_resp), \
+         patch("requests.post", return_value=mock_resp), \
+         patch("httpx.get", return_value=mock_resp), \
+         patch("httpx.post", return_value=mock_resp), \
+         patch("httpx.Client.send", return_value=mock_resp), \
+         patch("shutil.which", side_effect=safe_which), \
+         patch("subprocess.run", side_effect=safe_subproc_run), \
+         patch("subprocess.Popen", side_effect=safe_subproc_popen):
+
+        mock_update.return_value.complete = True
+        mock_update.return_value.available_version = None
+
+        # 1. Initial page load
+        at = AppTest.from_file(main_file)
+        at.run(timeout=30)
+        assert not at.exception, f"Main.py initial run threw exceptions: {[e.value for e in at.exception]}"
+
+        # Verify old G5 link '🎬 Long Video' is completely absent from top bar
+        assert not any(pl.label == "🎬 Long Video" for pl in at.page_link)
+        # Verify 'Navigasi Studio' never appears
+        assert not any("Navigasi Studio" in s.value for s in at.subheader)
+        assert not any("Navigasi Studio" in m.value for m in at.markdown)
+
+        # 2. Click 'Kelola Niche' (Item 3) -> Opens show_niche_dialog without ImportError
+        niche_btn = at.button(key="efs_btn_niche_main")
+        assert niche_btn is not None
+        niche_btn.click().run(timeout=20)
+        assert not at.exception, f"Clicking Kelola Niche threw exception: {[e.value for e in at.exception]}"
+        assert not any("Navigasi Studio" in s.value for s in at.subheader)
+        assert not any("Navigasi Studio" in m.value for m in at.markdown)
+        # Verify preset tree and metrics rendered in niche dialog
+        has_niche_tree = any("Pohon Hirarki Niche" in m.value for m in at.markdown) or any("Struktur Niche" in m.value for m in at.markdown)
+        assert has_niche_tree, "Niche dialog tree content was not rendered"
+        assert len(at.metric) >= 3, "Summary metrics (Total, Bawaan, Kustom) not found in Niche dialog"
+
+        # 3. Click 'API & Penyedia AI' (Item 4) -> Opens upstream settings dialog with all tabs
+        at2 = AppTest.from_file(main_file).run(timeout=30)
+        ai_btn = at2.button(key="efs_btn_settings_ai_main")
+        assert ai_btn is not None
+        ai_btn.click().run(timeout=20)
+        assert not at2.exception, f"Clicking API & Penyedia AI threw exception: {[e.value for e in at2.exception]}"
+        assert at2.session_state.get("settings_dialog_open", False) is True
+        assert not any("Navigasi Studio" in s.value for s in at2.subheader)
+
+        # 4. Click 'Cache & Penyimpanan' (Item 5) -> Opens upstream settings dialog focused on cache
+        at3 = AppTest.from_file(main_file).run(timeout=30)
+        cache_btn = at3.button(key="efs_btn_settings_cache_main")
+        assert cache_btn is not None
+        cache_btn.click().run(timeout=20)
+        assert not at3.exception, f"Clicking Cache & Penyimpanan threw exception: {[e.value for e in at3.exception]}"
+        assert at3.session_state.get("settings_dialog_open", False) is True
+        assert not any("Navigasi Studio" in s.value for s in at3.subheader)
+
+        # 5. Click 'Tentang' (Item 6) -> Opens show_about_dialog
+        at4 = AppTest.from_file(main_file).run(timeout=30)
+        about_btn = at4.button(key="efs_btn_about_main")
+        assert about_btn is not None
+        about_btn.click().run(timeout=20)
+        assert not at4.exception, f"Clicking Tentang threw exception: {[e.value for e in at4.exception]}"
+        assert any("MoneyPrinterTurbo" in m.value for m in at4.markdown)
+        assert not any("Navigasi Studio" in s.value for s in at4.subheader)
+
+
+def test_r2_sidebar_click_all_items_long_video_page(tmp_path, monkeypatch):
+    """Verify R2: clicking all sidebar items on Long Video operates without exception,
+
+    dialogs open cleanly, and 'Navigasi Studio' never appears anywhere.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    lv_file = str(repo_root / "webui" / "pages" / "1_🎬_Long_Video.py")
+
+    monkeypatch.setattr("app.services.longform.store.get_projects_root", lambda: tmp_path)
+    monkeypatch.setattr("app.services.longform.ui.components.get_projects_root", lambda: tmp_path)
+
+    # 1. Initial page load
+    at = AppTest.from_file(lv_file).run(timeout=15)
+    assert not at.exception, f"Long Video initial run threw exception: {[e.value for e in at.exception]}"
+    assert not any("Navigasi Studio" in s.value for s in at.subheader)
+    assert not any("Navigasi Studio" in m.value for m in at.markdown)
+
+    # 2. Click 'Kelola Niche'
+    niche_btn = at.button(key="efs_btn_niche_longform")
+    assert niche_btn is not None
+    niche_btn.click().run(timeout=15)
+    assert not at.exception, f"Long Video Kelola Niche threw exception: {[e.value for e in at.exception]}"
+    assert not any("Navigasi Studio" in s.value for s in at.subheader)
+    assert not any("Navigasi Studio" in m.value for m in at.markdown)
+    has_niche_tree = any("Pohon Hirarki Niche" in m.value for m in at.markdown) or any("Struktur Niche" in m.value for m in at.markdown)
+    assert has_niche_tree, "Niche dialog tree content was not rendered in Long Video"
+
+    # 3. Click 'API & Penyedia AI'
+    at2 = AppTest.from_file(lv_file).run(timeout=15)
+    ai_btn = at2.button(key="efs_btn_settings_ai_longform")
+    assert ai_btn is not None
+    ai_btn.click().run(timeout=15)
+    assert not at2.exception, f"Long Video API & Penyedia AI threw exception: {[e.value for e in at2.exception]}"
+    assert at2.session_state["settings_dialog_open"] is True
+    assert at2.session_state["settings_dialog_target_tab"] == "llm"
+    assert not any("Navigasi Studio" in s.value for s in at2.subheader)
+
+    # 4. Click 'Cache & Penyimpanan'
+    at3 = AppTest.from_file(lv_file).run(timeout=15)
+    cache_btn = at3.button(key="efs_btn_settings_cache_longform")
+    assert cache_btn is not None
+    cache_btn.click().run(timeout=15)
+    assert not at3.exception, f"Long Video Cache & Penyimpanan threw exception: {[e.value for e in at3.exception]}"
+    assert at3.session_state["settings_dialog_open"] is True
+    assert at3.session_state["settings_dialog_target_tab"] == "cache"
+    assert not any("Navigasi Studio" in s.value for s in at3.subheader)
+
+    # 5. Click 'Tentang'
+    at4 = AppTest.from_file(lv_file).run(timeout=15)
+    about_btn = at4.button(key="efs_btn_about_longform")
+    assert about_btn is not None
+    about_btn.click().run(timeout=15)
+    assert not at4.exception, f"Long Video Tentang threw exception: {[e.value for e in at4.exception]}"
+    assert any("MoneyPrinterTurbo" in m.value for m in at4.markdown)
+    assert not any("Navigasi Studio" in s.value for s in at4.subheader)
 

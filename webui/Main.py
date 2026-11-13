@@ -112,7 +112,9 @@ streamlit_style = f"<style>{style_file.read_text(encoding='utf-8')}</style>"
 st.markdown(streamlit_style, unsafe_allow_html=True)
 try:
     from app.services.branding.theme import inject_brand_theme
+    from app.services.branding.sidebar import render_brand_sidebar
     inject_brand_theme()
+    render_brand_sidebar(current_page="main")
 except Exception:
     pass
 # 定义资源目录
@@ -1847,12 +1849,6 @@ def _render_top_bar():
             gap="small",
             width="stretch",
         ):
-            try:
-                from app.services.longform.ui.nav import render_longform_entry
-                render_longform_entry()
-            except Exception:
-                pass
-
             _render_task_manager_entry()
 
             st.button(

@@ -145,9 +145,9 @@ def test_h3_main_page_sidebar_css_and_no_exception():
         css_markdowns = [m.value for m in at.markdown if "stExpandSidebarButton" in m.value]
         assert len(css_markdowns) >= 1, "Expected injected CSS for stExpandSidebarButton not found in markdown widgets"
 
-        # Verify page links include Long Video
+        # Verify page links include Long Video / Video Panjang
         links = [pl.label for pl in at.page_link]
-        assert any("Long Video" in l for l in links), f"Expected Long Video page_link not found in: {links}"
+        assert any("Long Video" in l or "Video Panjang" in l for l in links), f"Expected Long Video / Video Panjang page_link not found in: {links}"
 
 
 def test_h3_long_video_renders_sidebar_and_back_link(tmp_path, monkeypatch):

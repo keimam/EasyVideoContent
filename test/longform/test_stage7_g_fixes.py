@@ -335,7 +335,7 @@ def test_g5_main_page_renders_long_video_link(monkeypatch):
 
         assert not at.exception, f"Main.py threw exceptions: {[e.value for e in at.exception]}"
         page_link_labels = [pl.label for pl in at.page_link]
-        assert any("Long Video" in label for label in page_link_labels), f"No Long Video link found in: {page_link_labels}"
+        assert any("Long Video" in label or "Video Panjang" in label for label in page_link_labels), f"No Long Video link found in: {page_link_labels}"
 
 
 def test_g5_long_video_page_renders_back_to_mpt_link(tmp_path, monkeypatch):

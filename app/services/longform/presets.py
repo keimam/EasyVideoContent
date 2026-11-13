@@ -379,6 +379,10 @@ def format_preset_tree(presets: Dict[str, Preset] | None = None) -> str:
     return "\n".join(lines)
 
 
+# Alias for backwards compatibility / UI convenience (R2)
+render_preset_tree = format_preset_tree
+
+
 def slugify_preset_name(name: str) -> str:
     """Convert a human-readable preset name into a safe alphanumeric slug (G2)."""
     import re

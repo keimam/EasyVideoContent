@@ -55,41 +55,70 @@ def show_about_dialog():
 
 @st.dialog("Kelola Niche & Sub-Niche", width="large")
 def show_niche_dialog():
-    """Dialog for inspecting and managing niches & sub-niches."""
-    from app.services.longform.presets import list_presets, render_preset_tree
+    """Dialog for inspecting and managing niches & sub-niches (R2)."""
+    from app.services.longform.presets import (
+        list_presets,
+        format_preset_tree,
+        get_builtin_presets,
+        get_custom_presets,
+        get_preset,
+    )
 
-    st.subheader("🏷️ Daftar Niche & Sub-Niche")
+    st.subheader("🏷️ Kelola Niche & Sub-Niche")
     st.caption("Niche mendefinisikan gaya narasi, kata kunci footage, musik, dan istilah negatif.")
 
-    presets = list_presets()
+    all_presets = list_presets()
+    builtin_presets = get_builtin_presets()
+    custom_presets = get_custom_presets()
 
-    col1, col2 = st.columns([1.2, 1.8])
+    # Summary metrics
+    m1, m2, m3 = st.columns(3)
+    with m1:
+        st.metric("Total Preset", len(all_presets))
+    with m2:
+        st.metric("Niche Bawaan", len(builtin_presets), help="Preset read-only bawaan sistem")
+    with m3:
+        st.metric("Niche Kustom", len(custom_presets), help="Preset kustom buatan pengguna")
+
+    st.markdown("---")
+
+    col1, col2 = st.columns([1.3, 1.7])
     with col1:
-        st.markdown("**Struktur Niche:**")
-        tree_text = render_preset_tree()
+        st.markdown("**🌳 Pohon Hirarki Niche:**")
+        tree_text = format_preset_tree(all_presets)
         st.code(tree_text, language="text")
 
     with col2:
-        st.markdown("**Detail Preset:**")
-        preset_ids = [p["preset_id"] for p in presets]
+        st.markdown("**🔍 Detail Preset:**")
+        preset_ids = sorted(list(all_presets.keys()))
         chosen_id = st.selectbox("Pilih Preset untuk Dilihat:", preset_ids, key="sb_dialog_chosen_preset")
-        if chosen_id:
-            from app.services.longform.presets import get_preset
-            p_data = get_preset(chosen_id)
-            if p_data:
-                st.write(f"**Nama:** {p_data.get('name', chosen_id)}")
-                st.write(f"**Tipe:** {'Sub-Niche' if p_data.get('extends') else 'Niche Utama'}")
-                if p_data.get("extends"):
-                    st.write(f"**Turunan dari:** `{p_data.get('extends')}`")
-                kw = p_data.get("footage_keywords", [])
-                if kw:
-                    st.write(f"**Kata Kunci Footage:** {', '.join(kw[:8])}...")
-                neg = p_data.get("avoid_keywords", [])
-                if neg:
-                    st.write(f"**Kata Kunci Dihindari:** {', '.join(neg[:6])}...")
+        if chosen_id and chosen_id in all_presets:
+            p_data = all_presets[chosen_id]
+            st.write(f"**Nama:** {getattr(p_data, 'name', chosen_id)}")
+            is_sub = bool(getattr(p_data, "extends", None))
+            st.write(f"**Tipe:** {'Sub-Niche' if is_sub else 'Niche Utama'}")
+            if is_sub:
+                st.write(f"**Turunan dari:** `{p_data.extends}`")
+            kw = getattr(p_data, "footage_keywords", []) or []
+            if kw:
+                st.write(f"**Kata Kunci Footage ({len(kw)}):** {', '.join(kw[:8])}{'...' if len(kw) > 8 else ''}")
+            neg = getattr(p_data, "avoid_keywords", []) or []
+            if neg:
+                st.write(f"**Kata Kunci Dihindari ({len(neg)}):** {', '.join(neg[:6])}{'...' if len(neg) > 6 else ''}")
 
-    if st.button("Tutup", key="btn_close_niche_dialog", use_container_width=True):
-        st.rerun()
+    st.markdown("---")
+    act_col1, act_col2 = st.columns([1.6, 1])
+    with act_col1:
+        if st.button("📁 Buka Pengelola Niche di Long Video", key="btn_open_niche_manager", type="primary", use_container_width=True):
+            st.session_state["show_niche_mgmt"] = True
+            try:
+                st.switch_page("pages/1_🎬_Long_Video.py")
+            except Exception:
+                pass
+            st.rerun()
+    with act_col2:
+        if st.button("Tutup", key="btn_close_niche_dialog", use_container_width=True):
+            st.rerun()
 
 
 def _inject_sidebar_styles():
@@ -145,92 +174,106 @@ def _inject_sidebar_styles():
         padding-left: 0.35rem;
     }
 
-    /* R2: Active item: background #1F2633 + accent icon, NO left border line */
-    [data-testid="stSidebar"] div.stPageLink a:has(strong),
-    [data-testid="stSidebar"] div.stPageLink a:has(b),
-    [data-testid="stSidebar"] div.stPageLink a[data-testid="stPageLink-NavLink"]:has(strong),
-    [data-testid="stSidebar"] div.stPageLink a[data-testid="stPageLink-NavLink"]:has(b) {
-        background-color: var(--efs-nav-active) !important;
-        border-left: none !important;
-        border: none !important;
-        color: var(--efs-text) !important;
-        padding: 8px 12px !important;
-        border-radius: 8px !important;
-        font-weight: 600 !important;
-    }
-
-    /* Active icon gets accent color #8FA6FF */
-    [data-testid="stSidebar"] div.stPageLink a:has(strong) [data-testid="stIconMaterial"],
-    [data-testid="stSidebar"] div.stPageLink a:has(b) [data-testid="stIconMaterial"],
-    [data-testid="stSidebar"] div.stPageLink a:has(strong) [class*="material-symbols"],
-    [data-testid="stSidebar"] div.stPageLink a:has(b) [class*="material-symbols"] {
-        color: var(--efs-accent) !important;
-    }
-
-    /* Inactive nav items */
-    [data-testid="stSidebar"] div.stPageLink a {
-        border-radius: 8px !important;
-        border: none !important;
-        transition: all 0.15s ease-in-out !important;
-        padding: 8px 12px !important;
-        color: var(--efs-text-2) !important;
-    }
-
-    [data-testid="stSidebar"] div.stPageLink a [data-testid="stIconMaterial"],
-    [data-testid="stSidebar"] div.stPageLink a [class*="material-symbols"] {
-        color: var(--efs-dim) !important;
-        margin-right: 4px !important;
-    }
-
-    [data-testid="stSidebar"] div.stPageLink a:hover {
-        background-color: var(--efs-surface) !important;
-        color: var(--efs-text) !important;
-    }
-
-    [data-testid="stSidebar"] div.stPageLink a:hover [data-testid="stIconMaterial"],
-    [data-testid="stSidebar"] div.stPageLink a:hover [class*="material-symbols"] {
-        color: var(--efs-text) !important;
-    }
-
-    /* Sidebar Action Buttons styled like nav items */
-    [data-testid="stSidebar"] div.stButton > button {
+    /* R2: Uniform Sidebar Navigation Items (PRODUKSI and PENGATURAN match mockup exactly) */
+    [data-testid="stSidebar"] div.stPageLink a,
+    [data-testid="stSidebar"] div.stPageLink a[data-testid="stPageLink-NavLink"],
+    [data-testid="stSidebar"] button,
+    [data-testid="stSidebar"] div.stButton > button,
+    [data-testid="stSidebar"] button[kind="secondary"],
+    [data-testid="stSidebar"] button[data-testid="baseButton-secondary"],
+    [data-testid="stSidebar"] div.stButton > button[kind="secondary"],
+    [data-testid="stSidebar"] div.stButton > button[data-testid="baseButton-secondary"] {
         background-color: transparent !important;
         border: none !important;
+        border-width: 0 !important;
+        border-style: none !important;
+        border-color: transparent !important;
+        outline: none !important;
+        box-shadow: none !important;
         color: var(--efs-text-2) !important;
         text-align: left !important;
         justify-content: flex-start !important;
         padding: 8px 12px !important;
         min-height: 40px !important;
+        height: 40px !important;
         border-radius: 8px !important;
         font-weight: 500 !important;
-        transition: all 0.15s ease-in-out !important;
+        font-size: 0.88rem !important;
+        width: 100% !important;
+        transition: background-color 0.15s ease, color 0.15s ease !important;
     }
 
-    [data-testid="stSidebar"] div.stButton > button:hover {
+    /* Vertical rhythm between sidebar items */
+    [data-testid="stSidebar"] div.stButton,
+    [data-testid="stSidebar"] div.stPageLink {
+        margin-bottom: 2px !important;
+    }
+
+    /* Hover state for ALL sidebar items */
+    [data-testid="stSidebar"] div.stPageLink a:hover,
+    [data-testid="stSidebar"] button:hover,
+    [data-testid="stSidebar"] div.stButton > button:hover,
+    [data-testid="stSidebar"] button[kind="secondary"]:hover,
+    [data-testid="stSidebar"] div.stButton > button[kind="secondary"]:hover {
         background-color: var(--efs-surface) !important;
         color: var(--efs-text) !important;
-    }
-
-    [data-testid="stSidebar"] div.stButton > button [data-testid="stIconMaterial"],
-    [data-testid="stSidebar"] div.stButton > button [class*="material-symbols"] {
-        color: var(--efs-dim) !important;
-        margin-right: 4px !important;
-    }
-
-    [data-testid="stSidebar"] div.stButton > button:hover [data-testid="stIconMaterial"],
-    [data-testid="stSidebar"] div.stButton > button:hover [class*="material-symbols"] {
-        color: var(--efs-text) !important;
-    }
-
-    /* Fallback button active styling */
-    [data-testid="stSidebar"] div.stButton > button[kind="primary"] {
-        background-color: var(--efs-nav-active) !important;
-        color: var(--efs-text) !important;
         border: none !important;
+        outline: none !important;
+        box-shadow: none !important;
     }
 
-    [data-testid="stSidebar"] div.stButton > button[kind="primary"] [data-testid="stIconMaterial"],
-    [data-testid="stSidebar"] div.stButton > button[kind="primary"] [class*="material-symbols"] {
+    /* Focus & active outline removal */
+    [data-testid="stSidebar"] button:focus,
+    [data-testid="stSidebar"] button:active,
+    [data-testid="stSidebar"] div.stButton > button:focus,
+    [data-testid="stSidebar"] div.stButton > button:active {
+        border: none !important;
+        outline: none !important;
+        box-shadow: none !important;
+    }
+
+    /* Icon styling for ALL sidebar items */
+    [data-testid="stSidebar"] div.stPageLink a [data-testid="stIconMaterial"],
+    [data-testid="stSidebar"] div.stPageLink a [class*="material-symbols"],
+    [data-testid="stSidebar"] div.stButton > button [data-testid="stIconMaterial"],
+    [data-testid="stSidebar"] div.stButton > button [class*="material-symbols"],
+    [data-testid="stSidebar"] button [data-testid="stIconMaterial"],
+    [data-testid="stSidebar"] button [class*="material-symbols"] {
+        color: var(--efs-dim) !important;
+        margin-right: 8px !important;
+        font-size: 1.15rem !important;
+        transition: color 0.15s ease !important;
+    }
+
+    [data-testid="stSidebar"] div.stPageLink a:hover [data-testid="stIconMaterial"],
+    [data-testid="stSidebar"] div.stPageLink a:hover [class*="material-symbols"],
+    [data-testid="stSidebar"] div.stButton > button:hover [data-testid="stIconMaterial"],
+    [data-testid="stSidebar"] div.stButton > button:hover [class*="material-symbols"],
+    [data-testid="stSidebar"] button:hover [data-testid="stIconMaterial"],
+    [data-testid="stSidebar"] button:hover [class*="material-symbols"] {
+        color: var(--efs-text) !important;
+    }
+
+    /* Active Item (PRODUKSI or PENGATURAN): background #1F2633 + accent icon #8FA6FF, NO left border line */
+    [data-testid="stSidebar"] div.stPageLink a:has(strong),
+    [data-testid="stSidebar"] div.stPageLink a:has(b),
+    [data-testid="stSidebar"] div.stPageLink a[data-testid="stPageLink-NavLink"]:has(strong),
+    [data-testid="stSidebar"] div.stPageLink a[data-testid="stPageLink-NavLink"]:has(b),
+    [data-testid="stSidebar"] button[kind="primary"],
+    [data-testid="stSidebar"] button[data-testid="baseButton-primary"],
+    [data-testid="stSidebar"] div.stButton > button[kind="primary"],
+    [data-testid="stSidebar"] div.stButton > button[data-testid="baseButton-primary"] {
+        background-color: var(--efs-nav-active) !important;
+        border: none !important;
+        border-left: none !important;
+        color: var(--efs-text) !important;
+        font-weight: 600 !important;
+    }
+
+    [data-testid="stSidebar"] div.stPageLink a:has(strong) [data-testid="stIconMaterial"],
+    [data-testid="stSidebar"] div.stPageLink a:has(b) [data-testid="stIconMaterial"],
+    [data-testid="stSidebar"] button[kind="primary"] [data-testid="stIconMaterial"],
+    [data-testid="stSidebar"] div.stButton > button[kind="primary"] [data-testid="stIconMaterial"] {
         color: var(--efs-accent) !important;
     }
 
@@ -360,9 +403,9 @@ def render_brand_sidebar(current_page: str = "main"):
             use_container_width=True,
             help="Buka konfigurasi model AI (LLM, TTS, dan Gambar)",
         ):
+            st.session_state["settings_dialog_open"] = True
+            st.session_state["settings_dialog_target_tab"] = "llm"
             if current_page == "main":
-                st.session_state["settings_dialog_open"] = True
-                st.session_state["settings_dialog_target_tab"] = "llm"
                 st.rerun()
             else:
                 try:
@@ -378,9 +421,9 @@ def render_brand_sidebar(current_page: str = "main"):
             use_container_width=True,
             help="Periksa dan bersihkan cache video & materi",
         ):
+            st.session_state["settings_dialog_open"] = True
+            st.session_state["settings_dialog_target_tab"] = "cache"
             if current_page == "main":
-                st.session_state["settings_dialog_open"] = True
-                st.session_state["settings_dialog_target_tab"] = "cache"
                 st.rerun()
             else:
                 try:

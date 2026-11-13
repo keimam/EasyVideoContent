@@ -161,7 +161,9 @@ def get_global_css() -> str:
     div[data-testid="stDecoration"],
     div[data-testid="stStatusWidget"],
     div[data-testid="stSkillsNudgeAnchor"],
-    div[data-testid="stSkillsNudge"] {{
+    div[data-testid="stSkillsNudge"],
+    div.st-key-open_settings_dialog_button,
+    div[class*="st-key-open_settings_dialog_button"] {{
         display: none !important;
     }}
 
