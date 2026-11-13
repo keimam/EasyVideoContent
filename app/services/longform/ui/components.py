@@ -2196,7 +2196,7 @@ def render_capcut_step_flow(
         prev_exports = []
         if exp_root.is_dir():
             for d in sorted(exp_root.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
-                if d.is_dir() and d.name.startswith("MPT_"):
+                if d.is_dir() and (d.name.startswith("EFS_") or d.name.startswith("MPT_")):
                     mtime_str = datetime.fromtimestamp(d.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
                     prev_exports.append({"Draft": d.name, "Waktu Pembuatan": mtime_str, "Path": str(d)})
 

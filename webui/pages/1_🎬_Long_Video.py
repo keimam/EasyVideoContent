@@ -1,4 +1,4 @@
-"""Longform Video Studio - MoneyPrinterTurbo WebUI Page (Stage 7A.1).
+"""Longform Video Studio - EasyFaceless Studio WebUI Page (Stage 7A.1, 8A.1).
 
 Provides structured 10-20 minute longform video project management,
 AI/Markdown script generation, voice synthesis orchestration,
@@ -20,12 +20,26 @@ import streamlit as st
 
 from app.services.longform.ui import components
 
+try:
+    from app.services.branding.constants import APP_NAME, FAVICON_PATH
+    from app.services.branding.theme import inject_brand_theme
+    _page_title = f"{APP_NAME} — Video Panjang"
+    _page_icon = str(FAVICON_PATH) if FAVICON_PATH.is_file() else "🎬"
+except Exception:
+    _page_title = "Studio Video Panjang - MoneyPrinterTurbo"
+    _page_icon = "🎬"
+
 st.set_page_config(
-    page_title="Studio Video Panjang - MoneyPrinterTurbo",
-    page_icon="🎬",
+    page_title=_page_title,
+    page_icon=_page_icon,
     layout="wide",
     initial_sidebar_state="auto",
 )
+
+try:
+    inject_brand_theme()
+except Exception:
+    pass
 
 # Read query parameter for persistent project selection across refreshes (C4.5)
 query_pid = st.query_params.get("project")
