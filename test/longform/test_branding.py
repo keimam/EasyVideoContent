@@ -252,7 +252,8 @@ def test_short_video_flow_submission():
         video_source="pixabay",
     )
 
-    with patch("app.services.task.start") as mock_start:
+    with patch("app.services.task.start") as mock_start, \
+         patch("app.services.webui_task.tm.start") as mock_tm_start:
         submitted_id = webui_task.submit_generation(task_id, params)
         assert submitted_id == task_id
         assert webui_task.is_generation_active(task_id) or submitted_id == task_id
