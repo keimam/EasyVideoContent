@@ -1036,7 +1036,7 @@ def test_z3_pipeline_auto_unmocked_integration(tmp_path, monkeypatch):
     # Verify CapCut draft exported and installed
     draft_folders = list(mock_capcut_draft_root.iterdir())
     assert len(draft_folders) >= 1
-    assert any(f"MPT_{test_pid}" in d.name for d in draft_folders)
+    assert any(f"EFS_{test_pid}" in d.name or f"MPT_{test_pid}" in d.name for d in draft_folders)
     draft_content_file = draft_folders[0] / "draft_content.json"
     assert draft_content_file.is_file()
 

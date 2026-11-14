@@ -2327,7 +2327,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_c_export.add_argument("--install", action="store_true", help="Install draft directly into CapCut draft folder (CapCut must be closed)")
     p_c_export.add_argument("--portable", action="store_true", help="Copy all media into draft folder (requires --yes to confirm disk copy)")
     p_c_export.add_argument("--yes", action="store_true", help="Confirm media copying when using --portable")
-    p_c_export.add_argument("--name", help="Custom draft name override (default: MPT_<id>_<timestamp>)")
+    p_c_export.add_argument("--name", help="Custom draft name override (default: EFS_<id>_<timestamp>)")
 
     # capcut calibrate [id] [--no-install]
     p_c_calib = capcut_subs.add_parser("calibrate", help="Generate empirical subtitle calibration draft (sizes 5..10) (6B.1)")

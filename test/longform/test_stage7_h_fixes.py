@@ -145,9 +145,9 @@ def test_h3_main_page_sidebar_css_and_no_exception():
         css_markdowns = [m.value for m in at.markdown if "stExpandSidebarButton" in m.value]
         assert len(css_markdowns) >= 1, "Expected injected CSS for stExpandSidebarButton not found in markdown widgets"
 
-        # Verify page links include Long Video
+        # Verify page links include Long Video / Video Panjang
         links = [pl.label for pl in at.page_link]
-        assert any("Long Video" in l for l in links), f"Expected Long Video page_link not found in: {links}"
+        assert any("Long Video" in l or "Video Panjang" in l for l in links), f"Expected Long Video / Video Panjang page_link not found in: {links}"
 
 
 def test_h3_long_video_renders_sidebar_and_back_link(tmp_path, monkeypatch):
@@ -182,16 +182,20 @@ def test_h5_main_page_hides_stsidebar_nav_and_highlights_active_item():
         assert len(nav_hide_css) >= 1, "Expected injected CSS hiding stSidebarNav not found in Main.py"
         assert "display: none !important" in nav_hide_css[0]
 
-        # 2. Verify 'Navigasi Studio' subheader exists in sidebar
+        # 2. Verify sidebar navigation header exists (supports 7A.5 and 8A.1 brand sidebar)
         subheaders = [s.value for s in at.subheader]
-        assert any("Navigasi Studio" in s for s in subheaders), f"Navigasi Studio subheader missing from: {subheaders}"
+        md_texts = [m.value for m in at.markdown]
+        assert any("Navigasi Studio" in s for s in subheaders) or any("EasyFaceless" in m for m in md_texts)
 
-        # 3. Verify MoneyPrinterTurbo item is highlighted as active (bold label or primary button)
+        # 3. Verify short video item is highlighted as active (bold label or primary button)
         links = [pl.label for pl in at.page_link]
         buttons = [b.label for b in at.button]
         all_labels = links + buttons
-        assert any("**MoneyPrinterTurbo (Video Pendek)**" in l or "(Aktif)" in l for l in all_labels), (
-            f"MoneyPrinterTurbo item is not highlighted as active in: {all_labels}"
+        assert any(
+            "**Video Pendek**" in l or "**MoneyPrinterTurbo (Video Pendek)**" in l or "(Aktif)" in l
+            for l in all_labels
+        ), (
+            f"Short video item is not highlighted as active in: {all_labels}"
         )
 
 
@@ -210,14 +214,18 @@ def test_h5_long_video_hides_stsidebar_nav_and_highlights_active_item(tmp_path, 
     assert len(nav_hide_css) >= 1, "Expected injected CSS hiding stSidebarNav not found in Long Video"
     assert "display: none !important" in nav_hide_css[0]
 
-    # 2. Verify 'Navigasi Studio' subheader exists in sidebar
+    # 2. Verify sidebar navigation header exists (supports 7A.5 and 8A.1 brand sidebar)
     subheaders = [s.value for s in at.subheader]
-    assert any("Navigasi Studio" in s for s in subheaders), f"Navigasi Studio subheader missing from: {subheaders}"
+    md_texts = [m.value for m in at.markdown]
+    assert any("Navigasi Studio" in s for s in subheaders) or any("EasyFaceless" in m for m in md_texts)
 
-    # 3. Verify Studio Video Panjang item is highlighted as active (bold label or primary button)
+    # 3. Verify long video item is highlighted as active (bold label or primary button)
     links = [pl.label for pl in at.page_link]
     buttons = [b.label for b in at.button]
     all_labels = links + buttons
-    assert any("**Studio Video Panjang**" in l or "(Aktif)" in l for l in all_labels), (
+    assert any(
+        "**Video Panjang**" in l or "**Studio Video Panjang**" in l or "(Aktif)" in l
+        for l in all_labels
+    ), (
         f"Studio Video Panjang item is not highlighted as active in: {all_labels}"
     )

@@ -18,6 +18,7 @@ Tujuannya adalah menjaga kemudahan sinkronisasi (merge/rebase) dari repositori u
 | **Tahap 6A & 6B** | Tidak Ada | 0 baris | Analisis template CapCut 8.9.0, doctor CLI, builder draft portable, multi-track export |
 | **Tahap 7A (G5)** | `webui/Main.py` | 6 baris | Entry hook tombol/link "🎬 Long Video" pada top bar header di samping Task Manager & Settings |
 | **Tahap 7.9** | Tidak Ada berkas upstream diubah di luar merge | 0 baris baru | Sinkronisasi upstream v1.3.10 (merge clean, hook G5 di Main.py & .gitignore tetap utuh) |
+| **Tahap 8A.1** | `webui/Main.py`, `webui/.streamlit/config.toml`, `.streamlit/config.toml` | ~35 baris | Rebrand EasyFaceless Studio: header brand, favicon/title, dark theme tokens, font Plus Jakarta Sans offline, hook sidebar & settings |
 
 ---
 
@@ -161,5 +162,41 @@ Tujuannya adalah menjaga kemudahan sinkronisasi (merge/rebase) dari repositori u
 - **Hasil Verifikasi Pasca-Merge:**
   * Seluruh rangkaian 227 pengujian di `test/longform` lulus 100%.
   * Banner *"Update available: v1.3.10"* pada antarmuka WebUI hilang secara alami karena versi aplikasi telah mutakhir (`v1.3.10`).
+
+### Tahap 8A.1: Rebrand "EasyFaceless Studio" (Identitas, Tema Global, Font Offline, & Sidebar)
+- **File Upstream yang Disentuh:**
+  1. `webui/Main.py`:
+     - Baris 79–115: Konfigurasi `st.set_page_config` judul halaman `"EasyFaceless Studio — Video Pendek"`, icon favicon PNG lokal, dialog *About* dengan atribusi penuh ke MoneyPrinterTurbo (MIT). Injeksi tema CSS branding secara aman dengan blok `try...except`.
+     - Baris 1773–1782: Hook pada `_render_brand()` memanggil `render_brand_header()` dari `app.services.branding.theme` (judul brand, logo, badge versi `"v1.0 · inti v1.3.10"`, dan link update `"Pembaruan inti MoneyPrinterTurbo tersedia"`). Jika modul branding dilepas, fallback otomatis ke tampilan upstream asli.
+     - Baris 9483–9490: Handler `open_settings` pada query parameter di `_render_application()` untuk navigasi mulus dari sidebar Video Panjang ke tab pengaturan API & Cache.
+     - *Cara melepas saat merge:* Hapus blok try/except `branding` dan kembalikan pemanggilan `_render_brand` ke template HTML lama.
+  2. `webui/.streamlit/config.toml` & `.streamlit/config.toml`:
+     - Penambahan bagian `[server] enableStaticServing = true` untuk penyajian aset font lokal statis (R2 revisi R1).
+     - Penambahan bagian `[theme]` tema dasar gelap (`base="dark"`, `primaryColor="#8FA6FF"`, `backgroundColor="#0D1015"`, `secondaryBackgroundColor="#11151C"`, `textColor="#E8ECF2"`).
+- **Revisi 8A.1 (R1 & R2): Proteksi Ikon Material Symbols, Penyesuaian Mockup, & Satu Pintu Per Fungsi:**
+  - *Perbaikan Ikon Streamlit (R1):* Font Plus Jakarta Sans dibatasi secara ketat hanya pada elemen teks UI (body, markdown, label, input, button text). Elemen ikon Streamlit (`[data-testid="stIconMaterial"]`, `[class*="material-symbols"]`, `.material-symbols-rounded`, tombol ciut sidebar, pembungkus icon) dilindungi secara eksplisit dengan `font-family: 'Material Symbols Rounded', ... !important`, sehingga glyph ikon tidak lagi tampil sebagai teks ligature mentah ("movie", "bolt", "category", dsb.).
+  - *Penyajian Font Statis & Reduksi CSS (R1):* Menggantikan embedding base64 TTF berulang di setiap rerun Streamlit dengan `enableStaticServing = true` di path `/app/static/fonts/PlusJakartaSans[wght].ttf`. Ukuran payload CSS berkurang drastis dari ~239 KB menjadi ~4.4 KB (>98% pemangkasan).
+  - *Penyelarasan Sidebar ke Mockup (R1 & R2):* Seluruh item menu (PRODUKSI dan PENGATURAN) tampil seragam sebagai menu item polos tanpa bingkai border. Item sidebar aktif menggunakan latar `#1F2633` dan ikon aksen `#8FA6FF` **tanpa garis tepi aksen kiri**. Header sidebar logo 36x36 dengan teks bertumpuk `EasyFaceless` (bold) + `STUDIO` (small caps abu-abu). Footer sidebar menggunakan kartu halus dengan versi dan atribusi MIT.
+  - *Perbaikan Kelola Niche (R2):* Menghubungkan fungsi nyata `format_preset_tree()`, `list_presets()`, `get_builtin_presets()`, dan `get_custom_presets()` dari `app.services.longform.presets` (serta menyediakan alias `render_preset_tree = format_preset_tree`). Dialog menampilkan pohon hirarki ASCII, metrik ringkasan, inspeksi detail, dan tombol langsung ke pengelola niche di Long Video tanpa `ImportError`.
+  - *Pembersihan Kode Lama Navigasi Studio (R2):* Menghapus total blok fallback `st.subheader("🧭 Navigasi Studio")` dari `app/services/longform/ui/nav.py`.
+  - *Satu Pintu Per Fungsi (R2):*
+    * Menghapus tautan redundant "🎬 Long Video" (hook G5) dari `_render_top_bar()` di `webui/Main.py`, memangkas diff file upstream.
+    * Memindahkan pemanggilan `render_brand_sidebar(current_page="main")` ke blok inisialisasi awal di samping `inject_brand_theme()`.
+    * Menyembunyikan tombol redundant "Settings" di bilah atas melalui CSS terisolasi dari modul branding (`div.st-key-open_settings_dialog_button { display: none !important; }`), sementara logika Python upstream tetap 100% utuh tanpa perubahan. Item sidebar "API & Penyedia AI" menjadi pintu tunggal untuk membuka dialog pengaturan yang sama persis (seluruh tab).
+- **Modul Mandiri Terisolasi:**
+  - `app/services/branding/`:
+    * `constants.py`: Identitas merek (`APP_NAME = "EasyFaceless Studio"`, `APP_VERSION = "1.0.0"`, `CORE_VERSION = "1.3.10"`, `MIT_ATTRIBUTION = "Dibangun di atas MoneyPrinterTurbo (MIT)"`, palet warna HEX token B2).
+    * `theme.py`: Pengendali CSS tema global offline, proteksi font ikon Material Symbols, token CSS global, penyembunyian tombol redundant bilah atas via CSS, dan helper gaya 8A.2.
+    * `sidebar.py`: Sidebar terpadu B3 dengan header brand mockup, grup PRODUKSI (Video Panjang, Video Pendek), grup PENGATURAN seragam borderless dan rata kiri menyamai PRODUKSI (Kelola Niche, API & Penyedia AI, Cache & Penyimpanan, tinggi 44 px, padding 12 px, gap ikon 8 px), footer versi, dan tombol berbingkai "Tentang" di bagian bawah.
+  - `resource/branding/`: `logo.svg`, `logo.png` (256x256), `favicon.png` (64x64).
+  - `resource/fonts/plus-jakarta-sans/` serta `webui/static/fonts/`: Berkas font `PlusJakartaSans[wght].ttf` dan lisensi `OFL.txt` (100% luring, 0 panggilan ke `fonts.googleapis.com`).
+  - `docs/branding/mockup/`: Acuan visual UI (1_beranda.png, 2_proyek.png, 3_selesai.png).
+  - `docs/branding/screens/`: Tangkapan layar headless verifikasi Edge/Playwright (`main.png`, `longvideo.png`, `sidebar.png`).
+  - `scripts/verify_icons_headless.py`: Skrip verifikasi headless otomatis untuk font ikon Material Symbols dan teks UI.
+  - `app/services/longform/capcut/service.py`: Awalan ekspor draft baru beralih ke `EFS_` (mis. `EFS_<project_id>_<timestamp>`).
+  - `app/services/longform/status.py` & `components.py`: Dukungan pembacaan draft ganda (`EFS_` dan legacy `MPT_`) untuk kompatibilitas riwayat dan deteksi draft terbaru.
+  - `test/longform/test_branding.py`: 9 pengujian unit & AppTest memverifikasi konstanta merek, proteksi font Material Symbols, font luring tanpa CDN / static serving, backward compatibility prefix CapCut, AppTest Main.py, AppTest Long Video, alur submit video pendek, dan interaksi klik seluruh item sidebar di kedua halaman.
+  - `test/longform/test_ui_jobs.py`: Menghapus *fixed sleep* dan menggantinya dengan polling berbasis kondisi dan batas waktu 20 detik untuk kehandalan tes saat beban CPU tinggi (R4).
+
 
 

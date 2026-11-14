@@ -368,7 +368,7 @@ def export_full_project(
         raise ValueError(f"Project '{project_id}' has no chapters.")
 
     timestamp_str = datetime.datetime.now().strftime("%Y%m%d-%H%M")
-    base_draft_name = custom_draft_name or f"MPT_{project_id}_{timestamp_str}"
+    base_draft_name = custom_draft_name or f"EFS_{project_id}_{timestamp_str}"
 
     export_capcut_root = project_dir / "export" / "capcut"
     export_capcut_root.mkdir(parents=True, exist_ok=True)

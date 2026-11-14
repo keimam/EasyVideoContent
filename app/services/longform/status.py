@@ -133,8 +133,11 @@ def find_latest_capcut_draft(project_dir: Path, project_id: str) -> Optional[Dic
     if not capcut_dirs:
         return None
 
-    # Prioritize drafts matching project name
-    matching_project = [d for d in capcut_dirs if d.name.startswith(f"MPT_{project_id}")]
+    # Prioritize drafts matching project name (supports both new EFS_ and legacy MPT_ prefixes)
+    matching_project = [
+        d for d in capcut_dirs
+        if d.name.startswith(f"EFS_{project_id}") or d.name.startswith(f"MPT_{project_id}")
+    ]
     target = max(matching_project, key=lambda d: d.stat().st_mtime) if matching_project else max(capcut_dirs, key=lambda d: d.stat().st_mtime)
 
     mtime_dt = datetime.fromtimestamp(target.stat().st_mtime)

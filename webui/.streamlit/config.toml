@@ -6,3 +6,14 @@ toolbarMode = "minimal"
 
 [logger]
 hideWelcomeMessage = true
+
+[server]
+enableStaticServing = true
+
+[theme]
+base = "dark"
+primaryColor = "#8FA6FF"
+backgroundColor = "#0D1015"
+secondaryBackgroundColor = "#11151C"
+textColor = "#E8ECF2"
+font = "sans serif"

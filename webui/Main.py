@@ -76,17 +76,29 @@ from app.utils.logging_utils import (
 from app.utils import utils
 from app.utils.request_logging import trace_http_call
 
+try:
+    from app.services.branding.constants import APP_NAME, FAVICON_PATH, MIT_THANKS, UPSTREAM_REPO_URL
+    _main_page_title = f"{APP_NAME} — Video Pendek"
+    _main_page_icon = str(FAVICON_PATH) if FAVICON_PATH.is_file() else "🎬"
+    _about_content = f"# {APP_NAME}\n\n{MIT_THANKS}\n\n{UPSTREAM_REPO_URL}"
+except Exception:
+    _main_page_title = "MoneyPrinterTurbo"
+    _main_page_icon = "🤖"
+    _about_content = (
+        "# MoneyPrinterTurbo\nSimply provide a topic or keyword for a video, and it will "
+        "automatically generate the video copy, video materials, video subtitles, "
+        "and video background music before synthesizing a high-definition short "
+        "video.\n\nhttps://github.com/harry0703/MoneyPrinterTurbo"
+    )
+
 st.set_page_config(
-    page_title="MoneyPrinterTurbo",
-    page_icon="🤖",
+    page_title=_main_page_title,
+    page_icon=_main_page_icon,
     layout="wide",
     initial_sidebar_state="auto",
     menu_items={
         "Report a bug": "https://github.com/harry0703/MoneyPrinterTurbo/issues",
-        "About": "# MoneyPrinterTurbo\nSimply provide a topic or keyword for a video, and it will "
-        "automatically generate the video copy, video materials, video subtitles, "
-        "and video background music before synthesizing a high-definition short "
-        "video.\n\nhttps://github.com/harry0703/MoneyPrinterTurbo",
+        "About": _about_content,
     },
 )
 
@@ -98,6 +110,13 @@ st.set_page_config(
 style_file = Path(__file__).with_name("styles.css")
 streamlit_style = f"<style>{style_file.read_text(encoding='utf-8')}</style>"
 st.markdown(streamlit_style, unsafe_allow_html=True)
+try:
+    from app.services.branding.theme import inject_brand_theme
+    from app.services.branding.sidebar import render_brand_sidebar
+    inject_brand_theme()
+    render_brand_sidebar(current_page="main")
+except Exception:
+    pass
 # 定义资源目录
 font_dir = utils.font_dir()
 song_dir = utils.song_dir()
@@ -1755,6 +1774,12 @@ def _open_material_settings_dialog():
 
 def _render_brand(available_update: str | None = None):
     """渲染项目名称、当前版本和可选的更新入口。"""
+    try:
+        from app.services.branding.theme import render_brand_header
+        render_brand_header(available_update=available_update)
+        return
+    except Exception:
+        pass
     update_link = ""
     if available_update:
         update_label = html.escape(
@@ -1824,12 +1849,6 @@ def _render_top_bar():
             gap="small",
             width="stretch",
         ):
-            try:
-                from app.services.longform.ui.nav import render_longform_entry
-                render_longform_entry()
-            except Exception:
-                pass
-
             _render_task_manager_entry()
 
             st.button(
@@ -9459,6 +9478,11 @@ def _render_generation_controls(
 
 def _render_application():
     """按固定顺序渲染顶部栏、弹窗、生成表单和任务结果。"""
+    if "open_settings" in st.query_params:
+        target = st.query_params.pop("open_settings")
+        st.session_state["settings_dialog_open"] = True
+        st.session_state["settings_dialog_target_tab"] = target
+
     _render_top_bar()
 
     if st.session_state.get("settings_dialog_open", False):
