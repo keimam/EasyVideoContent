@@ -66,7 +66,10 @@ def capture_url(ws_url: str, target_url: str, output_path: Path, wait_sec: float
 def main():
     browser_exe = find_browser_exe()
     port = 9222
+    import shutil
     user_data = REPO_ROOT / ".temp_chrome_profile"
+    if user_data.exists():
+        shutil.rmtree(user_data, ignore_errors=True)
     user_data.mkdir(exist_ok=True)
 
     chrome_cmd = [
@@ -96,67 +99,52 @@ def main():
             target_info = targets[0]
         ws_url = target_info["webSocketDebuggerUrl"]
 
-        # 1. 8a2_beranda.png
-        print("[1/3] Capturing 8a2_beranda.png...")
-        capture_url(ws_url, "http://localhost:8501/Long_Video", SCREENS_DIR / "8a2_beranda.png", wait_sec=7.0)
+        # 1. 8a2v2_beranda.png
+        print("[1/6] Capturing 8a2v2_beranda.png...")
+        capture_url(ws_url, "http://localhost:8501/Long_Video?lang=id", SCREENS_DIR / "8a2v2_beranda.png", wait_sec=8.5)
 
-        # 2. 8a2_proyek_visual.png
-        print("[2/3] Capturing 8a2_proyek_visual.png...")
+        # 2. 8a2v2_proyek_visual.png
+        print("[2/6] Capturing 8a2v2_proyek_visual.png...")
         capture_url(
             ws_url,
-            "http://localhost:8501/Long_Video?project=dodge_charger_stage2",
-            SCREENS_DIR / "8a2_proyek_visual.png",
-            wait_sec=7.0,
+            "http://localhost:8501/Long_Video?project=dodge_charger_stage2&step=visual&lang=id",
+            SCREENS_DIR / "8a2v2_proyek_visual.png",
+            wait_sec=8.5,
         )
 
-        # 3. 8a2_selesai.png
-        print("[3/3] Capturing 8a2_selesai.png...")
+        # 3. 8a2v2_selesai.png
+        print("[3/6] Capturing 8a2v2_selesai.png...")
         capture_url(
             ws_url,
-            "http://localhost:8501/Long_Video?project=uji_nokey",
-            SCREENS_DIR / "8a2_selesai.png",
-            wait_sec=7.0,
+            "http://localhost:8501/Long_Video?project=uji_nokey&step=render&lang=id",
+            SCREENS_DIR / "8a2v2_selesai.png",
+            wait_sec=8.5,
         )
 
         print("All Indonesian screenshots captured successfully in docs/branding/screens/!")
 
-        # Now capture English versions (L5)
-        print("\nSwitching to English UI for EN screenshots...")
-        import toml
-        cfg_path = REPO_ROOT / "config.toml"
-        cfg_data = toml.load(cfg_path)
-        orig_ui = dict(cfg_data.get("ui", {}))
-        try:
-            cfg_data.setdefault("ui", {})["language"] = "en"
-            with open(cfg_path, "w", encoding="utf-8") as f:
-                toml.dump(cfg_data, f)
-            time.sleep(2.0)
+        # 4. 8a2v2_beranda_en.png
+        print("[4/6] Capturing 8a2v2_beranda_en.png...")
+        capture_url(ws_url, "http://localhost:8501/Long_Video?lang=en", SCREENS_DIR / "8a2v2_beranda_en.png", wait_sec=8.5)
 
-            print("[4/6] Capturing 8a2_beranda_en.png...")
-            capture_url(ws_url, "http://localhost:8501/Long_Video", SCREENS_DIR / "8a2_beranda_en.png", wait_sec=7.0)
+        # 5. 8a2v2_proyek_visual_en.png
+        print("[5/6] Capturing 8a2v2_proyek_visual_en.png...")
+        capture_url(
+            ws_url,
+            "http://localhost:8501/Long_Video?project=dodge_charger_stage2&step=visual&lang=en",
+            SCREENS_DIR / "8a2v2_proyek_visual_en.png",
+            wait_sec=8.5,
+        )
 
-            print("[5/6] Capturing 8a2_proyek_visual_en.png...")
-            capture_url(
-                ws_url,
-                "http://localhost:8501/Long_Video?project=dodge_charger_stage2",
-                SCREENS_DIR / "8a2_proyek_visual_en.png",
-                wait_sec=7.0,
-            )
-
-            print("[6/6] Capturing 8a2_selesai_en.png...")
-            capture_url(
-                ws_url,
-                "http://localhost:8501/Long_Video?project=uji_nokey",
-                SCREENS_DIR / "8a2_selesai_en.png",
-                wait_sec=7.0,
-            )
-            print("All English screenshots captured successfully!")
-        finally:
-            # Restore original config
-            cfg_data["ui"] = orig_ui
-            with open(cfg_path, "w", encoding="utf-8") as f:
-                toml.dump(cfg_data, f)
-            print("Restored original config.toml.")
+        # 6. 8a2v2_selesai_en.png
+        print("[6/6] Capturing 8a2v2_selesai_en.png...")
+        capture_url(
+            ws_url,
+            "http://localhost:8501/Long_Video?project=uji_nokey&step=render&lang=en",
+            SCREENS_DIR / "8a2v2_selesai_en.png",
+            wait_sec=8.5,
+        )
+        print("All English screenshots captured successfully!")
 
     finally:
         proc.terminate()

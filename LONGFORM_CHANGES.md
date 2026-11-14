@@ -236,6 +236,36 @@ Tujuannya adalah menjaga kemudahan sinkronisasi (merge/rebase) dari repositori u
     * `8a2_proyek_visual.png` & `8a2_proyek_visual_en.png`
     * `8a2_selesai.png` & `8a2_selesai_en.png`
 
+### Revisi 8A.2 v2: Penyesuaian Presisi ke Mockup & Penguatan i18n (V1-V5)
+- **File Kode Upstream yang Disentuh:** **Nihil (0 berkas kode)**
+- **Audit & Scanner Kebocoran Kunci i18n (V1):**
+  - Mengaudit dan menyinkronkan seluruh kunci i18n yang sebelumnya bocor (`gallery_heading`, `all_chapters_option`, `filter_needs_review`, `filter_locked`, `btn_auto_run_until_done`, `unit_minutes`, `capcut_heading`, `final_video_heading`, dll.) ke kamus `ID_TRANSLATIONS` dan `EN_TRANSLATIONS` di `app/services/longform/ui/i18n.py`.
+  - Menambahkan pengujian otomatis AST scanner `test_i18n_codebase_scanner` pada `test/longform/test_i18n.py` yang memindai seluruh penggunaan `t("...")` pada `components.py` dan memvalidasi keberadaannya di kedua kamus bahasa.
+  - Menambahkan pengujian `test_i18n_no_raw_keys_in_rendered_ui` yang merender UI Beranda dan Proyek via AppTest lalu memverifikasi bahwa tidak ada kunci i18n bergaris bawah atau pola unit yang bocor ke teks komponen antarmuka.
+  - Mendukung pengalihan bahasa dinamis instan melalui query parameter URL `?lang=en` atau `?lang=id` pada `get_ui_language()`.
+- **Kartu Stepper & Widget Metrik Kustom (V2):**
+  - Implementasi kartu stepper `render_stepper_card_html` di `theme.py` yang menampilkan nomor langkah dalam lingkaran aksen/sukses/netral, judul langkah tebal, teks status berwarna, dan bingkai aksen pada langkah aktif, yang diletakkan di atas tombol interaktif transparan (`opacity: 0`) untuk kompatibilitas penuh dengan AppTest dan interaktivitas klik peramban.
+  - Implementasi widget metrik kustom `render_metric_tile` (`.efs-metric-tile`) dengan pembungkusan teks otomatis (`white-space: normal`, `word-break: break-word`), tata letak flex-column, dan tanpa pemotongan tanda titik-titik (`text-overflow: clip`).
+  - Menambahkan aturan CSS selektor saudara (`:has(.efs-metric-tile) + [data-testid="stElementContainer"]`) yang menyembunyikan fallback `st.metric` bawaan Streamlit secara bersih di peramban sehingga tidak terjadi duplikasi metrik visual.
+  - Pembersihan header langkah: judul pendek tanpa nomor/emoji, satu kalimat deskripsi fungsi, tombol aksi utama di sisi kanan baris judul, dan menghapus status teknis berbentuk blok kode.
+- **Penyelarasan Langkah Visual ke Mockup 2 (V3):**
+  - 4 metrik kustom horizontal di bawah judul: Klip Siap, Perlu Dicek, Terkunci, dan Sumber Terpakai.
+  - Opsi sumber footage (Pexels, Pixabay, Local) dipindahkan ke expander collapsible di bawah header (`> Sumber footage`).
+  - Tata letak kolom galeri footage 1.6 : 1.0 (sisi kiri galeri kartu 3 kolom, sisi kanan panel detail shot persisten yang menampilkan pratinjau klip, tombol kunci, ganti footage, dan checkbox perlu dicek).
+  - Tab bab dibuat ringkas ("Bab 1", "Bab 2", dst.) dan filter chips menampilkan hitungan jumlah klip per kategori (`Semua (N)`, `Perlu dicek (N)`, `Terkunci (N)`, `Placeholder (N)`).
+- **Penyelarasan Tampilan Selesai ke Mockup 3 (V4):**
+  - Menghilangkan banner ganda: menyembunyikan widget monitor status "Pekerjaan Selesai" saat 4 langkah utama selesai (`hide_completed=core_4_completed`), menyisakan tepat satu banner hijau sukses dari Mockup 3 di bagian atas.
+  - Memindahkan kontrol "Pengaturan Niche Proyek" dari expander di atas stepper ke popover tombol `⋯` di bilah atas header.
+  - Tampilan 2 kolom berdampingan permanen saat seluruh langkah selesai:
+    * Sisi Kiri ("Video final"): Pemutar video HTML5, 4 tile metrik teknis tanpa pemotongan, tombol pemutar sistem & buka folder, cap waktu bab YouTube dengan tombol salin interaktif 1-klik, dan expander "Render lagi" untuk perubahan volume BGM & render ulang paksa.
+    * Sisi Kanan ("CapCut"): Header "CapCut" dengan tombol "Cek ulang", 2 tile metrik diagnostik status CapCut & aplikasi aman, kartu draft terbaru, tombol ekspor ulang ke CapCut, tombol buka folder draft CapCut, serta expander kalibrasi ukuran teks subtitle dan riwayat draft.
+- **Penyesuaian Durasi Beranda, Pembersihan Total Emoji, & Verifikasi (V5):**
+  - Mengubah rentang slider durasi beranda menjadi 10–20 menit dengan nilai default 12 menit dan format string `%d menit`.
+  - Menghapus seluruh karakter emoji dari judul, tombol, label, dan chip di seluruh alur antarmuka.
+  - Menangkap 6 tangkapan layar headless beresolusi tinggi 1600x1050 (ID & EN: Beranda, Proyek Visual, Selesai) ke `docs/branding/screens/8a2v2_*.png`.
+  - Pembuatan skrip profil waktu muat AppTest `Main.py` (`scripts/profile_main_apptest.py`) yang membuktikan waktu inisialisasi hanya 3.22 detik tanpa panggilan jaringan/DNS/subprocess yang lambat.
+
+
 
 
 

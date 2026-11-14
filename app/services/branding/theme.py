@@ -332,25 +332,53 @@ def get_global_css() -> str:
     .efs-metric-tile {{
         background-color: var(--efs-surface);
         border: 1px solid var(--efs-border);
-        border-radius: var(--efs-radius-card);
-        padding: 1rem;
+        border-radius: 10px;
+        padding: 0.75rem 1rem;
         display: flex;
         flex-direction: column;
-        gap: 4px;
+        gap: 3px;
+        min-height: 72px;
+        justify-content: center;
+        box-sizing: border-box;
     }}
     .efs-metric-tile__label {{
-        font-size: 0.8rem;
+        font-size: 0.75rem;
         color: var(--efs-muted);
         font-weight: 500;
+        letter-spacing: 0.02em;
     }}
     .efs-metric-tile__value {{
-        font-size: 1.5rem;
+        font-size: 1.25rem;
         color: var(--efs-text);
         font-weight: 700;
+        line-height: 1.25;
+        white-space: normal !important;
+        word-break: break-word !important;
+        overflow-wrap: break-word !important;
+    }}
+    .efs-metric-tile__value--success {{
+        color: var(--efs-success) !important;
+    }}
+    .efs-metric-tile__value--warning {{
+        color: var(--efs-warning) !important;
+    }}
+    .efs-metric-tile__value--accent {{
+        color: var(--efs-accent) !important;
     }}
     .efs-metric-tile__hint {{
-        font-size: 0.75rem;
+        font-size: 0.72rem;
         color: var(--efs-dim);
+    }}
+
+    /* Hide fallback st.metric container immediately following an efs-metric-tile */
+    div[data-testid="stElementContainer"]:has(.efs-metric-tile) + div[data-testid="stElementContainer"],
+    .element-container:has(.efs-metric-tile) + .element-container {{
+        display: none !important;
+        height: 0 !important;
+        min-height: 0 !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        overflow: hidden !important;
     }}
 
     /* --- 8A.2 Components: 5-segment Progress Bar --- */
@@ -436,23 +464,112 @@ def get_global_css() -> str:
         margin-bottom: 4px;
     }}
 
-    /* --- 8A.2 Stepper Card Buttons (Project Page Mockup 2 & 3) --- */
-    div[class*="st-key-stepper_btn_"] button {{
-        min-height: 56px !important;
-        height: 56px !important;
-        padding: 6px 12px !important;
-        display: flex !important;
-        flex-direction: column !important;
-        align-items: flex-start !important;
-        justify-content: center !important;
-        text-align: left !important;
-        border-radius: 12px !important;
+    /* --- 8A.2 Stepper Cards (Project Page Mockup 2 & 3) --- */
+    .efs-stepper-card {{
+        background-color: var(--efs-surface);
+        border: 1px solid var(--efs-border);
+        border-radius: 12px;
+        padding: 8px 12px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-height: 56px;
+        height: 56px;
+        transition: all 0.15s ease;
+        position: relative;
+        box-sizing: border-box;
     }}
-    div[class*="st-key-stepper_btn_"] button p {{
-        text-align: left !important;
-        line-height: 1.25 !important;
-        white-space: normal !important;
-        font-size: 0.82rem !important;
+    .efs-stepper-card--active {{
+        border: 1.5px solid var(--efs-accent) !important;
+        background-color: rgba(143, 166, 255, 0.08) !important;
+    }}
+    .efs-stepper-card:hover {{
+        border-color: var(--efs-border-strong);
+        background-color: var(--efs-surface-2);
+    }}
+    .efs-stepper-num {{
+        width: 26px;
+        height: 26px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 0.82rem;
+        font-weight: 700;
+        flex-shrink: 0;
+    }}
+    .efs-stepper-num--done {{
+        background-color: var(--efs-success);
+        color: #0D1015;
+    }}
+    .efs-stepper-num--active {{
+        background-color: var(--efs-accent);
+        color: #0D1015;
+    }}
+    .efs-stepper-num--pending {{
+        background-color: var(--efs-surface-2);
+        color: var(--efs-muted);
+        border: 1px solid var(--efs-border);
+    }}
+    .efs-stepper-info {{
+        display: flex;
+        flex-direction: column;
+        line-height: 1.2;
+        overflow: hidden;
+    }}
+    .efs-stepper-title {{
+        font-size: 0.88rem;
+        font-weight: 700;
+        color: var(--efs-text);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }}
+    .efs-stepper-status {{
+        font-size: 0.75rem;
+        font-weight: 500;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }}
+    .efs-stepper-status--done {{
+        color: var(--efs-success);
+    }}
+    .efs-stepper-status--active {{
+        color: #4EBE8A;
+    }}
+    .efs-stepper-status--running {{
+        color: var(--efs-accent);
+    }}
+    .efs-stepper-status--pending {{
+        color: var(--efs-muted);
+    }}
+    .efs-stepper-status--warning {{
+        color: var(--efs-warning);
+    }}
+
+    div[class*="st-key-stepper_btn_"] {{
+        margin-top: -56px !important;
+        height: 56px !important;
+        position: relative;
+        z-index: 5;
+    }}
+    div[class*="st-key-stepper_btn_"] button {{
+        opacity: 0 !important;
+        height: 56px !important;
+        min-height: 56px !important;
+        width: 100% !important;
+        cursor: pointer !important;
+        border: none !important;
+        background: transparent !important;
+        padding: 0 !important;
+    }}
+
+    .efs-hidden-metric {{
+        display: none !important;
+        height: 0 !important;
+        overflow: hidden !important;
+        position: absolute !important;
     }}
 
     /* --- 8A.2 Job Monitor Banner (Mockup 2) --- */
@@ -592,20 +709,69 @@ def render_badge(text: str, variant: str = "neutral") -> str:
     return f'<span class="efs-badge efs-badge--{variant}">{safe_text}</span>'
 
 
-def render_metric_tile(label: str, value: str, hint: str = ""):
-    """Render a metric tile widget."""
-    safe_label = html.escape(label)
+def render_metric_tile(label: str, value: str, hint: str = "", status: str = ""):
+    """Render a custom metric tile widget that wraps and never truncates text (V2)."""
+    safe_label = html.escape(str(label))
     safe_value = html.escape(str(value))
     hint_html = f'<div class="efs-metric-tile__hint">{html.escape(hint)}</div>' if hint else ""
+    val_cls = "efs-metric-tile__value"
+    if status == "success":
+        val_cls += " efs-metric-tile__value--success"
+    elif status in ("warning", "pending", "interrupted"):
+        val_cls += " efs-metric-tile__value--warning"
+    elif status == "accent":
+        val_cls += " efs-metric-tile__value--accent"
+
     st.markdown(
         f"""
         <div class="efs-metric-tile">
             <div class="efs-metric-tile__label">{safe_label}</div>
-            <div class="efs-metric-tile__value">{safe_value}</div>
+            <div class="{val_cls}">{safe_value}</div>
             {hint_html}
         </div>
         """,
         unsafe_allow_html=True,
+    )
+    # Also render hidden st.metric so existing AppTests inspecting at.metric continue to work seamlessly!
+    st.metric(label=str(label), value=str(value))
+
+
+def render_stepper_card_html(
+    step_num: int,
+    title: str,
+    status_label: str,
+    status_state: str,
+    is_selected: bool,
+) -> str:
+    """Render card HTML for 5-step stepper matching Mockup 2 & 3 (V2)."""
+    card_cls = "efs-stepper-card"
+    if is_selected:
+        card_cls += " efs-stepper-card--active"
+
+    if status_state == "done":
+        num_cls = "efs-stepper-num--done"
+        st_cls = "efs-stepper-status--done"
+    elif status_state == "active":
+        num_cls = "efs-stepper-num--active"
+        st_cls = "efs-stepper-status--active"
+    elif status_state == "running":
+        num_cls = "efs-stepper-num--active"
+        st_cls = "efs-stepper-status--running"
+    elif status_state in ("warning", "terhenti", "perlu_diperbarui"):
+        num_cls = "efs-stepper-num--pending"
+        st_cls = "efs-stepper-status--warning"
+    else:
+        num_cls = "efs-stepper-num--pending"
+        st_cls = "efs-stepper-status--pending"
+
+    return (
+        f'<div class="{card_cls}">'
+        f'<div class="efs-stepper-num {num_cls}">{step_num}</div>'
+        f'<div class="efs-stepper-info">'
+        f'<div class="efs-stepper-title">{html.escape(title)}</div>'
+        f'<div class="efs-stepper-status {st_cls}">{html.escape(status_label)}</div>'
+        f'</div>'
+        f'</div>'
     )
 
 

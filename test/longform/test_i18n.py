@@ -82,3 +82,69 @@ def test_brand_names_not_translated():
 
         built_on = t("nav_about_help", lang=lang)
         assert "MoneyPrinterTurbo" in built_on
+
+
+def test_i18n_codebase_scanner():
+    """Verify V1: Every single t('...') key called anywhere in code exists in both ID and EN dictionaries."""
+    import re
+    from pathlib import Path
+
+    key_pattern = re.compile(r'\bt\(\s*[\"\']([a-zA-Z0-9_]+)[\"\']')
+    repo_root = Path(__file__).resolve().parents[2]
+
+    files = (
+        list((repo_root / "app" / "services" / "longform" / "ui").rglob("*.py"))
+        + list((repo_root / "app" / "services" / "branding").rglob("*.py"))
+        + list((repo_root / "webui" / "pages").rglob("*.py"))
+    )
+
+    missing_in_id = set()
+    missing_in_en = set()
+
+    for f in files:
+        content = f.read_text(encoding="utf-8")
+        for m in key_pattern.finditer(content):
+            k = m.group(1)
+            if k not in ID_TRANSLATIONS:
+                missing_in_id.add((k, f.name))
+            if k not in EN_TRANSLATIONS:
+                missing_in_en.add((k, f.name))
+
+    assert not missing_in_id, f"Found t(...) keys in code missing in ID_TRANSLATIONS: {missing_in_id}"
+    assert not missing_in_en, f"Found t(...) keys in code missing in EN_TRANSLATIONS: {missing_in_en}"
+
+
+def test_no_raw_i18n_keys_rendered_in_apptest(tmp_path, monkeypatch):
+    """Verify V1: No raw i18n keys (e.g. gallery_heading, unit_minutes) leak into rendered UI."""
+    from streamlit.testing.v1 import AppTest
+    from pathlib import Path
+    from app.services.longform.store import create_project
+
+    monkeypatch.setattr("app.services.longform.store.get_projects_root", lambda: tmp_path)
+    monkeypatch.setattr("app.services.longform.ui.components.get_projects_root", lambda: tmp_path)
+
+    # 1. Check Home page
+    repo_root = Path(__file__).resolve().parents[2]
+    app_file = str(repo_root / "webui" / "pages" / "1_🎬_Long_Video.py")
+
+    create_project("test_proj_p1", "Test Project Title", "automotive.muscle_car", projects_root=tmp_path)
+
+    at = AppTest.from_file(app_file)
+    at.run(timeout=15)
+    assert not at.exception
+
+    all_ui_text = " ".join([m.value for m in at.markdown] + [b.label for b in at.button if b.label] + [t.value for t in at.title])
+    known_leaks = ["gallery_heading", "all_chapters_option", "filter_needs_review", "filter_locked", "btn_auto_run_until_done", "unit_minutes"]
+    for leak in known_leaks:
+        assert leak not in all_ui_text, f"Raw i18n key '{leak}' was rendered on the Home page!"
+
+    # 2. Check Project page
+    at_proj = AppTest.from_file(app_file)
+    at_proj.query_params["project"] = "test_proj_p1"
+    at_proj.run(timeout=15)
+    assert not at_proj.exception
+
+    all_proj_text = " ".join([m.value for m in at_proj.markdown] + [b.label for b in at_proj.button if b.label] + [t.value for t in at_proj.title])
+    for leak in known_leaks:
+        assert leak not in all_proj_text, f"Raw i18n key '{leak}' was rendered on the Project page!"
+

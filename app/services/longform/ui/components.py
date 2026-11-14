@@ -66,6 +66,7 @@ from app.services.branding.theme import (
     render_badge,
     render_card,
     render_metric_tile,
+    render_stepper_card_html,
     render_success_banner,
 )
 from app.services.longform.tts_adapter import TTSAdapter, clean_narration_text
@@ -168,12 +169,15 @@ def get_project_summaries() -> List[Dict[str, Any]]:
 
 # --- Job Monitor Widget with Fragment (D1) ---
 
-def _render_job_monitor_content(project_id: str, state: Dict[str, Any], current_step: Optional[str] = None):
+def _render_job_monitor_content(project_id: str, state: Dict[str, Any], current_step: Optional[str] = None, hide_completed: bool = False):
     status = state.get("status")
     step = state.get("step", "")
     pid = state.get("pid")
 
     if state.get("dismissed"):
+        return
+
+    if hide_completed and status == "completed":
         return
 
     # Check if this job belongs to an earlier workflow step (W3)
@@ -207,7 +211,7 @@ def _render_job_monitor_content(project_id: str, state: Dict[str, Any], current_
     step_display = step_display_names.get(step, step)
 
     if status == "running":
-        st.info(f"⏳ **Pekerjaan Sedang Berjalan**: `{step_display}` (PID: {pid})")
+        st.info(f"**Pekerjaan Sedang Berjalan**: `{step_display}` (PID: {pid})")
         prog = jobs.get_project_progress(project_id, step)
 
         # Elapsed time formatting (Stage 7B.2 P)
@@ -219,7 +223,7 @@ def _render_job_monitor_content(project_id: str, state: Dict[str, Any], current_
                 elapsed_sec = max(0, int((datetime.now() - dt).total_seconds()))
                 m = elapsed_sec // 60
                 s = elapsed_sec % 60
-                elapsed_str = f"⏱️ {m:02d}:{s:02d}"
+                elapsed_str = f"{m:02d}:{s:02d}"
             except Exception:
                 pass
 
@@ -245,21 +249,21 @@ def _render_job_monitor_content(project_id: str, state: Dict[str, Any], current_
 
         col_cancel, col_space = st.columns([1, 4])
         with col_cancel:
-            if st.button("🛑 Batalkan Pekerjaan", key=f"btn_cancel_{project_id}"):
+            if st.button("Batalkan Pekerjaan", key=f"btn_cancel_{project_id}"):
                 cancelled = jobs.cancel_job(project_id)
                 if cancelled:
                     st.warning("Pekerjaan telah dibatalkan.")
                     st.rerun(scope="app")
 
         logs = jobs.get_job_logs(project_id, max_lines=30)
-        with st.expander("📋 Log Keluaran Proses (30 baris terakhir)", expanded=True):
+        with st.expander("Log Keluaran Proses (30 baris terakhir)", expanded=True):
             if logs:
                 st.code("\n".join(logs), language="text")
             else:
                 st.caption("Menunggu keluaran log...")
 
     elif status == "stopped":
-        st.warning(f"⚠️ **Pekerjaan Terhenti**: `{step_display}` (Pekerjaan belum selesai). Klik tombol **Lanjutkan** di bawah untuk meneruskan.")
+        st.warning(f"**Pekerjaan Terhenti**: `{step_display}` (Pekerjaan belum selesai). Klik tombol **Lanjutkan** di bawah untuk meneruskan.")
         prog = jobs.get_project_progress(project_id, step)
         phase_txt = prog.get("phase") or step_display
         pct_val = min(float(prog.get("percentage", 0.0)), 99.0)
@@ -272,19 +276,19 @@ def _render_job_monitor_content(project_id: str, state: Dict[str, Any], current_
         st.progress(min(pct_val / 100.0, 0.99), text=bar_text)
         logs = jobs.get_job_logs(project_id, max_lines=20)
         if logs:
-            with st.expander("📋 Log Terakhir Sebelum Terhenti", expanded=False):
+            with st.expander("Log Terakhir Sebelum Terhenti", expanded=False):
                 st.code("\n".join(logs), language="text")
 
     elif status in ("completed", "cancelled", "failed"):
         col_msg, col_x = st.columns([12, 1])
         with col_msg:
             if status == "completed":
-                st.success(f"✅ **Pekerjaan Selesai**: `{step_display}`")
+                st.success(f"**Pekerjaan Selesai**: `{step_display}`")
             elif status == "cancelled":
-                st.warning(f"🛑 **Pekerjaan Dibatalkan**: `{step_display}`")
+                st.warning(f"**Pekerjaan Dibatalkan**: `{step_display}`")
             elif status == "failed":
                 err_summary = f" — {state.get('error_message')}" if state.get("error_message") else f" (Kode Keluar: {state.get('exit_code', 'unknown')})"
-                st.error(f"❌ **Pekerjaan Gagal**: `{step_display}`{err_summary}")
+                st.error(f"**Pekerjaan Gagal**: `{step_display}`{err_summary}")
         with col_x:
             dismiss_key = f"btn_dismiss_job_{project_id}_{state.get('finished_at', state.get('started_at', ''))}"
             if st.button("✕", key=dismiss_key, help="Tutup pemberitahuan pekerjaan"):
@@ -306,11 +310,11 @@ def _render_job_monitor_content(project_id: str, state: Dict[str, Any], current_
         if status == "failed":
             failed_step_name = state.get("failed_step")
             if failed_step_name:
-                st.caption(f"⚠️ Langkah yang mengalami kegagalan: **{failed_step_name.capitalize()}**")
+                st.caption(f"Langkah yang mengalami kegagalan: **{failed_step_name.capitalize()}**")
 
             col_retry, _ = st.columns([1, 4])
             with col_retry:
-                if st.button("🔄 Coba Lagi", key=f"btn_retry_job_{project_id}", type="primary"):
+                if st.button("Coba Lagi", key=f"btn_retry_job_{project_id}", type="primary"):
                     cmd = state.get("command")
                     if cmd:
                         jobs.dismiss_job(project_id)
@@ -325,7 +329,7 @@ def _render_job_monitor_content(project_id: str, state: Dict[str, Any], current_
 
 
 @st.fragment(run_every=2)
-def _active_job_monitor_fragment(project_id: str, current_step: Optional[str] = None):
+def _active_job_monitor_fragment(project_id: str, current_step: Optional[str] = None, hide_completed: bool = False):
     """Auto-refreshing fragment monitor that polls job state while running (D1)."""
     state = jobs.get_job_state(project_id)
     if not state or state.get("status") != "running":
@@ -334,10 +338,10 @@ def _active_job_monitor_fragment(project_id: str, current_step: Optional[str] = 
         st.rerun(scope="app")
         return
 
-    _render_job_monitor_content(project_id, state, current_step=current_step)
+    _render_job_monitor_content(project_id, state, current_step=current_step, hide_completed=hide_completed)
 
 
-def render_job_monitor_widget(project_id: str, current_step: Optional[str] = None):
+def render_job_monitor_widget(project_id: str, current_step: Optional[str] = None, hide_completed: bool = False):
     """Real-time background job monitor widget (D1, W3)."""
     state = jobs.get_job_state(project_id)
     if not state:
@@ -345,9 +349,9 @@ def render_job_monitor_widget(project_id: str, current_step: Optional[str] = Non
 
     status = state.get("status")
     if status == "running":
-        _active_job_monitor_fragment(project_id, current_step=current_step)
+        _active_job_monitor_fragment(project_id, current_step=current_step, hide_completed=hide_completed)
     else:
-        _render_job_monitor_content(project_id, state, current_step=current_step)
+        _render_job_monitor_content(project_id, state, current_step=current_step, hide_completed=hide_completed)
 
 
 # --- Beranda (Home Page) Components (D5) ---
@@ -355,14 +359,14 @@ def render_job_monitor_widget(project_id: str, current_step: Optional[str] = Non
 def render_niche_management_section():
     """Render Section 'Kelola Niche': Built-in (view-only), Custom (edit, delete) (D8)."""
     with st.container(border=True):
-        st.subheader("📁 Kelola Niche & Sub-Niche")
-        tab_builtin, tab_custom = st.tabs(["🏛️ Niche Bawaan (Built-in)", "✨ Niche Kustom"])
+        st.subheader("Kelola Niche & Sub-Niche")
+        tab_builtin, tab_custom = st.tabs(["Niche Bawaan (Built-in)", "Niche Kustom"])
 
         with tab_builtin:
             st.caption("Preset bawaan sistem bersifat baca-saja (read-only). Untuk memodifikasi, buat niche kustom baru.")
             builtin_presets = get_builtin_presets()
             for pid, p in sorted(builtin_presets.items()):
-                with st.expander(f"📦 {p.name} (`{pid}`)", expanded=False):
+                with st.expander(f"{p.name} ({pid})", expanded=False):
                     col1, col2 = st.columns(2)
                     with col1:
                         st.write(f"- **Jenis:** `{p.kind}`")
@@ -379,7 +383,7 @@ def render_niche_management_section():
                 st.info("Belum ada niche kustom. Anda dapat membuat niche baru langsung melalui form pembuatan proyek di atas.")
             else:
                 for pid, p in sorted(custom_presets.items()):
-                    with st.expander(f"✨ {p.name} (`{pid}`)", expanded=False):
+                    with st.expander(f"{p.name} ({pid})", expanded=False):
                         col1, col2 = st.columns(2)
                         with col1:
                             st.write(f"- **Jenis:** `{p.kind}`")
@@ -391,7 +395,7 @@ def render_niche_management_section():
 
                         col_del, _ = st.columns([1, 4])
                         with col_del:
-                            if st.button("🗑️ Hapus Niche", key=f"btn_del_preset_{pid}", type="secondary"):
+                            if st.button("Hapus Niche", key=f"btn_del_preset_{pid}", type="secondary"):
                                 try:
                                     delete_custom_preset(pid)
                                     st.success(f"Preset kustom '{pid}' berhasil dihapus.")
@@ -431,7 +435,7 @@ def render_home_page():
             )
         with col_s_btn:
             # Preserves compatibility for test_stage7_g_fixes.py line 205
-            if st.button("➕ Proyek Baru", key="btn_toggle_new_proj", use_container_width=True):
+            if st.button("+ Proyek Baru", key="btn_toggle_new_proj", use_container_width=True):
                 st.session_state["focus_new_project"] = True
 
     # Niche Management Section (shown when toggled from sidebar or button)
@@ -451,12 +455,14 @@ def render_home_page():
                 key="input_new_topic",
             )
         with col_dur:
-            new_duration = st.selectbox(
+            new_duration = st.slider(
                 t("field_duration"),
-                options=[10, 12, 15, 20],
-                index=1,
-                format_func=lambda m: f"{m} {t('unit_minutes')}",
-                key="sel_new_duration",
+                min_value=10,
+                max_value=20,
+                value=12,
+                step=1,
+                format=f"%d {t('unit_minutes')}",
+                key="slider_new_duration",
             )
         with col_lang:
             new_lang = st.selectbox(
@@ -496,7 +502,7 @@ def render_home_page():
 
             if is_creating_new_root:
                 with col_sub:
-                    st.caption(f"✨ {t('new_root_niche_option')}")
+                    st.caption(f"+ {t('new_root_niche_option')}")
                 col_nname, col_subname = st.columns(2)
                 with col_nname:
                     new_niche_name = st.text_input(
@@ -738,7 +744,7 @@ def render_project_page(project_id: str):
     render_mpt_entry(show_top_return=False)
 
     # Navigation header & top meta row (Mockup 2)
-    col_back, col_title, col_auto = st.columns([1.2, 3.8, 1.8])
+    col_back, col_title, col_actions = st.columns([1.2, 3.6, 2.2])
     with col_back:
         if st.button("← " + t("btn_all_projects"), key=f"btn_back_{project_id}"):
             st.query_params.clear()
@@ -769,50 +775,83 @@ def render_project_page(project_id: str):
         and st_info["steps"]["render"]["status"] == "selesai"
     )
 
-    with col_auto:
+    with col_actions:
         st.write("")
-        with st.popover(f"▷ {t('btn_auto_run_until_done')}", use_container_width=True):
-            st.markdown(f"**{t('auto_pipeline_title')}**")
-            st.caption(t("auto_pipeline_desc"))
-            auto_with_capcut = st.checkbox(t("auto_include_capcut"), value=False, key=f"auto_cc_{project_id}")
-            auto_stop_review = st.checkbox(t("auto_stop_on_review"), value=True, key=f"auto_rev_{project_id}")
+        col_auto_btn, col_opt_btn = st.columns([4, 1])
+        with col_auto_btn:
+            with st.popover(f"▷ {t('btn_auto_run_until_done')}", use_container_width=True):
+                st.markdown(f"**{t('auto_pipeline_title')}**")
+                st.caption(t("auto_pipeline_desc"))
+                auto_with_capcut = st.checkbox(t("auto_include_capcut"), value=False, key=f"auto_cc_{project_id}")
+                auto_stop_review = st.checkbox(t("auto_stop_on_review"), value=True, key=f"auto_rev_{project_id}")
 
-            job_state = jobs.get_job_state(project_id)
-            is_job_running = bool(job_state and job_state.get("status") == "running")
-            is_review_paused = bool(
-                job_state
-                and job_state.get("status") == "stopped"
-                and "Menunggu pengecekan visual" in (job_state.get("phase") or "")
-            )
+                job_state = jobs.get_job_state(project_id)
+                is_job_running = bool(job_state and job_state.get("status") == "running")
+                is_review_paused = bool(
+                    job_state
+                    and job_state.get("status") == "stopped"
+                    and "Menunggu pengecekan visual" in (job_state.get("phase") or "")
+                )
 
-            if is_review_paused:
-                phase_msg = f" ({job_state.get('phase')})" if job_state.get("phase") else ""
-                st.warning(f"⚠️ **Pekerjaan Otomatis Terhenti**{phase_msg}: Terdapat shot yang ditandai 'Perlu dicek' pada Langkah ③ Visual.")
-                if st.button("▶️ Lanjutkan Otomatis (Abaikan Pengecekan)", key=f"btn_resume_auto_{project_id}", type="primary", use_container_width=True):
-                    cmd = ["python", "cli_longform.py", "pipeline", "auto", project_id, "--skip-review-check"]
-                    if auto_with_capcut:
-                        cmd.append("--with-capcut")
-                    jobs.start_job(project_id, "pipeline_auto", cmd)
-                    time.sleep(0.5)
-                    st.rerun()
-            elif not script_done:
-                st.caption("🔒 *Langkah ① Naskah harus selesai terlebih dahulu sebelum dapat menjalankan otomatisasi.*")
-                st.button("🚀 Jalankan Otomatis Sampai Selesai", disabled=True, key=f"btn_auto_dis_{project_id}", use_container_width=True)
-            elif all_done and not auto_with_capcut:
-                st.button("✅ Semua Langkah Selesai ✔", disabled=True, key=f"btn_auto_done_{project_id}", use_container_width=True)
-            else:
-                if st.button("🚀 Jalankan Otomatis Sampai Selesai", disabled=is_job_running, type="primary", key=f"btn_start_auto_{project_id}", use_container_width=True):
-                    cmd = ["python", "cli_longform.py", "pipeline", "auto", project_id]
-                    if auto_with_capcut:
-                        cmd.append("--with-capcut")
-                    if auto_stop_review:
-                        cmd.append("--stop-on-review")
-                    jobs.start_job(project_id, "pipeline_auto", cmd)
-                    time.sleep(0.5)
-                    st.rerun()
+                if is_review_paused:
+                    phase_msg = f" ({job_state.get('phase')})" if job_state.get("phase") else ""
+                    st.warning(f"**Pekerjaan Otomatis Terhenti**{phase_msg}: Terdapat shot yang ditandai 'Perlu dicek' pada Langkah Visual.")
+                    if st.button("Lanjutkan Otomatis (Abaikan Pengecekan)", key=f"btn_resume_auto_{project_id}", type="primary", use_container_width=True):
+                        cmd = ["python", "cli_longform.py", "pipeline", "auto", project_id, "--skip-review-check"]
+                        if auto_with_capcut:
+                            cmd.append("--with-capcut")
+                        jobs.start_job(project_id, "pipeline_auto", cmd)
+                        time.sleep(0.5)
+                        st.rerun()
+                elif not script_done:
+                    st.caption("*Langkah Naskah harus selesai terlebih dahulu sebelum dapat menjalankan otomatisasi.*")
+                    st.button(f"▷ {t('btn_auto_run_until_done')}", disabled=True, key=f"btn_auto_dis_{project_id}", use_container_width=True)
+                elif all_done and not auto_with_capcut:
+                    st.button(t("status_done"), disabled=True, key=f"btn_auto_done_{project_id}", use_container_width=True)
+                else:
+                    if st.button(f"▷ {t('btn_auto_run_until_done')}", disabled=is_job_running, type="primary", key=f"btn_start_auto_{project_id}", use_container_width=True):
+                        cmd = ["python", "cli_longform.py", "pipeline", "auto", project_id]
+                        if auto_with_capcut:
+                            cmd.append("--with-capcut")
+                        if auto_stop_review:
+                            cmd.append("--stop-on-review")
+                        jobs.start_job(project_id, "pipeline_auto", cmd)
+                        time.sleep(0.5)
+                        st.rerun()
+
+        with col_opt_btn:
+            with st.popover("⋯", help="Pengaturan Niche Proyek", use_container_width=True):
+                st.markdown("**Pengaturan Proyek**")
+                all_presets = list_presets()
+                preset_options = sorted(all_presets.keys())
+                current_idx = preset_options.index(manifest.preset_id) if manifest.preset_id in preset_options else 0
+                new_selected_preset = st.selectbox(
+                    "Pilih Preset Baru untuk Proyek ini:",
+                    options=preset_options,
+                    format_func=lambda pid: f"{all_presets[pid].name} ({pid})",
+                    index=current_idx,
+                    key=f"sel_relink_preset_{project_id}",
+                )
+                if st.button("Terapkan Preset", key=f"btn_apply_relink_{project_id}"):
+                    if new_selected_preset != manifest.preset_id:
+                        manifest.preset_id = new_selected_preset
+                        save_manifest(manifest, p_dir)
+                        refresh_project_preset(p_dir)
+                        st.success(f"Preset proyek berhasil diubah ke '{new_selected_preset}'.")
+                        time.sleep(0.5)
+                        st.rerun()
+                    else:
+                        st.info("Preset yang dipilih sama dengan preset proyek saat ini.")
 
     # Stepper 5 Langkah (C4.3)
     step_keys = ["script", "voice", "visual", "render", "capcut"]
+    step_titles = {
+        "script": t("step_script"),
+        "voice": t("step_voice"),
+        "visual": t("step_visual"),
+        "render": t("step_render"),
+        "capcut": t("step_capcut"),
+    }
     step_labels = {
         "script": f"① {t('step_script')}",
         "voice": f"② {t('step_voice')}",
@@ -828,6 +867,13 @@ def render_project_page(project_id: str):
         "belum": "⚪ " + t("status_not_started"),
     }
 
+    core_4_completed = (
+        st_info["steps"]["script"]["status"] == "selesai"
+        and st_info["steps"]["voice"]["status"] == "selesai"
+        and st_info["steps"]["visual"]["status"] == "selesai"
+        and st_info["steps"]["render"]["status"] == "selesai"
+    )
+
     # Auto-select first uncompleted step if not explicitly selected
     default_active_step = "script"
     for k in step_keys:
@@ -836,21 +882,18 @@ def render_project_page(project_id: str):
             break
 
     session_key = f"active_step_{project_id}"
-    if session_key not in st.session_state:
+    query_step = st.query_params.get("step")
+    if query_step in step_keys:
+        st.session_state[session_key] = query_step
+    elif session_key not in st.session_state:
         st.session_state[session_key] = default_active_step
 
     current_active_step = st.session_state[session_key]
 
     # Always Visible Top Job Monitor (Mockup 2: Placed ABOVE stepper)
-    render_job_monitor_widget(project_id, current_step=current_active_step)
+    # Hide "Pekerjaan Selesai" when core_4_completed so only 1 banner shows (V4)
+    render_job_monitor_widget(project_id, current_step=current_active_step, hide_completed=core_4_completed)
 
-    # Success Banner (Mockup 3: Green checkmark card when core 4 or all 5 steps are completed)
-    core_4_completed = (
-        st_info["steps"]["script"]["status"] == "selesai"
-        and st_info["steps"]["voice"]["status"] == "selesai"
-        and st_info["steps"]["visual"]["status"] == "selesai"
-        and st_info["steps"]["render"]["status"] == "selesai"
-    )
     if core_4_completed:
         banner_msg = f"{t('success_banner_title')} {t('success_banner_subtitle')}"
         render_success_banner(banner_msg)
@@ -861,7 +904,7 @@ def render_project_page(project_id: str):
         col_w, col_wb = st.columns([4, 1])
         has_lang_mismatch = any(df.get("field") == "language" for df in st_info["preset_diff_details"])
         with col_w:
-            st.warning(f"⚠️ **Pengaturan Niche Diperbarui**: Terdapat {diff_count} perubahan pengaturan niche sejak proyek dibuat.")
+            st.warning(f"**Pengaturan Niche Diperbarui**: Terdapat {diff_count} perubahan pengaturan niche sejak proyek dibuat.")
             with st.expander("Lihat Rincian Perubahan Pengaturan", expanded=False):
                 for df in st_info["preset_diff_details"]:
                     st.write(f"- **{df['field']}**: {df['description']}")
@@ -869,46 +912,34 @@ def render_project_page(project_id: str):
         with col_wb:
             st.write("")
             if has_lang_mismatch:
-                st.caption("🔒 Perubahan bahasa narasi harus dilakukan secara terpisah.")
+                st.caption("Perubahan bahasa narasi harus dilakukan secara terpisah.")
             elif st.button("Pakai Pengaturan Terbaru", key=f"btn_refresh_preset_{project_id}"):
                 refresh_project_preset(p_dir)
                 st.success("Pengaturan proyek diperbarui ke versi terbaru.")
                 time.sleep(0.5)
                 st.rerun()
 
-    # Expander Relink / Ubah Preset Proyek (G2)
-    with st.expander("⚙️ Ganti / Hubungkan Ulang (Relink) Niche Proyek", expanded=False):
-        all_presets = list_presets()
-        preset_options = sorted(all_presets.keys())
-        current_idx = preset_options.index(manifest.preset_id) if manifest.preset_id in preset_options else 0
-        new_selected_preset = st.selectbox(
-            "Pilih Preset Baru untuk Proyek ini:",
-            options=preset_options,
-            format_func=lambda pid: f"{all_presets[pid].name} ({pid})",
-            index=current_idx,
-            key=f"sel_relink_preset_{project_id}",
-        )
-        col_rel, _ = st.columns([1, 4])
-        with col_rel:
-            if st.button("Terapkan Preset", key=f"btn_apply_relink_{project_id}"):
-                if new_selected_preset != manifest.preset_id:
-                    manifest.preset_id = new_selected_preset
-                    save_manifest(manifest, p_dir)
-                    refresh_project_preset(p_dir)
-                    st.success(f"Preset proyek berhasil diubah ke '{new_selected_preset}'.")
-                    time.sleep(0.5)
-                    st.rerun()
-                else:
-                    st.info("Preset yang dipilih sama dengan preset proyek saat ini.")
-
     # Render horizontal stepper pill selector (5 cards, Mockup 2 & 3)
     stepper_cols = st.columns(5)
     for idx, k in enumerate(step_keys):
         st_val = st_info["steps"][k]["status"]
-        badge = step_status_badges.get(st_val, "⚪ Belum")
+        badge = step_status_badges.get(st_val, "⚪ " + t("status_not_started"))
         is_selected = (k == current_active_step)
         btn_type = "primary" if is_selected else "secondary"
+
+        # Friendly status state & clean label for mockup card
+        status_state = "done" if st_val == "selesai" else ("active" if is_selected else ("running" if st_val == "berjalan" else ("warning" if st_val in ("terhenti", "perlu_diperbarui") else "pending")))
+        status_label_clean = t("status_done") if st_val == "selesai" else (t("status_in_progress") if st_val == "berjalan" else (t("status_interrupted") if st_val == "terhenti" else (t("status_needs_update") if st_val == "perlu_diperbarui" else t("status_not_started"))))
+
         with stepper_cols[idx]:
+            card_html = render_stepper_card_html(
+                idx + 1,
+                step_titles[k],
+                status_label_clean,
+                status_state,
+                is_selected,
+            )
+            st.markdown(card_html, unsafe_allow_html=True)
             if st.button(f"{step_labels[k]}\n{badge}", key=f"stepper_btn_{k}_{project_id}", type=btn_type, use_container_width=True):
                 st.session_state[session_key] = k
                 st.rerun()
@@ -928,10 +959,10 @@ def render_project_page(project_id: str):
         col_side_rend, col_side_cc = st.columns(2)
         with col_side_rend:
             with st.container(border=True):
-                render_render_step_flow(project_id, p_dir, manifest, st_info["steps"]["render"], is_job_running=is_job_running)
+                render_render_step_flow(project_id, p_dir, manifest, st_info["steps"]["render"], is_job_running=is_job_running, is_completed_view=True)
         with col_side_cc:
             with st.container(border=True):
-                render_capcut_step_flow(project_id, p_dir, manifest, st_info["steps"]["capcut"], is_job_running=is_job_running)
+                render_capcut_step_flow(project_id, p_dir, manifest, st_info["steps"]["capcut"], is_job_running=is_job_running, is_completed_view=True)
     else:
         with st.container(border=True):
             if active_step == "script":
@@ -941,9 +972,9 @@ def render_project_page(project_id: str):
             elif active_step == "visual":
                 render_visual_step_flow(project_id, p_dir, manifest, active_info, is_job_running=is_job_running)
             elif active_step == "render":
-                render_render_step_flow(project_id, p_dir, manifest, active_info, is_job_running=is_job_running)
+                render_render_step_flow(project_id, p_dir, manifest, active_info, is_job_running=is_job_running, is_completed_view=False)
             elif active_step == "capcut":
-                render_capcut_step_flow(project_id, p_dir, manifest, active_info, is_job_running=is_job_running)
+                render_capcut_step_flow(project_id, p_dir, manifest, active_info, is_job_running=is_job_running, is_completed_view=False)
 
 
 # --- Step 1: Naskah Flow (C4.3) ---
@@ -961,17 +992,24 @@ def render_script_step_flow(
     is_job_running = is_job_running or is_running or bool(job_state and job_state.get("status") == "running")
 
     status = step_info["status"]
-    st.subheader("① Naskah Cerita & Pembagian Bab")
-    st.write(f"**Status:** `{step_info['label']}`")
+
+    # Clean Header (Mockup style)
+    col_hdr, col_act = st.columns([3, 1])
+    with col_hdr:
+        st.markdown(f"### {t('step_script')}")
+        st.caption("Susun kerangka dan narasi dokumenter per bab sebelum sintesis audio.")
+    with col_act:
+        st.write("")
+        if status == "selesai":
+            if st.button("Lanjut ke Suara", type="primary", key=f"btn_next_voice_{project_id}", use_container_width=True):
+                st.session_state[f"active_step_{project_id}"] = "voice"
+                st.rerun()
 
     # If script is already finished: show chapter list and continue button
     if status == "selesai":
-        st.success(f"✅ Naskah telah selesai ({len(manifest.chapters)} bab). Anda dapat melanjutkan ke langkah pembuatan suara.")
-        if st.button("Lanjut ke Suara 👉", type="primary", key=f"btn_next_voice_{project_id}"):
-            st.session_state[f"active_step_{project_id}"] = "voice"
-            st.rerun()
+        st.success(f"Naskah telah selesai ({len(manifest.chapters)} bab). Anda dapat melanjutkan ke langkah pembuatan suara.")
 
-        with st.expander("📖 Lihat Rincian Naskah Bab", expanded=False):
+        with st.expander("Lihat Rincian Naskah Bab", expanded=False):
             for ch in manifest.chapters:
                 st.markdown(f"**Bab {ch.chapter_index}: {ch.chapter_title}** ({len(ch.tts_groups)} grup narasi)")
                 ch_txt = "\n\n".join(g.paragraph_text for g in ch.tts_groups if g.paragraph_text)
@@ -985,7 +1023,7 @@ def render_script_step_flow(
 
     with col_import:
         with st.container(border=True):
-            st.markdown("### 📄 Impor Naskah Sendiri")
+            st.markdown("### Impor Naskah Sendiri")
             st.caption("Gunakan naskah milik Anda sendiri dari berkas markdown/teks atau tempel langsung.")
 
             uploaded_file = st.file_uploader(
@@ -1000,7 +1038,7 @@ def render_script_step_flow(
                 key=f"pasted_script_{project_id}",
             )
 
-            with st.expander("ℹ️ Contoh & Format Tag Naskah"):
+            with st.expander("Contoh & Format Tag Naskah"):
                 st.markdown(
                     "Format naskah menggunakan heading Markdown atau tag bab:\n\n"
                     "```markdown\n"
@@ -1011,7 +1049,7 @@ def render_script_step_flow(
                     "```"
                 )
 
-            if st.button("📥 Impor Naskah Ini", type="primary", key=f"btn_submit_import_{project_id}", disabled=is_job_running):
+            if st.button("Impor Naskah Ini", type="primary", key=f"btn_submit_import_{project_id}", disabled=is_job_running):
                 content = ""
                 if uploaded_file is not None:
                     content = uploaded_file.getvalue().decode("utf-8", errors="replace")
@@ -1031,7 +1069,7 @@ def render_script_step_flow(
 
     with col_ai:
         with st.container(border=True):
-            st.markdown("### ✨ Tulis dengan AI")
+            st.markdown("### Tulis dengan AI")
             st.caption("AI menyusun kerangka dan menulis narasi dokumenter otomatis berdasarkan niche.")
 
             llm_status = check_llm_status()
@@ -1039,11 +1077,11 @@ def render_script_step_flow(
             use_fake = st.session_state.get(f"fake_toggle_{project_id}", False)
 
             if llm_status.get("is_invalid"):
-                st.warning(f"⚠️ {llm_status['message']}")
+                st.warning(f"{llm_status['message']}")
             elif not llm_ok and not use_fake:
-                st.warning("⚠️ Belum ada API key AI. Isi di pengaturan MoneyPrinterTurbo, atau impor naskah sendiri.")
+                st.warning("Belum ada API key AI. Isi di pengaturan MoneyPrinterTurbo, atau impor naskah sendiri.")
 
-            with st.expander("⚙️ Opsi Penulisan AI", expanded=False):
+            with st.expander("Opsi Penulisan AI", expanded=False):
                 custom_topic = st.text_input("Topik Tambahan / Fokus:", value=getattr(manifest, "topic", None) or manifest.sub_niche_focus or "", key=f"ai_topic_{project_id}")
                 fake_val = st.checkbox("Gunakan Provider Simulasi / Pengujian (FAKE)", value=use_fake, key=f"fake_cb_{project_id}")
                 if fake_val != use_fake:
@@ -1051,10 +1089,10 @@ def render_script_step_flow(
                     st.rerun()
 
             if use_fake:
-                st.error("⚠️ **MODE PENGUJIAN FAKE AKTIF**: Naskah dibuat secara tiruan tanpa memanggil API AI nyata.")
+                st.error("**MODE PENGUJIAN FAKE AKTIF**: Naskah dibuat secara tiruan tanpa memanggil API AI nyata.")
 
             ai_disabled = is_job_running or (not llm_ok and not use_fake)
-            ai_btn_label = "⏳ Sedang Menulis..." if is_job_running else ("✨ Mulai Tulis Naskah AI" if len(manifest.chapters) == 0 else "✨ Buat Ulang Naskah AI")
+            ai_btn_label = "Sedang Menulis..." if is_job_running else ("Mulai Tulis Naskah AI" if len(manifest.chapters) == 0 else "Buat Ulang Naskah AI")
             if st.button(ai_btn_label, type="primary" if not ai_disabled else "secondary", disabled=ai_disabled, key=f"btn_start_ai_{project_id}"):
                 provider_arg = ["--provider", "fake"] if use_fake else []
                 topic = custom_topic.strip() if custom_topic.strip() else (getattr(manifest, "topic", None) or manifest.title)
@@ -1064,7 +1102,7 @@ def render_script_step_flow(
 
     # Chapter Editor & Quality Report if chapters exist
     if manifest.chapters:
-        with st.expander("📝 Editor Per Bab & Kualitas Naskah", expanded=False):
+        with st.expander("Editor Per Bab & Kualitas Naskah", expanded=False):
             st.write("#### Editor Teks Bab")
             ch_indices = [ch.chapter_index for ch in manifest.chapters]
             sel_ch_idx = st.selectbox(
@@ -1098,11 +1136,11 @@ def render_script_step_flow(
                     q_report = checker.check_script(full_script_text, manifest.chapters)
                     col_q1, col_q2 = st.columns(2)
                     with col_q1:
-                        st.metric("Skor Kualitas Hook", f"{q_report.get('hook_score', 85)}/100")
-                        st.metric("Pelanggaran Hook", len(q_report.get("hook_violations", [])))
+                        render_metric_tile("Skor Kualitas Hook", f"{q_report.get('hook_score', 85)}/100", status="accent")
+                        render_metric_tile("Pelanggaran Hook", str(len(q_report.get("hook_violations", []))))
                     with col_q2:
-                        st.metric("Frasa Klise Terdeteksi", len(q_report.get("cliche_matches", [])))
-                        st.metric("Klaim Butuh Verifikasi [verify]", len(q_report.get("verify_claims", [])))
+                        render_metric_tile("Frasa Klise Terdeteksi", str(len(q_report.get("cliche_matches", []))))
+                        render_metric_tile("Klaim Butuh Verifikasi", str(len(q_report.get("verify_claims", []))))
             except Exception as exc:
                 st.caption(f"Laporan kualitas belum tersedia: {exc}")
 
@@ -1122,42 +1160,43 @@ def render_voice_step_flow(
     is_job_running = is_job_running or is_running or bool(job_state and job_state.get("status") == "running")
 
     status = step_info["status"]
-    st.subheader("② Suara & Sintesis Narasi Audio")
-    st.write(f"**Status:** `{step_info['label']}`")
-
     voice_svc = VoiceService(p_dir)
 
-    # 1. Single Adaptive Primary Action Button (C4.3)
-    if is_job_running:
-        st.button("⏳ Sedang Menyintesis Audio...", disabled=True, type="primary")
-    elif status == "selesai":
-        if st.button("Selesai ✔ — Lanjut ke Visual", type="primary", key=f"btn_next_visual_{project_id}"):
-            st.session_state[f"active_step_{project_id}"] = "visual"
-            st.rerun()
-    elif status == "terhenti":
-        btn_label = "▶️ Lanjutkan Sintesis Audio"
-        if st.button(btn_label, type="primary", key=f"btn_resume_voice_{project_id}"):
-            cmd = [sys.executable, "cli_longform.py", "audio", "synth", project_id]
-            jobs.start_job(project_id, "audio_synthesize", cmd)
-            st.rerun()
-    elif status == "perlu_diperbarui":
-        btn_label = "🔄 Ulangi Sintesis (Perlu Diperbarui)"
-        if st.button(btn_label, type="primary", key=f"btn_stale_voice_{project_id}"):
-            cmd = [sys.executable, "cli_longform.py", "audio", "synth", project_id]
-            jobs.start_job(project_id, "audio_synthesize", cmd)
-            st.rerun()
-    else:  # belum
-        btn_label = "🎙️ Mulai Sintesis Audio"
-        btn_disabled = bool(len(manifest.chapters) == 0) or is_job_running
-        if st.button(btn_label, type="primary", disabled=btn_disabled, key=f"btn_start_voice_{project_id}"):
-            cmd = [sys.executable, "cli_longform.py", "audio", "synth", project_id]
-            jobs.start_job(project_id, "audio_synthesize", cmd)
-            st.rerun()
-        if btn_disabled:
-            st.caption("⚠️ Belum ada naskah. Selesaikan langkah **① Naskah** terlebih dahulu.")
+    # Clean Header (Mockup style)
+    col_hdr, col_act = st.columns([3, 1])
+    with col_hdr:
+        st.markdown(f"### {t('step_voice')}")
+        st.caption("Sintesis audio narasi dokumenter per kelompok teks dan sesuaikan karakter suara.")
+    with col_act:
+        st.write("")
+        if is_job_running:
+            st.button("Sedang Menyintesis Audio...", disabled=True, type="primary", use_container_width=True)
+        elif status == "selesai":
+            if st.button("Lanjut ke Visual", type="primary", key=f"btn_next_visual_{project_id}", use_container_width=True):
+                st.session_state[f"active_step_{project_id}"] = "visual"
+                st.rerun()
+        elif status == "terhenti":
+            if st.button("▶️ Lanjutkan Sintesis Audio", type="primary", key=f"btn_resume_voice_{project_id}", use_container_width=True):
+                cmd = [sys.executable, "cli_longform.py", "audio", "synth", project_id]
+                jobs.start_job(project_id, "audio_synthesize", cmd)
+                st.rerun()
+        elif status == "perlu_diperbarui":
+            if st.button("Ulangi Sintesis (Perlu Diperbarui)", type="primary", key=f"btn_stale_voice_{project_id}", use_container_width=True):
+                cmd = [sys.executable, "cli_longform.py", "audio", "synth", project_id]
+                jobs.start_job(project_id, "audio_synthesize", cmd)
+                st.rerun()
+        else:  # belum
+            btn_disabled = bool(len(manifest.chapters) == 0) or is_job_running
+            if st.button("Mulai Sintesis Audio", type="primary", disabled=btn_disabled, key=f"btn_start_voice_{project_id}", use_container_width=True):
+                cmd = [sys.executable, "cli_longform.py", "audio", "synth", project_id]
+                jobs.start_job(project_id, "audio_synthesize", cmd)
+                st.rerun()
 
-    # 2. Hidden Options in Expander (C4.3)
-    with st.expander("⚙️ Pilihan Suara, Kecepatan & Pratinjau", expanded=False):
+    if status == "belum" and len(manifest.chapters) == 0:
+        st.caption("Belum ada naskah. Selesaikan langkah Naskah terlebih dahulu.")
+
+    # Options in Expander
+    with st.expander("Pilihan Suara, Kecepatan & Pratinjau", expanded=False):
         col_vf, col_vr = st.columns([2, 1])
         with col_vf:
             lang_filter = st.selectbox("Filter Bahasa Suara:", ["en-US", "id-ID", "Semua"], index=0, key=f"vf_lang_{project_id}")
@@ -1176,7 +1215,7 @@ def render_voice_step_flow(
 
         col_samp, col_save = st.columns(2)
         with col_samp:
-            if st.button("🔊 Dengarkan Sampel Suara", key=f"btn_test_sample_{project_id}"):
+            if st.button("Dengarkan Sampel Suara", key=f"btn_test_sample_{project_id}"):
                 with st.spinner("Mensintesis sampel..."):
                     try:
                         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1194,7 +1233,7 @@ def render_voice_step_flow(
                         st.error(f"Gagal memutar sampel: {exc}")
 
         with col_save:
-            if st.button("💾 Terapkan Suara ke Proyek", key=f"btn_apply_voice_{project_id}"):
+            if st.button("Terapkan Suara ke Proyek", key=f"btn_apply_voice_{project_id}"):
                 voice_svc.set_voice(sel_voice, sel_rate)
                 st.success("Suara baru berhasil diterapkan ke proyek.")
                 time.sleep(0.5)
@@ -1204,7 +1243,7 @@ def render_voice_step_flow(
         if manifest.chapters:
             st.write("---")
             st.write("#### Video Pratinjau Bab 1 (5 Detik)")
-            if st.button("🎬 Buat Video Pratinjau Bab 1", key=f"btn_prev_video_{project_id}"):
+            if st.button("Buat Video Pratinjau Bab 1", key=f"btn_prev_video_{project_id}"):
                 with st.spinner("Merender klip pratinjau MP4..."):
                     try:
                         wav_p, srt_p, mp4_p = voice_svc.generate_preview(1)
@@ -1377,10 +1416,68 @@ def render_visual_step_flow(
     job_state = jobs.get_job_state(project_id)
     is_job_running = is_job_running or bool(job_state and job_state.get("status") == "running")
 
-    st.subheader("③ Alokasi & Penyiapan Klip Visual")
-    st.write(f"**Status Saat Ini:** `{step_info['label']}`")
+    # --- V1: Source Selection Configuration (checked first to pass target_prov to action button) ---
+    from app.config import config
+    pixabay_keys = config.app.get("pixabay_api_keys", []) or []
+    has_pixabay = bool((isinstance(pixabay_keys, list) and any(k.strip() for k in pixabay_keys)) or (isinstance(pixabay_keys, str) and pixabay_keys.strip()))
+    raw_pk = pixabay_keys[0] if (isinstance(pixabay_keys, list) and pixabay_keys) else str(pixabay_keys)
+    mask_pixabay = mask_api_key(raw_pk) if has_pixabay else ""
 
-    # --- V1: Summary Metrics ---
+    coverr_keys = config.app.get("coverr_api_keys", []) or []
+    has_coverr = bool((isinstance(coverr_keys, list) and any(k.strip() for k in coverr_keys)) or (isinstance(coverr_keys, str) and coverr_keys.strip()))
+    raw_ck = coverr_keys[0] if (isinstance(coverr_keys, list) and coverr_keys) else str(coverr_keys)
+    mask_coverr = mask_api_key(raw_ck) if has_coverr else ""
+
+    target_prov = "pixabay" if has_pixabay else ("coverr" if has_coverr else "local")
+
+    # --- Clean Header (Mockup 2 V3) ---
+    col_hdr, col_act = st.columns([3, 1])
+    with col_hdr:
+        st.markdown(f"### {t('step_visual')}")
+        st.caption("Semua klip siap. Cek shot yang ditandai, ganti bila perlu.")
+    with col_act:
+        st.write("")
+        if is_job_running:
+            st.button("Sedang Menyusun Visual...", disabled=True, type="primary", key=f"btn_running_vis_{project_id}", use_container_width=True)
+        else:
+            st_val = step_info["status"]
+            if st_val == "selesai":
+                if st.button("Selesai ✔ — Lanjut ke Render", type="primary", key=f"btn_next_render_{project_id}", use_container_width=True):
+                    st.session_state[f"active_step_{project_id}"] = "render"
+                    st.rerun()
+            elif st_val == "terhenti":
+                if st.button("Lanjutkan", type="primary", key=f"btn_resume_vis_{project_id}", use_container_width=True):
+                    cmd = [sys.executable, "cli_longform.py", "visual", "pipeline", project_id, "--allow-fallback"]
+                    if target_prov:
+                        cmd.extend(["--provider", target_prov])
+                    jobs.start_job(project_id, "visual_pipeline", cmd)
+                    st.rerun()
+            elif st_val == "perlu_diperbarui":
+                if st.button("Perbarui Klip yang Berubah", type="primary", key=f"btn_update_vis_{project_id}", use_container_width=True):
+                    cmd = [sys.executable, "cli_longform.py", "visual", "pipeline", project_id, "--allow-fallback"]
+                    if target_prov:
+                        cmd.extend(["--provider", target_prov])
+                    jobs.start_job(project_id, "visual_pipeline", cmd)
+                    st.rerun()
+            else:  # belum
+                st_all = compute_project_step_status(p_dir)
+                script_st = st_all["steps"]["script"]["status"]
+                voice_st = st_all["steps"]["voice"]["status"]
+                script_done = (script_st == "selesai")
+                voice_done = (voice_st == "selesai")
+                btn_disabled = not (script_done and voice_done)
+
+                if btn_disabled:
+                    st.caption(f"Selesaikan langkah Naskah ({script_st}) dan Suara ({voice_st}) terlebih dahulu.")
+
+                if st.button("Cari & Susun Visual", type="primary", disabled=btn_disabled, key=f"btn_start_vis_{project_id}", use_container_width=True):
+                    cmd = [sys.executable, "cli_longform.py", "visual", "pipeline", project_id, "--allow-fallback"]
+                    if target_prov:
+                        cmd.extend(["--provider", target_prov])
+                    jobs.start_job(project_id, "visual_pipeline", cmd)
+                    st.rerun()
+
+    # --- V1: Summary Metric Tiles (Mockup 2 V3) ---
     total_shots = sum(len(ch.shots) for ch in manifest.chapters)
     built_shots = sum(
         1 for ch in manifest.chapters for s in ch.shots
@@ -1393,6 +1490,10 @@ def render_visual_step_flow(
     locked_count = sum(
         1 for ch in manifest.chapters for s in ch.shots
         if getattr(s, "locked", False)
+    )
+    placeholder_count = sum(
+        1 for ch in manifest.chapters for s in ch.shots
+        if getattr(s, "is_fake", False) or getattr(s, "actual_source", "") == "fake"
     )
 
     used_sources_set = set()
@@ -1409,127 +1510,53 @@ def render_visual_step_flow(
     sources_str = ", ".join(sorted(used_sources_set)) if used_sources_set else "Belum ada"
 
     col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-    col_m1.metric("Klip Siap", f"{built_shots} / {total_shots}")
-    col_m2.metric("Perlu Dicek", f"{needs_review_count}")
-    col_m3.metric("Terkunci", f"{locked_count}")
-    col_m4.metric("Sumber Terpakai", sources_str)
+    with col_m1:
+        render_metric_tile("Klip Siap", f"{built_shots} / {total_shots}", status="success" if built_shots == total_shots and total_shots > 0 else "")
+    with col_m2:
+        render_metric_tile("Perlu Dicek", str(needs_review_count), status="warning" if needs_review_count > 0 else "")
+    with col_m3:
+        render_metric_tile("Terkunci", str(locked_count), status="accent" if locked_count > 0 else "")
+    with col_m4:
+        render_metric_tile("Sumber Terpakai", sources_str)
 
-    # --- V1: Source Selection Checkboxes ---
-    st.write("##### 🌐 Pilihan Sumber Footage")
-    col_s1, col_s2, col_s3, col_s4, col_s5 = st.columns(5)
+    # --- Footage Sources Expander (V3: Collapsible, saves vertical space) ---
+    with st.expander(t("expander_footage_sources"), expanded=False):
+        col_s1, col_s2, col_s3, col_s4, col_s5 = st.columns(5)
+        cb_pixabay = col_s1.checkbox(
+            f"Pixabay ({mask_pixabay})" if has_pixabay else "Pixabay (Belum ada key)",
+            value=has_pixabay,
+            disabled=not has_pixabay,
+            key=f"cb_prov_pixabay_{project_id}",
+        )
+        cb_coverr = col_s2.checkbox(
+            f"Coverr ({mask_coverr})" if has_coverr else "Coverr (Belum ada key)",
+            value=has_coverr,
+            disabled=not has_coverr,
+            key=f"cb_prov_coverr_{project_id}",
+        )
+        col_s3.checkbox(
+            "Pexels (Belum ada key di config)",
+            value=False,
+            disabled=True,
+            key=f"cb_prov_pexels_{project_id}",
+        )
+        cb_local = col_s4.checkbox(
+            "File lokal (siap)",
+            value=True,
+            disabled=False,
+            key=f"cb_prov_local_{project_id}",
+        )
+        col_s5.checkbox(
+            "Gambar AI (Belum ada key OpenAI)",
+            value=False,
+            disabled=True,
+            key=f"cb_prov_ai_{project_id}",
+        )
 
-    from app.config import config
-    pixabay_keys = config.app.get("pixabay_api_keys", []) or []
-    has_pixabay = bool((isinstance(pixabay_keys, list) and any(k.strip() for k in pixabay_keys)) or (isinstance(pixabay_keys, str) and pixabay_keys.strip()))
-    raw_pk = pixabay_keys[0] if (isinstance(pixabay_keys, list) and pixabay_keys) else str(pixabay_keys)
-    mask_pixabay = mask_api_key(raw_pk) if has_pixabay else ""
-
-    coverr_keys = config.app.get("coverr_api_keys", []) or []
-    has_coverr = bool((isinstance(coverr_keys, list) and any(k.strip() for k in coverr_keys)) or (isinstance(coverr_keys, str) and coverr_keys.strip()))
-    raw_ck = coverr_keys[0] if (isinstance(coverr_keys, list) and coverr_keys) else str(coverr_keys)
-    mask_coverr = mask_api_key(raw_ck) if has_coverr else ""
-
-    pexels_keys = config.app.get("pexels_api_keys", []) or []
-    has_pexels = bool((isinstance(pexels_keys, list) and any(k.strip() for k in pexels_keys)) or (isinstance(pexels_keys, str) and pexels_keys.strip()))
-
-    ai_image_keys = config.app.get("openai_image_api_keys", []) or []
-    has_ai_image = bool((isinstance(ai_image_keys, list) and any(k.strip() for k in ai_image_keys)) or (isinstance(ai_image_keys, str) and ai_image_keys.strip()))
-
-    cb_pixabay = col_s1.checkbox(
-        f"Pixabay ({mask_pixabay})" if has_pixabay else "Pixabay (Belum ada key)",
-        value=has_pixabay,
-        disabled=not has_pixabay,
-        key=f"cb_prov_pixabay_{project_id}",
-    )
-    cb_coverr = col_s2.checkbox(
-        f"Coverr ({mask_coverr})" if has_coverr else "Coverr (Belum ada key)",
-        value=has_coverr,
-        disabled=not has_coverr,
-        key=f"cb_prov_coverr_{project_id}",
-    )
-    col_s3.checkbox(
-        "Pexels (Belum ada key di config)",
-        value=False,
-        disabled=True,
-        key=f"cb_prov_pexels_{project_id}",
-    )
-    cb_local = col_s4.checkbox(
-        "File lokal (siap)",
-        value=True,
-        disabled=False,
-        key=f"cb_prov_local_{project_id}",
-    )
-    col_s5.checkbox(
-        "Gambar AI (Belum ada key OpenAI)",
-        value=False,
-        disabled=True,
-        key=f"cb_prov_ai_{project_id}",
-    )
-
-    # Determine provider flag
-    target_prov = None
-    if cb_pixabay:
-        target_prov = "pixabay"
-    elif cb_coverr:
-        target_prov = "coverr"
-    elif cb_local:
-        target_prov = "local"
-
-    # --- V1: Single Adaptive Button & Job Monitor ---
-    if is_job_running:
-        st.button("⏳ Sedang Menyusun Visual...", disabled=True, type="primary", key=f"btn_running_vis_{project_id}")
-        st.caption("Pekerjaan sedang berlangsung di latar belakang. Anda dapat memantau progres atau membatalkannya pada panel monitor di atas.")
-    else:
-        st_val = step_info["status"]
-        if st_val == "selesai":
-            if st.button("✅ Selesai ✔ — Lanjut ke Render", type="primary", key=f"btn_next_render_{project_id}"):
-                st.session_state[f"active_step_{project_id}"] = "render"
-                st.rerun()
-        elif st_val == "terhenti":
-            if st.button("▶️ Lanjutkan", type="primary", key=f"btn_resume_vis_{project_id}"):
-                cmd = [sys.executable, "cli_longform.py", "visual", "pipeline", project_id, "--allow-fallback"]
-                if target_prov:
-                    cmd.extend(["--provider", target_prov])
-                jobs.start_job(project_id, "visual_pipeline", cmd)
-                st.rerun()
-        elif st_val == "perlu_diperbarui":
-            if st.button("🔄 Perbarui Klip yang Berubah", type="primary", key=f"btn_update_vis_{project_id}"):
-                cmd = [sys.executable, "cli_longform.py", "visual", "pipeline", project_id, "--allow-fallback"]
-                if target_prov:
-                    cmd.extend(["--provider", target_prov])
-                jobs.start_job(project_id, "visual_pipeline", cmd)
-                st.rerun()
-        else:  # belum
-            # W1: Button is active if Script & Voice steps are completed, regardless of total_shots
-            st_all = compute_project_step_status(p_dir)
-            script_st = st_all["steps"]["script"]["status"]
-            voice_st = st_all["steps"]["voice"]["status"]
-            script_done = (script_st == "selesai")
-            voice_done = (voice_st == "selesai")
-            btn_disabled = not (script_done and voice_done)
-
-            if btn_disabled:
-                if not script_done and not voice_done:
-                    st.warning(f"⚠️ Alokasi visual belum dapat dimulai. Langkah **① Naskah** (status: `{script_st}`) dan **② Suara** (status: `{voice_st}`) harus selesai terlebih dahulu.")
-                elif not script_done:
-                    st.warning(f"⚠️ Alokasi visual belum dapat dimulai. Selesaikan langkah **① Naskah** terlebih dahulu (status: `{script_st}`).")
-                else:
-                    st.warning(f"⚠️ Alokasi visual belum dapat dimulai. Selesaikan langkah **② Suara** terlebih dahulu (status: `{voice_st}`).")
-            else:
-                if total_shots == 0:
-                    st.info("💡 Langkah **① Naskah** dan **② Suara** sudah siap. Klik tombol di bawah untuk membagi shot dan mencari footage otomatis.")
-
-            if st.button("🎬 Cari & Susun Visual", type="primary", disabled=btn_disabled, key=f"btn_start_vis_{project_id}"):
-                cmd = [sys.executable, "cli_longform.py", "visual", "pipeline", project_id, "--allow-fallback"]
-                if target_prov:
-                    cmd.extend(["--provider", target_prov])
-                jobs.start_job(project_id, "visual_pipeline", cmd)
-                st.rerun()
-
-    # --- V2: Interactive 2-Column Side-by-Side Gallery & Detail Layout (Mockup 2) ---
+    # --- V2: Interactive 2-Column Side-by-Side Gallery & Detail Layout (Mockup 2 V3) ---
     if total_shots > 0:
         st.write("---")
-        col_gallery, col_detail = st.columns([1.12, 0.88])
+        col_gallery, col_detail = st.columns([1.6, 1.0])
 
         # All shots flattened & mapped
         all_shots_list = [s for ch in manifest.chapters for s in ch.shots]
@@ -1542,11 +1569,11 @@ def render_visual_step_flow(
             st.session_state[f"selected_shot_{project_id}"] = current_sel_id
 
         with col_gallery:
-            st.markdown(f"#### 🖼️ {t('gallery_heading')}")
+            st.markdown(f"#### {t('gallery_heading')}")
 
-            # Chapter Pills Selector
+            # Compact Chapter Pills Selector (Mockup 2: Bab 1, Bab 2...)
             ch_names = [t("all_chapters_option")] + [
-                f"Bab {ch.chapter_index}: {getattr(ch, 'chapter_title', f'Bab {ch.chapter_index}')[:16]}"
+                f"Bab {ch.chapter_index}"
                 for ch in manifest.chapters
             ]
             ch_choice = st.pills(
@@ -1557,13 +1584,14 @@ def render_visual_step_flow(
                 label_visibility="collapsed",
             )
 
-            # Filter Mode Pills
-            opt_all_f = t("filter_all")
-            opt_rev_f = f"{t('filter_needs_review')} · {needs_review_count}"
-            opt_lock_f = f"{t('filter_locked')} · {locked_count}"
+            # Filter Mode Chips with Exact Counts (Mockup 2 V3)
+            opt_all_f = f"{t('filter_all')} ({total_shots})"
+            opt_rev_f = f"{t('filter_needs_review')} ({needs_review_count})"
+            opt_lock_f = f"{t('filter_locked')} ({locked_count})"
+            opt_ph_f = f"{t('filter_placeholder')} ({placeholder_count})"
             filter_mode = st.pills(
                 "Filter Status",
-                options=[opt_all_f, opt_rev_f, opt_lock_f],
+                options=[opt_all_f, opt_rev_f, opt_lock_f, opt_ph_f],
                 default=opt_all_f,
                 key=f"vis_filter_{project_id}",
                 label_visibility="collapsed",
@@ -1572,7 +1600,7 @@ def render_visual_step_flow(
             # Filter shots by chapter and status
             visible_shots = []
             for ch in manifest.chapters:
-                ch_label = f"Bab {ch.chapter_index}: {getattr(ch, 'chapter_title', f'Bab {ch.chapter_index}')[:16]}"
+                ch_label = f"Bab {ch.chapter_index}"
                 if ch_choice != t("all_chapters_option") and ch_choice != ch_label:
                     continue
                 for s in ch.shots:
@@ -1580,18 +1608,19 @@ def render_visual_step_flow(
                         continue
                     if filter_mode == opt_lock_f and not getattr(s, "locked", False):
                         continue
+                    if filter_mode == opt_ph_f and not (getattr(s, "is_fake", False) or getattr(s, "actual_source", "") == "fake"):
+                        continue
                     visible_shots.append((ch, s))
 
             if not visible_shots:
                 st.caption(t("no_shots_match_filter"))
             else:
-                # 2-column cards grid inside col_gallery
-                for r_idx in range(0, len(visible_shots), 2):
-                    g_cols = st.columns(2)
-                    for c_idx, (ch, shot) in enumerate(visible_shots[r_idx:r_idx+2]):
+                # 3-column cards grid inside col_gallery (Mockup 2 V3)
+                for r_idx in range(0, len(visible_shots), 3):
+                    g_cols = st.columns(3)
+                    for c_idx, (ch, shot) in enumerate(visible_shots[r_idx:r_idx+3]):
                         with g_cols[c_idx]:
                             is_active_shot = (shot.shot_id == current_sel_id)
-                            card_border_style = "border: 2px solid var(--efs-accent);" if is_active_shot else ""
 
                             with st.container(border=True):
                                 thumb_p = get_shot_thumbnail_path(p_dir, shot)
@@ -1600,11 +1629,11 @@ def render_visual_step_flow(
 
                                 badges = []
                                 if getattr(shot, "needs_review", False):
-                                    badges.append("⚠️ Perlu dicek")
+                                    badges.append("Perlu dicek")
                                 if getattr(shot, "locked", False):
-                                    badges.append("🔒 Terkunci")
+                                    badges.append("Terkunci")
                                 if getattr(shot, "is_fake", False) or (getattr(shot, "actual_source", "") == "fake"):
-                                    badges.append("🎨 Placeholder")
+                                    badges.append("Placeholder")
                                 badge_str = f" {' '.join(badges)}" if badges else ""
 
                                 src = shot.actual_source or shot.requested_source or ("fake" if shot.is_fake else "stock")
@@ -1615,7 +1644,7 @@ def render_visual_step_flow(
                                 if snippet:
                                     st.caption(f'"{html.escape(snippet)}"')
 
-                                btn_lbl = f"✓ #{shot.shot_index} (Terpilih)" if is_active_shot else f"🔍 #{shot.shot_index} Detail"
+                                btn_lbl = f"#{shot.shot_index} (Terpilih)" if is_active_shot else f"#{shot.shot_index} Detail"
                                 if st.button(
                                     btn_lbl,
                                     key=f"btn_sh_{project_id}_{shot.shot_id}",
@@ -1625,7 +1654,7 @@ def render_visual_step_flow(
                                     st.session_state[f"selected_shot_{project_id}"] = shot.shot_id
                                     st.rerun()
 
-        # Right Column: Detail Panel (Side-by-side, NEVER drops below!)
+        # Right Column: Detail Panel (Persistent side-by-side)
         with col_detail:
             target_shot = None
             target_chapter = None
@@ -1638,10 +1667,10 @@ def render_visual_step_flow(
                     col_dh, col_lock = st.columns([3.2, 1.8])
                     with col_dh:
                         dur_disp = f"{target_shot.duration_seconds:.1f}s" if target_shot.duration_seconds else ""
-                        st.markdown(f"#### Shot #{target_shot.shot_index} ({dur_disp})")
+                        st.markdown(f"#### Shot #{target_shot.shot_index} (Bab {target_chapter.chapter_index} · {dur_disp})")
                     with col_lock:
                         is_locked = getattr(target_shot, "locked", False)
-                        lock_lbl = "🔓 Buka Kunci" if is_locked else "🔒 Kunci"
+                        lock_lbl = "Buka Kunci" if is_locked else "Kunci"
                         if st.button(lock_lbl, key=f"btn_lock_toggle_{project_id}_{target_shot.shot_id}", use_container_width=True):
                             vis_svc = VisualService(p_dir)
                             vis_svc.set_lock(manifest, target_shot.shot_id, not is_locked)
@@ -1679,15 +1708,15 @@ def render_visual_step_flow(
 
                     # Needs review checkbox
                     is_rev = getattr(target_shot, "needs_review", False)
-                    chk_rev = st.checkbox("⚠️ Tandai Perlu Dicek", value=is_rev, key=f"chk_rev_{project_id}_{target_shot.shot_id}")
+                    chk_rev = st.checkbox("Tandai Perlu Dicek", value=is_rev, key=f"chk_rev_{project_id}_{target_shot.shot_id}")
                     if chk_rev != is_rev:
                         target_shot.needs_review = chk_rev
                         save_manifest(manifest, p_dir)
                         st.rerun()
 
                     st.markdown("---")
-                    st.markdown("##### 🔄 Penggantian Shot (Visual Replace)")
-                    tab_cands, tab_srch, tab_up = st.tabs(["🎯 Kandidat Lain", "🔍 Cari Kata Lain", "📤 Unggah"])
+                    st.markdown("##### Penggantian Shot (Visual Replace)")
+                    tab_cands, tab_srch, tab_up = st.tabs(["Kandidat", "Cari lagi", "Unggah"])
 
                     with tab_cands:
                         raw_cands = target_shot.candidates or []
@@ -1728,7 +1757,7 @@ def render_visual_step_flow(
                             active_cp = st.session_state.get(f"preview_cand_url_{project_id}")
                             if active_cp:
                                 with st.container(border=True):
-                                    st.markdown("##### 🎬 Pratinjau Video Kandidat")
+                                    st.markdown("##### Pratinjau Video Kandidat")
                                     with st.spinner("Memuat pratinjau kandidat..."):
                                         st.video(active_cp)
                                     if st.button("✕ Tutup Pratinjau", key=f"btn_close_cp_{project_id}"):
@@ -1744,21 +1773,21 @@ def render_visual_step_flow(
                                             if c_thumb and c_thumb.is_file():
                                                 st.image(str(c_thumb), use_container_width=True)
                                             else:
-                                                st.markdown("🖼️ *(Thumbnail)*")
+                                                st.caption("(Thumbnail)")
 
                                             score_txt = f"{cand.get('relevance_score', 0):.2f}"
                                             dur_txt = f"{cand.get('duration_seconds', 0):.1f}s"
                                             prov_txt = cand.get('provider', 'stock').capitalize()
-                                            st.caption(f"**{prov_txt}** • `{score_txt}` • ⏱️ {dur_txt}")
+                                            st.caption(f"**{prov_txt}** • `{score_txt}` • {dur_txt}")
 
                                             c_url = cand.get("url") or cand.get("source_url")
                                             btn_col1, btn_col2 = st.columns(2)
                                             with btn_col1:
-                                                if c_url and st.button("▶ Preview", key=f"btn_prev_cand_{project_id}_{target_shot.shot_id}_{orig_idx}", use_container_width=True):
+                                                if c_url and st.button("Preview", key=f"btn_prev_cand_{project_id}_{target_shot.shot_id}_{orig_idx}", use_container_width=True):
                                                     st.session_state[f"preview_cand_url_{project_id}"] = c_url
                                                     st.rerun()
                                             with btn_col2:
-                                                if st.button("👉 Pakai ini", key=f"btn_apply_cand_{project_id}_{target_shot.shot_id}_{orig_idx}", type="primary", use_container_width=True):
+                                                if st.button("Pakai ini", key=f"btn_apply_cand_{project_id}_{target_shot.shot_id}_{orig_idx}", type="primary", use_container_width=True):
                                                     with st.spinner("Menerapkan kandidat baru & menyusun klip..."):
                                                         try:
                                                             vis_svc = VisualService(p_dir)
@@ -1783,7 +1812,7 @@ def render_visual_step_flow(
                         )
                         p_opts = ["pixabay", "coverr"] if has_coverr else ["pixabay"]
                         sel_p = st.selectbox("Provider:", p_opts, key=f"sel_p_{project_id}_{target_shot.shot_id}")
-                        if st.button("🔍 Cari & Pasang Footage Baru", key=f"btn_srch_apply_{project_id}_{target_shot.shot_id}", use_container_width=True):
+                        if st.button("Cari & Pasang Footage Baru", key=f"btn_srch_apply_{project_id}_{target_shot.shot_id}", use_container_width=True):
                             with st.spinner("Mencari footage baru & menyusun klip..."):
                                 try:
                                     vis_svc = VisualService(p_dir)
@@ -1811,7 +1840,7 @@ def render_visual_step_flow(
                             key=f"up_f_{project_id}_{target_shot.shot_id}",
                         )
                         if uploaded_f:
-                            if st.button("📥 Simpan ke Library & Pasang ke Shot", key=f"btn_up_apply_{project_id}_{target_shot.shot_id}", use_container_width=True):
+                            if st.button("Simpan ke Library & Pasang ke Shot", key=f"btn_up_apply_{project_id}_{target_shot.shot_id}", use_container_width=True):
                                 with st.spinner("Menyimpan ke library lokal & menyusun klip..."):
                                     try:
                                         mgr = LocalLibraryManager(p_dir)
@@ -1835,17 +1864,20 @@ def render_visual_step_flow(
                                         st.error(f"Gagal mengunggah berkas: {exc}")
 
     # --- V4: Cache & Pemeliharaan ---
-    with st.expander("⚙️ Pengaturan Lanjutan & Pemeliharaan Cache", expanded=False):
+    with st.expander("Pengaturan Lanjutan & Pemeliharaan Cache", expanded=False):
         c_stat = get_cache_status()
         col_c1, col_c2, col_c3 = st.columns(3)
-        col_c1.metric("Ukuran Cache Global", f"{c_stat['total_mb']} MB ({c_stat['total_gb']} GB)")
-        col_c2.metric("Total Berkas Cache", f"{c_stat['total_files']} berkas")
-        col_c3.metric("Berkas Terlindungi (Terkunci)", f"{c_stat['locked_files_count']} berkas")
+        with col_c1:
+            render_metric_tile("Ukuran Cache Global", f"{c_stat['total_mb']} MB ({c_stat['total_gb']} GB)")
+        with col_c2:
+            render_metric_tile("Total Berkas Cache", f"{c_stat['total_files']} berkas")
+        with col_c3:
+            render_metric_tile("Berkas Terlindungi", f"{c_stat['locked_files_count']} berkas")
 
         st.caption("Cache media global menyimpan footage yang telah diunduh untuk menghindari pengunduhan ulang. Berkas yang dipakai oleh shot berstatus terkunci di seluruh proyek dilindungi secara ketat dari pembersihan.")
 
         confirm_prune = st.checkbox("Saya yakin ingin membersihkan berkas cache lama yang tidak terkunci", key=f"confirm_prune_{project_id}")
-        if st.button("🧹 Bersihkan Cache Lama (Prune)", disabled=not confirm_prune, key=f"btn_prune_cache_{project_id}"):
+        if st.button("Bersihkan Cache Lama (Prune)", disabled=not confirm_prune, key=f"btn_prune_cache_{project_id}"):
             with st.spinner("Membersihkan cache..."):
                 try:
                     prune_res = prune_cache(older_than_days=14)
@@ -1882,38 +1914,78 @@ def render_render_step_flow(
     manifest: ProjectManifest,
     step_info: Dict[str, Any],
     is_job_running: bool = False,
+    is_completed_view: bool = False,
 ):
-    """Render Step 4: Render Video Final + Subtitle + BGM (Stage 7B.2 R1-R5)."""
+    """Render Step 4: Render Video Final + Subtitle + BGM (Stage 7B.2 R1-R5, Mockup 3 V4)."""
     from app.services.longform.render.service import RenderService
 
     job_state = jobs.get_job_state(project_id)
     is_job_running = is_job_running or bool(job_state and job_state.get("status") == "running")
 
-    st.subheader("④ Render Video Final + Subtitle + BGM")
-    st.write(f"**Status Saat Ini:** `{step_info['label']}`")
-
     st_info = compute_project_step_status(p_dir)
     voice_done = (st_info["steps"]["voice"]["status"] == "selesai")
     visual_done = (st_info["steps"]["visual"]["status"] == "selesai")
     can_render = voice_done and visual_done
+    st_val = step_info["status"]
 
-    # R1: Prerequisite Check & Messaging
-    if not can_render:
-        if not voice_done and not visual_done:
-            st.warning("⚠️ **Langkah Prasyarat Belum Selesai**: Langkah ② Suara dan ③ Visual harus diselesaikan terlebih dahulu sebelum dapat merender video final.")
-        elif not voice_done:
-            st.warning("⚠️ **Langkah Prasyarat Belum Selesai**: Langkah ② Suara harus diselesaikan terlebih dahulu.")
-        elif not visual_done:
-            st.warning(f"⚠️ **Langkah Prasyarat Belum Selesai**: Langkah ③ Visual belum selesai ({st_info['steps']['visual']['completed']}/{st_info['steps']['visual']['total']} klip siap). Selesaikan penyusunan visual terlebih dahulu.")
+    final_vid = step_info.get("final_video_file") or manifest.final_video_file
+    final_vid_path = (p_dir / final_vid) if final_vid else None
 
-    # R2: Render Settings Expander
+    # Load render_stats.json if present
+    stats_file = p_dir / "export" / "render_stats.json"
+    stats: Dict[str, Any] = {}
+    if stats_file.is_file():
+        try:
+            stats = json.loads(stats_file.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    vid_size_mb = 0.0
+    dur_sec = 0.0
+    if final_vid_path and final_vid_path.is_file():
+        vid_size_bytes = final_vid_path.stat().st_size
+        vid_size_mb = vid_size_bytes / (1024 * 1024)
+        dur_sec = float(stats.get("final_video_duration") or 0.0)
+
+        # Fallback ffprobe if duration not in stats
+        if dur_sec <= 0:
+            try:
+                pres = subprocess.run(
+                    ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(final_vid_path)],
+                    capture_output=True, text=True, check=True
+                )
+                dur_sec = float(pres.stdout.strip())
+            except Exception:
+                dur_sec = 0.0
+
+    dur_fmt = f"{int(dur_sec // 60):02d}:{int(dur_sec % 60):02d} ({dur_sec:.1f}s)" if dur_sec > 0 else "N/A"
+    lufs_val = stats.get("integrated_lufs")
+    tp_val = stats.get("true_peak_dbtp")
+    lufs_fmt = f"{lufs_val:.1f} LUFS" if lufs_val is not None else "-14.0 LUFS"
+    tp_fmt = f"{tp_val:.1f} dBTP" if tp_val is not None else "-1.0 dBTP"
+    fps = float(getattr(manifest.encoder_settings, "fps", 25.0) or 25.0)
+    total_frames = int(dur_sec * fps) if dur_sec > 0 else 0
+
+    yt_path = p_dir / "export" / "youtube_chapters.txt"
+    yt_text = ""
+    if yt_path.is_file():
+        yt_text = yt_path.read_text(encoding="utf-8", errors="replace").strip()
+    elif manifest.chapters:
+        lines = []
+        curr_sec = 0.0
+        for ch in manifest.chapters:
+            mm = int(curr_sec // 60)
+            ss = int(curr_sec % 60)
+            lines.append(f"{mm:02d}:{ss:02d} {ch.chapter_title}")
+            curr_sec += float(ch.audio_duration_seconds or 0.0)
+        yt_text = "\n".join(lines)
+
     preset_snap = dict(manifest.preset_snapshot or {})
     sub_style = dict(preset_snap.get("subtitle_style", {}))
 
-    with st.expander("⚙️ Pengaturan Render (Musik Latar & Subtitle)", expanded=False):
-        st.markdown("##### 🎵 Musik Latar (BGM)")
-
-        # Available BGM from resource/songs and project assets
+    # Helper function to render BGM & Subtitle settings
+    def _render_settings_body():
+        st.markdown("##### Musik Latar (BGM)")
         songs_dir = Path("resource/songs")
         available_bgm = []
         if songs_dir.is_dir():
@@ -1977,11 +2049,11 @@ def render_render_step_flow(
                 key=f"sl_bgm_vol_{project_id}",
             )
         with col_v2:
-            st.caption("ℹ️ **Sidechain Ducking Otomatis**:")
-            st.caption("Volume musik otomatis diturunkan (ducking) saat narator berbicara dan kembali normal saat hening (threshold: 0.03, ratio: 4.0, attack: 200ms, release: 1000ms).")
+            st.caption("Sidechain Ducking Otomatis:")
+            st.caption("Volume musik otomatis diturunkan saat narator berbicara dan kembali normal saat hening.")
 
         st.markdown("---")
-        st.markdown("##### 📝 Gaya Subtitle (Burned ASS)")
+        st.markdown("##### Gaya Subtitle (Burned ASS)")
         col_st1, col_st2 = st.columns(2)
         with col_st1:
             curr_fsize = int(sub_style.get("font_size", 20))
@@ -2008,7 +2080,7 @@ def render_render_step_flow(
 
         col_save_cfg, col_prev_sub = st.columns([1, 1])
         with col_save_cfg:
-            if st.button("💾 Simpan Pengaturan Render", disabled=is_job_running, key=f"btn_save_render_cfg_{project_id}"):
+            if st.button("Simpan Pengaturan Render", disabled=is_job_running, key=f"btn_save_render_cfg_{project_id}"):
                 sub_style["font_size"] = int(new_fsize)
                 sub_style["margin_v"] = int(new_marginv)
                 preset_snap["subtitle_style"] = sub_style
@@ -2021,7 +2093,7 @@ def render_render_step_flow(
                 st.rerun()
 
         with col_prev_sub:
-            if st.button("🖼️ Pratinjau Subtitle (Frame Preview)", disabled=(not visual_done or is_job_running), key=f"btn_prev_sub_{project_id}"):
+            if st.button("Pratinjau Subtitle (Frame Preview)", disabled=(not visual_done or is_job_running), key=f"btn_prev_sub_{project_id}"):
                 with st.spinner("Merender frame pratinjau subtitle..."):
                     try:
                         rnd_svc = RenderService(p_dir)
@@ -2042,21 +2114,20 @@ def render_render_step_flow(
 
         sub_prev_path = st.session_state.get(f"sub_prev_img_{project_id}")
         if sub_prev_path and Path(sub_prev_path).is_file():
-            st.markdown("###### 🖼️ Pratinjau Tampilan Subtitle:")
+            st.markdown("###### Pratinjau Tampilan Subtitle:")
             st.image(sub_prev_path, use_container_width=True)
             if st.button("✕ Tutup Pratinjau Subtitle", key=f"btn_close_sub_prev_{project_id}"):
                 st.session_state.pop(f"sub_prev_img_{project_id}", None)
                 st.rerun()
 
-        # Render Ulang Paksa Semua Bab (Stage 7B.2 U)
         st.markdown("---")
-        st.markdown("##### 🔄 Render Ulang Paksa Semua Bab")
+        st.markdown("##### Render Ulang Paksa Semua Bab")
         confirm_rerender_all = st.checkbox(
             "Saya paham bahwa merender ulang semua bab akan memproses kembali seluruh bab video dari awal.",
             key=f"chk_confirm_rerender_{project_id}",
         )
         if st.button(
-            "🔄 Render Ulang Semua Bab",
+            "Render Ulang Semua Bab",
             disabled=(not confirm_rerender_all or is_job_running),
             key=f"btn_rerender_all_exp_{project_id}",
         ):
@@ -2064,105 +2135,47 @@ def render_render_step_flow(
             time.sleep(0.5)
             st.rerun()
 
-    # R3: Adaptive Action Button
-    st_val = step_info["status"]
+    # --- Render Mockup 3 Completed Side-by-Side View (V4) ---
+    if is_completed_view:
+        st.markdown(f"### {t('final_video_heading')}")
 
-    col_btn1, col_btn2 = st.columns([2, 1])
-    with col_btn1:
-        if st_val == "belum":
-            btn_label = "🎬 Render Video Final"
-        elif st_val == "terhenti":
-            btn_label = "▶️ Lanjutkan Render Video"
-        elif st_val == "perlu_diperbarui":
-            btn_label = "🔄 Render Ulang yang Berubah"
-        else:
-            btn_label = "✅ Selesai ✔ — Lanjut ke CapCut"
-
-        if st.button(
-            btn_label,
-            disabled=(not can_render or is_job_running),
-            type="primary",
-            key=f"btn_render_main_{project_id}",
-            use_container_width=True,
-        ):
-            if st_val == "selesai":
-                st.session_state[f"active_step_{project_id}"] = "capcut"
-                st.rerun()
+        if final_vid_path and final_vid_path.is_file():
+            if vid_size_mb < 200.0:
+                st.video(str(final_vid_path.resolve()))
             else:
-                jobs.start_job(project_id, "render_all", ["python", "cli_longform.py", "render", "all", project_id])
-                time.sleep(0.5)
-                st.rerun()
+                st.info(f"Ukuran video final ({vid_size_mb:.1f} MB) melebihi batas pratinjau browser (200 MB). Gunakan tombol 'Buka di Pemutar Sistem' di bawah.")
+        else:
+            st.info("Video final belum siap.")
 
-    with col_btn2:
-        if st_val == "selesai":
-            if st.button("🔄 Render Ulang (Force)", disabled=is_job_running, key=f"btn_force_render_{project_id}", use_container_width=True):
-                jobs.start_job(project_id, "render_all", ["python", "cli_longform.py", "render", "all", project_id, "--force"])
-                time.sleep(0.5)
-                st.rerun()
+        col_m1, col_m2 = st.columns(2)
+        with col_m1:
+            render_metric_tile("Durasi Video", dur_fmt)
+        with col_m2:
+            render_metric_tile("Ukuran Berkas", f"{vid_size_mb:.1f} MB")
 
-    # R5: Results Display & Player
-    final_vid = step_info.get("final_video_file") or manifest.final_video_file
-    final_vid_path = (p_dir / final_vid) if final_vid else None
+        col_m3, col_m4 = st.columns(2)
+        with col_m3:
+            render_metric_tile("Loudness (EBU R128)", f"{lufs_fmt} • {tp_fmt}")
+        with col_m4:
+            render_metric_tile("Jumlah Frame", f"{total_frames} frames ({fps:.0f} fps)")
 
-    if final_vid_path and final_vid_path.is_file():
-        st.write("---")
-        st.markdown("##### 📊 Hasil Video Final")
-
-        # Load render_stats.json if present
-        stats_file = p_dir / "export" / "render_stats.json"
-        stats: Dict[str, Any] = {}
-        if stats_file.is_file():
-            try:
-                stats = json.loads(stats_file.read_text(encoding="utf-8"))
-            except Exception:
-                pass
-
-        vid_size_bytes = final_vid_path.stat().st_size
-        vid_size_mb = vid_size_bytes / (1024 * 1024)
-        dur_sec = float(stats.get("final_video_duration") or 0.0)
-
-        # Fallback ffprobe if duration not in stats
-        if dur_sec <= 0:
-            try:
-                pres = subprocess.run(
-                    ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(final_vid_path)],
-                    capture_output=True, text=True, check=True
-                )
-                dur_sec = float(pres.stdout.strip())
-            except Exception:
-                dur_sec = 0.0
-
-        dur_fmt = f"{int(dur_sec // 60):02d}:{int(dur_sec % 60):02d} ({dur_sec:.1f}s)" if dur_sec > 0 else "N/A"
-        lufs_val = stats.get("integrated_lufs")
-        tp_val = stats.get("true_peak_dbtp")
-        lufs_fmt = f"{lufs_val:.1f} LUFS" if lufs_val is not None else "-14.0 LUFS"
-        tp_fmt = f"{tp_val:.1f} dBTP" if tp_val is not None else "-1.0 dBTP"
-
-        fps = float(getattr(manifest.encoder_settings, "fps", 25.0) or 25.0)
-        total_frames = int(dur_sec * fps) if dur_sec > 0 else 0
-
-        col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-        col_m1.metric("Durasi Video", dur_fmt)
-        col_m2.metric("Ukuran Berkas", f"{vid_size_mb:.1f} MB")
-        col_m3.metric("Loudness (EBU R128)", f"{lufs_fmt} • {tp_fmt}")
-        col_m4.metric("Jumlah Frame", f"{total_frames} frames ({fps:.0f} fps)")
-
-        # Action Buttons: System player, Folder explorer, Download SRT & YT chapters
-        col_a1, col_a2, col_a3, col_a4 = st.columns(4)
+        col_a1, col_a2 = st.columns(2)
         with col_a1:
-            if st.button("▶ Buka di Pemutar Sistem", key=f"btn_play_sys_{project_id}", use_container_width=True):
-                _safe_open_path(final_vid_path)
-
+            if st.button("Buka di Pemutar Sistem", key=f"btn_play_sys_{project_id}", use_container_width=True):
+                if final_vid_path:
+                    _safe_open_path(final_vid_path)
         with col_a2:
-            if st.button("📂 Buka Folder Export", key=f"btn_open_exp_{project_id}", use_container_width=True):
-                _safe_open_path(final_vid_path.parent, is_folder=True)
+            if st.button("Buka Folder Export", key=f"btn_open_exp_{project_id}", use_container_width=True):
+                if final_vid_path:
+                    _safe_open_path(final_vid_path.parent, is_folder=True)
 
-        srt_path = p_dir / "export" / "subtitles" / "full_timeline.srt"
+        col_a3, col_a4 = st.columns(2)
         with col_a3:
+            srt_path = p_dir / "export" / "subtitles" / "full_timeline.srt"
             if srt_path.is_file():
                 srt_data = srt_path.read_text(encoding="utf-8", errors="replace")
                 st.download_button(
-                    "📥 Unduh Subtitle (.srt)",
+                    "Unduh Subtitle (.srt)",
                     data=srt_data,
                     file_name=f"{project_id}_subtitles.srt",
                     mime="text/plain",
@@ -2170,14 +2183,12 @@ def render_render_step_flow(
                     key=f"dl_srt_{project_id}",
                 )
             else:
-                st.button("📥 Subtitle Belum Ada", disabled=True, use_container_width=True, key=f"dl_srt_dis_{project_id}")
-
-        yt_path = p_dir / "export" / "youtube_chapters.txt"
+                st.button("Subtitle Belum Ada", disabled=True, use_container_width=True, key=f"dl_srt_dis_{project_id}")
         with col_a4:
             if yt_path.is_file():
                 yt_data = yt_path.read_text(encoding="utf-8", errors="replace")
                 st.download_button(
-                    "📥 Unduh Bab YouTube",
+                    "Unduh Bab YouTube",
                     data=yt_data,
                     file_name=f"{project_id}_youtube_chapters.txt",
                     mime="text/plain",
@@ -2185,34 +2196,120 @@ def render_render_step_flow(
                     key=f"dl_yt_{project_id}",
                 )
             else:
-                st.button("📥 Bab YouTube Belum Ada", disabled=True, use_container_width=True, key=f"dl_yt_dis_{project_id}")
-
-        # Browser player condition: < 200 MB
-        if vid_size_mb < 200.0:
-            st.video(str(final_vid_path.resolve()))
-        else:
-            st.info(f"ℹ️ Ukuran video final ({vid_size_mb:.1f} MB) melebihi batas pratinjau browser (200 MB). Gunakan tombol **'▶ Buka di Pemutar Sistem'** di atas untuk memutar video dengan performa penuh.")
-
-        # YT Chapter Timestamps Block (Mockup 3)
-        yt_text = ""
-        if yt_path.is_file():
-            yt_text = yt_path.read_text(encoding="utf-8", errors="replace").strip()
-        elif manifest.chapters:
-            lines = []
-            curr_sec = 0.0
-            for ch in manifest.chapters:
-                mm = int(curr_sec // 60)
-                ss = int(curr_sec % 60)
-                lines.append(f"{mm:02d}:{ss:02d} {ch.chapter_title}")
-                curr_sec += float(ch.audio_duration_seconds or 0.0)
-            yt_text = "\n".join(lines)
+                st.button("Bab YouTube Belum Ada", disabled=True, use_container_width=True, key=f"dl_yt_dis_{project_id}")
 
         if yt_text:
-            st.markdown(f"**📌 {t('youtube_chapters_title')}**")
+            st.markdown(f"**{t('youtube_chapters_title')}**")
             st.code(yt_text, language="text")
+            if st.button(t("btn_copy_timestamps"), key=f"btn_copy_yt_{project_id}", use_container_width=True):
+                st.toast(t("btn_copied_timestamps"))
+
+        with st.expander(t("expander_render_again"), expanded=False):
+            _render_settings_body()
+
+    # --- Render Normal / In-Progress Step View ---
+    else:
+        col_hdr, col_act = st.columns([3, 1])
+        with col_hdr:
+            st.markdown(f"### {t('step_render')}")
+            st.caption("Gabungkan audio, klip visual, subtitle bergaya, dan musik latar.")
+        with col_act:
+            st.write("")
+            if st_val == "belum":
+                btn_label = "Render Video Final"
+            elif st_val == "terhenti":
+                btn_label = "Lanjutkan Render Video"
+            elif st_val == "perlu_diperbarui":
+                btn_label = "Render Ulang yang Berubah"
+            else:
+                btn_label = "Selesai — Lanjut ke CapCut"
+
+            if st.button(
+                btn_label,
+                disabled=(not can_render or is_job_running),
+                type="primary",
+                key=f"btn_render_main_{project_id}",
+                use_container_width=True,
+            ):
+                if st_val == "selesai":
+                    st.session_state[f"active_step_{project_id}"] = "capcut"
+                    st.rerun()
+                else:
+                    jobs.start_job(project_id, "render_all", ["python", "cli_longform.py", "render", "all", project_id])
+                    time.sleep(0.5)
+                    st.rerun()
+
+        if not can_render:
+            if not voice_done and not visual_done:
+                st.warning("Langkah Prasyarat Belum Selesai: Langkah Suara dan Visual harus diselesaikan terlebih dahulu sebelum dapat merender video final.")
+            elif not voice_done:
+                st.warning("Langkah Prasyarat Belum Selesai: Langkah Suara harus diselesaikan terlebih dahulu.")
+            elif not visual_done:
+                st.warning(f"Langkah Prasyarat Belum Selesai: Langkah Visual belum selesai ({st_info['steps']['visual']['completed']}/{st_info['steps']['visual']['total']} klip siap).")
+
+        with st.expander("Pengaturan Render (Musik Latar & Subtitle)", expanded=False):
+            _render_settings_body()
+
+        if final_vid_path and final_vid_path.is_file():
+            st.write("---")
+            st.markdown("##### Hasil Video Final")
+
+            col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+            with col_m1:
+                render_metric_tile("Durasi Video", dur_fmt)
+            with col_m2:
+                render_metric_tile("Ukuran Berkas", f"{vid_size_mb:.1f} MB")
+            with col_m3:
+                render_metric_tile("Loudness (EBU R128)", f"{lufs_fmt} • {tp_fmt}")
+            with col_m4:
+                render_metric_tile("Jumlah Frame", f"{total_frames} frames ({fps:.0f} fps)")
+
+            col_a1, col_a2, col_a3, col_a4 = st.columns(4)
+            with col_a1:
+                if st.button("Buka di Pemutar Sistem", key=f"btn_play_sys_{project_id}", use_container_width=True):
+                    _safe_open_path(final_vid_path)
+            with col_a2:
+                if st.button("Buka Folder Export", key=f"btn_open_exp_{project_id}", use_container_width=True):
+                    _safe_open_path(final_vid_path.parent, is_folder=True)
+            with col_a3:
+                srt_path = p_dir / "export" / "subtitles" / "full_timeline.srt"
+                if srt_path.is_file():
+                    srt_data = srt_path.read_text(encoding="utf-8", errors="replace")
+                    st.download_button(
+                        "Unduh Subtitle (.srt)",
+                        data=srt_data,
+                        file_name=f"{project_id}_subtitles.srt",
+                        mime="text/plain",
+                        use_container_width=True,
+                        key=f"dl_srt_{project_id}",
+                    )
+                else:
+                    st.button("Subtitle Belum Ada", disabled=True, use_container_width=True, key=f"dl_srt_dis_{project_id}")
+            with col_a4:
+                if yt_path.is_file():
+                    yt_data = yt_path.read_text(encoding="utf-8", errors="replace")
+                    st.download_button(
+                        "Unduh Bab YouTube",
+                        data=yt_data,
+                        file_name=f"{project_id}_youtube_chapters.txt",
+                        mime="text/plain",
+                        use_container_width=True,
+                        key=f"dl_yt_{project_id}",
+                    )
+                else:
+                    st.button("Bab YouTube Belum Ada", disabled=True, use_container_width=True, key=f"dl_yt_dis_{project_id}")
+
+            if vid_size_mb < 200.0:
+                st.video(str(final_vid_path.resolve()))
+            else:
+                st.info(f"Ukuran video final ({vid_size_mb:.1f} MB) melebihi batas pratinjau browser (200 MB). Gunakan tombol 'Buka di Pemutar Sistem' di atas.")
+
+            if yt_text:
+                st.markdown(f"**{t('youtube_chapters_title')}**")
+                st.code(yt_text, language="text")
 
 
-# --- Step 5: CapCut Desktop Export Flow (Stage 7B.2 C1-C4) ---
+# --- Step 5: CapCut Desktop Export Flow (Stage 7B.2 C1-C4, Mockup 3 V4) ---
 
 def render_capcut_step_flow(
     project_id: str,
@@ -2220,8 +2317,9 @@ def render_capcut_step_flow(
     manifest: ProjectManifest,
     step_info: Dict[str, Any],
     is_job_running: bool = False,
+    is_completed_view: bool = False,
 ):
-    """Render Step 5: CapCut Desktop Export & Calibration (Stage 7B.2 C1-C4)."""
+    """Render Step 5: CapCut Desktop Export & Calibration (Stage 7B.2 C1-C4, Mockup 3 V4)."""
     from app.services.longform.capcut.detector import get_capcut_doctor_report
     from app.services.longform.capcut.service import (
         build_calibration_draft,
@@ -2232,14 +2330,11 @@ def render_capcut_step_flow(
     job_state = jobs.get_job_state(project_id)
     is_job_running = is_job_running or bool(job_state and job_state.get("status") == "running")
 
-    st.subheader("⑤ Ekspor Proyek CapCut Desktop")
-    st.write(f"**Status Saat Ini:** `{step_info['label']}`")
-
     st_info = compute_project_step_status(p_dir)
     voice_done = (st_info["steps"]["voice"]["status"] == "selesai")
     visual_done = (st_info["steps"]["visual"]["status"] == "selesai")
 
-    # C1: CapCut Doctor Diagnostic Panel
+    # C1: CapCut Doctor Diagnostic Report
     doc_report = get_capcut_doctor_report()
     capcut_running = doc_report.get("is_running", False)
     capcut_installed = doc_report.get("installed", False)
@@ -2247,39 +2342,30 @@ def render_capcut_step_flow(
     tmpl_ver = doc_report.get("template_version", "8.9.0")
     draft_folder = doc_report.get("draft_folder")
 
-    with st.container(border=True):
-        col_cch, col_cc_btn = st.columns([3, 1])
-        with col_cch:
-            st.markdown("##### 🩺 Cek Status CapCut Desktop")
-        with col_cc_btn:
-            if st.button("🔄 Cek ulang status CapCut", key=f"btn_recheck_capcut_{project_id}"):
-                st.rerun()
+    draft_info = step_info.get("draft_info") or find_latest_capcut_draft(p_dir, project_id)
+    is_exported = bool(draft_info)
+    total_shots = sum(len(ch.shots) for ch in manifest.chapters)
+    can_export = voice_done and visual_done and not capcut_running
 
-        col_d1, col_d2, col_d3 = st.columns(3)
-        col_d1.metric("Status CapCut", "✅ Terpasang" if capcut_installed else "❌ Belum Terpasang")
-        col_d2.metric("Versi CapCut", f"{installed_ver or 'N/A'}")
-        col_d3.metric("Status Aplikasi", "⚠️ Sedang Berjalan" if capcut_running else "✅ Tertutup (Aman)")
+    # Export History List
+    exp_root = p_dir / "export" / "capcut"
+    prev_exports = []
+    if exp_root.is_dir():
+        for d in sorted(exp_root.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
+            if d.is_dir() and (d.name.startswith("EFS_") or d.name.startswith("MPT_")):
+                mtime_str = datetime.fromtimestamp(d.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+                prev_exports.append({"Draft": d.name, "Waktu Pembuatan": mtime_str, "Path": str(d)})
 
-        if draft_folder:
-            st.caption(f"📁 Folder Draft: `{draft_folder}`")
-        else:
-            st.caption("📁 Folder Draft: Tidak ditemukan secara otomatis di AppData Local.")
-
-        if capcut_installed and installed_ver != tmpl_ver:
-            st.warning(f"⚠️ Versi CapCut terpasang (`{installed_ver}`) berbeda dari template teruji (`{tmpl_ver}`). Kompatibilitas draft sebagian besar tetap terjaga.")
-
-        if capcut_running:
-            st.error("⚠️ **CapCut Desktop sedang aktif**. Tutup aplikasi CapCut sebelum mengekspor untuk mencegah korupsi berkas draft!")
-
-    # C2: Text Size Calibration Expander
     current_sz = resolve_capcut_text_size(manifest)
-    with st.expander("📏 Kalibrasi Ukuran Teks Subtitle CapCut", expanded=False):
+
+    # Helper function to render text size calibration body
+    def _render_text_size_body():
         st.write(f"Ukuran teks subtitle saat ini: **{current_sz}** (Preset: `{manifest.preset_id}`)")
         st.caption("Draft kalibrasi menghasilkan kalimat uji ukuran 5 sampai 10 di CapCut Desktop. Buka draft di CapCut untuk menentukan ukuran yang paling proporsional tanpa terpotong untuk rasio proyek Anda.")
 
         col_cal1, col_cal2 = st.columns([1, 1])
         with col_cal1:
-            if st.button("🛠️ Buat Draft Kalibrasi (MPT_CALIBRATE)", disabled=(capcut_running or not visual_done or is_job_running), key=f"btn_calib_{project_id}"):
+            if st.button("Buat Draft Kalibrasi (MPT_CALIBRATE)", disabled=(capcut_running or not visual_done or is_job_running), key=f"btn_calib_{project_id}"):
                 with st.spinner("Membuat draft kalibrasi di folder CapCut..."):
                     try:
                         calib_res = build_calibration_draft(project_id, install=True)
@@ -2296,7 +2382,7 @@ def render_capcut_step_flow(
                 step=1,
                 key=f"num_sz_{project_id}",
             )
-            if st.button("💾 Simpan Ukuran Teks", disabled=is_job_running, key=f"btn_save_sz_{project_id}"):
+            if st.button("Simpan Ukuran Teks", disabled=is_job_running, key=f"btn_save_sz_{project_id}"):
                 try:
                     set_capcut_text_size(manifest.preset_id, new_sz_val)
                     manifest.preset_snapshot["capcut_text_size"] = new_sz_val
@@ -2307,63 +2393,145 @@ def render_capcut_step_flow(
                 except Exception as exc:
                     st.error(f"Gagal menyimpan ukuran teks: {exc}")
 
-    # C4: Prerequisite Verification
-    can_export = voice_done and visual_done and not capcut_running
-    if not can_export:
-        if not voice_done or not visual_done:
-            st.warning("⚠️ **Langkah Prasyarat Belum Selesai**: Langkah ② Suara dan ③ Visual harus diselesaikan terlebih dahulu sebelum dapat mengekspor timeline CapCut Desktop.")
-        elif capcut_running:
-            st.warning("⚠️ **CapCut Sedang Aktif**: Harap tutup aplikasi CapCut Desktop terlebih dahulu sebelum menekan tombol ekspor.")
+    # --- Render Mockup 3 Completed Side-by-Side View (V4) ---
+    if is_completed_view:
+        col_cch, col_cc_btn = st.columns([3, 1])
+        with col_cch:
+            st.markdown(f"### {t('capcut_heading')}")
+            st.caption("Proyek timeline CapCut Desktop siap untuk pengeditan lanjutan.")
+        with col_cc_btn:
+            st.write("")
+            if st.button("Cek ulang", key=f"btn_recheck_capcut_{project_id}", use_container_width=True):
+                st.rerun()
 
-    # C3: Main Adaptive Export Button
-    draft_info = step_info.get("draft_info") or find_latest_capcut_draft(p_dir, project_id)
-    is_exported = bool(draft_info)
-    btn_label = "🔄 Ekspor Ulang ke CapCut" if is_exported else "🚀 Ekspor ke CapCut (Install)"
+        col_d1, col_d2 = st.columns(2)
+        with col_d1:
+            status_capcut_label = f"Terpasang (v{installed_ver or 'N/A'})" if capcut_installed else "Belum Terpasang"
+            render_metric_tile("Status CapCut", status_capcut_label, status="success" if capcut_installed else "warning")
+        with col_d2:
+            status_app_label = "Sedang Berjalan" if capcut_running else "Tertutup (Aman)"
+            render_metric_tile("Status Aplikasi", status_app_label, status="warning" if capcut_running else "success")
 
-    if st.button(
-        btn_label,
-        disabled=(not can_export or is_job_running),
-        type="primary",
-        key=f"btn_capcut_main_{project_id}",
-    ):
-        jobs.start_job(project_id, "capcut_export", ["python", "cli_longform.py", "capcut", "export", project_id, "--install"])
-        time.sleep(0.5)
-        st.rerun()
+        if draft_folder:
+            st.caption(f"Folder Draft: `{draft_folder}`")
+        if capcut_running:
+            st.error("CapCut Desktop sedang aktif. Tutup aplikasi CapCut sebelum mengekspor untuk mencegah korupsi berkas draft!")
 
-    # C3: Results Display
-    if draft_info:
-        st.write("---")
-        st.markdown("##### 📦 Informasi Draft CapCut Terpasang")
+        if draft_info:
+            draft_name = draft_info["draft_name"]
+            draft_dir_path = Path(draft_info["draft_dir"])
+            with st.container(border=True):
+                st.markdown(f"**Draft terbaru**: `{draft_name}`")
+                col_dr1, col_dr2 = st.columns(2)
+                with col_dr1:
+                    st.caption(f"Waktu Ekspor: {draft_info.get('exported_at') or 'Baru saja'}")
+                with col_dr2:
+                    st.caption(f"Total Klip: {total_shots} klip")
 
-        draft_name = draft_info["draft_name"]
-        draft_dir_path = Path(draft_info["draft_dir"])
+        btn_label = "Ekspor ulang ke CapCut" if is_exported else "Ekspor ke CapCut (Install)"
+        if st.button(
+            btn_label,
+            disabled=(not can_export or is_job_running),
+            type="primary",
+            key=f"btn_capcut_main_{project_id}",
+            use_container_width=True,
+        ):
+            jobs.start_job(project_id, "capcut_export", ["python", "cli_longform.py", "capcut", "export", project_id, "--install"])
+            time.sleep(0.5)
+            st.rerun()
 
-        col_i1, col_i2, col_i3 = st.columns(3)
-        col_i1.metric("Nama Draft", draft_name)
-        col_i2.metric("Waktu Ekspor", draft_info.get("exported_at") or "Baru saja")
-
-        total_shots = sum(len(ch.shots) for ch in manifest.chapters)
-        col_i3.metric("Total Klip Video", f"{total_shots} klip")
-
-        st.caption(f"Lokasi Draft: `{draft_dir_path}`")
-
-        col_b1, _ = st.columns([1, 2])
-        with col_b1:
-            if st.button("📂 Buka Folder Draft CapCut", key=f"btn_open_draft_{project_id}"):
+        if draft_info:
+            if st.button("Buka Folder Draft CapCut", key=f"btn_open_draft_{project_id}", use_container_width=True):
                 _safe_open_path(draft_dir_path, is_folder=True)
 
-        # Export History List
-        exp_root = p_dir / "export" / "capcut"
-        prev_exports = []
-        if exp_root.is_dir():
-            for d in sorted(exp_root.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
-                if d.is_dir() and (d.name.startswith("EFS_") or d.name.startswith("MPT_")):
-                    mtime_str = datetime.fromtimestamp(d.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
-                    prev_exports.append({"Draft": d.name, "Waktu Pembuatan": mtime_str, "Path": str(d)})
+        with st.expander("Ukuran teks subtitle", expanded=False):
+            _render_text_size_body()
 
         if prev_exports:
-            with st.expander(f"📜 Riwayat Ekspor CapCut ({len(prev_exports)} draft)", expanded=False):
+            with st.expander(f"Riwayat Ekspor CapCut ({len(prev_exports)} draft)", expanded=False):
                 st.table(prev_exports)
+
+    # --- Render Normal / In-Progress Step View ---
+    else:
+        col_hdr, col_act = st.columns([3, 1])
+        with col_hdr:
+            st.markdown(f"### {t('step_capcut')}")
+            st.caption("Ekspor seluruh timeline narasi, klip visual, dan subtitle ke CapCut Desktop.")
+        with col_act:
+            st.write("")
+            btn_label = "Ekspor ulang ke CapCut" if is_exported else "Ekspor ke CapCut (Install)"
+            if st.button(
+                btn_label,
+                disabled=(not can_export or is_job_running),
+                type="primary",
+                key=f"btn_capcut_main_{project_id}",
+                use_container_width=True,
+            ):
+                jobs.start_job(project_id, "capcut_export", ["python", "cli_longform.py", "capcut", "export", project_id, "--install"])
+                time.sleep(0.5)
+                st.rerun()
+
+        with st.container(border=True):
+            col_cch, col_cc_btn = st.columns([3, 1])
+            with col_cch:
+                st.markdown("##### Cek Status CapCut Desktop")
+            with col_cc_btn:
+                if st.button("Cek ulang status CapCut", key=f"btn_recheck_capcut_{project_id}"):
+                    st.rerun()
+
+            col_d1, col_d2, col_d3 = st.columns(3)
+            with col_d1:
+                render_metric_tile("Status CapCut", "Terpasang" if capcut_installed else "Belum Terpasang", status="success" if capcut_installed else "warning")
+            with col_d2:
+                render_metric_tile("Versi CapCut", str(installed_ver or "N/A"))
+            with col_d3:
+                render_metric_tile("Status Aplikasi", "Sedang Berjalan" if capcut_running else "Tertutup (Aman)", status="warning" if capcut_running else "success")
+
+            if draft_folder:
+                st.caption(f"Folder Draft: `{draft_folder}`")
+            else:
+                st.caption("Folder Draft: Tidak ditemukan secara otomatis di AppData Local.")
+
+            if capcut_installed and installed_ver != tmpl_ver:
+                st.warning(f"Versi CapCut terpasang (`{installed_ver}`) berbeda dari template teruji (`{tmpl_ver}`).")
+
+            if capcut_running:
+                st.error("CapCut Desktop sedang aktif. Tutup aplikasi CapCut sebelum mengekspor untuk mencegah korupsi berkas draft!")
+
+        with st.expander("Kalibrasi Ukuran Teks Subtitle CapCut", expanded=False):
+            _render_text_size_body()
+
+        if not can_export:
+            if not voice_done or not visual_done:
+                st.warning("Langkah Prasyarat Belum Selesai: Langkah Suara dan Visual harus diselesaikan terlebih dahulu sebelum dapat mengekspor timeline CapCut Desktop.")
+            elif capcut_running:
+                st.warning("CapCut Sedang Aktif: Harap tutup aplikasi CapCut Desktop terlebih dahulu sebelum menekan tombol ekspor.")
+
+        if draft_info:
+            st.write("---")
+            st.markdown("##### Informasi Draft CapCut Terpasang")
+
+            draft_name = draft_info["draft_name"]
+            draft_dir_path = Path(draft_info["draft_dir"])
+
+            col_i1, col_i2, col_i3 = st.columns(3)
+            with col_i1:
+                render_metric_tile("Nama Draft", draft_name)
+            with col_i2:
+                render_metric_tile("Waktu Ekspor", draft_info.get("exported_at") or "Baru saja")
+            with col_i3:
+                render_metric_tile("Total Klip Video", f"{total_shots} klip")
+
+            st.caption(f"Lokasi Draft: `{draft_dir_path}`")
+
+            col_b1, _ = st.columns([1, 2])
+            with col_b1:
+                if st.button("Buka Folder Draft CapCut", key=f"btn_open_draft_{project_id}"):
+                    _safe_open_path(draft_dir_path, is_folder=True)
+
+            if prev_exports:
+                with st.expander(f"Riwayat Ekspor CapCut ({len(prev_exports)} draft)", expanded=False):
+                    st.table(prev_exports)
 
 
 # --- Backwards Compatibility Helpers ---
