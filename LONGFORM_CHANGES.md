@@ -198,5 +198,44 @@ Tujuannya adalah menjaga kemudahan sinkronisasi (merge/rebase) dari repositori u
   - `test/longform/test_branding.py`: 9 pengujian unit & AppTest memverifikasi konstanta merek, proteksi font Material Symbols, font luring tanpa CDN / static serving, backward compatibility prefix CapCut, AppTest Main.py, AppTest Long Video, alur submit video pendek, dan interaksi klik seluruh item sidebar di kedua halaman.
   - `test/longform/test_ui_jobs.py`: Menghapus *fixed sleep* dan menggantinya dengan polling berbasis kondisi dan batas waktu 20 detik untuk kehandalan tes saat beban CPU tinggi (R4).
 
+### Tahap 8A.2: Halaman Long Video Sesuai Mockup & Bahasa Tampilan ID/EN (L1-L5)
+- **File Upstream yang Disentuh:**
+  1. `webui/Main.py`:
+     - Baris 706: Penambahan parameter `default_language="id"` pada fungsi pemanggil resolusi bahasa antarmuka pengguna (`resolve_ui_language`) agar WebUI secara alami mengutamakan bahasa Indonesia saat nilai konfigurasi bahasa di `config.toml` belum disetel pengguna.
+     - *Cara melepas saat merge:* Kembalikan pemanggilan `resolve_ui_language` ke default parameter aslinya.
+- **Pembersihan & Konsolidasi Font Statis (L5):**
+  - Menghapus duplikasi folder font di `resource/fonts/plus-jakarta-sans/` dan root `static/fonts/`.
+  - Menetapkan satu-satunya sumber kebenaran font lokal di `webui/static/fonts/PlusJakartaSans[wght].ttf` dan `webui/static/fonts/OFL.txt` yang dilayani langsung oleh server Streamlit secara luring (0 panggilan CDN eksternal).
+- **Modul Lokalisasi Bilingual i18n (`app/services/longform/ui/i18n.py`):**
+  - Modul baru independen yang menyediakan kamus terjemahan simetris ID dan EN (>100 kunci) dengan helper `t(key, lang=None, **kwargs)` dan `get_ui_language()`.
+  - Integrasi lokalisasi penuh pada modul navigasi sidebar (`sidebar.py`) dan seluruh alur halaman Long Video (`components.py`).
+  - Menjaga nama merek (EasyFaceless Studio, MoneyPrinterTurbo, CapCut) tidak diterjemahkan secara paksa.
+- **Implementasi Mockup 1 — Beranda Long Video (`components.render_home_page`):**
+  - Header bersih dengan judul brand, subtitle ringkas, dan kotak pencarian proyek instan di sisi kanan (`home_search_kw`).
+  - Kartu "Mulai video baru" yang terbuka langsung (permanen tanpa perlu membuka expander) dengan baris input topik, slider durasi, pilihan bahasa, dan tombol aksi utama `Buat Proyek`.
+  - Expander "Pengaturan lanjutan" untuk pemilihan niche, sub-niche, fokus narasi, rasio aspek, ID folder proyek kustom, dan pembuatan niche baru langsung dari UI.
+  - Filter chips interaktif menggunakan `st.pills` ("Semua · N", "Sedang dikerjakan · N", "Selesai · N").
+  - Grid kartu proyek 3 kolom responsif dengan wadah thumbnail aspek 16:9, badge durasi mengambang, judul 1 baris dengan pemotongan ellipsis, info sub-niche, visual progress bar 5-segmen berwarna (Selesai, Berjalan, Perlu Diperbarui, Belum), dan tombol "Buka proyek".
+- **Implementasi Mockup 2 — Halaman Proyek & Langkah ③ Visual (`components.render_project_page` & `render_visual_step_flow`):**
+  - Bilah navigasi atas bersih dengan tombol kembali "← Kembali ke Beranda", judul proyek tanpa emoji ganda, chip metadata (niche, durasi estimasi `≈ X menit`, rasio aspek & bahasa narasi), serta tombol kanan popover `▷ Otomatis sampai selesai` (dengan opsi ekspor CapCut dan batas review visual).
+  - Banner monitor pekerjaan latar belakang ditempatkan di posisi atas di atas stepper (Mockup 2).
+  - Stepper alur kerja 5 kartu horizontal dengan badge status per langkah.
+  - Alur Langkah ③ Visual: tata letak 2 kolom berdampingan (kiri galeri footage per bab dengan filter pills dan 2-kolom kartu shot, kanan panel detail shot persisten yang menampilkan pratinjau video klip, teks narasi utuh, kata kunci, 3 sub-tab penggantian visual [Kandidat Lain, Cari Kata Lain, Unggah], tombol toggle kunci shot, dan checkbox penanda perlu dicek).
+- **Implementasi Mockup 3 — Tampilan Selesai (`components.render_project_page`, `render_render_step_flow`, `render_capcut_step_flow`):**
+  - Banner sukses warna hijau di bagian atas saat 4 langkah utama / seluruh langkah telah selesai ("Video siap diunggah, draft CapCut sudah terpasang...").
+  - Tata letak 2 kartu berdampingan saat proyek selesai dan berada di langkah Render atau CapCut:
+    * Sisi Kiri ("Video Final"): Pemutar video HTML5 responsif 16:9, metrik teknis (durasi, ukuran berkas, loudness terintegrasi EBU R128 & true-peak, frame & FPS), tombol pemutar sistem, buka folder ekspor, unduh subtitle (.srt), unduh bab YouTube, serta blok cap waktu bab YouTube yang siap disalin 1-klik (`st.code`).
+    * Sisi Kanan ("CapCut"): Kartu diagnostik status CapCut Desktop (terpasang, versi, status aktif), tombol cek ulang status CapCut, kalibrasi ukuran teks subtitle (slider 5–10 dan pembuatan draft kalibrasi), tombol ekspor ulang adaptif, tombol buka folder draft, dan tabel riwayat ekspor jika terdapat lebih dari satu draft.
+- **Pengujian & Verifikasi Otomatis (L5):**
+  - `test/longform/test_i18n.py`: 4 pengujian memverifikasi simetri kunci kamus ID/EN, substitusi format string, fallback bahasa tak dikenal ke EN, dan proteksi kata nama merek.
+  - `test/longform/test_stage8a2_ui.py`: 4 pengujian komprehensif AppTest memvalidasi Beranda 3-kolom kartu proyek & progress bar 5-segmen, tata letak detail proyek & panel penggantian visual 2-kolom, tampilan 2-kolom selesai & cap waktu YouTube, serta pengalihan dinamis bahasa ID ↔ EN.
+  - Seluruh 244 pengujian dalam test suite `test/longform` lulus 100% tanpa regresi.
+- **Tangkapan Layar Headless (L5):**
+  - Pembuatan skrip `scripts/capture_8a2_screens.py` menggunakan Chrome/Edge headless berbasis CDP lokal untuk menangkap seluruh tampilan secara otomatis ke `docs/branding/screens/`:
+    * `8a2_beranda.png` & `8a2_beranda_en.png`
+    * `8a2_proyek_visual.png` & `8a2_proyek_visual_en.png`
+    * `8a2_selesai.png` & `8a2_selesai_en.png`
+
+
 
 

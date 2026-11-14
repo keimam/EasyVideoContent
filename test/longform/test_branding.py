@@ -57,13 +57,18 @@ def test_branding_constants():
 
 
 def test_font_offline_bundling():
-    """Verify B2/R2 font bundling: static URL serving, zero base64 bloat, 100% offline."""
+    """Verify B2/R2/8A.2 font bundling: single canonical location in webui/static/fonts, zero base64 bloat, 100% offline."""
     assert FONT_TTF_PATH.is_file(), f"Plus Jakarta Sans TTF missing at {FONT_TTF_PATH}"
     assert FONT_OFL_PATH.is_file(), f"OFL license file missing at {FONT_OFL_PATH}"
     assert FONT_TTF_PATH.stat().st_size > 50000, "Font file seems suspiciously small"
 
     webui_static_font = Path("webui/static/fonts/PlusJakartaSans[wght].ttf")
     assert webui_static_font.is_file(), f"Static served font missing at {webui_static_font}"
+    assert FONT_TTF_PATH.resolve() == webui_static_font.resolve()
+
+    # Verify duplicate locations are cleaned up (8A.2)
+    assert not Path("resource/fonts/plus-jakarta-sans").exists(), "Duplicate font folder resource/fonts/plus-jakarta-sans should be removed"
+    assert not Path("static/fonts").exists(), "Duplicate font folder static/fonts should be removed"
 
     css = get_global_css()
     assert "@font-face" in css

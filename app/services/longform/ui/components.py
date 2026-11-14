@@ -12,6 +12,7 @@ Implements step-flow UX:
 from __future__ import annotations
 
 from datetime import datetime
+import html
 import json
 import os
 import re
@@ -60,11 +61,71 @@ from app.services.longform.store import (
     save_manifest,
     update_project_script,
 )
+from app.services.branding.theme import (
+    render_5_segment_progress_bar_html,
+    render_badge,
+    render_card,
+    render_metric_tile,
+    render_success_banner,
+)
 from app.services.longform.tts_adapter import TTSAdapter, clean_narration_text
 from app.services.longform.ui import jobs
 from app.services.longform.ui.i18n import t
 from app.services.longform.ui.security import check_llm_status, mask_api_key, safe_windows_path
 from app.services.longform.voice_service import VoiceService, list_available_voices
+
+
+def get_project_thumbnail_path(p_dir: Path) -> Optional[Path]:
+    """Find or extract a representative thumbnail for the project card (L1)."""
+    # 1. Output thumbnail
+    t1 = p_dir / "export" / "thumbnail.jpg"
+    if t1.is_file() and t1.stat().st_size > 0:
+        return t1
+    t2 = p_dir / "output" / "thumbnail.jpg"
+    if t2.is_file() and t2.stat().st_size > 0:
+        return t2
+    # 2. Assets visual thumbnails
+    t_dir = p_dir / "assets" / "visual" / "thumbnails"
+    if t_dir.is_dir():
+        for f in sorted(t_dir.glob("*.jpg")):
+            if f.is_file() and f.stat().st_size > 0 and not f.name.startswith("candidate"):
+                return f
+    # 3. If final video exists, try to extract a quick frame
+    final_vid = p_dir / "export" / "final.mp4"
+    if not final_vid.is_file():
+        final_vid = p_dir / "output" / "final.mp4"
+    if final_vid.is_file() and final_vid.stat().st_size > 0:
+        try:
+            t1.parent.mkdir(parents=True, exist_ok=True)
+            cmd = ["ffmpeg", "-y", "-ss", "00:00:03", "-i", str(final_vid), "-vframes", "1", "-vf", "scale=320:-1", str(t1)]
+            subprocess.run(cmd, capture_output=True, timeout=5)
+            if t1.is_file() and t1.stat().st_size > 0:
+                return t1
+        except Exception:
+            pass
+    return None
+
+
+def render_project_thumbnail_html(thumb_path: Optional[Path], duration_str: str) -> str:
+    """Render 16:9 thumbnail container with duration badge overlay (L1)."""
+    import html
+    dur_badge = f'<div class="efs-project-card-duration">{html.escape(duration_str)}</div>'
+    if thumb_path and thumb_path.is_file():
+        try:
+            import base64
+            b64 = base64.b64encode(thumb_path.read_bytes()).decode("ascii")
+            return f'<div class="efs-project-card-thumb"><img src="data:image/jpeg;base64,{b64}" alt="Thumb" />{dur_badge}</div>'
+        except Exception:
+            pass
+    return (
+        f'<div class="efs-project-card-thumb" style="background: radial-gradient(circle at center, #1F2633 0%, #0F141E 100%);">'
+        f'<svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#5A6478" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'
+        f'<rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"></rect>'
+        f'<line x1="7" y1="2" x2="7" y2="22"></line><line x1="17" y1="2" x2="17" y2="22"></line>'
+        f'<line x1="2" y1="12" x2="22" y2="12"></line><line x1="2" y1="7" x2="7" y2="7"></line>'
+        f'<line x1="2" y1="17" x2="7" y2="17"></line><line x1="17" y1="17" x2="22" y2="17"></line>'
+        f'<line x1="17" y1="7" x2="22" y2="7"></line></svg>{dur_badge}</div>'
+    )
 
 
 # --- Project Discovery via Single Status Resolver (C2, D5) ---
@@ -341,277 +402,318 @@ def render_niche_management_section():
 
 
 def render_home_page():
-    """Render Beranda: Compact 2-column cards grid & quick creation (D5, D7, D8, G5)."""
+    """Render Beranda Long Video matching Mockup 1 (L1, 8A.2)."""
     # G5: Return navigation link to MoneyPrinterTurbo Main
     from app.services.longform.ui.nav import render_mpt_entry
     render_mpt_entry()
 
-    # 1. Top bar: Title + "📁 Kelola Niche" + "+ Proyek Baru" button at top right
-    col_h, col_niche_mgmt, col_new = st.columns([3.5, 1.3, 1.2])
+    # 1. Header with title, subtitle, and search box on the right (Mockup 1)
+    col_h, col_actions = st.columns([3.5, 2.0])
     with col_h:
-        st.title("🎬 Studio Video Panjang")
-        st.caption("Alur otomatis video dokumenter 10–20 menit: Naskah › Suara › Visual › Render › CapCut.")
-    with col_niche_mgmt:
+        st.markdown(
+            f"""
+            <div style="margin-bottom: 0.5rem;">
+                <h1 style="font-size: 1.85rem; font-weight: 700; margin: 0 0 0.35rem 0; color: var(--efs-text);">{t("home_title")}</h1>
+                <p style="font-size: 0.95rem; color: var(--efs-muted); margin: 0;">{t("home_subtitle")}</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with col_actions:
         st.write("")
-        show_niche_mgmt = st.session_state.get("show_niche_mgmt", False)
-        nm_label = "✕ Tutup Niche" if show_niche_mgmt else "📁 Kelola Niche"
-        if st.button(nm_label, use_container_width=True, key="btn_toggle_niche_mgmt"):
-            st.session_state["show_niche_mgmt"] = not show_niche_mgmt
-            st.session_state["show_new_proj_form"] = False
-            st.rerun()
-    with col_new:
-        st.write("")
-        show_form = st.session_state.get("show_new_proj_form", False)
-        btn_label = "✕ Tutup Form" if show_form else "➕ Proyek Baru"
-        if st.button(btn_label, type="primary", use_container_width=True, key="btn_toggle_new_proj"):
-            st.session_state["show_new_proj_form"] = not show_form
-            st.session_state["show_niche_mgmt"] = False
-            st.rerun()
+        col_s_box, col_s_btn = st.columns([3, 2])
+        with col_s_box:
+            search_kw = st.text_input(
+                "Cari proyek...",
+                placeholder=t("home_search_placeholder"),
+                label_visibility="collapsed",
+                key="home_search_kw",
+            )
+        with col_s_btn:
+            # Preserves compatibility for test_stage7_g_fixes.py line 205
+            if st.button("➕ Proyek Baru", key="btn_toggle_new_proj", use_container_width=True):
+                st.session_state["focus_new_project"] = True
 
-    # Niche Management Section (shown when toggled) (D8)
+    # Niche Management Section (shown when toggled from sidebar or button)
     if st.session_state.get("show_niche_mgmt"):
         render_niche_management_section()
 
-    # 2. New Project Form ala MoneyPrinterTurbo asli (shown when toggled) (D7, D8, G2, G3)
-    if st.session_state.get("show_new_proj_form"):
-        with st.container(border=True):
-            st.subheader("✨ Buat Proyek Video Baru")
-            # D7: Main fields outside expander
+    # 2. Card "Mulai video baru" (Permanently open at top, Mockup 1)
+    with st.container(border=True):
+        st.markdown(f"#### {t('card_new_video_title')}")
+        st.caption(t("card_new_video_note"))
+
+        col_topik, col_dur, col_lang, col_btn = st.columns([3.2, 1.2, 1.4, 1.3])
+        with col_topik:
             new_topic = st.text_input(
-                "Topik / Judul Video (Wajib):",
-                placeholder="Mis. Kisah Legenda Dodge Charger 1969 atau Sejarah Perkembangan AI",
+                t("field_topic"),
+                placeholder=t("field_topic_placeholder"),
                 key="input_new_topic",
             )
+        with col_dur:
+            new_duration = st.selectbox(
+                t("field_duration"),
+                options=[10, 12, 15, 20],
+                index=1,
+                format_func=lambda m: f"{m} {t('unit_minutes')}",
+                key="sel_new_duration",
+            )
+        with col_lang:
+            new_lang = st.selectbox(
+                t("field_narration_lang"),
+                options=["id-ID (Bahasa Indonesia)", "en-US (English)"],
+                index=0,
+                key="sel_new_proj_lang",
+            )
+        eff_lang_code = "en-US" if "en-US" in new_lang else "id-ID"
 
-            col_dur, col_lang = st.columns(2)
-            with col_dur:
-                new_duration = st.slider("Target Durasi (menit):", min_value=10, max_value=20, value=12)
-            with col_lang:
-                new_lang = st.selectbox("Bahasa Narasi:", ["id-ID (Bahasa Indonesia)", "en-US (Bahasa Inggris)"], index=0, key="sel_new_proj_lang")
+        with col_btn:
+            st.write("")
+            st.write("")
+            submitted = st.button(t("btn_create_project"), type="primary", use_container_width=True, key="btn_create_project_submit")
 
-            eff_lang_code = "en-US" if "en-US" in new_lang else "id-ID"
+        # Expander "Pengaturan lanjutan"
+        with st.expander(t("expander_advanced_settings"), expanded=False):
+            root_ids, root_labels = get_available_niches_for_ui(eff_lang_code)
 
-            # D7, G3: Niche, Sub-niche, Fokus inside expander "Pengaturan lanjutan"
-            with st.expander("⚙️ Pengaturan Lanjutan (Niche, Sub-Niche, Rasio)", expanded=False):
-                root_ids, root_labels = get_available_niches_for_ui(eff_lang_code)
+            col_n, col_sub = st.columns(2)
+            with col_n:
+                chosen_root = st.selectbox(
+                    t("field_main_niche"),
+                    options=root_ids,
+                    format_func=lambda pid: root_labels.get(pid, pid),
+                    index=0,
+                    key="sel_root_niche",
+                )
 
-                col_n, col_sub = st.columns(2)
-                with col_n:
-                    chosen_root = st.selectbox(
-                        "Niche Utama:",
-                        options=root_ids,
-                        format_func=lambda pid: root_labels.get(pid, pid),
+            is_creating_new_root = (chosen_root == "+ Niche baru…")
+            new_niche_name = ""
+            new_sub_name = ""
+            chosen_sub = "(Gunakan Niche Utama)"
+            is_creating_new_sub = False
+            custom_footage_kw = ""
+            custom_avoid_kw = ""
+
+            if is_creating_new_root:
+                with col_sub:
+                    st.caption(f"✨ {t('new_root_niche_option')}")
+                col_nname, col_subname = st.columns(2)
+                with col_nname:
+                    new_niche_name = st.text_input(
+                        t("new_niche_name_label"),
+                        placeholder=t("new_niche_name_placeholder"),
+                        key="input_new_niche_name",
+                    )
+                with col_subname:
+                    new_sub_name = st.text_input(
+                        t("new_sub_name_label"),
+                        placeholder=t("new_sub_name_placeholder"),
+                        key="input_new_sub_name",
+                    )
+                col_kw1, col_kw2 = st.columns(2)
+                with col_kw1:
+                    custom_footage_kw = st.text_input(
+                        t("custom_footage_kw_label"),
+                        placeholder="Mis. ramen, yatai, tokyo street",
+                        key="input_custom_footage_kw",
+                    )
+                with col_kw2:
+                    custom_avoid_kw = st.text_input(
+                        t("custom_avoid_kw_label"),
+                        placeholder="Mis. cartoon, 3d render, watermark",
+                        key="input_custom_avoid_kw",
+                    )
+            else:
+                sub_ids, sub_labels = get_sub_niches_for_ui(chosen_root, eff_lang_code)
+                with col_sub:
+                    chosen_sub = st.selectbox(
+                        t("field_sub_niche"),
+                        options=sub_ids,
+                        format_func=lambda pid: sub_labels.get(pid, pid),
                         index=0,
-                        help="Pilih niche yang tersedia atau pilih '+ Niche baru…' untuk membuat baru.",
-                        key="sel_root_niche",
+                        key="sel_sub_niche",
                     )
 
-                is_creating_new_root = (chosen_root == "+ Niche baru…")
-                new_niche_name = ""
-                new_sub_name = ""
-                chosen_sub = "(Gunakan Niche Utama)"
-                is_creating_new_sub = False
-                custom_footage_kw = ""
-                custom_avoid_kw = ""
-
-                if is_creating_new_root:
-                    with col_sub:
-                        st.caption("✨ Membuat Niche Utama Baru")
-                    col_nname, col_subname = st.columns(2)
-                    with col_nname:
-                        new_niche_name = st.text_input(
-                            "Nama Niche Baru (Wajib):",
-                            placeholder="Mis. Kuliner atau Wisata Alam",
-                            key="input_new_niche_name",
-                        )
-                    with col_subname:
-                        new_sub_name = st.text_input(
-                            "Nama Sub-Niche (Opsional):",
-                            placeholder="Mis. Street food Jepang",
-                            key="input_new_sub_name",
-                        )
+                is_creating_new_sub = (chosen_sub == "+ Sub-niche baru…")
+                if is_creating_new_sub:
+                    new_sub_name = st.text_input(
+                        t("new_sub_name_label"),
+                        placeholder=t("new_sub_name_placeholder"),
+                        key="input_new_sub_name",
+                    )
                     col_kw1, col_kw2 = st.columns(2)
                     with col_kw1:
                         custom_footage_kw = st.text_input(
-                            "Kata Kunci Footage / Visual (pisahkan koma):",
+                            t("custom_footage_kw_label"),
                             placeholder="Mis. ramen, yatai, tokyo street",
                             key="input_custom_footage_kw",
                         )
                     with col_kw2:
                         custom_avoid_kw = st.text_input(
-                            "Hindari Kata / Filter Negatif (pisahkan koma):",
+                            t("custom_avoid_kw_label"),
                             placeholder="Mis. cartoon, 3d render, watermark",
                             key="input_custom_avoid_kw",
                         )
+
+            suggested_id = re.sub(r"[^a-zA-Z0-9_\-]+", "_", new_topic.lower()).strip("_")
+            col_id, col_foc, col_asp = st.columns([1.5, 2, 1.5])
+            with col_id:
+                custom_id = st.text_input(t("field_project_id"), value=suggested_id)
+            with col_foc:
+                new_focus = st.text_input(t("field_narrative_focus"), placeholder=t("field_narrative_focus_placeholder"))
+            with col_asp:
+                aspect_ratio = st.selectbox(t("field_aspect_ratio"), ["16:9 (Horizontal YouTube)", "9:16 (Vertikal Shorts/Reels)"], index=0)
+
+        if submitted:
+            if not new_topic.strip():
+                st.error("Topik / Judul video wajib diisi.")
+            elif is_creating_new_root and not new_niche_name.strip():
+                st.error("Nama Niche Baru wajib diisi saat memilih opsi '+ Niche baru…'.")
+            elif is_creating_new_sub and not new_sub_name.strip():
+                st.error("Nama Sub-Niche Baru wajib diisi saat memilih opsi '+ Sub-niche baru…'.")
+            else:
+                eff_id = custom_id.strip() if custom_id.strip() else re.sub(r"[^a-zA-Z0-9_\-]+", "_", new_topic.lower()).strip("_")
+                if not eff_id:
+                    eff_id = f"project_{int(time.time())}"
+
+                if get_project_dir(eff_id).exists():
+                    st.error(f"Proyek dengan ID '{eff_id}' sudah ada. Ubah topik atau ID proyek.")
                 else:
-                    sub_ids, sub_labels = get_sub_niches_for_ui(chosen_root, eff_lang_code)
-                    with col_sub:
-                        chosen_sub = st.selectbox(
-                            "Sub-Niche (Opsional):",
-                            options=sub_ids,
-                            format_func=lambda pid: sub_labels.get(pid, pid),
-                            index=0,
-                            help="Pilih sub-niche atau pilih '+ Sub-niche baru…' untuk menambah sub-niche.",
-                            key="sel_sub_niche",
-                        )
+                    try:
+                        extra_vis = [k.strip() for k in custom_footage_kw.split(",") if k.strip()] if (is_creating_new_root or is_creating_new_sub) else []
+                        extra_neg = [k.strip() for k in custom_avoid_kw.split(",") if k.strip()] if (is_creating_new_root or is_creating_new_sub) else []
 
-                    is_creating_new_sub = (chosen_sub == "+ Sub-niche baru…")
-                    if is_creating_new_sub:
-                        new_sub_name = st.text_input(
-                            "Nama Sub-Niche Baru (Wajib):",
-                            placeholder="Mis. Street food Jepang",
-                            key="input_new_sub_name",
-                        )
-                        col_kw1, col_kw2 = st.columns(2)
-                        with col_kw1:
-                            custom_footage_kw = st.text_input(
-                                "Kata Kunci Footage / Visual (pisahkan koma):",
-                                placeholder="Mis. ramen, yatai, tokyo street",
-                                key="input_custom_footage_kw",
-                            )
-                        with col_kw2:
-                            custom_avoid_kw = st.text_input(
-                                "Hindari Kata / Filter Negatif (pisahkan koma):",
-                                placeholder="Mis. cartoon, 3d render, watermark",
-                                key="input_custom_avoid_kw",
-                            )
-
-                suggested_id = re.sub(r"[^a-zA-Z0-9_\-]+", "_", new_topic.lower()).strip("_")
-                custom_id = st.text_input("ID Proyek (Folder):", value=suggested_id, help="Biarkan default jika ingin dibuat otomatis dari topik.")
-                new_focus = st.text_input("Sudut Fokus Khusus:", placeholder="Mis. Mesin 426 Hemi dan dominasi NASCAR")
-                aspect_ratio = st.selectbox("Rasio Aspek:", ["16:9 (Horizontal YouTube)", "9:16 (Vertikal Shorts/Reels)"], index=0)
-
-            col_sub_btn, col_sub_cancel = st.columns([1, 4])
-            with col_sub_btn:
-                submitted = st.button("🚀 Buat Proyek", type="primary", key="btn_create_project_submit")
-
-            if submitted:
-                if not new_topic.strip():
-                    st.error("Topik / Judul video wajib diisi.")
-                elif is_creating_new_root and not new_niche_name.strip():
-                    st.error("Nama Niche Baru wajib diisi saat memilih opsi '+ Niche baru…'.")
-                elif is_creating_new_sub and not new_sub_name.strip():
-                    st.error("Nama Sub-Niche Baru wajib diisi saat memilih opsi '+ Sub-niche baru…'.")
-                else:
-                    eff_id = custom_id.strip() if custom_id.strip() else re.sub(r"[^a-zA-Z0-9_\-]+", "_", new_topic.lower()).strip("_")
-                    if not eff_id:
-                        eff_id = f"project_{int(time.time())}"
-
-                    if get_project_dir(eff_id).exists():
-                        st.error(f"Proyek dengan ID '{eff_id}' sudah ada. Ubah topik atau ID proyek.")
-                    else:
-                        try:
-                            extra_vis = [k.strip() for k in custom_footage_kw.split(",") if k.strip()] if (is_creating_new_root or is_creating_new_sub) else []
-                            extra_neg = [k.strip() for k in custom_avoid_kw.split(",") if k.strip()] if (is_creating_new_root or is_creating_new_sub) else []
-
-                            if is_creating_new_root:
-                                target_preset_id, _ = create_custom_niche_hierarchy(
-                                    niche_name=new_niche_name.strip(),
-                                    sub_niche_name=new_sub_name.strip() if new_sub_name.strip() else None,
-                                    language=eff_lang_code,
-                                    visual_keywords=extra_vis,
-                                    negative_terms=extra_neg,
-                                )
-                            elif is_creating_new_sub:
-                                target_preset_id, _ = create_custom_niche_hierarchy(
-                                    niche_name="",
-                                    sub_niche_name=new_sub_name.strip(),
-                                    parent_niche_id=chosen_root,
-                                    language=eff_lang_code,
-                                    visual_keywords=extra_vis,
-                                    negative_terms=extra_neg,
-                                )
-                            elif chosen_sub != "(Gunakan Niche Utama)":
-                                target_preset_id = chosen_sub
-                            else:
-                                target_preset_id = chosen_root
-
-                            create_project(
-                                project_id=eff_id,
-                                title=new_topic.strip(),
-                                topic=new_topic.strip(),
-                                target_duration_minutes=new_duration,
-                                preset_id=target_preset_id,
-                                sub_niche_focus=new_focus.strip() if new_focus else None,
-                                aspect_ratio="16:9" if "16:9" in aspect_ratio else "9:16",
+                        if is_creating_new_root:
+                            target_preset_id, _ = create_custom_niche_hierarchy(
+                                niche_name=new_niche_name.strip(),
+                                sub_niche_name=new_sub_name.strip() if new_sub_name.strip() else None,
                                 language=eff_lang_code,
+                                visual_keywords=extra_vis,
+                                negative_terms=extra_neg,
                             )
-                            st.query_params["project"] = eff_id
-                            st.session_state["show_new_proj_form"] = False
-                            st.rerun()
-                        except Exception as exc:
-                            st.error(f"Gagal membuat proyek: {exc}")
+                        elif is_creating_new_sub:
+                            target_preset_id, _ = create_custom_niche_hierarchy(
+                                niche_name="",
+                                sub_niche_name=new_sub_name.strip(),
+                                parent_niche_id=chosen_root,
+                                language=eff_lang_code,
+                                visual_keywords=extra_vis,
+                                negative_terms=extra_neg,
+                            )
+                        elif chosen_sub != "(Gunakan Niche Utama)":
+                            target_preset_id = chosen_sub
+                        else:
+                            target_preset_id = chosen_root
 
-    st.write("---")
+                        create_project(
+                            project_id=eff_id,
+                            title=new_topic.strip(),
+                            topic=new_topic.strip(),
+                            target_duration_minutes=new_duration,
+                            preset_id=target_preset_id,
+                            sub_niche_focus=new_focus.strip() if new_focus else None,
+                            aspect_ratio="16:9" if "16:9" in aspect_ratio else "9:16",
+                            language=eff_lang_code,
+                        )
+                        st.query_params["project"] = eff_id
+                        st.session_state["show_new_proj_form"] = False
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Gagal membuat proyek: {exc}")
 
-    # 3. Project Cards Grid (D5)
+    st.write("")
+
+    # 3. Project Filter Chips and Grid (Mockup 1)
     projects = get_project_summaries()
 
-    col_search, col_stats = st.columns([4, 1.2])
-    with col_search:
-        search_kw = st.text_input("🔍 Cari proyek...", placeholder="Ketik kata kunci judul atau ID proyek...", label_visibility="collapsed")
-    with col_stats:
-        st.caption(f"Total: **{len(projects)} Proyek**")
+    total_cnt = len(projects)
+    comp_cnt = sum(
+        1 for p in projects
+        if all(p.get("steps", {}).get(s, {}).get("status") == "selesai" for s in ["script", "voice", "visual", "render", "capcut"])
+    )
+    in_prog_cnt = total_cnt - comp_cnt
+
+    opt_all = f"{t('filter_all')} · {total_cnt}"
+    opt_prog = f"{t('filter_in_progress')} · {in_prog_cnt}"
+    opt_done = f"{t('filter_completed')} · {comp_cnt}"
+
+    filter_choice = st.pills(
+        "Filter",
+        options=[opt_all, opt_prog, opt_done],
+        default=opt_all,
+        key="home_filter_pills",
+        label_visibility="collapsed",
+    )
+
+    filtered_projects = projects
+    if filter_choice == opt_prog:
+        filtered_projects = [
+            p for p in projects
+            if not all(p.get("steps", {}).get(s, {}).get("status") == "selesai" for s in ["script", "voice", "visual", "render", "capcut"])
+        ]
+    elif filter_choice == opt_done:
+        filtered_projects = [
+            p for p in projects
+            if all(p.get("steps", {}).get(s, {}).get("status") == "selesai" for s in ["script", "voice", "visual", "render", "capcut"])
+        ]
 
     if search_kw:
         kw = search_kw.strip().lower()
-        projects = [p for p in projects if kw in p["title"].lower() or kw in p["project_id"].lower()]
+        filtered_projects = [p for p in filtered_projects if kw in p["title"].lower() or kw in p["project_id"].lower()]
 
-    if not projects:
-        st.info("Tidak ada proyek yang sesuai dengan pencarian." if search_kw else "Belum ada proyek video panjang. Klik **➕ Proyek Baru** di kanan atas.")
+    if not filtered_projects:
+        if search_kw:
+            st.info(t("no_projects_found"))
+        else:
+            st.info(t("no_projects_yet"))
         return
 
-    cols = st.columns(2)
-    step_icons = {
-        "selesai": "✔",
-        "berjalan": "⏳",
-        "terhenti": "⚠️",
-        "perlu_diperbarui": "🔄",
-        "belum": "○",
-    }
-
-    for idx, p in enumerate(projects):
-        with cols[idx % 2]:
+    # 3-Column Project Cards Grid (Mockup 1)
+    cols = st.columns(3)
+    for idx, p in enumerate(filtered_projects):
+        with cols[idx % 3]:
             with st.container(border=True):
-                # 1-line title truncated with ellipsis
-                raw_title = p["title"].strip()
-                trunc_title = (raw_title[:32] + "…") if len(raw_title) > 34 else raw_title
-                st.markdown(f"#### {trunc_title}", help=raw_title)
+                p_dir = get_project_dir(p["project_id"])
+                thumb_p = get_project_thumbnail_path(p_dir)
+                dur_minutes = p.get("duration_minutes", 12)
+                dur_str = f"≈ {dur_minutes} {t('unit_minutes')}"
+                st.markdown(render_project_thumbnail_html(thumb_p, dur_str), unsafe_allow_html=True)
 
-                # Niche & Duration
+                raw_title = p["title"].strip()
+                st.markdown(
+                    f'<div class="efs-project-card-title" title="{html.escape(raw_title)}">{html.escape(raw_title)}</div>',
+                    unsafe_allow_html=True,
+                )
+
                 niche_text = p["preset_id"]
                 if p.get("sub_niche_focus"):
                     niche_text += f" › {p['sub_niche_focus']}"
-                if len(niche_text) > 40:
-                    niche_text = niche_text[:38] + "…"
-                st.caption(f"📁 {niche_text}  •  ⏱️ ~{p['duration_minutes']} mnt")
-
-                # 5 status icons in 1 row
-                sc = p['steps']['script']['status']
-                vc = p['steps']['voice']['status']
-                vs = p['steps']['visual']['status']
-                rd = p['steps']['render']['status']
-                cc = p['steps']['capcut']['status']
-
-                diff_icon = " ⚠️" if p.get("preset_has_impactful_diff") else ""
                 st.markdown(
-                    f"`{step_icons.get(sc, '○')}` Naskah &nbsp; "
-                    f"`{step_icons.get(vc, '○')}` Suara &nbsp; "
-                    f"`{step_icons.get(vs, '○')}` Visual &nbsp; "
-                    f"`{step_icons.get(rd, '○')}` Render &nbsp; "
-                    f"`{step_icons.get(cc, '○')}` CapCut{diff_icon}",
-                    help="Status 5 langkah workflow proyek" if not diff_icon else "Pengaturan niche diperbarui sejak proyek dibuat"
+                    f'<div class="efs-project-card-niche">{html.escape(niche_text)}</div>',
+                    unsafe_allow_html=True,
                 )
 
-                # Clean Next Step line: NO double words!
-                next_step = p.get("next_step", "Naskah")
-                if next_step == "Semua Selesai ✔":
-                    st.markdown("✅ **Semua Selesai**")
-                else:
-                    st.markdown(f"👉 **Berikutnya:** {next_step}")
+                # 5-segment progress bar
+                st.markdown(render_5_segment_progress_bar_html(p.get("steps", {})), unsafe_allow_html=True)
 
-                # Open button
-                if st.button("📂 Buka", key=f"btn_open_{p['project_id']}", use_container_width=True):
+                # Next step and progress count
+                comp_steps = sum(
+                    1 for s in ["script", "voice", "visual", "render", "capcut"]
+                    if p.get("steps", {}).get(s, {}).get("status") == "selesai"
+                )
+                if comp_steps == 5:
+                    next_str = t("project_all_done")
+                else:
+                    raw_next = p.get("next_step", "Naskah")
+                    next_str = t("project_next_step", step=raw_next)
+
+                prog_str = t("project_step_progress", completed=comp_steps)
+                st.markdown(
+                    f'<div class="efs-project-card-status"><span>{html.escape(next_str)}</span><span>{html.escape(prog_str)}</span></div>',
+                    unsafe_allow_html=True,
+                )
+
+                if st.button(t("btn_open_project"), key=f"btn_open_{p['project_id']}", use_container_width=True):
                     st.query_params["project"] = p["project_id"]
                     st.rerun()
 
@@ -635,24 +737,123 @@ def render_project_page(project_id: str):
     from app.services.longform.ui.nav import render_mpt_entry
     render_mpt_entry(show_top_return=False)
 
-    # Navigation header
-    col_back, col_title = st.columns([1, 5])
+    # Navigation header & top meta row (Mockup 2)
+    col_back, col_title, col_auto = st.columns([1.2, 3.8, 1.8])
     with col_back:
-        if st.button("← Kembali ke Beranda", key=f"btn_back_{project_id}"):
+        if st.button("← " + t("btn_all_projects"), key=f"btn_back_{project_id}"):
             st.query_params.clear()
             st.session_state.pop(f"active_step_{project_id}", None)
             st.rerun()
 
     with col_title:
-        st.title(f"🎬 {manifest.title}")
-        meta_sub = ""
-        if getattr(manifest, "topic", None):
-            meta_sub += f"**Topik:** {manifest.topic} | "
-        meta_sub += f"Preset: `{manifest.preset_id}`"
+        st.title(manifest.title)
+        niche_text = manifest.preset_id
         if manifest.sub_niche_focus:
-            meta_sub += f" › *{manifest.sub_niche_focus}*"
-        meta_sub += f" | Rasio: `{manifest.aspect_ratio}` | Est. Durasi: ~{st_info['duration_minutes']} menit"
-        st.caption(meta_sub)
+            niche_text += f" › {manifest.sub_niche_focus}"
+        dur_badge = f"≈ {st_info['duration_minutes']} {t('unit_minutes')}"
+        manifest_lang = getattr(manifest, "language", None) or (manifest.preset_snapshot or {}).get("language") or "id-ID"
+        asp_badge = f"{manifest.aspect_ratio} · {manifest_lang}"
+        st.markdown(
+            f'{render_badge(niche_text, "neutral")} '
+            f'{render_badge(dur_badge, "neutral")} '
+            f'{render_badge(asp_badge, "neutral")}',
+            unsafe_allow_html=True,
+        )
+
+    # Automated Pipeline Section ("Otomatis Sampai Selesai" - A1, A2, A3)
+    script_done = (st_info["steps"]["script"]["status"] == "selesai")
+    all_done = (
+        st_info["steps"]["script"]["status"] == "selesai"
+        and st_info["steps"]["voice"]["status"] == "selesai"
+        and st_info["steps"]["visual"]["status"] == "selesai"
+        and st_info["steps"]["render"]["status"] == "selesai"
+    )
+
+    with col_auto:
+        st.write("")
+        with st.popover(f"▷ {t('btn_auto_run_until_done')}", use_container_width=True):
+            st.markdown(f"**{t('auto_pipeline_title')}**")
+            st.caption(t("auto_pipeline_desc"))
+            auto_with_capcut = st.checkbox(t("auto_include_capcut"), value=False, key=f"auto_cc_{project_id}")
+            auto_stop_review = st.checkbox(t("auto_stop_on_review"), value=True, key=f"auto_rev_{project_id}")
+
+            job_state = jobs.get_job_state(project_id)
+            is_job_running = bool(job_state and job_state.get("status") == "running")
+            is_review_paused = bool(
+                job_state
+                and job_state.get("status") == "stopped"
+                and "Menunggu pengecekan visual" in (job_state.get("phase") or "")
+            )
+
+            if is_review_paused:
+                phase_msg = f" ({job_state.get('phase')})" if job_state.get("phase") else ""
+                st.warning(f"⚠️ **Pekerjaan Otomatis Terhenti**{phase_msg}: Terdapat shot yang ditandai 'Perlu dicek' pada Langkah ③ Visual.")
+                if st.button("▶️ Lanjutkan Otomatis (Abaikan Pengecekan)", key=f"btn_resume_auto_{project_id}", type="primary", use_container_width=True):
+                    cmd = ["python", "cli_longform.py", "pipeline", "auto", project_id, "--skip-review-check"]
+                    if auto_with_capcut:
+                        cmd.append("--with-capcut")
+                    jobs.start_job(project_id, "pipeline_auto", cmd)
+                    time.sleep(0.5)
+                    st.rerun()
+            elif not script_done:
+                st.caption("🔒 *Langkah ① Naskah harus selesai terlebih dahulu sebelum dapat menjalankan otomatisasi.*")
+                st.button("🚀 Jalankan Otomatis Sampai Selesai", disabled=True, key=f"btn_auto_dis_{project_id}", use_container_width=True)
+            elif all_done and not auto_with_capcut:
+                st.button("✅ Semua Langkah Selesai ✔", disabled=True, key=f"btn_auto_done_{project_id}", use_container_width=True)
+            else:
+                if st.button("🚀 Jalankan Otomatis Sampai Selesai", disabled=is_job_running, type="primary", key=f"btn_start_auto_{project_id}", use_container_width=True):
+                    cmd = ["python", "cli_longform.py", "pipeline", "auto", project_id]
+                    if auto_with_capcut:
+                        cmd.append("--with-capcut")
+                    if auto_stop_review:
+                        cmd.append("--stop-on-review")
+                    jobs.start_job(project_id, "pipeline_auto", cmd)
+                    time.sleep(0.5)
+                    st.rerun()
+
+    # Stepper 5 Langkah (C4.3)
+    step_keys = ["script", "voice", "visual", "render", "capcut"]
+    step_labels = {
+        "script": f"① {t('step_script')}",
+        "voice": f"② {t('step_voice')}",
+        "visual": f"③ {t('step_visual')}",
+        "render": f"④ {t('step_render')}",
+        "capcut": f"⑤ {t('step_capcut')}",
+    }
+    step_status_badges = {
+        "selesai": "✅ " + t("status_done"),
+        "berjalan": "⏳ " + t("status_in_progress"),
+        "terhenti": "⚠️ " + t("status_interrupted"),
+        "perlu_diperbarui": "🔄 " + t("status_needs_update"),
+        "belum": "⚪ " + t("status_not_started"),
+    }
+
+    # Auto-select first uncompleted step if not explicitly selected
+    default_active_step = "script"
+    for k in step_keys:
+        if st_info["steps"][k]["status"] != "selesai":
+            default_active_step = k
+            break
+
+    session_key = f"active_step_{project_id}"
+    if session_key not in st.session_state:
+        st.session_state[session_key] = default_active_step
+
+    current_active_step = st.session_state[session_key]
+
+    # Always Visible Top Job Monitor (Mockup 2: Placed ABOVE stepper)
+    render_job_monitor_widget(project_id, current_step=current_active_step)
+
+    # Success Banner (Mockup 3: Green checkmark card when core 4 or all 5 steps are completed)
+    core_4_completed = (
+        st_info["steps"]["script"]["status"] == "selesai"
+        and st_info["steps"]["voice"]["status"] == "selesai"
+        and st_info["steps"]["visual"]["status"] == "selesai"
+        and st_info["steps"]["render"]["status"] == "selesai"
+    )
+    if core_4_completed:
+        banner_msg = f"{t('success_banner_title')} {t('success_banner_subtitle')}"
+        render_success_banner(banner_msg)
 
     # Preset Impactful Difference Banner (C3, H1)
     if st_info.get("preset_has_impactful_diff"):
@@ -700,97 +901,7 @@ def render_project_page(project_id: str):
                 else:
                     st.info("Preset yang dipilih sama dengan preset proyek saat ini.")
 
-    # Stepper 5 Langkah (C4.3)
-    step_keys = ["script", "voice", "visual", "render", "capcut"]
-    step_labels = {
-        "script": "① Naskah",
-        "voice": "② Suara",
-        "visual": "③ Visual",
-        "render": "④ Render",
-        "capcut": "⑤ CapCut",
-    }
-    step_status_badges = {
-        "selesai": "✅ Selesai",
-        "berjalan": "⏳ Berjalan",
-        "terhenti": "⚠️ Terhenti",
-        "perlu_diperbarui": "🔄 Perlu Diperbarui",
-        "belum": "⚪ Belum",
-    }
-
-    # Auto-select first uncompleted step if not explicitly selected
-    default_active_step = "script"
-    for k in step_keys:
-        if st_info["steps"][k]["status"] != "selesai":
-            default_active_step = k
-            break
-
-    session_key = f"active_step_{project_id}"
-    if session_key not in st.session_state:
-        st.session_state[session_key] = default_active_step
-
-    current_active_step = st.session_state[session_key]
-
-    # Always Visible Top Job Monitor (C1, C4.3, W3)
-    render_job_monitor_widget(project_id, current_step=current_active_step)
-
-    # Automated Pipeline Section ("Otomatis Sampai Selesai" - A1, A2, A3)
-    script_done = (st_info["steps"]["script"]["status"] == "selesai")
-    all_done = (
-        st_info["steps"]["script"]["status"] == "selesai"
-        and st_info["steps"]["voice"]["status"] == "selesai"
-        and st_info["steps"]["visual"]["status"] == "selesai"
-        and st_info["steps"]["render"]["status"] == "selesai"
-    )
-
-    with st.container(border=True):
-        col_a1, col_a2, col_a3 = st.columns([3, 1, 1])
-        with col_a1:
-            st.markdown("##### 🚀 Otomatis Sampai Selesai")
-            st.caption("Jalankan langkah yang tersisa secara berurutan dalam satu antrean pekerjaan latar belakang (Suara → Visual → Render → CapCut).")
-        with col_a2:
-            auto_with_capcut = st.checkbox("Sertakan CapCut", value=False, key=f"auto_cc_{project_id}")
-        with col_a3:
-            auto_stop_review = st.checkbox("Berhenti jika Perlu Dicek", value=True, key=f"auto_rev_{project_id}")
-
-        job_state = jobs.get_job_state(project_id)
-        is_job_running = bool(job_state and job_state.get("status") == "running")
-        is_review_paused = bool(
-            job_state
-            and job_state.get("status") == "stopped"
-            and "Menunggu pengecekan visual" in (job_state.get("phase") or "")
-        )
-
-        if is_review_paused:
-            phase_msg = f" ({job_state.get('phase')})" if job_state.get("phase") else ""
-            st.warning(f"⚠️ **Pekerjaan Otomatis Terhenti**{phase_msg}: Terdapat shot yang ditandai 'Perlu dicek' pada Langkah ③ Visual. Silakan tinjau visual di tab ③ atau klik tombol di bawah untuk melanjutkan render.")
-            col_b1, _ = st.columns([2, 3])
-            with col_b1:
-                if st.button("▶️ Lanjutkan Otomatis (Abaikan Pengecekan)", key=f"btn_resume_auto_{project_id}", type="primary", use_container_width=True):
-                    cmd = ["python", "cli_longform.py", "pipeline", "auto", project_id, "--skip-review-check"]
-                    if auto_with_capcut:
-                        cmd.append("--with-capcut")
-                    jobs.start_job(project_id, "pipeline_auto", cmd)
-                    time.sleep(0.5)
-                    st.rerun()
-        elif not script_done:
-            st.caption("🔒 *Langkah ① Naskah harus selesai terlebih dahulu sebelum dapat menjalankan otomatisasi.*")
-            st.button("🚀 Jalankan Otomatis Sampai Selesai", disabled=True, key=f"btn_auto_dis_{project_id}")
-        elif all_done and not auto_with_capcut:
-            st.button("✅ Semua Langkah Selesai ✔", disabled=True, key=f"btn_auto_done_{project_id}")
-        else:
-            if st.button("🚀 Jalankan Otomatis Sampai Selesai", disabled=is_job_running, type="primary", key=f"btn_start_auto_{project_id}"):
-                cmd = ["python", "cli_longform.py", "pipeline", "auto", project_id]
-                if auto_with_capcut:
-                    cmd.append("--with-capcut")
-                if auto_stop_review:
-                    cmd.append("--stop-on-review")
-                jobs.start_job(project_id, "pipeline_auto", cmd)
-                time.sleep(0.5)
-                st.rerun()
-
-    st.write("---")
-
-    # Render horizontal stepper pill selector
+    # Render horizontal stepper pill selector (5 cards, Mockup 2 & 3)
     stepper_cols = st.columns(5)
     for idx, k in enumerate(step_keys):
         st_val = st_info["steps"][k]["status"]
@@ -812,17 +923,27 @@ def render_project_page(project_id: str):
     job_state = jobs.get_job_state(project_id)
     is_job_running = bool(job_state and job_state.get("status") == "running")
 
-    with st.container(border=True):
-        if active_step == "script":
-            render_script_step_flow(project_id, p_dir, manifest, active_info, is_job_running=is_job_running)
-        elif active_step == "voice":
-            render_voice_step_flow(project_id, p_dir, manifest, active_info, is_job_running=is_job_running)
-        elif active_step == "visual":
-            render_visual_step_flow(project_id, p_dir, manifest, active_info, is_job_running=is_job_running)
-        elif active_step == "render":
-            render_render_step_flow(project_id, p_dir, manifest, active_info, is_job_running=is_job_running)
-        elif active_step == "capcut":
-            render_capcut_step_flow(project_id, p_dir, manifest, active_info, is_job_running=is_job_running)
+    # Mockup 3: If core steps are completed and on Render or CapCut step, render side-by-side view
+    if core_4_completed and active_step in ("render", "capcut"):
+        col_side_rend, col_side_cc = st.columns(2)
+        with col_side_rend:
+            with st.container(border=True):
+                render_render_step_flow(project_id, p_dir, manifest, st_info["steps"]["render"], is_job_running=is_job_running)
+        with col_side_cc:
+            with st.container(border=True):
+                render_capcut_step_flow(project_id, p_dir, manifest, st_info["steps"]["capcut"], is_job_running=is_job_running)
+    else:
+        with st.container(border=True):
+            if active_step == "script":
+                render_script_step_flow(project_id, p_dir, manifest, active_info, is_job_running=is_job_running)
+            elif active_step == "voice":
+                render_voice_step_flow(project_id, p_dir, manifest, active_info, is_job_running=is_job_running)
+            elif active_step == "visual":
+                render_visual_step_flow(project_id, p_dir, manifest, active_info, is_job_running=is_job_running)
+            elif active_step == "render":
+                render_render_step_flow(project_id, p_dir, manifest, active_info, is_job_running=is_job_running)
+            elif active_step == "capcut":
+                render_capcut_step_flow(project_id, p_dir, manifest, active_info, is_job_running=is_job_running)
 
 
 # --- Step 1: Naskah Flow (C4.3) ---
@@ -1405,42 +1526,77 @@ def render_visual_step_flow(
                 jobs.start_job(project_id, "visual_pipeline", cmd)
                 st.rerun()
 
-    # --- V2: Galeri per bab / contact sheet interaktif ---
+    # --- V2: Interactive 2-Column Side-by-Side Gallery & Detail Layout (Mockup 2) ---
     if total_shots > 0:
         st.write("---")
-        st.write("#### 🖼️ Galeri Visual & Contact Sheet Interaktif")
+        col_gallery, col_detail = st.columns([1.12, 0.88])
 
-        filter_mode = st.radio(
-            "Filter Cepat:",
-            ["Semua", "Perlu dicek", "Terkunci", "Placeholder"],
-            horizontal=True,
-            key=f"vis_filter_{project_id}",
-        )
+        # All shots flattened & mapped
+        all_shots_list = [s for ch in manifest.chapters for s in ch.shots]
+        all_ch_map = {s.shot_id: ch for ch in manifest.chapters for s in ch.shots}
 
-        ch_tabs = st.tabs([f"Bab {ch.chapter_index}: {getattr(ch, 'chapter_title', f'Bab {ch.chapter_index}')[:25]}" for ch in manifest.chapters])
-        for ch_idx, ch in enumerate(manifest.chapters):
-            with ch_tabs[ch_idx]:
-                if filter_mode == "Perlu dicek":
-                    ch_shots = [s for s in ch.shots if getattr(s, "needs_review", False)]
-                elif filter_mode == "Terkunci":
-                    ch_shots = [s for s in ch.shots if getattr(s, "locked", False)]
-                elif filter_mode == "Placeholder":
-                    ch_shots = [s for s in ch.shots if (getattr(s, "is_fake", False) or getattr(s, "actual_source", "") == "fake")]
-                else:
-                    ch_shots = ch.shots
+        # Resolve selected shot ID or default to first shot
+        current_sel_id = st.session_state.get(f"selected_shot_{project_id}")
+        if not current_sel_id or current_sel_id not in all_ch_map:
+            current_sel_id = all_shots_list[0].shot_id if all_shots_list else None
+            st.session_state[f"selected_shot_{project_id}"] = current_sel_id
 
-                if not ch_shots:
-                    st.caption("Tidak ada shot yang cocok dengan filter ini.")
-                else:
-                    for r_idx in range(0, len(ch_shots), 4):
-                        cols = st.columns(4)
-                        for c_idx, shot in enumerate(ch_shots[r_idx:r_idx+4]):
-                            with cols[c_idx]:
+        with col_gallery:
+            st.markdown(f"#### 🖼️ {t('gallery_heading')}")
+
+            # Chapter Pills Selector
+            ch_names = [t("all_chapters_option")] + [
+                f"Bab {ch.chapter_index}: {getattr(ch, 'chapter_title', f'Bab {ch.chapter_index}')[:16]}"
+                for ch in manifest.chapters
+            ]
+            ch_choice = st.pills(
+                "Pilih Bab",
+                options=ch_names,
+                default=t("all_chapters_option"),
+                key=f"vis_ch_sel_{project_id}",
+                label_visibility="collapsed",
+            )
+
+            # Filter Mode Pills
+            opt_all_f = t("filter_all")
+            opt_rev_f = f"{t('filter_needs_review')} · {needs_review_count}"
+            opt_lock_f = f"{t('filter_locked')} · {locked_count}"
+            filter_mode = st.pills(
+                "Filter Status",
+                options=[opt_all_f, opt_rev_f, opt_lock_f],
+                default=opt_all_f,
+                key=f"vis_filter_{project_id}",
+                label_visibility="collapsed",
+            )
+
+            # Filter shots by chapter and status
+            visible_shots = []
+            for ch in manifest.chapters:
+                ch_label = f"Bab {ch.chapter_index}: {getattr(ch, 'chapter_title', f'Bab {ch.chapter_index}')[:16]}"
+                if ch_choice != t("all_chapters_option") and ch_choice != ch_label:
+                    continue
+                for s in ch.shots:
+                    if filter_mode == opt_rev_f and not getattr(s, "needs_review", False):
+                        continue
+                    if filter_mode == opt_lock_f and not getattr(s, "locked", False):
+                        continue
+                    visible_shots.append((ch, s))
+
+            if not visible_shots:
+                st.caption(t("no_shots_match_filter"))
+            else:
+                # 2-column cards grid inside col_gallery
+                for r_idx in range(0, len(visible_shots), 2):
+                    g_cols = st.columns(2)
+                    for c_idx, (ch, shot) in enumerate(visible_shots[r_idx:r_idx+2]):
+                        with g_cols[c_idx]:
+                            is_active_shot = (shot.shot_id == current_sel_id)
+                            card_border_style = "border: 2px solid var(--efs-accent);" if is_active_shot else ""
+
+                            with st.container(border=True):
                                 thumb_p = get_shot_thumbnail_path(p_dir, shot)
-                                if thumb_p and thumb_p.is_file():
-                                    st.image(str(thumb_p), use_container_width=True)
-                                else:
-                                    st.markdown("🖼️ *(Belum ada thumbnail)*")
+                                dur_s = f"{shot.duration_seconds:.1f}s" if shot.duration_seconds else ""
+                                st.markdown(render_project_thumbnail_html(thumb_p, dur_s), unsafe_allow_html=True)
 
                                 badges = []
                                 if getattr(shot, "needs_review", False):
@@ -1452,49 +1608,47 @@ def render_visual_step_flow(
                                 badge_str = f" {' '.join(badges)}" if badges else ""
 
                                 src = shot.actual_source or shot.requested_source or ("fake" if shot.is_fake else "stock")
-                                dur = f"{shot.duration_seconds:.1f}s" if shot.duration_seconds else ""
-                                st.caption(f"**#{shot.shot_index}** ({dur}) • `{src}`{badge_str}")
+                                st.caption(f"**#{shot.shot_index}** ({dur_s}) • `{src}`{badge_str}")
 
                                 narr = get_shot_narration(ch, shot)
-                                snippet = (narr[:45] + "...") if len(narr) > 45 else narr
+                                snippet = (narr[:40] + "...") if len(narr) > 40 else narr
                                 if snippet:
-                                    st.caption(f'"{snippet}"')
+                                    st.caption(f'"{html.escape(snippet)}"')
 
-                                is_sel = (st.session_state.get(f"selected_shot_{project_id}") == shot.shot_id)
-                                btn_type = "primary" if is_sel else "secondary"
-                                btn_lbl = "🔍 Terpilih" if is_sel else "🔍 Detail"
-                                if st.button(btn_lbl, key=f"btn_sh_{project_id}_{shot.shot_id}", type=btn_type, use_container_width=True):
+                                btn_lbl = f"✓ #{shot.shot_index} (Terpilih)" if is_active_shot else f"🔍 #{shot.shot_index} Detail"
+                                if st.button(
+                                    btn_lbl,
+                                    key=f"btn_sh_{project_id}_{shot.shot_id}",
+                                    type="primary" if is_active_shot else "secondary",
+                                    use_container_width=True,
+                                ):
                                     st.session_state[f"selected_shot_{project_id}"] = shot.shot_id
                                     st.rerun()
 
-    # --- V3: Detail Panel & Ganti Shot (Visual Replace) ---
-    sel_id = st.session_state.get(f"selected_shot_{project_id}")
-    if sel_id:
-        target_shot = None
-        target_chapter = None
-        for ch in manifest.chapters:
-            for s in ch.shots:
-                if s.shot_id == sel_id:
-                    target_shot = s
-                    target_chapter = ch
-                    break
-            if target_shot:
-                break
+        # Right Column: Detail Panel (Side-by-side, NEVER drops below!)
+        with col_detail:
+            target_shot = None
+            target_chapter = None
+            if current_sel_id in all_ch_map:
+                target_shot = next((s for s in all_shots_list if s.shot_id == current_sel_id), None)
+                target_chapter = all_ch_map.get(current_sel_id)
 
-        if target_shot and target_chapter:
-            st.write("---")
-            with st.container(border=True):
-                col_dh, col_close = st.columns([4, 1])
-                with col_dh:
-                    st.subheader(f"🎬 Detail Shot: `{target_shot.shot_id}` (Bab {target_shot.chapter_index}, Shot #{target_shot.shot_index})")
-                with col_close:
-                    if st.button("✕ Tutup Detail", key=f"btn_close_detail_{project_id}_{target_shot.shot_id}"):
-                        st.session_state[f"selected_shot_{project_id}"] = None
-                        st.rerun()
+            if target_shot and target_chapter:
+                with st.container(border=True):
+                    col_dh, col_lock = st.columns([3.2, 1.8])
+                    with col_dh:
+                        dur_disp = f"{target_shot.duration_seconds:.1f}s" if target_shot.duration_seconds else ""
+                        st.markdown(f"#### Shot #{target_shot.shot_index} ({dur_disp})")
+                    with col_lock:
+                        is_locked = getattr(target_shot, "locked", False)
+                        lock_lbl = "🔓 Buka Kunci" if is_locked else "🔒 Kunci"
+                        if st.button(lock_lbl, key=f"btn_lock_toggle_{project_id}_{target_shot.shot_id}", use_container_width=True):
+                            vis_svc = VisualService(p_dir)
+                            vis_svc.set_lock(manifest, target_shot.shot_id, not is_locked)
+                            save_manifest(manifest, p_dir)
+                            st.rerun()
 
-                col_left, col_right = st.columns([1, 1])
-                with col_left:
-                    st.markdown("##### 📺 Preview & Informasi Shot")
+                    # Video / Image Large Preview
                     clip_p = (p_dir / target_shot.rendered_clip) if target_shot.rendered_clip else None
                     asset_p = (p_dir / target_shot.asset_path) if target_shot.asset_path else None
                     with st.spinner("Memuat preview video..."):
@@ -1508,7 +1662,7 @@ def render_visual_step_flow(
                             st.info("Klip belum dibuat. Jalankan penyusunan visual untuk merender klip.")
 
                     target_narr = get_shot_narration(target_chapter, target_shot)
-                    st.markdown(f"**Teks Narasi:**\n> {target_narr or '-'}")
+                    st.markdown(f"**Narasi:**\n> {html.escape(target_narr or '-')}")
 
                     from app.services.longform.visual.query_extractor import extract_short_search_query
                     preset_snap = manifest.preset_snapshot or {}
@@ -1521,29 +1675,24 @@ def render_visual_step_flow(
                             required_subject_terms=preset_snap.get("required_subject_terms"),
                         )
 
-                    st.write(f"**Kata Kunci Pencarian:** `{short_q or '-'}`")
-                    score_disp = f"{target_shot.relevance_score:.2f}" if target_shot.relevance_score is not None else "-"
-                    st.write(f"**Skor Relevansi:** `{score_disp}`")
+                    st.markdown(f"**Kata Kunci:** `{html.escape(short_q or '-')}`")
 
-                    is_locked = getattr(target_shot, "locked", False)
-                    lock_lbl = "🔓 Buka Kunci Shot" if is_locked else "🔒 Kunci Shot Ini"
-                    if st.button(lock_lbl, key=f"btn_lock_toggle_{project_id}_{target_shot.shot_id}", use_container_width=True):
-                        vis_svc = VisualService(p_dir)
-                        vis_svc.set_lock(manifest, target_shot.shot_id, not is_locked)
+                    # Needs review checkbox
+                    is_rev = getattr(target_shot, "needs_review", False)
+                    chk_rev = st.checkbox("⚠️ Tandai Perlu Dicek", value=is_rev, key=f"chk_rev_{project_id}_{target_shot.shot_id}")
+                    if chk_rev != is_rev:
+                        target_shot.needs_review = chk_rev
                         save_manifest(manifest, p_dir)
-                        st.success(f"Status shot diubah menjadi {'Terkunci' if not is_locked else 'Terbuka'}.")
-                        time.sleep(0.3)
                         st.rerun()
 
-                with col_right:
+                    st.markdown("---")
                     st.markdown("##### 🔄 Penggantian Shot (Visual Replace)")
-                    tab_cands, tab_srch, tab_up = st.tabs(["🎯 Pilih Kandidat Lain", "🔍 Cari Kata Lain", "📤 Unggah File"])
+                    tab_cands, tab_srch, tab_up = st.tabs(["🎯 Kandidat Lain", "🔍 Cari Kata Lain", "📤 Unggah"])
 
                     with tab_cands:
                         raw_cands = target_shot.candidates or []
                         cur_asset_file = Path(target_shot.asset_path).name if target_shot.asset_path else ""
 
-                        # Extract active asset base numeric ID if available (X2)
                         active_base_id = ""
                         m_act = re.search(r"(\d{4,})", f"{target_shot.asset_path or ''} {getattr(target_shot, 'source_candidate_id', '')}")
                         if m_act:
@@ -1559,16 +1708,12 @@ def render_visual_step_flow(
 
                             if not base_id:
                                 continue
-
-                            # Skip if matches current active asset base ID (X2)
                             if active_base_id and base_id == active_base_id:
                                 continue
                             if orig_idx == 0 and target_shot.asset_path and not getattr(target_shot, "is_replaced", False):
                                 continue
                             if cur_asset_file and base_id in cur_asset_file:
                                 continue
-
-                            # Skip duplicates across renditions/resolutions
                             if base_id in seen_ids:
                                 continue
 
@@ -1578,9 +1723,8 @@ def render_visual_step_flow(
                         if not unique_cands:
                             st.caption("Tidak ada kandidat alternatif lain yang tersimpan untuk shot ini.")
                         else:
-                            st.write(f"Ditemukan **{len(unique_cands)}** kandidat alternatif:")
+                            st.caption(f"Ditemukan **{len(unique_cands)}** kandidat alternatif:")
 
-                            # Optional Candidate Preview Player (X2)
                             active_cp = st.session_state.get(f"preview_cand_url_{project_id}")
                             if active_cp:
                                 with st.container(border=True):
@@ -1591,10 +1735,9 @@ def render_visual_step_flow(
                                         st.session_state[f"preview_cand_url_{project_id}"] = None
                                         st.rerun()
 
-                            # 3-column candidate grid (X2)
-                            for r_i in range(0, len(unique_cands), 3):
-                                cand_cols = st.columns(3)
-                                for c_col_idx, (orig_idx, cand) in enumerate(unique_cands[r_i:r_i+3]):
+                            for r_i in range(0, len(unique_cands), 2):
+                                cand_cols = st.columns(2)
+                                for c_col_idx, (orig_idx, cand) in enumerate(unique_cands[r_i:r_i+2]):
                                     with cand_cols[c_col_idx]:
                                         with st.container(border=True):
                                             c_thumb = get_candidate_thumbnail_path(p_dir, cand)
@@ -1605,9 +1748,8 @@ def render_visual_step_flow(
 
                                             score_txt = f"{cand.get('relevance_score', 0):.2f}"
                                             dur_txt = f"{cand.get('duration_seconds', 0):.1f}s"
-                                            res_txt = f"{cand.get('width', 0)}x{cand.get('height', 0)}"
                                             prov_txt = cand.get('provider', 'stock').capitalize()
-                                            st.caption(f"**{prov_txt}** • `{score_txt}`\n⏱️ {dur_txt} • 📐 {res_txt}")
+                                            st.caption(f"**{prov_txt}** • `{score_txt}` • ⏱️ {dur_txt}")
 
                                             c_url = cand.get("url") or cand.get("source_url")
                                             btn_col1, btn_col2 = st.columns(2)
@@ -1641,7 +1783,7 @@ def render_visual_step_flow(
                         )
                         p_opts = ["pixabay", "coverr"] if has_coverr else ["pixabay"]
                         sel_p = st.selectbox("Provider:", p_opts, key=f"sel_p_{project_id}_{target_shot.shot_id}")
-                        if st.button("🔍 Cari & Pasang Footage Baru", key=f"btn_srch_apply_{project_id}_{target_shot.shot_id}"):
+                        if st.button("🔍 Cari & Pasang Footage Baru", key=f"btn_srch_apply_{project_id}_{target_shot.shot_id}", use_container_width=True):
                             with st.spinner("Mencari footage baru & menyusun klip..."):
                                 try:
                                     vis_svc = VisualService(p_dir)
@@ -1669,7 +1811,7 @@ def render_visual_step_flow(
                             key=f"up_f_{project_id}_{target_shot.shot_id}",
                         )
                         if uploaded_f:
-                            if st.button("📥 Simpan ke Library & Pasang ke Shot", key=f"btn_up_apply_{project_id}_{target_shot.shot_id}"):
+                            if st.button("📥 Simpan ke Library & Pasang ke Shot", key=f"btn_up_apply_{project_id}_{target_shot.shot_id}", use_container_width=True):
                                 with st.spinner("Menyimpan ke library lokal & menyusun klip..."):
                                     try:
                                         mgr = LocalLibraryManager(p_dir)
@@ -1678,14 +1820,15 @@ def render_visual_step_flow(
                                         vis_svc.replace_shot(
                                             manifest=manifest,
                                             shot_id=target_shot.shot_id,
-                                            file_path=asset_info["file_path"],
+                                            prompt="",
+                                            provider_name="local",
                                             rebuild=True,
                                         )
                                         t_cache = p_dir / "assets" / "visual" / "thumbnails" / f"{target_shot.shot_id}.jpg"
                                         t_cache.unlink(missing_ok=True)
                                         save_manifest(manifest, p_dir)
                                         get_shot_thumbnail_path(p_dir, target_shot)
-                                        st.success(f"Berkas '{uploaded_f.name}' berhasil ditambahkan ke library lokal dan dipasang ke shot (terkunci).")
+                                        st.success(f"Berkas '{uploaded_f.name}' berhasil dipasang ke shot dan terkunci.")
                                         time.sleep(0.5)
                                         st.rerun()
                                     except Exception as exc:
@@ -2049,6 +2192,24 @@ def render_render_step_flow(
             st.video(str(final_vid_path.resolve()))
         else:
             st.info(f"ℹ️ Ukuran video final ({vid_size_mb:.1f} MB) melebihi batas pratinjau browser (200 MB). Gunakan tombol **'▶ Buka di Pemutar Sistem'** di atas untuk memutar video dengan performa penuh.")
+
+        # YT Chapter Timestamps Block (Mockup 3)
+        yt_text = ""
+        if yt_path.is_file():
+            yt_text = yt_path.read_text(encoding="utf-8", errors="replace").strip()
+        elif manifest.chapters:
+            lines = []
+            curr_sec = 0.0
+            for ch in manifest.chapters:
+                mm = int(curr_sec // 60)
+                ss = int(curr_sec % 60)
+                lines.append(f"{mm:02d}:{ss:02d} {ch.chapter_title}")
+                curr_sec += float(ch.audio_duration_seconds or 0.0)
+            yt_text = "\n".join(lines)
+
+        if yt_text:
+            st.markdown(f"**📌 {t('youtube_chapters_title')}**")
+            st.code(yt_text, language="text")
 
 
 # --- Step 5: CapCut Desktop Export Flow (Stage 7B.2 C1-C4) ---

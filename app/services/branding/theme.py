@@ -352,6 +352,198 @@ def get_global_css() -> str:
         font-size: 0.75rem;
         color: var(--efs-dim);
     }}
+
+    /* --- 8A.2 Components: 5-segment Progress Bar --- */
+    .efs-progress-bar {{
+        display: flex;
+        gap: 4px;
+        width: 100%;
+        height: 6px;
+        border-radius: 3px;
+        margin: 8px 0 6px 0;
+    }}
+    .efs-segment {{
+        flex: 1;
+        height: 100%;
+        border-radius: 2px;
+        background: var(--efs-surface-2);
+    }}
+    .efs-segment--done {{
+        background-color: var(--efs-success) !important;
+    }}
+    .efs-segment--active {{
+        background-color: var(--efs-accent) !important;
+    }}
+    .efs-segment--pending {{
+        background-color: var(--efs-border) !important;
+    }}
+
+    /* --- 8A.2 Project Cards (Beranda Mockup 1) --- */
+    .efs-project-card-thumb {{
+        position: relative;
+        width: 100%;
+        aspect-ratio: 16 / 9;
+        background: var(--efs-inset);
+        border-radius: 10px;
+        overflow: hidden;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border: 1px solid var(--efs-border);
+        margin-bottom: 8px;
+    }}
+    .efs-project-card-thumb img {{
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+    }}
+    .efs-project-card-duration {{
+        position: absolute;
+        bottom: 8px;
+        right: 8px;
+        background: rgba(10, 13, 20, 0.85);
+        color: #F0F4FC;
+        font-size: 0.75rem;
+        font-weight: 600;
+        padding: 2px 7px;
+        border-radius: 4px;
+        letter-spacing: 0.02em;
+    }}
+    .efs-project-card-title {{
+        font-size: 1.02rem;
+        font-weight: 700;
+        color: var(--efs-text);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        line-height: 1.3;
+        margin-bottom: 2px;
+    }}
+    .efs-project-card-niche {{
+        font-size: 0.8rem;
+        color: var(--efs-dim);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        margin-bottom: 4px;
+    }}
+    .efs-project-card-status {{
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 0.78rem;
+        color: var(--efs-muted);
+        margin-bottom: 4px;
+    }}
+
+    /* --- 8A.2 Stepper Card Buttons (Project Page Mockup 2 & 3) --- */
+    div[class*="st-key-stepper_btn_"] button {{
+        min-height: 56px !important;
+        height: 56px !important;
+        padding: 6px 12px !important;
+        display: flex !important;
+        flex-direction: column !important;
+        align-items: flex-start !important;
+        justify-content: center !important;
+        text-align: left !important;
+        border-radius: 12px !important;
+    }}
+    div[class*="st-key-stepper_btn_"] button p {{
+        text-align: left !important;
+        line-height: 1.25 !important;
+        white-space: normal !important;
+        font-size: 0.82rem !important;
+    }}
+
+    /* --- 8A.2 Job Monitor Banner (Mockup 2) --- */
+    .efs-job-banner {{
+        background-color: var(--efs-surface);
+        border: 1px solid var(--efs-accent);
+        border-radius: var(--efs-radius-card);
+        padding: 1rem 1.25rem;
+        margin-bottom: 1.25rem;
+        box-shadow: 0 4px 16px rgba(143, 166, 255, 0.08);
+    }}
+    .efs-job-banner__header {{
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 0.5rem;
+    }}
+    .efs-job-banner__title {{
+        font-size: 1.05rem;
+        font-weight: 700;
+        color: var(--efs-text);
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }}
+    .efs-job-banner__meta {{
+        font-size: 0.85rem;
+        color: var(--efs-accent);
+        font-weight: 600;
+    }}
+
+    /* --- 8A.2 Success Banner (Mockup 3) --- */
+    .efs-success-banner {{
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        padding: 1rem 1.25rem;
+        background-color: rgba(74, 222, 155, 0.1);
+        border: 1px solid var(--efs-success);
+        border-radius: var(--efs-radius-card);
+        margin-bottom: 1.25rem;
+        color: var(--efs-text);
+    }}
+    .efs-success-banner__icon {{
+        width: 28px;
+        height: 28px;
+        border-radius: 50%;
+        background-color: var(--efs-success);
+        color: #0A0D14;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: 800;
+        font-size: 0.95rem;
+        flex-shrink: 0;
+    }}
+    .efs-success-banner__text {{
+        font-size: 0.92rem;
+        line-height: 1.45;
+        color: var(--efs-text);
+    }}
+
+    /* --- 8A.2 Visual Step Shot Cards & Detail --- */
+    .efs-shot-card {{
+        background: var(--efs-surface);
+        border: 1px solid var(--efs-border);
+        border-radius: 10px;
+        padding: 8px;
+        margin-bottom: 10px;
+        transition: border-color 0.15s ease;
+    }}
+    .efs-shot-card--active {{
+        border: 2px solid var(--efs-accent) !important;
+        background-color: rgba(143, 166, 255, 0.05) !important;
+    }}
+    .efs-shot-thumb {{
+        width: 100%;
+        aspect-ratio: 16 / 9;
+        border-radius: 6px;
+        overflow: hidden;
+        background: var(--efs-inset);
+        margin-bottom: 6px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }}
+    .efs-shot-thumb img {{
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+    }}
     </style>
     """
     return css.strip()
@@ -427,6 +619,42 @@ def render_page_header(title: str, subtitle: str = "", badge: str = ""):
                 {html.escape(title)}{badge_html}
             </h1>
             {f'<p style="font-size: 0.95rem; color: var(--efs-muted); margin: 0;">{html.escape(subtitle)}</p>' if subtitle else ""}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_5_segment_progress_bar_html(steps: dict) -> str:
+    """Return HTML string for 5-segment progress bar (Mockup 1)."""
+    step_order = ["script", "voice", "visual", "render", "capcut"]
+    segments = []
+    found_active = False
+
+    for k in step_order:
+        s_data = steps.get(k, {}) if isinstance(steps, dict) else {}
+        s_val = s_data.get("status", "belum") if isinstance(s_data, dict) else "belum"
+
+        if s_val == "selesai":
+            cls = "efs-segment--done"
+        elif s_val == "berjalan" or (not found_active and s_val in ("belum", "terhenti", "perlu_diperbarui")):
+            cls = "efs-segment--active"
+            found_active = True
+        else:
+            cls = "efs-segment--pending"
+
+        segments.append(f'<div class="efs-segment {cls}"></div>')
+
+    return f'<div class="efs-progress-bar">{"".join(segments)}</div>'
+
+
+def render_success_banner(message: str):
+    """Render green success banner with checkmark (Mockup 3)."""
+    st.markdown(
+        f"""
+        <div class="efs-success-banner">
+            <div class="efs-success-banner__icon">✓</div>
+            <div class="efs-success-banner__text">{html.escape(message)}</div>
         </div>
         """,
         unsafe_allow_html=True,
