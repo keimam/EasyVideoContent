@@ -222,11 +222,22 @@ def get_global_css() -> str:
         color: var(--efs-text) !important;
     }}
 
-    /* Containers & Cards (radius 16px) */
-    div[data-testid="stExpander"] {{
+    /* Containers & Cards (Uniform 10px radius, 16-24px consistent vertical margin, border-box) */
+    [data-testid="stExpander"],
+    div[data-testid="stExpander"],
+    details[data-testid="stExpander"] {{
         background-color: var(--efs-surface) !important;
         border: 1px solid var(--efs-border) !important;
-        border-radius: var(--efs-radius-card) !important;
+        border-radius: 10px !important;
+        box-sizing: border-box !important;
+        width: 100% !important;
+        margin-top: 0 !important;
+        margin-bottom: 4px !important; /* Total gap with Streamlit container flex gap (16px) = 20px (target: 16-24px) */
+    }}
+
+    [data-testid="stExpander"] summary {{
+        border-radius: 10px !important;
+        box-sizing: border-box !important;
     }}
 
     /* Brand Header on Main.py (B1) */
@@ -379,6 +390,27 @@ def get_global_css() -> str:
         margin: 0 !important;
         padding: 0 !important;
         overflow: hidden !important;
+    }}
+
+    /* --- Consistent Block Spacing (16-24px) & Uniform Widths across all steps (V6) --- */
+    div[data-testid="stHorizontalBlock"]:has(.efs-metric-tile) {{
+        margin-bottom: 4px !important; /* Total gap with Streamlit container flex gap (16px) = 20px (target: 16-24px) */
+        width: 100% !important;
+        box-sizing: border-box !important;
+    }}
+
+    div[data-testid="stHorizontalBlock"]:has(.efs-stepper-card) {{
+        margin-bottom: 4px !important; /* Total gap with Streamlit container flex gap (16px) = 20px (target: 16-24px) */
+        width: 100% !important;
+        box-sizing: border-box !important;
+    }}
+
+    /* Prevent double margin when expander immediately follows a metric tile row */
+    div[data-testid="stHorizontalBlock"]:has(.efs-metric-tile) + div[data-testid="stElementContainer"] [data-testid="stExpander"],
+    div[data-testid="stHorizontalBlock"]:has(.efs-metric-tile) + [data-testid="stExpander"],
+    div[data-testid="stHorizontalBlock"]:has(.efs-metric-tile) + div[data-testid="stElementContainer"]:has([data-testid="stExpander"]),
+    div[data-testid="stElementContainer"]:has(.efs-metric-tile) + div[data-testid="stElementContainer"] [data-testid="stExpander"] {{
+        margin-top: 0 !important;
     }}
 
     /* --- 8A.2 Components: 5-segment Progress Bar --- */

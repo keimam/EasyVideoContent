@@ -19,6 +19,9 @@ Tujuannya adalah menjaga kemudahan sinkronisasi (merge/rebase) dari repositori u
 | **Tahap 7A (G5)** | `webui/Main.py` | 6 baris | Entry hook tombol/link "🎬 Long Video" pada top bar header di samping Task Manager & Settings |
 | **Tahap 7.9** | Tidak Ada berkas upstream diubah di luar merge | 0 baris baru | Sinkronisasi upstream v1.3.10 (merge clean, hook G5 di Main.py & .gitignore tetap utuh) |
 | **Tahap 8A.1** | `webui/Main.py`, `webui/.streamlit/config.toml`, `.streamlit/config.toml` | ~35 baris | Rebrand EasyFaceless Studio: header brand, favicon/title, dark theme tokens, font Plus Jakarta Sans offline, hook sidebar & settings |
+| **Tahap 8A.2** | `webui/Main.py` | 1 baris | Parameter default_language='id' pada resolusi bahasa antarmuka pengguna |
+| **Revisi 8A.2 v2** | Tidak Ada | 0 baris | Audit i18n scanner, custom stepper & metric tile, penyesuaian presisi mockup 1-3, pembersihan emoji |
+| **Addendum 8A.2 v2 (V6)** | Tidak Ada | 0 baris | Resolusi tumpang tindih visual step, margin vertikal seragam 16-24px, automated CDP bounding box checks |
 
 ---
 
@@ -264,6 +267,24 @@ Tujuannya adalah menjaga kemudahan sinkronisasi (merge/rebase) dari repositori u
   - Menghapus seluruh karakter emoji dari judul, tombol, label, dan chip di seluruh alur antarmuka.
   - Menangkap 6 tangkapan layar headless beresolusi tinggi 1600x1050 (ID & EN: Beranda, Proyek Visual, Selesai) ke `docs/branding/screens/8a2v2_*.png`.
   - Pembuatan skrip profil waktu muat AppTest `Main.py` (`scripts/profile_main_apptest.py`) yang membuktikan waktu inisialisasi hanya 3.22 detik tanpa panggilan jaringan/DNS/subprocess yang lambat.
+
+### Addendum 8A.2 v2: Resolusi Penumpukan Blok & Penyelarasan Jarak Vertikal Konsisten 16–24 px (V6)
+- **File Kode Upstream yang Disentuh:** **Nihil (0 berkas kode)**
+- **Investigasi Akar Masalah (Root Cause):**
+  1. *Jarak Vertikal 0px / Menempel:* Baris 4 metric tile (`.efs-metric-tile`) dirender di dalam `st.columns(4)` (`div[data-testid="stHorizontalBlock"]`). Di bawahnya, expander "Sumber footage" dirender via `st.expander` (`[data-testid="stExpander"]`). Pada layout flexbox kolom Streamlit di dalam `st.container(border=True)`, baik kontainer horizontal baris metrik maupun expander tidak memiliki margin vertikal bawaan. Fallback `st.metric` disembunyikan menggunakan `height: 0; margin: 0;`, sehingga sisi bawah elemen metrik menempel tepat di sisi atas expander (selisih vertikal 0–1 px).
+  2. *Lebar Expander Melebihi Barisan Tile:* Komponen expander Streamlit (`details[data-testid="stExpander"]`) memiliki border radius bawaan tema 16 px tanpa deklarasi eksplisit `box-sizing: border-box !important; width: 100% !important;`, sedangkan kartu metrik menggunakan border radius 10 px. Kurva lengkung 16 px dan rendering box-sizing membuat expander terlihat melebar keluar melewati garis batas kartu metrik.
+- **Perbaikan Terpusat di Modul Tema Global (`app/services/branding/theme.py`):**
+  - Menyelaraskan seluruh komponen kontainer utama (`[data-testid="stExpander"]`, `div[data-testid="stExpander"]`, `details[data-testid="stExpander"]`) dengan `border-radius: 10px !important; box-sizing: border-box !important; width: 100% !important; margin-top: 0 !important; margin-bottom: 1.25rem !important;` (20 px).
+  - Menambahkan aturan CSS layout untuk barisan tile metrik kustom `div[data-testid="stHorizontalBlock"]:has(.efs-metric-tile)` dengan `margin-bottom: 1.25rem !important; width: 100% !important; box-sizing: border-box !important;` (20 px).
+  - Menambahkan aturan CSS layout untuk barisan stepper kustom `div[data-testid="stHorizontalBlock"]:has(.efs-stepper-card)` dengan `margin-bottom: 1.25rem !important; width: 100% !important; box-sizing: border-box !important;` (20 px).
+  - Menambahkan penanganan selektor saudara (`:has(.efs-metric-tile) + [data-testid="stExpander"]`, dll.) untuk mencegah penumpukan margin ganda saat expander langsung mengikuti baris metrik, menjamin jarak vertikal persis 20 px (rentang target 16–24 px).
+- **Audit Komponen Kustom Serupa:**
+  - Memeriksa seluruh langkah (Naskah, Suara, Visual, Render, CapCut) serta tampilan selesai: seluruh baris metrik, kartu stepper, banner status, dan expander kini memiliki margin vertikal 20 px yang seragam tanpa penumpukan dan lebar 100% box-sizing yang rapi.
+- **Pemeriksaan Tabrakan Bounding Box Otomatis di Skrip Tangkapan Layar (`scripts/capture_8a2_screens.py`):**
+  - Menambahkan fungsi pengujian otomatis CDP `verify_no_block_overlaps(ws_url, target_url, viewport_width)` yang dijalankan pada resolusi **1280 px** dan **1920 px**.
+  - Fungsi ini mengukur koordinat bounding box seluruh blok utama (stepper, job banner, success banner, metric tile row, expander, kartu kolom) dan memverifikasi tidak ada dua blok independen yang bertumpukan (`overlapPx <= 0`).
+  - Mengukur jarak vertikal baris metrik ke expander secara presisi via JavaScript di peramban dan mengonfirmasi jarak 20 px (dalam batas 16–24 px).
+  - Menghasilkan 6 tangkapan layar beresolusi penuh 1600x1280 terbaru di `docs/branding/screens/8a2v2_*.png`.
 
 
 

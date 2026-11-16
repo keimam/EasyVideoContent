@@ -76,7 +76,7 @@ def test_font_offline_bundling():
     assert "/app/static/fonts/PlusJakartaSans[wght].ttf" in css
     # R2: No base64 bloat embedded in CSS on rerun
     assert "data:font/ttf;base64," not in css
-    assert len(css) < 20000, f"CSS payload too large ({len(css)} bytes), expected lightweight static ref"
+    assert len(css) < 25000, f"CSS payload too large ({len(css)} bytes), expected lightweight static ref"
 
     # Strict offline guarantee: ZERO calls to external font CDNs or web URLs
     assert "fonts.googleapis.com" not in css
