@@ -90,13 +90,18 @@ from app.services.longform.voice_service import VoiceService, list_available_voi
 
 
 def _open_mpt_settings_dialog(target_tab: str = "llm") -> None:
-    """Trigger MoneyPrinterTurbo's native Settings dialog directly on the requested tab."""
+    """Trigger MoneyPrinterTurbo's native Settings dialog on the active page at the requested tab."""
     st.session_state["settings_dialog_open"] = True
     st.session_state["settings_dialog_target_tab"] = target_tab
-    try:
-        st.switch_page("Main.py")
-    except Exception:
-        st.rerun()
+    st.rerun()
+
+
+def _get_step_subtitle(step_key: str, status: str, is_job_running: bool = False) -> str:
+    """Return status-aware localized subtitle for the given workflow step."""
+    eff = "berjalan" if is_job_running else (status or "belum")
+    if eff not in {"belum", "berjalan", "terhenti", "perlu_diperbarui", "selesai"}:
+        eff = "belum"
+    return t(f"{step_key}_subtitle_{eff}")
 
 
 def _render_friendly_error(friendly_msg: str, exc: Optional[BaseException | str] = None, expanded: bool = False):
@@ -1086,7 +1091,7 @@ def render_script_step_flow(
     col_hdr, col_act = st.columns([3, 1])
     with col_hdr:
         st.markdown(f"### {t('script_step_title')}")
-        st.caption(t("script_step_subtitle"))
+        st.caption(_get_step_subtitle("script", status, is_job_running))
     with col_act:
         st.write("")
         if status == "selesai":
@@ -1366,7 +1371,7 @@ def render_voice_step_flow(
     col_hdr, col_act = st.columns([3, 1])
     with col_hdr:
         st.markdown(f"### {t('voice_step_title')}")
-        st.caption(t("voice_step_subtitle"))
+        st.caption(_get_step_subtitle("voice", status, is_job_running))
     with col_act:
         st.write("")
         if is_job_running:
@@ -1685,7 +1690,7 @@ def render_visual_step_flow(
     col_hdr, col_act = st.columns([3, 1])
     with col_hdr:
         st.markdown(f"### {t('visual_step_title')}")
-        st.caption(t("visual_step_subtitle"))
+        st.caption(_get_step_subtitle("visual", step_info["status"], is_job_running))
     with col_act:
         st.write("")
         if is_job_running:
@@ -2481,7 +2486,7 @@ def render_render_step_flow(
         col_hdr, col_act = st.columns([3, 1])
         with col_hdr:
             st.markdown(f"### {t('render_step_title')}")
-            st.caption(t("render_step_subtitle"))
+            st.caption(_get_step_subtitle("render", st_val, is_job_running))
         with col_act:
             st.write("")
             if st_val == "belum":
@@ -2674,7 +2679,7 @@ def render_capcut_step_flow(
         col_cch, col_cc_btn = st.columns([3, 1])
         with col_cch:
             st.markdown(f"### {t('capcut_heading')}")
-            st.caption(t("capcut_subtitle_completed"))
+            st.caption(_get_step_subtitle("capcut", step_info["status"], is_job_running))
         with col_cc_btn:
             st.write("")
             if st.button(t("btn_recheck"), key=f"btn_recheck_capcut_{project_id}", use_container_width=True):
@@ -2735,7 +2740,7 @@ def render_capcut_step_flow(
         col_hdr, col_act = st.columns([3, 1])
         with col_hdr:
             st.markdown(f"### {t('step_capcut')}")
-            st.caption(t("capcut_subtitle_step"))
+            st.caption(_get_step_subtitle("capcut", step_info["status"], is_job_running))
         with col_act:
             st.write("")
             btn_label = t("btn_reexport_capcut") if is_exported else t("btn_export_capcut_install")

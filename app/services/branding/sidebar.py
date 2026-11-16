@@ -466,13 +466,7 @@ def render_brand_sidebar(current_page: str = "main"):
         ):
             st.session_state["settings_dialog_open"] = True
             st.session_state["settings_dialog_target_tab"] = "llm"
-            if current_page == "main":
-                st.rerun()
-            else:
-                try:
-                    st.switch_page("Main.py")
-                except Exception:
-                    pass
+            st.rerun()
 
         # 3.3 Cache & Penyimpanan
         if st.button(
@@ -484,13 +478,7 @@ def render_brand_sidebar(current_page: str = "main"):
         ):
             st.session_state["settings_dialog_open"] = True
             st.session_state["settings_dialog_target_tab"] = "cache"
-            if current_page == "main":
-                st.rerun()
-            else:
-                try:
-                    st.switch_page("Main.py")
-                except Exception:
-                    pass
+            st.rerun()
 
         # 4. Footer (matching mockup)
         st.markdown(

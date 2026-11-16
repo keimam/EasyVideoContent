@@ -23,7 +23,7 @@ Tujuannya adalah menjaga kemudahan sinkronisasi (merge/rebase) dari repositori u
 | **Revisi 8A.2 v2** | Tidak Ada | 0 baris | Audit i18n scanner, custom stepper & metric tile, penyesuaian presisi mockup 1-3, pembersihan emoji |
 | **Addendum 8A.2 v2 (V6)** | Tidak Ada | 0 baris | Resolusi tumpang tindih visual step, margin vertikal seragam 16-24px, automated CDP bounding box checks |
 | **Addendum 8A.2 v2 (V7)** | Tidak Ada | 0 baris | Pemulihan regresi logika Visual (is_replaced, upload file_path, provider), i18n tuntas seluruh langkah & dialog, AST scanner literal UI, pratinjau suara aman, expander Detail error |
-| **Tahap 8B.1** | Tidak Ada | 0 baris | Penyatuan penyedia AI Long Video (LLM/Naskah, TTS/Suara, Gambar AI) ke lapisan konfigurasi, kesiapan, katalog/model, & dialog Settings MoneyPrinterTurbo tanpa duplikasi key; fallback Whisper & Azure TTS v2 |
+| **Tahap 8B.1** | `webui/Main.py` (B3) | ~31 baris | Penyatuan penyedia AI Long Video; Addendum B3 menambahkan guard `_efs_settings_library_only` + `render_embedded_settings_dialog()` di `webui/Main.py` agar dialog Settings MPT dapat dibuka langsung di halaman aktif Long Video tanpa `switch_page` |
 
 ---
 
@@ -330,6 +330,11 @@ Tujuannya adalah menjaga kemudahan sinkronisasi (merge/rebase) dari repositori u
   - Memastikan `store.create_project()` menyinkronkan `umum`/`umum.id`/`umum.en` sesuai `language`, menyimpan `manifest.language`, dan menimpa `preset_snapshot["language"]`; serta memperbaiki key `sel_root_niche_{eff_lang_code}` di `components.py` agar state preset tidak tertinggal saat pengguna menukar bahasa narasi.
   - Mempertegas target bahasa narasi proyek di bagian AWAL & AKHIR seluruh template prompt (`resource/longform/prompts/{outline,chapter,revise_length,summary}.md`) termasuk untuk judul bab.
   - Menambahkan validasi bahasa otomatis pasca-panggilan di `ScriptGenerator` dengan retry hingga 2× (`max_lang_retries=2`), penandaan `"Perlu dicek: bahasa"` pada `quality_report.md` & UI, tombol *"Tulis ulang bab ini"* (`script rewrite --chapter <idx>`) untuk memperbaiki bab rusak tanpa menghapus bab lain, serta normalisasi paragraf pendek ke ±40–120 kata secara seragam di `script_import.py::normalize_short_paragraphs()`.
+- **Addendum 8B.1 (B3 — Dialog Settings MPT di Halaman Aktif, Ikon `st.dialog`, & Subjudul Sadar-Status):**
+  - Hook minimal di `webui/Main.py` (`_efs_settings_library_only` membungkus bootstrap halaman agar dapat diimpor sebagai pustaka + helper `render_embedded_settings_dialog()`); `webui/pages/1_🎬_Long_Video.py`, `app/services/branding/sidebar.py`, dan `components._open_mpt_settings_dialog()` membuka dialog Settings MPT langsung di halaman Long Video tanpa `st.switch_page("Main.py")` sehingga proyek & langkah aktif tidak berpindah.
+  - Memperbaiki aturan pengecualian ikon Material Symbols di `app/services/branding/theme.py` (`span[role="img"][aria-label$=" icon"]`, `span[style*="Material Symbols"]`, dan aturan di dalam `st.dialog` / `stSubheader`) sehingga ikon `:material/psychology:`, `:material/movie:`, `:material/image:`, dan `:material/video_library:` pada tab Umum tampil sebagai glif, bukan teks mentah.
+  - Menambahkan `_get_step_subtitle()` di `components.py` dan kunci `*_subtitle_{belum,berjalan,terhenti,perlu_diperbarui,selesai}` simetris ID/EN di `i18n.py` untuk semua 5 langkah serta memperjelas label `prov_ai_no_mpt_key`.
+  - **Cara Melepas Hook `webui/Main.py` saat Merge Upstream:** Hapus blok `if not st.session_state.get("_efs_settings_library_only", False):` (kembalikan indentasi baris `st.set_page_config`–`render_brand_sidebar` dan `_render_application()`) serta hapus fungsi `render_embedded_settings_dialog()`.
 
 
 

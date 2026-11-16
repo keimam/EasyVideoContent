@@ -1080,4 +1080,122 @@ def test_b2_rewrite_single_chapter_preserves_other_chapters(tmp_path: Path, monk
     assert m_after.chapters[1].needs_language_review is False
 
 
+# ---------------------------------------------------------------------------
+# B3 Addendum: Same-page MPT Settings dialog, dialog icons, status-aware subtitles
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "step_name,btn_prefix,expected_tab",
+    [
+        ("script", "btn_chg_llm_", "llm"),
+        ("voice", "btn_tts_settings_", "general"),
+        ("visual", "btn_ai_img_cfg_", "material"),
+    ],
+)
+def test_b3_settings_buttons_open_on_long_video_without_switch_page(
+    tmp_path: Path, monkeypatch, step_name, btn_prefix, expected_tab
+):
+    """Settings shortcuts on Long Video must open MPT's Settings dialog on the active page without st.switch_page."""
+    import streamlit as st
+
+    monkeypatch.setattr("app.services.longform.store.get_projects_root", lambda: tmp_path)
+    monkeypatch.setattr("app.services.longform.ui.components.get_projects_root", lambda: tmp_path)
+    monkeypatch.setitem(config.ui, "language", "id")
+    # Ensure AI image is unconfigured so btn_ai_img_cfg_{pid} renders on Visual step
+    monkeypatch.setitem(config.app, "openai_image_api_key", "")
+    monkeypatch.setitem(config.app, "codex_image_enabled", False)
+
+    def _forbid_switch_page(*args, **kwargs):
+        raise AssertionError(f"st.switch_page must NOT be called (called with {args}, {kwargs})")
+
+    monkeypatch.setattr(st, "switch_page", _forbid_switch_page)
+
+    pid = f"b3_samepage_{step_name}"
+    create_project(pid, "Same Page Settings Test", "automotive.muscle_car", projects_root=tmp_path)
+
+    at = AppTest.from_file(_get_long_video_app_file())
+    at.query_params["project"] = pid
+    at.session_state[f"active_step_{pid}"] = step_name
+    at.run(timeout=25)
+    assert not at.exception
+
+    target_btns = [b for b in at.button if (b.key or "") == f"{btn_prefix}{pid}"]
+    assert len(target_btns) == 1, f"Button {btn_prefix}{pid} not found on step {step_name}"
+    target_btns[0].click().run(timeout=25)
+
+    assert not at.exception
+    assert at.session_state["settings_dialog_open"] is True
+    assert at.session_state.get("settings_active_tab") == expected_tab
+    # Project and active step must stay completely intact
+    assert at.query_params["project"] == pid
+    assert at.session_state[f"active_step_{pid}"] == step_name
+
+    # Closing dialog reruns on the same project & step cleanly
+    at.session_state["settings_dialog_open"] = False
+    at.run(timeout=25)
+    assert not at.exception
+    assert at.query_params["project"] == pid
+    assert at.session_state[f"active_step_{pid}"] == step_name
+
+
+@pytest.mark.parametrize("ui_lang", ["id", "en"])
+def test_b3_visual_zero_clips_subtitle_and_ai_image_checkbox_label(tmp_path: Path, monkeypatch, ui_lang):
+    """Visual step with 0/0 clips shows 'belum' subtitle (not 'Semua klip siap') & clearer AI image checkbox."""
+    monkeypatch.setattr("app.services.longform.store.get_projects_root", lambda: tmp_path)
+    monkeypatch.setattr("app.services.longform.ui.components.get_projects_root", lambda: tmp_path)
+    monkeypatch.setitem(config.ui, "language", ui_lang)
+    monkeypatch.setitem(config.app, "openai_image_api_key", "")
+    monkeypatch.setitem(config.app, "codex_image_enabled", False)
+
+    pid = f"b3_vis_zero_{ui_lang}"
+    create_project(pid, "Zero Clips Project", "automotive.muscle_car", projects_root=tmp_path)
+
+    at = AppTest.from_file(_get_long_video_app_file())
+    at.query_params["project"] = pid
+    at.session_state[f"active_step_{pid}"] = "visual"
+    at.run(timeout=25)
+
+    assert not at.exception
+    captions = " ".join(c.value for c in at.caption)
+    cb_labels = " ".join(cb.label for cb in at.checkbox)
+    if ui_lang == "id":
+        assert "Semua klip siap" not in captions
+        assert "Belum ada klip visual" in captions
+        assert "belum diatur" in cb_labels
+        assert "Pengaturan, lalu Gunakan" in cb_labels
+    else:
+        assert "All clips ready" not in captions
+        assert "No visual clips yet" in captions
+        assert "not configured" in cb_labels
+        assert "Settings, then Apply" in cb_labels
+
+
+@pytest.mark.parametrize("step_key", ["script", "voice", "visual", "render", "capcut"])
+@pytest.mark.parametrize("status_val", ["belum", "berjalan", "terhenti", "perlu_diperbarui", "selesai"])
+@pytest.mark.parametrize("ui_lang", ["id", "en"])
+def test_b3_status_aware_subtitles_all_steps_and_languages(monkeypatch, step_key, status_val, ui_lang):
+    """Every workflow step has distinct status-aware subtitles in both ID and EN."""
+    from app.services.longform.ui.components import _get_step_subtitle
+    from app.services.longform.ui import i18n
+
+    monkeypatch.setitem(config.ui, "language", ui_lang)
+    expected_key = f"{step_key}_subtitle_{status_val}"
+    subtitle = _get_step_subtitle(step_key, status_val, is_job_running=(status_val == "berjalan"))
+    assert subtitle and subtitle != expected_key
+    assert subtitle == i18n.t(expected_key, lang=ui_lang)
+
+
+def test_b3_theme_css_protects_inline_material_heading_icons():
+    """Branding CSS must exclude inline Material Symbols spans in stMarkdownContainer / headings / stDialog."""
+    from app.services.branding.theme import get_global_css
+
+    css = get_global_css()
+    assert 'not([role="img"][aria-label$=" icon"])' in css
+    assert 'not([style*="Material Symbols"])' in css
+    assert 'span[role="img"][aria-label$=" icon"]' in css
+    assert '[data-testid="stDialog"] [data-testid="stIconMaterial"]' in css
+
+
+
 
