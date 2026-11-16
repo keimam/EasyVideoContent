@@ -191,7 +191,7 @@ def test_webui_smoke_stopped_state_adaptive_resume_button(tmp_path, monkeypatch)
     # In voice step, completed 1/2 -> status is "terhenti"!
     resume_btns = [b for b in at.button if "Lanjutkan Sintesis Audio" in (b.label or "")]
     assert len(resume_btns) == 1
-    assert "▶️ Lanjutkan Sintesis Audio" in resume_btns[0].label
+    assert "Lanjutkan Sintesis Audio" in resume_btns[0].label
 
 
 def test_webui_job_monitor_refresh_resilience_and_lifecycle(tmp_path, monkeypatch):

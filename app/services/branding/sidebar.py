@@ -15,11 +15,11 @@ from app.services.branding.constants import (
     UPSTREAM_REPO_URL,
     get_logo_data_uri,
 )
+from app.services.longform.ui.i18n import t
 
 
-@st.dialog("Tentang EasyFaceless Studio")
-def show_about_dialog():
-    """Dialog displaying version, description, and MIT upstream attribution."""
+def _render_about_dialog_body():
+    """Dialog body displaying version, description, and MIT upstream attribution."""
     logo_uri = get_logo_data_uri()
     st.markdown(
         f"""
@@ -33,29 +33,27 @@ def show_about_dialog():
         """,
         unsafe_allow_html=True,
     )
-    st.markdown(
-        """
-        **EasyFaceless Studio** adalah rangkaian alat pembuatan video otomatis faceless bertenaga AI,
-        mendukung pembuatan naskah, sintesis suara, visualisasi shot otomatis, penggabungan musik latar,
-        dan integrasi pengeditan timeline CapCut Desktop.
-        """
-    )
+    st.markdown(t("about_dialog_desc"))
     st.divider()
-    st.markdown(f"### Atribusi & Lisensi\n\n{MIT_THANKS}")
+    st.markdown(f"### {t('about_dialog_license')}\n\n{MIT_THANKS}")
     st.markdown(
         f"""
-        - **Proyek Asli:** [{UPSTREAM_REPO_URL}]({UPSTREAM_REPO_URL})
-        - **Lisensi:** MIT License (Copyright &copy; 2024 Harry)
-        - **Status Modifikasi:** Fitur Video Panjang dikembangkan sebagai ekstensi mandiri yang terisolasi.
+        - **{t('about_dialog_original_proj')}** [{UPSTREAM_REPO_URL}]({UPSTREAM_REPO_URL})
+        - **{t('about_dialog_license_type')}** {t('license_mit_detail')}
+        - **{t('about_dialog_status')}** {t('about_dialog_status_desc')}
         """
     )
-    if st.button("Tutup", key="btn_close_about_dialog", use_container_width=True):
+    if st.button(t("dialog_close"), key="btn_close_about_dialog", use_container_width=True):
         st.rerun()
 
 
-@st.dialog("Kelola Niche & Sub-Niche", width="large")
-def show_niche_dialog():
-    """Dialog for inspecting and managing niches & sub-niches (R2)."""
+def show_about_dialog():
+    """Open localized About dialog dynamically."""
+    st.dialog(t("about_dialog_title"))(_render_about_dialog_body)()
+
+
+def _render_niche_dialog_body():
+    """Dialog body for inspecting and managing niches & sub-niches (R2)."""
     from app.services.longform.presets import (
         list_presets,
         format_preset_tree,
@@ -64,8 +62,8 @@ def show_niche_dialog():
         get_preset,
     )
 
-    st.subheader("🏷️ Kelola Niche & Sub-Niche")
-    st.caption("Niche mendefinisikan gaya narasi, kata kunci footage, musik, dan istilah negatif.")
+    st.subheader(t("niche_dialog_title"))
+    st.caption(t("niche_dialog_desc"))
 
     all_presets = list_presets()
     builtin_presets = get_builtin_presets()
@@ -74,42 +72,42 @@ def show_niche_dialog():
     # Summary metrics
     m1, m2, m3 = st.columns(3)
     with m1:
-        st.metric("Total Preset", len(all_presets))
+        st.metric(t("niche_metric_total"), len(all_presets))
     with m2:
-        st.metric("Niche Bawaan", len(builtin_presets), help="Preset read-only bawaan sistem")
+        st.metric(t("niche_metric_builtin"), len(builtin_presets), help=t("niche_metric_builtin_help"))
     with m3:
-        st.metric("Niche Kustom", len(custom_presets), help="Preset kustom buatan pengguna")
+        st.metric(t("niche_metric_custom"), len(custom_presets), help=t("niche_metric_custom_help"))
 
     st.markdown("---")
 
     col1, col2 = st.columns([1.3, 1.7])
     with col1:
-        st.markdown("**🌳 Pohon Hirarki Niche:**")
+        st.markdown(f"**{t('niche_tree_heading')}**")
         tree_text = format_preset_tree(all_presets)
         st.code(tree_text, language="text")
 
     with col2:
-        st.markdown("**🔍 Detail Preset:**")
+        st.markdown(f"**{t('niche_detail_heading')}**")
         preset_ids = sorted(list(all_presets.keys()))
-        chosen_id = st.selectbox("Pilih Preset untuk Dilihat:", preset_ids, key="sb_dialog_chosen_preset")
+        chosen_id = st.selectbox(t("niche_select_view"), preset_ids, key="sb_dialog_chosen_preset")
         if chosen_id and chosen_id in all_presets:
             p_data = all_presets[chosen_id]
-            st.write(f"**Nama:** {getattr(p_data, 'name', chosen_id)}")
+            st.write(f"**{t('niche_field_name')}** {getattr(p_data, 'name', chosen_id)}")
             is_sub = bool(getattr(p_data, "extends", None))
-            st.write(f"**Tipe:** {'Sub-Niche' if is_sub else 'Niche Utama'}")
+            st.write(f"**{t('niche_field_type')}** {t('niche_type_sub') if is_sub else t('niche_type_main')}")
             if is_sub:
-                st.write(f"**Turunan dari:** `{p_data.extends}`")
+                st.write(f"**{t('niche_derived_from')}** `{p_data.extends}`")
             kw = getattr(p_data, "footage_keywords", []) or []
             if kw:
-                st.write(f"**Kata Kunci Footage ({len(kw)}):** {', '.join(kw[:8])}{'...' if len(kw) > 8 else ''}")
+                st.write(f"**{t('niche_footage_keywords', count=len(kw))}** {', '.join(kw[:8])}{'...' if len(kw) > 8 else ''}")
             neg = getattr(p_data, "avoid_keywords", []) or []
             if neg:
-                st.write(f"**Kata Kunci Dihindari ({len(neg)}):** {', '.join(neg[:6])}{'...' if len(neg) > 6 else ''}")
+                st.write(f"**{t('niche_avoid_keywords', count=len(neg))}** {', '.join(neg[:6])}{'...' if len(neg) > 6 else ''}")
 
     st.markdown("---")
     act_col1, act_col2 = st.columns([1.6, 1])
     with act_col1:
-        if st.button("📁 Buka Pengelola Niche di Long Video", key="btn_open_niche_manager", type="primary", use_container_width=True):
+        if st.button(t("niche_btn_open_manager"), key="btn_open_niche_manager", type="primary", use_container_width=True):
             st.session_state["show_niche_mgmt"] = True
             try:
                 st.switch_page("pages/1_🎬_Long_Video.py")
@@ -117,8 +115,13 @@ def show_niche_dialog():
                 pass
             st.rerun()
     with act_col2:
-        if st.button("Tutup", key="btn_close_niche_dialog", use_container_width=True):
+        if st.button(t("dialog_close"), key="btn_close_niche_dialog", use_container_width=True):
             st.rerun()
+
+
+def show_niche_dialog():
+    """Open localized Manage Niche dialog dynamically."""
+    st.dialog(t("niche_dialog_title"), width="large")(_render_niche_dialog_body)()
 
 
 def _inject_sidebar_styles():
@@ -384,11 +387,11 @@ def render_brand_sidebar(current_page: str = "main"):
         )
 
         # 2. Group PRODUKSI
-        st.markdown('<div class="efs-sb-section">PRODUKSI</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="efs-sb-section">{t("nav_production")}</div>', unsafe_allow_html=True)
 
         is_lv = (current_page == "longform")
-        lv_label = "**Video Panjang**" if is_lv else "Video Panjang"
-        lv_help = "Studio Video Panjang Dokumenter (10–20 menit)" + (" (Halaman Aktif)" if is_lv else "")
+        lv_label = f"**{t('nav_long_video')}**" if is_lv else t("nav_long_video")
+        lv_help = t("nav_long_video_help") + (f" {t('active_page_indicator')}" if is_lv else "")
         lv_rendered = False
         for path in ["pages/1_🎬_Long_Video.py", "1_🎬_Long_Video.py", "webui/pages/1_🎬_Long_Video.py"]:
             try:
@@ -400,7 +403,7 @@ def render_brand_sidebar(current_page: str = "main"):
 
         if not lv_rendered:
             if st.button(
-                "Video Panjang" + (" (Aktif)" if is_lv else ""),
+                t("nav_long_video") + (f" {t('active_page_indicator')}" if is_lv else ""),
                 key=f"efs_btn_lv_{current_page}",
                 icon=":material/movie:",
                 type="primary" if is_lv else "secondary",
@@ -414,8 +417,8 @@ def render_brand_sidebar(current_page: str = "main"):
                         pass
 
         is_main = (current_page == "main")
-        main_label = "**Video Pendek**" if is_main else "Video Pendek"
-        main_help = "Studio Pembuatan Video Pendek" + (" (Halaman Aktif)" if is_main else "")
+        main_label = f"**{t('nav_short_video')}**" if is_main else t("nav_short_video")
+        main_help = t("nav_short_video_help") + (f" {t('active_page_indicator')}" if is_main else "")
         main_rendered = False
         for path in ["Main.py", "webui/Main.py", "../Main.py"]:
             try:
@@ -427,7 +430,7 @@ def render_brand_sidebar(current_page: str = "main"):
 
         if not main_rendered:
             if st.button(
-                "Video Pendek" + (" (Aktif)" if is_main else ""),
+                t("nav_short_video") + (f" {t('active_page_indicator')}" if is_main else ""),
                 key=f"efs_btn_main_{current_page}",
                 icon=":material/bolt:",
                 type="primary" if is_main else "secondary",
@@ -441,25 +444,25 @@ def render_brand_sidebar(current_page: str = "main"):
                         pass
 
         # 3. Group PENGATURAN
-        st.markdown('<div class="efs-sb-section">PENGATURAN</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="efs-sb-section">{t("nav_settings")}</div>', unsafe_allow_html=True)
 
         # 3.1 Kelola Niche
         if st.button(
-            "Kelola Niche",
+            t("nav_manage_niche"),
             key=f"efs_btn_niche_{current_page}",
             icon=":material/category:",
             use_container_width=True,
-            help="Kelola template topik, niche, dan kata kunci footage",
+            help=t("nav_manage_niche_help"),
         ):
             show_niche_dialog()
 
         # 3.2 API & Penyedia AI
         if st.button(
-            "API & Penyedia AI",
+            t("nav_ai_settings"),
             key=f"efs_btn_settings_ai_{current_page}",
             icon=":material/tune:",
             use_container_width=True,
-            help="Buka konfigurasi model AI (LLM, TTS, dan Gambar)",
+            help=t("nav_ai_settings_help"),
         ):
             st.session_state["settings_dialog_open"] = True
             st.session_state["settings_dialog_target_tab"] = "llm"
@@ -473,11 +476,11 @@ def render_brand_sidebar(current_page: str = "main"):
 
         # 3.3 Cache & Penyimpanan
         if st.button(
-            "Cache & Penyimpanan",
+            t("nav_cache_storage"),
             key=f"efs_btn_settings_cache_{current_page}",
             icon=":material/cleaning_services:",
             use_container_width=True,
-            help="Periksa dan bersihkan cache video & materi",
+            help=t("nav_cache_storage_help"),
         ):
             st.session_state["settings_dialog_open"] = True
             st.session_state["settings_dialog_target_tab"] = "cache"
@@ -494,17 +497,17 @@ def render_brand_sidebar(current_page: str = "main"):
             f"""
             <div class="efs-sb-footer">
                 <div class="efs-sb-footer__version">{VERSION_STRING}</div>
-                <div class="efs-sb-footer__mit">Dibangun di atas<br>MoneyPrinterTurbo (MIT)</div>
+                <div class="efs-sb-footer__mit">{t("built_on_mpt")}<br>MoneyPrinterTurbo (MIT)</div>
             </div>
             """,
             unsafe_allow_html=True,
         )
 
         if st.button(
-            "Tentang",
+            t("nav_about"),
             key=f"efs_btn_about_{current_page}",
             icon=":material/info:",
             use_container_width=True,
-            help="Informasi versi, lisensi MIT, dan atribusi MoneyPrinterTurbo",
+            help=t("nav_about_help"),
         ):
             show_about_dialog()

@@ -39,8 +39,8 @@ LOGO_SVG_PATH = BRANDING_DIR / "logo.svg"
 LOGO_PNG_PATH = BRANDING_DIR / "logo.png"
 FAVICON_PATH = BRANDING_DIR / "favicon.png"
 
-# Typography Paths (Local offline bundle)
-FONT_DIR = PROJECT_ROOT / "resource" / "fonts" / "plus-jakarta-sans"
+# Typography Paths (Local offline bundle, served via Streamlit static serving)
+FONT_DIR = PROJECT_ROOT / "webui" / "static" / "fonts"
 FONT_TTF_PATH = FONT_DIR / "PlusJakartaSans[wght].ttf"
 FONT_OFL_PATH = FONT_DIR / "OFL.txt"
 

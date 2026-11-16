@@ -19,6 +19,10 @@ Tujuannya adalah menjaga kemudahan sinkronisasi (merge/rebase) dari repositori u
 | **Tahap 7A (G5)** | `webui/Main.py` | 6 baris | Entry hook tombol/link "🎬 Long Video" pada top bar header di samping Task Manager & Settings |
 | **Tahap 7.9** | Tidak Ada berkas upstream diubah di luar merge | 0 baris baru | Sinkronisasi upstream v1.3.10 (merge clean, hook G5 di Main.py & .gitignore tetap utuh) |
 | **Tahap 8A.1** | `webui/Main.py`, `webui/.streamlit/config.toml`, `.streamlit/config.toml` | ~35 baris | Rebrand EasyFaceless Studio: header brand, favicon/title, dark theme tokens, font Plus Jakarta Sans offline, hook sidebar & settings |
+| **Tahap 8A.2** | `webui/Main.py` | 1 baris | Parameter default_language='id' pada resolusi bahasa antarmuka pengguna |
+| **Revisi 8A.2 v2** | Tidak Ada | 0 baris | Audit i18n scanner, custom stepper & metric tile, penyesuaian presisi mockup 1-3, pembersihan emoji |
+| **Addendum 8A.2 v2 (V6)** | Tidak Ada | 0 baris | Resolusi tumpang tindih visual step, margin vertikal seragam 16-24px, automated CDP bounding box checks |
+| **Addendum 8A.2 v2 (V7)** | Tidak Ada | 0 baris | Pemulihan regresi logika Visual (is_replaced, upload file_path, provider), i18n tuntas seluruh langkah & dialog, AST scanner literal UI, pratinjau suara aman, expander Detail error |
 
 ---
 
@@ -197,6 +201,113 @@ Tujuannya adalah menjaga kemudahan sinkronisasi (merge/rebase) dari repositori u
   - `app/services/longform/status.py` & `components.py`: Dukungan pembacaan draft ganda (`EFS_` dan legacy `MPT_`) untuk kompatibilitas riwayat dan deteksi draft terbaru.
   - `test/longform/test_branding.py`: 9 pengujian unit & AppTest memverifikasi konstanta merek, proteksi font Material Symbols, font luring tanpa CDN / static serving, backward compatibility prefix CapCut, AppTest Main.py, AppTest Long Video, alur submit video pendek, dan interaksi klik seluruh item sidebar di kedua halaman.
   - `test/longform/test_ui_jobs.py`: Menghapus *fixed sleep* dan menggantinya dengan polling berbasis kondisi dan batas waktu 20 detik untuk kehandalan tes saat beban CPU tinggi (R4).
+
+### Tahap 8A.2: Halaman Long Video Sesuai Mockup & Bahasa Tampilan ID/EN (L1-L5)
+- **File Upstream yang Disentuh:**
+  1. `webui/Main.py`:
+     - Baris 706: Penambahan parameter `default_language="id"` pada fungsi pemanggil resolusi bahasa antarmuka pengguna (`resolve_ui_language`) agar WebUI secara alami mengutamakan bahasa Indonesia saat nilai konfigurasi bahasa di `config.toml` belum disetel pengguna.
+     - *Cara melepas saat merge:* Kembalikan pemanggilan `resolve_ui_language` ke default parameter aslinya.
+- **Pembersihan & Konsolidasi Font Statis (L5):**
+  - Menghapus duplikasi folder font di `resource/fonts/plus-jakarta-sans/` dan root `static/fonts/`.
+  - Menetapkan satu-satunya sumber kebenaran font lokal di `webui/static/fonts/PlusJakartaSans[wght].ttf` dan `webui/static/fonts/OFL.txt` yang dilayani langsung oleh server Streamlit secara luring (0 panggilan CDN eksternal).
+- **Modul Lokalisasi Bilingual i18n (`app/services/longform/ui/i18n.py`):**
+  - Modul baru independen yang menyediakan kamus terjemahan simetris ID dan EN (>100 kunci) dengan helper `t(key, lang=None, **kwargs)` dan `get_ui_language()`.
+  - Integrasi lokalisasi penuh pada modul navigasi sidebar (`sidebar.py`) dan seluruh alur halaman Long Video (`components.py`).
+  - Menjaga nama merek (EasyFaceless Studio, MoneyPrinterTurbo, CapCut) tidak diterjemahkan secara paksa.
+- **Implementasi Mockup 1 — Beranda Long Video (`components.render_home_page`):**
+  - Header bersih dengan judul brand, subtitle ringkas, dan kotak pencarian proyek instan di sisi kanan (`home_search_kw`).
+  - Kartu "Mulai video baru" yang terbuka langsung (permanen tanpa perlu membuka expander) dengan baris input topik, slider durasi, pilihan bahasa, dan tombol aksi utama `Buat Proyek`.
+  - Expander "Pengaturan lanjutan" untuk pemilihan niche, sub-niche, fokus narasi, rasio aspek, ID folder proyek kustom, dan pembuatan niche baru langsung dari UI.
+  - Filter chips interaktif menggunakan `st.pills` ("Semua · N", "Sedang dikerjakan · N", "Selesai · N").
+  - Grid kartu proyek 3 kolom responsif dengan wadah thumbnail aspek 16:9, badge durasi mengambang, judul 1 baris dengan pemotongan ellipsis, info sub-niche, visual progress bar 5-segmen berwarna (Selesai, Berjalan, Perlu Diperbarui, Belum), dan tombol "Buka proyek".
+- **Implementasi Mockup 2 — Halaman Proyek & Langkah ③ Visual (`components.render_project_page` & `render_visual_step_flow`):**
+  - Bilah navigasi atas bersih dengan tombol kembali "← Kembali ke Beranda", judul proyek tanpa emoji ganda, chip metadata (niche, durasi estimasi `≈ X menit`, rasio aspek & bahasa narasi), serta tombol kanan popover `▷ Otomatis sampai selesai` (dengan opsi ekspor CapCut dan batas review visual).
+  - Banner monitor pekerjaan latar belakang ditempatkan di posisi atas di atas stepper (Mockup 2).
+  - Stepper alur kerja 5 kartu horizontal dengan badge status per langkah.
+  - Alur Langkah ③ Visual: tata letak 2 kolom berdampingan (kiri galeri footage per bab dengan filter pills dan 2-kolom kartu shot, kanan panel detail shot persisten yang menampilkan pratinjau video klip, teks narasi utuh, kata kunci, 3 sub-tab penggantian visual [Kandidat Lain, Cari Kata Lain, Unggah], tombol toggle kunci shot, dan checkbox penanda perlu dicek).
+- **Implementasi Mockup 3 — Tampilan Selesai (`components.render_project_page`, `render_render_step_flow`, `render_capcut_step_flow`):**
+  - Banner sukses warna hijau di bagian atas saat 4 langkah utama / seluruh langkah telah selesai ("Video siap diunggah, draft CapCut sudah terpasang...").
+  - Tata letak 2 kartu berdampingan saat proyek selesai dan berada di langkah Render atau CapCut:
+    * Sisi Kiri ("Video Final"): Pemutar video HTML5 responsif 16:9, metrik teknis (durasi, ukuran berkas, loudness terintegrasi EBU R128 & true-peak, frame & FPS), tombol pemutar sistem, buka folder ekspor, unduh subtitle (.srt), unduh bab YouTube, serta blok cap waktu bab YouTube yang siap disalin 1-klik (`st.code`).
+    * Sisi Kanan ("CapCut"): Kartu diagnostik status CapCut Desktop (terpasang, versi, status aktif), tombol cek ulang status CapCut, kalibrasi ukuran teks subtitle (slider 5–10 dan pembuatan draft kalibrasi), tombol ekspor ulang adaptif, tombol buka folder draft, dan tabel riwayat ekspor jika terdapat lebih dari satu draft.
+- **Pengujian & Verifikasi Otomatis (L5):**
+  - `test/longform/test_i18n.py`: 4 pengujian memverifikasi simetri kunci kamus ID/EN, substitusi format string, fallback bahasa tak dikenal ke EN, dan proteksi kata nama merek.
+  - `test/longform/test_stage8a2_ui.py`: 4 pengujian komprehensif AppTest memvalidasi Beranda 3-kolom kartu proyek & progress bar 5-segmen, tata letak detail proyek & panel penggantian visual 2-kolom, tampilan 2-kolom selesai & cap waktu YouTube, serta pengalihan dinamis bahasa ID ↔ EN.
+  - Seluruh 244 pengujian dalam test suite `test/longform` lulus 100% tanpa regresi.
+- **Tangkapan Layar Headless (L5):**
+  - Pembuatan skrip `scripts/capture_8a2_screens.py` menggunakan Chrome/Edge headless berbasis CDP lokal untuk menangkap seluruh tampilan secara otomatis ke `docs/branding/screens/`:
+    * `8a2_beranda.png` & `8a2_beranda_en.png`
+    * `8a2_proyek_visual.png` & `8a2_proyek_visual_en.png`
+    * `8a2_selesai.png` & `8a2_selesai_en.png`
+
+### Revisi 8A.2 v2: Penyesuaian Presisi ke Mockup & Penguatan i18n (V1-V5)
+- **File Kode Upstream yang Disentuh:** **Nihil (0 berkas kode)**
+- **Audit & Scanner Kebocoran Kunci i18n (V1):**
+  - Mengaudit dan menyinkronkan seluruh kunci i18n yang sebelumnya bocor (`gallery_heading`, `all_chapters_option`, `filter_needs_review`, `filter_locked`, `btn_auto_run_until_done`, `unit_minutes`, `capcut_heading`, `final_video_heading`, dll.) ke kamus `ID_TRANSLATIONS` dan `EN_TRANSLATIONS` di `app/services/longform/ui/i18n.py`.
+  - Menambahkan pengujian otomatis AST scanner `test_i18n_codebase_scanner` pada `test/longform/test_i18n.py` yang memindai seluruh penggunaan `t("...")` pada `components.py` dan memvalidasi keberadaannya di kedua kamus bahasa.
+  - Menambahkan pengujian `test_i18n_no_raw_keys_in_rendered_ui` yang merender UI Beranda dan Proyek via AppTest lalu memverifikasi bahwa tidak ada kunci i18n bergaris bawah atau pola unit yang bocor ke teks komponen antarmuka.
+  - Mendukung pengalihan bahasa dinamis instan melalui query parameter URL `?lang=en` atau `?lang=id` pada `get_ui_language()`.
+- **Kartu Stepper & Widget Metrik Kustom (V2):**
+  - Implementasi kartu stepper `render_stepper_card_html` di `theme.py` yang menampilkan nomor langkah dalam lingkaran aksen/sukses/netral, judul langkah tebal, teks status berwarna, dan bingkai aksen pada langkah aktif, yang diletakkan di atas tombol interaktif transparan (`opacity: 0`) untuk kompatibilitas penuh dengan AppTest dan interaktivitas klik peramban.
+  - Implementasi widget metrik kustom `render_metric_tile` (`.efs-metric-tile`) dengan pembungkusan teks otomatis (`white-space: normal`, `word-break: break-word`), tata letak flex-column, dan tanpa pemotongan tanda titik-titik (`text-overflow: clip`).
+  - Menambahkan aturan CSS selektor saudara (`:has(.efs-metric-tile) + [data-testid="stElementContainer"]`) yang menyembunyikan fallback `st.metric` bawaan Streamlit secara bersih di peramban sehingga tidak terjadi duplikasi metrik visual.
+  - Pembersihan header langkah: judul pendek tanpa nomor/emoji, satu kalimat deskripsi fungsi, tombol aksi utama di sisi kanan baris judul, dan menghapus status teknis berbentuk blok kode.
+- **Penyelarasan Langkah Visual ke Mockup 2 (V3):**
+  - 4 metrik kustom horizontal di bawah judul: Klip Siap, Perlu Dicek, Terkunci, dan Sumber Terpakai.
+  - Opsi sumber footage (Pexels, Pixabay, Local) dipindahkan ke expander collapsible di bawah header (`> Sumber footage`).
+  - Tata letak kolom galeri footage 1.6 : 1.0 (sisi kiri galeri kartu 3 kolom, sisi kanan panel detail shot persisten yang menampilkan pratinjau klip, tombol kunci, ganti footage, dan checkbox perlu dicek).
+  - Tab bab dibuat ringkas ("Bab 1", "Bab 2", dst.) dan filter chips menampilkan hitungan jumlah klip per kategori (`Semua (N)`, `Perlu dicek (N)`, `Terkunci (N)`, `Placeholder (N)`).
+- **Penyelarasan Tampilan Selesai ke Mockup 3 (V4):**
+  - Menghilangkan banner ganda: menyembunyikan widget monitor status "Pekerjaan Selesai" saat 4 langkah utama selesai (`hide_completed=core_4_completed`), menyisakan tepat satu banner hijau sukses dari Mockup 3 di bagian atas.
+  - Memindahkan kontrol "Pengaturan Niche Proyek" dari expander di atas stepper ke popover tombol `⋯` di bilah atas header.
+  - Tampilan 2 kolom berdampingan permanen saat seluruh langkah selesai:
+    * Sisi Kiri ("Video final"): Pemutar video HTML5, 4 tile metrik teknis tanpa pemotongan, tombol pemutar sistem & buka folder, cap waktu bab YouTube dengan tombol salin interaktif 1-klik, dan expander "Render lagi" untuk perubahan volume BGM & render ulang paksa.
+    * Sisi Kanan ("CapCut"): Header "CapCut" dengan tombol "Cek ulang", 2 tile metrik diagnostik status CapCut & aplikasi aman, kartu draft terbaru, tombol ekspor ulang ke CapCut, tombol buka folder draft CapCut, serta expander kalibrasi ukuran teks subtitle dan riwayat draft.
+- **Penyesuaian Durasi Beranda, Pembersihan Total Emoji, & Verifikasi (V5):**
+  - Mengubah rentang slider durasi beranda menjadi 10–20 menit dengan nilai default 12 menit dan format string `%d menit`.
+  - Menghapus seluruh karakter emoji dari judul, tombol, label, dan chip di seluruh alur antarmuka.
+  - Menangkap 6 tangkapan layar headless beresolusi tinggi 1600x1050 (ID & EN: Beranda, Proyek Visual, Selesai) ke `docs/branding/screens/8a2v2_*.png`.
+  - Pembuatan skrip profil waktu muat AppTest `Main.py` (`scripts/profile_main_apptest.py`) yang membuktikan waktu inisialisasi hanya 3.22 detik tanpa panggilan jaringan/DNS/subprocess yang lambat.
+
+### Addendum 8A.2 v2: Resolusi Penumpukan Blok & Penyelarasan Jarak Vertikal Konsisten 16–24 px (V6)
+- **File Kode Upstream yang Disentuh:** **Nihil (0 berkas kode)**
+- **Investigasi Akar Masalah (Root Cause):**
+  1. *Jarak Vertikal 0px / Menempel:* Baris 4 metric tile (`.efs-metric-tile`) dirender di dalam `st.columns(4)` (`div[data-testid="stHorizontalBlock"]`). Di bawahnya, expander "Sumber footage" dirender via `st.expander` (`[data-testid="stExpander"]`). Pada layout flexbox kolom Streamlit di dalam `st.container(border=True)`, baik kontainer horizontal baris metrik maupun expander tidak memiliki margin vertikal bawaan. Fallback `st.metric` disembunyikan menggunakan `height: 0; margin: 0;`, sehingga sisi bawah elemen metrik menempel tepat di sisi atas expander (selisih vertikal 0–1 px).
+  2. *Lebar Expander Melebihi Barisan Tile:* Komponen expander Streamlit (`details[data-testid="stExpander"]`) memiliki border radius bawaan tema 16 px tanpa deklarasi eksplisit `box-sizing: border-box !important; width: 100% !important;`, sedangkan kartu metrik menggunakan border radius 10 px. Kurva lengkung 16 px dan rendering box-sizing membuat expander terlihat melebar keluar melewati garis batas kartu metrik.
+- **Perbaikan Terpusat di Modul Tema Global (`app/services/branding/theme.py`):**
+  - Menyelaraskan seluruh komponen kontainer utama (`[data-testid="stExpander"]`, `div[data-testid="stExpander"]`, `details[data-testid="stExpander"]`) dengan `border-radius: 10px !important; box-sizing: border-box !important; width: 100% !important; margin-top: 0 !important; margin-bottom: 1.25rem !important;` (20 px).
+  - Menambahkan aturan CSS layout untuk barisan tile metrik kustom `div[data-testid="stHorizontalBlock"]:has(.efs-metric-tile)` dengan `margin-bottom: 1.25rem !important; width: 100% !important; box-sizing: border-box !important;` (20 px).
+  - Menambahkan aturan CSS layout untuk barisan stepper kustom `div[data-testid="stHorizontalBlock"]:has(.efs-stepper-card)` dengan `margin-bottom: 1.25rem !important; width: 100% !important; box-sizing: border-box !important;` (20 px).
+  - Menambahkan penanganan selektor saudara (`:has(.efs-metric-tile) + [data-testid="stExpander"]`, dll.) untuk mencegah penumpukan margin ganda saat expander langsung mengikuti baris metrik, menjamin jarak vertikal persis 20 px (rentang target 16–24 px).
+- **Audit Komponen Kustom Serupa:**
+  - Memeriksa seluruh langkah (Naskah, Suara, Visual, Render, CapCut) serta tampilan selesai: seluruh baris metrik, kartu stepper, banner status, dan expander kini memiliki margin vertikal 20 px yang seragam tanpa penumpukan dan lebar 100% box-sizing yang rapi.
+- **Pemeriksaan Tabrakan Bounding Box Otomatis di Skrip Tangkapan Layar (`scripts/capture_8a2_screens.py`):**
+  - Menambahkan fungsi pengujian otomatis CDP `verify_no_block_overlaps(ws_url, target_url, viewport_width)` yang dijalankan pada resolusi **1280 px** dan **1920 px**.
+  - Fungsi ini mengukur koordinat bounding box seluruh blok utama (stepper, job banner, success banner, metric tile row, expander, kartu kolom) dan memverifikasi tidak ada dua blok independen yang bertumpukan (`overlapPx <= 0`).
+  - Mengukur jarak vertikal baris metrik ke expander secara presisi via JavaScript di peramban dan mengonfirmasi jarak 20 px (dalam batas 16–24 px).
+  - Menghasilkan 6 tangkapan layar beresolusi penuh 1600x1280 terbaru di `docs/branding/screens/8a2v2_*.png`.
+
+### Addendum 8A.2 v2: Pemulihan Regresi Logika, i18n Tuntas, Pratinjau Suara Aman, & Audit Pesan Error (V7)
+- **File Kode Upstream yang Disentuh:** **Nihil (0 berkas kode)**
+- **Verifikasi Isolasi Non-UI (`git diff stage-8a1-complete --stat -- app/services/longform`):**
+  - Hanya 2 file antarmuka yang berubah di `app/services/longform/`: `ui/components.py` dan `ui/i18n.py`. Seluruh file non-UI (service, schema, store, CLI, status, render, capcut) **100% utuh**.
+- **Pemulihan Regresi Logika di `app/services/longform/ui/components.py`:**
+  1. Menghapus penugasan atribut ilegal `target_shot.is_replaced = True` pada aksi *"Pakai ini"* di Langkah Visual (karena `Shot` di `schema.py` memakai `extra="forbid"` dan tidak memiliki field `is_replaced`), serta mengganti pengecekan ke `target_shot.locked` (yang memang otomatis disetel `True` oleh `VisualService.replace_shot`).
+  2. Memulihkan parameter `file_path=asset_info["file_path"]` pada tab *"Unggah"* (`tab_up`) menggantikan regresi 8A.2 (`prompt="", provider_name="local"`).
+  3. Memulihkan pemilihan provider dari checkbox di expander *"Sumber footage"* (`target_prov` membaca state `cb_prov_*`).
+  4. Membersihkan kunci `st.session_state` checkbox `"Perlu Dicek"` (`chk_rev_{pid}_{shot_id}`) setelah `replace_shot` berhasil agar `needs_review=False` yang baru disimpan tidak tertimpa nilai lama pada rerun berikutnya.
+- **Lokalisasi i18n Tuntas (ID & EN):**
+  - Melengkapi kamus simetris ID & EN di `app/services/longform/ui/i18n.py` (menghilangkan seluruh ~309 string literal hardcoded di `components.py`, `nav.py`, `sidebar.py`, dan `1_🎬_Long_Video.py`, termasuk dialog dinamis, banner pekerjaan, langkah Naskah, Suara, Visual, Render, dan CapCut, serta pemetaan `next_step` & opsi niche di UI).
+- **Pratinjau Suara Aman & Audit Pesan Error:**
+  - Tombol *"Buat Video Pratinjau Bab 1"* kini otomatis dinonaktifkan sebelum seluruh audio grup Bab 1 disintesis, disertai keterangan ramah (`voice_preview_prereq_caption`) tanpa menampilkan error jalur file atau perintah CLI teknis.
+  - Menambahkan helper `_render_friendly_error(friendly_msg, exc)` sehingga seluruh `st.error` menampilkan pesan ramah pengguna sementara detail teknis/stack ditempatkan di dalam expander *"Detail"* / *"Details"*.
+- **Penguatan Otomatis (`test_i18n.py`, `test_stage8a2_ui.py`, `conftest.py`):**
+  - Menambahkan AST scanner `test_no_hardcoded_ui_strings_without_t` yang memastikan 0 string literal ID/EN dipakai langsung di widget `st.*` tanpa `t()`.
+  - Menambahkan `test_all_steps_no_mixed_language_apptest` (Beranda + 5 langkah dalam ID & EN) dengan daftar kata terlarang lintas bahasa.
+  - Menambahkan `test_v7_visual_use_candidate_replaces_asset_and_locks`, `test_v7_visual_lock_toggle_and_upload_wiring`, `test_v7_voice_preview_disabled_before_audio_synth`, dan `test_v7_friendly_error_with_detail_expander`.
+- **Tangkapan Layar Verifikasi ID & EN Semua Langkah:** `docs/branding/screens/8a2v3_*.png`.
+
+
 
 
 
