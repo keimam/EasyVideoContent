@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -19,6 +20,34 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from loguru import logger
+
+
+class JobLaunchError(RuntimeError):
+    """Raised when a background job cannot be started (e.g. missing executable or CLI script)."""
+    pass
+
+
+def get_repo_root() -> Path:
+    """Return the repository root containing cli_longform.py."""
+    return Path(__file__).resolve().parents[4]
+
+
+def get_cli_script_path(repo_root: Optional[Path] = None) -> Path:
+    """Return the absolute path to cli_longform.py inside repo_root."""
+    root = (repo_root or get_repo_root()).resolve()
+    return root / "cli_longform.py"
+
+
+def build_longform_cli_command(
+    *args: str,
+    repo_root: Optional[Path] = None,
+) -> List[str]:
+    """Single canonical builder for Long Video background CLI commands (B1).
+
+    Always uses the active venv Python interpreter (``sys.executable``) and an
+    absolute path to ``cli_longform.py``.
+    """
+    return [sys.executable, str(get_cli_script_path(repo_root)), *[str(a) for a in args]]
 
 from app.services.longform.schema import ItemStatus, ProjectManifest
 from app.services.longform.store import (
@@ -251,12 +280,30 @@ def start_job(
     if sys.platform == "win32":
         creationflags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
 
-    repo_root = cwd or Path(__file__).resolve().parents[4]
+    repo_root = (cwd or get_repo_root()).resolve()
+    if not repo_root.is_dir():
+        raise JobLaunchError(f"Working directory not found: {repo_root}")
 
-    # Normalize command to use active python interpreter (sys.executable)
-    cmd_list = list(command)
-    if cmd_list and cmd_list[0] in ("python", "python3"):
+    # Normalize command and validate executable & script before Popen
+    cmd_list = [str(x) for x in command]
+    if not cmd_list:
+        raise JobLaunchError("Cannot start background job with an empty command.")
+
+    if cmd_list[0] in ("python", "python3"):
         cmd_list[0] = sys.executable
+
+    exe = cmd_list[0]
+    exe_found = Path(exe).is_file() or bool(shutil.which(exe))
+    if not exe_found:
+        raise JobLaunchError(f"Python executable not found: {exe}")
+
+    if len(cmd_list) >= 2 and cmd_list[1].lower().endswith(".py"):
+        script_candidate = Path(cmd_list[1])
+        if not script_candidate.is_absolute():
+            script_candidate = (repo_root / script_candidate).resolve()
+        if not script_candidate.is_file():
+            raise JobLaunchError(f"CLI script not found: {script_candidate}")
+        cmd_list[1] = str(script_candidate)
 
     # Open log file handle for child process
     fp = open(log_file, "a", encoding="utf-8", buffering=1)
@@ -273,7 +320,7 @@ def start_job(
         )
     except Exception as exc:
         fp.close()
-        raise RuntimeError(f"Failed to start background job: {exc}") from exc
+        raise JobLaunchError(f"Failed to start background job: {exc}") from exc
 
     _ACTIVE_PROCESSES[project_id] = proc
 
@@ -286,7 +333,7 @@ def start_job(
         "started_at": datetime.now().isoformat(),
         "finished_at": None,
         "log_file": str(log_file),
-        "command": command,
+        "command": cmd_list,
         "error_message": None,
         "dismissed": False,
     }

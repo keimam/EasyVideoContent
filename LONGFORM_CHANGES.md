@@ -321,6 +321,10 @@ Tujuannya adalah menjaga kemudahan sinkronisasi (merge/rebase) dari repositori u
 - **Gambar AI / Visual (`app/services/longform/visual/ai_image.py`, `visual/service.py`):**
   - Mendukung kedua backend Gambar AI MPT (`openai_image` dan `codex_image`), mengaktifkan checkbox *"Gambar AI ({provider})"* di Langkah Visual saat terkonfigurasi di MPT, serta menampilkan perkiraan jumlah gambar dan informasi biaya sebelum job berjalan.
 - **Tangkapan Layar Verifikasi ID & EN:** `docs/branding/screens/8b1_*.png`.
+- **Addendum 8B.1 (B1 — Penyeragaman Pembangun Perintah Job & Pesan Koneksi):**
+  - Menambahkan `get_repo_root()`, `get_cli_script_path()`, `build_longform_cli_command()`, `JobLaunchError`, serta validasi executable & skrip CLI sebelum `subprocess.Popen` di `app/services/longform/ui/jobs.py`.
+  - Memindahkan seluruh pemanggil `jobs.start_job` di `app/services/longform/ui/components.py` (`script_outline`, `script_generate`, `audio_synthesize`, `visual_pipeline`, `render_all`, `capcut_export`, `pipeline_auto`) ke `jobs.build_longform_cli_command(...)` + `_start_job_safe(...)` agar kegagalan launch menampilkan pesan ramah + expander `Detail`.
+  - Memperbaiki teks tes koneksi saat balasan kosong (`llm_connection_ok_plain`) di `i18n.py` dan `components.py` agar tidak berakhiran titik dua kosong.
 
 
 

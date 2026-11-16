@@ -109,6 +109,24 @@ def _render_friendly_error(friendly_msg: str, exc: Optional[BaseException | str]
                 st.code(detail_txt, language="text")
 
 
+def _start_job_safe(
+    project_id: str,
+    step_name: str,
+    cmd: List[str],
+    sleep_after: float = 0.0,
+) -> bool:
+    """Start a background CLI job and show friendly error + Detail on failure instead of crashing."""
+    try:
+        jobs.start_job(project_id, step_name, cmd)
+        if sleep_after > 0:
+            time.sleep(sleep_after)
+        st.rerun()
+        return True
+    except Exception as exc:
+        _render_friendly_error(t("err_job_start_friendly"), exc)
+        return False
+
+
 def get_project_thumbnail_path(p_dir: Path) -> Optional[Path]:
     """Find or extract a representative thumbnail for the project card (L1)."""
     # 1. Output thumbnail
@@ -366,9 +384,7 @@ def _render_job_monitor_content(project_id: str, state: Dict[str, Any], current_
                     cmd = state.get("command")
                     if cmd:
                         jobs.dismiss_job(project_id)
-                        jobs.start_job(project_id, state.get("step", "pipeline_auto"), cmd)
-                        time.sleep(0.5)
-                        st.rerun()
+                        _start_job_safe(project_id, state.get("step", "pipeline_auto"), cmd, sleep_after=0.5)
 
             if logs_tail:
                 with st.expander(t("job_error_log_expander"), expanded=False):
@@ -870,12 +886,11 @@ def render_project_page(project_id: str):
                     phase_msg = f" ({job_state.get('phase')})" if job_state.get("phase") else ""
                     st.warning(t("auto_review_paused_warn", phase=phase_msg))
                     if st.button(t("btn_resume_auto_skip"), key=f"btn_resume_auto_{project_id}", type="primary", use_container_width=True):
-                        cmd = ["python", "cli_longform.py", "pipeline", "auto", project_id, "--skip-review-check"]
+                        auto_args = ["pipeline", "auto", project_id, "--skip-review-check"]
                         if auto_with_capcut:
-                            cmd.append("--with-capcut")
-                        jobs.start_job(project_id, "pipeline_auto", cmd)
-                        time.sleep(0.5)
-                        st.rerun()
+                            auto_args.append("--with-capcut")
+                        cmd = jobs.build_longform_cli_command(*auto_args)
+                        _start_job_safe(project_id, "pipeline_auto", cmd, sleep_after=0.5)
                 elif not script_done:
                     st.caption(t("auto_need_script_caption"))
                     st.button(f"▷ {t('btn_auto_run_until_done')}", disabled=True, key=f"btn_auto_dis_{project_id}", use_container_width=True)
@@ -883,14 +898,13 @@ def render_project_page(project_id: str):
                     st.button(t("status_done"), disabled=True, key=f"btn_auto_done_{project_id}", use_container_width=True)
                 else:
                     if st.button(f"▷ {t('btn_auto_run_until_done')}", disabled=is_job_running, type="primary", key=f"btn_start_auto_{project_id}", use_container_width=True):
-                        cmd = ["python", "cli_longform.py", "pipeline", "auto", project_id]
+                        auto_args = ["pipeline", "auto", project_id]
                         if auto_with_capcut:
-                            cmd.append("--with-capcut")
+                            auto_args.append("--with-capcut")
                         if auto_stop_review:
-                            cmd.append("--stop-on-review")
-                        jobs.start_job(project_id, "pipeline_auto", cmd)
-                        time.sleep(0.5)
-                        st.rerun()
+                            auto_args.append("--stop-on-review")
+                        cmd = jobs.build_longform_cli_command(*auto_args)
+                        _start_job_safe(project_id, "pipeline_auto", cmd, sleep_after=0.5)
 
         with col_opt_btn:
             with st.popover("⋯", help=t("popover_project_settings_help"), use_container_width=True):
@@ -1165,7 +1179,11 @@ def render_script_step_flow(
             if conn_res:
                 ok_conn, conn_msg, conn_lat = conn_res
                 if ok_conn:
-                    st.success(t("llm_connection_ok", latency=conn_lat, msg=conn_msg))
+                    clean_msg = (conn_msg or "").strip()
+                    if clean_msg:
+                        st.success(t("llm_connection_ok", latency=conn_lat, msg=clean_msg))
+                    else:
+                        st.success(t("llm_connection_ok_plain", latency=conn_lat))
                 else:
                     lower_c = conn_msg.lower()
                     if "does not exist" in lower_c or "model_not_found" in lower_c or ("not found" in lower_c and "model" in lower_c):
@@ -1238,14 +1256,15 @@ def render_script_step_flow(
             if st.button(ai_btn_label, type="primary" if not ai_disabled else "secondary", disabled=ai_disabled, key=f"btn_start_ai_{project_id}"):
                 provider_arg = ["--provider", "fake"] if use_fake else []
                 if script_partial:
-                    cmd = ["script", "write", project_id] + provider_arg
+                    cmd = jobs.build_longform_cli_command("script", "write", project_id, *provider_arg)
                     step_name = "script_generate"
                 else:
                     topic = custom_topic.strip() if custom_topic.strip() else (getattr(manifest, "topic", None) or manifest.title)
-                    cmd = ["script", "outline", project_id, "--topic", topic, "--write"] + provider_arg
+                    dur_val = getattr(manifest, "target_duration_minutes", None)
+                    dur_args = ["--minutes", str(dur_val)] if dur_val else []
+                    cmd = jobs.build_longform_cli_command("script", "outline", project_id, "--topic", topic, *dur_args, "--write", *provider_arg)
                     step_name = "script_outline"
-                jobs.start_job(project_id, step_name, cmd)
-                st.rerun()
+                _start_job_safe(project_id, step_name, cmd)
 
     # Chapter Editor & Quality Report if chapters exist
     if manifest.chapters:
@@ -1325,20 +1344,17 @@ def render_voice_step_flow(
                 st.rerun()
         elif status == "terhenti":
             if st.button(t("btn_resume_voice"), type="primary", key=f"btn_resume_voice_{project_id}", use_container_width=True):
-                cmd = [sys.executable, "cli_longform.py", "audio", "synth", project_id]
-                jobs.start_job(project_id, "audio_synthesize", cmd)
-                st.rerun()
+                cmd = jobs.build_longform_cli_command("audio", "synth", project_id)
+                _start_job_safe(project_id, "audio_synthesize", cmd)
         elif status == "perlu_diperbarui":
             if st.button(t("btn_stale_voice"), type="primary", key=f"btn_stale_voice_{project_id}", use_container_width=True):
-                cmd = [sys.executable, "cli_longform.py", "audio", "synth", project_id]
-                jobs.start_job(project_id, "audio_synthesize", cmd)
-                st.rerun()
+                cmd = jobs.build_longform_cli_command("audio", "synth", project_id)
+                _start_job_safe(project_id, "audio_synthesize", cmd)
         else:  # belum
             btn_disabled = bool(len(manifest.chapters) == 0) or is_job_running
             if st.button(t("btn_start_voice"), type="primary", disabled=btn_disabled, key=f"btn_start_voice_{project_id}", use_container_width=True):
-                cmd = [sys.executable, "cli_longform.py", "audio", "synth", project_id]
-                jobs.start_job(project_id, "audio_synthesize", cmd)
-                st.rerun()
+                cmd = jobs.build_longform_cli_command("audio", "synth", project_id)
+                _start_job_safe(project_id, "audio_synthesize", cmd)
 
     if status == "belum" and len(manifest.chapters) == 0:
         st.caption(t("voice_missing_script_warning"))
@@ -1649,18 +1665,16 @@ def render_visual_step_flow(
                     st.rerun()
             elif st_val == "terhenti":
                 if st.button(t("visual_btn_resume"), type="primary", key=f"btn_resume_vis_{project_id}", use_container_width=True):
-                    cmd = [sys.executable, "cli_longform.py", "visual", "pipeline", project_id, "--allow-fallback"]
+                    vis_args = ["visual", "pipeline", project_id, "--allow-fallback"]
                     if target_prov:
-                        cmd.extend(["--provider", target_prov])
-                    jobs.start_job(project_id, "visual_pipeline", cmd)
-                    st.rerun()
+                        vis_args.extend(["--provider", target_prov])
+                    _start_job_safe(project_id, "visual_pipeline", jobs.build_longform_cli_command(*vis_args))
             elif st_val == "perlu_diperbarui":
                 if st.button(t("visual_btn_rebuild_stale"), type="primary", key=f"btn_update_vis_{project_id}", use_container_width=True):
-                    cmd = [sys.executable, "cli_longform.py", "visual", "pipeline", project_id, "--allow-fallback"]
+                    vis_args = ["visual", "pipeline", project_id, "--allow-fallback"]
                     if target_prov:
-                        cmd.extend(["--provider", target_prov])
-                    jobs.start_job(project_id, "visual_pipeline", cmd)
-                    st.rerun()
+                        vis_args.extend(["--provider", target_prov])
+                    _start_job_safe(project_id, "visual_pipeline", jobs.build_longform_cli_command(*vis_args))
             else:  # belum
                 st_all = compute_project_step_status(p_dir)
                 script_st = st_all["steps"]["script"]["status"]
@@ -1678,11 +1692,10 @@ def render_visual_step_flow(
                         st.caption(t("visual_prereq_voice"))
 
                 if st.button(t("visual_btn_start"), type="primary", disabled=btn_disabled, key=f"btn_start_vis_{project_id}", use_container_width=True):
-                    cmd = [sys.executable, "cli_longform.py", "visual", "pipeline", project_id, "--allow-fallback"]
+                    vis_args = ["visual", "pipeline", project_id, "--allow-fallback"]
                     if target_prov:
-                        cmd.extend(["--provider", target_prov])
-                    jobs.start_job(project_id, "visual_pipeline", cmd)
-                    st.rerun()
+                        vis_args.extend(["--provider", target_prov])
+                    _start_job_safe(project_id, "visual_pipeline", jobs.build_longform_cli_command(*vis_args))
 
     # --- V1: Summary Metric Tiles (Mockup 2 V3) ---
     total_shots = sum(len(ch.shots) for ch in manifest.chapters)
@@ -2351,9 +2364,12 @@ def render_render_step_flow(
             disabled=(not confirm_rerender_all or is_job_running),
             key=f"btn_rerender_all_exp_{project_id}",
         ):
-            jobs.start_job(project_id, "render_all", ["python", "cli_longform.py", "render", "all", project_id, "--force"])
-            time.sleep(0.5)
-            st.rerun()
+            _start_job_safe(
+                project_id,
+                "render_all",
+                jobs.build_longform_cli_command("render", "all", project_id, "--force"),
+                sleep_after=0.5,
+            )
 
     # --- Render Mockup 3 Completed Side-by-Side View (V4) ---
     if is_completed_view:
@@ -2455,9 +2471,12 @@ def render_render_step_flow(
                     st.session_state[f"active_step_{project_id}"] = "capcut"
                     st.rerun()
                 else:
-                    jobs.start_job(project_id, "render_all", ["python", "cli_longform.py", "render", "all", project_id])
-                    time.sleep(0.5)
-                    st.rerun()
+                    _start_job_safe(
+                        project_id,
+                        "render_all",
+                        jobs.build_longform_cli_command("render", "all", project_id),
+                        sleep_after=0.5,
+                    )
 
         if not can_render:
             if not voice_done and not visual_done:
@@ -2660,9 +2679,12 @@ def render_capcut_step_flow(
             key=f"btn_capcut_main_{project_id}",
             use_container_width=True,
         ):
-            jobs.start_job(project_id, "capcut_export", ["python", "cli_longform.py", "capcut", "export", project_id, "--install"])
-            time.sleep(0.5)
-            st.rerun()
+            _start_job_safe(
+                project_id,
+                "capcut_export",
+                jobs.build_longform_cli_command("capcut", "export", project_id, "--install"),
+                sleep_after=0.5,
+            )
 
         if draft_info:
             if st.button(t("btn_open_draft_folder"), key=f"btn_open_draft_{project_id}", use_container_width=True):
@@ -2691,9 +2713,12 @@ def render_capcut_step_flow(
                 key=f"btn_capcut_main_{project_id}",
                 use_container_width=True,
             ):
-                jobs.start_job(project_id, "capcut_export", ["python", "cli_longform.py", "capcut", "export", project_id, "--install"])
-                time.sleep(0.5)
-                st.rerun()
+                _start_job_safe(
+                    project_id,
+                    "capcut_export",
+                    jobs.build_longform_cli_command("capcut", "export", project_id, "--install"),
+                    sleep_after=0.5,
+                )
 
         with st.container(border=True):
             col_cch, col_cc_btn = st.columns([3, 1])

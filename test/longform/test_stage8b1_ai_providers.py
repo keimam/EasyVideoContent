@@ -686,3 +686,134 @@ def test_p4_apptest_failed_job_model_not_found_banner(tmp_path: Path, monkeypatc
         assert "Change provider/model" in btn_labels
         assert "preserved" in info_msgs
 
+
+# ---------------------------------------------------------------------------
+# B1 Addendum: Canonical Job Command Builder, Pre-Popen Validation & Live Fake Job
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("cli_args", [
+    ("script", "outline", "demo_pid", "--topic", "Test", "--write"),
+    ("script", "write", "demo_pid"),
+    ("audio", "synth", "demo_pid"),
+    ("visual", "pipeline", "demo_pid", "--allow-fallback"),
+    ("render", "all", "demo_pid"),
+    ("capcut", "export", "demo_pid", "--install"),
+    ("pipeline", "auto", "demo_pid"),
+])
+def test_b1_all_job_commands_use_canonical_builder_and_valid_paths(cli_args):
+    """Every job type uses active venv Python and an existing absolute cli_longform.py path."""
+    import sys
+
+    cmd = jobs.build_longform_cli_command(*cli_args)
+    assert cmd[0] == sys.executable
+    assert Path(cmd[0]).is_file(), f"Interpreter missing: {cmd[0]}"
+    assert Path(cmd[1]).is_absolute(), f"CLI path must be absolute: {cmd[1]}"
+    assert Path(cmd[1]).name == "cli_longform.py"
+    assert Path(cmd[1]).is_file(), f"CLI script missing: {cmd[1]}"
+    assert tuple(cmd[2:]) == cli_args
+
+
+def test_b1_start_job_validates_missing_executable_and_script_before_popen(tmp_path: Path, monkeypatch):
+    """Missing executable or CLI script raises JobLaunchError cleanly before Popen, and UI catches it safely."""
+    import shutil
+    from app.services.longform.ui.jobs import JobLaunchError
+
+    pid = f"b1_validate_{tmp_path.name}"
+    _, p_dir = create_project(pid, "Validate Launch", "automotive.muscle_car")
+    try:
+        popen_called = []
+        monkeypatch.setattr("subprocess.Popen", lambda *a, **kw: popen_called.append(True))
+
+        # 1. Missing executable (e.g. bare 'script' subcommand without python)
+        with pytest.raises(JobLaunchError, match="not found"):
+            jobs.start_job(pid, "script_outline", ["nonexistent_executable_b1", "cli_longform.py"])
+        assert popen_called == []
+
+        # 2. Missing CLI script
+        import sys
+        with pytest.raises(JobLaunchError, match="CLI script not found"):
+            jobs.start_job(pid, "script_outline", [sys.executable, "nonexistent_cli_script_b1.py"])
+        assert popen_called == []
+
+        # 3. _start_job_safe handles failure with friendly st.error + Detail expander (no page crash)
+        from app.services.longform.ui import components
+
+        errors_shown = []
+        expanders_shown = []
+        monkeypatch.setattr("streamlit.error", lambda msg: errors_shown.append(msg))
+        monkeypatch.setattr("streamlit.code", lambda txt, language="text": expanders_shown.append(txt))
+
+        class _DummyCtx:
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+
+        monkeypatch.setattr("streamlit.expander", lambda *a, **kw: _DummyCtx())
+        ok = components._start_job_safe(pid, "script_outline", ["nonexistent_executable_b1"])
+        assert ok is False
+        assert len(errors_shown) == 1
+        assert any("nonexistent_executable_b1" in x for x in expanders_shown)
+    finally:
+        shutil.rmtree(p_dir, ignore_errors=True)
+
+
+def test_b1_connection_test_no_trailing_colon_when_empty(tmp_path: Path, monkeypatch):
+    """Empty connection test reply shows 'Koneksi berhasil (2.30 dtk)' without trailing colon."""
+    monkeypatch.setattr("app.services.longform.store.get_projects_root", lambda: tmp_path)
+    monkeypatch.setattr("app.services.longform.ui.components.get_projects_root", lambda: tmp_path)
+    monkeypatch.setattr("app.services.longform.ui.components.test_llm_connection", lambda: (True, "", 2.30))
+    monkeypatch.setitem(config.ui, "language", "id")
+    monkeypatch.setitem(config.app, "llm_provider", "openrouter")
+    monkeypatch.setitem(config.app, "openrouter_api_key", "sk-or-v1-test1234567890")
+    monkeypatch.setitem(config.app, "openrouter_model_name", "openrouter/free")
+
+    pid = "b1_conn_colon"
+    create_project(pid, "Colon Test", "automotive.muscle_car", projects_root=tmp_path)
+
+    at = AppTest.from_file(_get_long_video_app_file())
+    at.query_params["project"] = pid
+    at.run(timeout=20)
+    assert not at.exception
+
+    btn_test = [b for b in at.button if b.key == f"btn_test_llm_{pid}"][0]
+    btn_test.click().run(timeout=20)
+    assert not at.exception
+    succ_msgs = [s.value for s in at.success]
+    assert any("Koneksi berhasil (2.30 dtk)" in m for m in succ_msgs)
+    assert not any(m.strip().endswith(":") for m in succ_msgs)
+
+
+def test_b1_end_to_end_fake_script_background_job():
+    """Launch real background script outline --write job with fake provider and poll to completion."""
+    import shutil
+    import time
+
+    pid = "b1_e2e_fake_script_job"
+    p_dir = jobs.get_project_dir(pid)
+    if p_dir.exists():
+        shutil.rmtree(p_dir, ignore_errors=True)
+
+    try:
+        create_project(pid, "E2E Background Script Test", "automotive.muscle_car")
+        cmd = jobs.build_longform_cli_command(
+            "script", "outline", pid, "--topic", "Classic Muscle Cars", "--minutes", "6", "--write", "--provider", "fake"
+        )
+        state = jobs.start_job(pid, "script_outline", cmd)
+        assert state["status"] == "running"
+
+        t0 = time.time()
+        cur = jobs.get_job_state(pid)
+        while cur and cur.get("status") == "running" and (time.time() - t0) < 30.0:
+            time.sleep(0.25)
+            cur = jobs.get_job_state(pid)
+
+        assert cur is not None
+        assert cur["status"] == "completed", f"Job failed: {cur}, logs={jobs.get_job_logs(pid, 30)}"
+        assert cur["exit_code"] == 0
+        assert (p_dir / "script" / "outline.json").is_file()
+        assert (p_dir / "script" / "full_script.md").is_file()
+        assert "[FAKE]" in (p_dir / "script" / "full_script.md").read_text(encoding="utf-8")
+    finally:
+        shutil.rmtree(p_dir, ignore_errors=True)
+
+
