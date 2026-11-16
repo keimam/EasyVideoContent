@@ -1159,16 +1159,17 @@ def test_b3_visual_zero_clips_subtitle_and_ai_image_checkbox_label(tmp_path: Pat
     assert not at.exception
     captions = " ".join(c.value for c in at.caption)
     cb_labels = " ".join(cb.label for cb in at.checkbox)
+    cb_texts = " ".join(f"{cb.label} {cb.help or ''}" for cb in at.checkbox)
     if ui_lang == "id":
         assert "Semua klip siap" not in captions
         assert "Belum ada klip visual" in captions
         assert "belum diatur" in cb_labels
-        assert "Pengaturan, lalu Gunakan" in cb_labels
+        assert "klik Gunakan" in cb_texts
     else:
         assert "All clips ready" not in captions
         assert "No visual clips yet" in captions
         assert "not configured" in cb_labels
-        assert "Settings, then Apply" in cb_labels
+        assert "click Apply" in cb_texts
 
 
 @pytest.mark.parametrize("step_key", ["script", "voice", "visual", "render", "capcut"])

@@ -253,6 +253,9 @@ def _render_job_monitor_content(project_id: str, state: Dict[str, Any], current_
         "visual_pipeline": t("job_step_visual_pipeline"),
         "visual_fetch": t("job_step_visual_fetch"),
         "visual_build": t("job_step_visual_build"),
+        "visual_ai_video": t("job_step_visual_ai_video"),
+        "visual_ai_video_batch": t("job_step_visual_ai_video_batch"),
+        "visual_ai_relevance": t("job_step_visual_ai_relevance"),
         "render_final": t("job_step_render_final"),
         "capcut_export": t("job_step_capcut_export"),
         "pipeline_auto": t("job_step_pipeline_auto"),
@@ -1674,14 +1677,37 @@ def render_visual_step_flow(
     mask_coverr = mask_api_key(raw_ck) if has_coverr else ""
 
     from app.services.longform.visual.ai_image import estimate_ai_image_usage, get_ai_image_readiness
+    from app.services.longform.visual.ai_relevance import (
+        check_shot_relevance,
+        estimate_relevance_check_calls,
+        get_vision_readiness,
+    )
+    from app.services.longform.visual.ai_video import (
+        AI_VIDEO_PROVIDER_ORDER,
+        build_ai_video_prompt,
+        estimate_ai_video_cost,
+        get_ai_video_provider_meta,
+        get_model_supported_durations,
+        list_configured_ai_video_providers,
+        plan_needs_review_ai_video_batch,
+        round_up_supported_duration,
+    )
+    from app.services.longform.visual.keyword_translator import (
+        is_non_english_language,
+        translate_single_query_to_english,
+    )
+    from app.services.longform.language_guard import resolve_project_language
 
     ai_readiness = get_ai_image_readiness()
     has_ai_image = bool(ai_readiness.get("ready", False))
+    vision_info = get_vision_readiness()
+    ai_vid_providers = list_configured_ai_video_providers()
 
     _cb_pix = st.session_state.get(f"cb_prov_pixabay_{project_id}", has_pixabay) if has_pixabay else False
     _cb_cov = st.session_state.get(f"cb_prov_coverr_{project_id}", has_coverr) if has_coverr else False
     _cb_ai = st.session_state.get(f"cb_prov_ai_{project_id}", False) if has_ai_image else False
     _cb_loc = st.session_state.get(f"cb_prov_local_{project_id}", True)
+    _cb_ai_rel = bool(st.session_state.get(f"cb_ai_rel_{project_id}", False)) if vision_info.get("vision_supported") else False
     target_prov = "ai_image" if _cb_ai and not (_cb_pix or _cb_cov) else (
         "pixabay" if _cb_pix else ("coverr" if _cb_cov else ("ai_image" if _cb_ai else ("local" if _cb_loc else None)))
     )
@@ -1706,12 +1732,16 @@ def render_visual_step_flow(
                     vis_args = ["visual", "pipeline", project_id, "--allow-fallback"]
                     if target_prov:
                         vis_args.extend(["--provider", target_prov])
+                    if _cb_ai_rel:
+                        vis_args.append("--check-ai-relevance")
                     _start_job_safe(project_id, "visual_pipeline", jobs.build_longform_cli_command(*vis_args))
             elif st_val == "perlu_diperbarui":
                 if st.button(t("visual_btn_rebuild_stale"), type="primary", key=f"btn_update_vis_{project_id}", use_container_width=True):
                     vis_args = ["visual", "pipeline", project_id, "--allow-fallback"]
                     if target_prov:
                         vis_args.extend(["--provider", target_prov])
+                    if _cb_ai_rel:
+                        vis_args.append("--check-ai-relevance")
                     _start_job_safe(project_id, "visual_pipeline", jobs.build_longform_cli_command(*vis_args))
             else:  # belum
                 st_all = compute_project_step_status(p_dir)
@@ -1733,6 +1763,8 @@ def render_visual_step_flow(
                     vis_args = ["visual", "pipeline", project_id, "--allow-fallback"]
                     if target_prov:
                         vis_args.extend(["--provider", target_prov])
+                    if _cb_ai_rel:
+                        vis_args.append("--check-ai-relevance")
                     _start_job_safe(project_id, "visual_pipeline", jobs.build_longform_cli_command(*vis_args))
 
     # --- V1: Summary Metric Tiles (Mockup 2 V3) ---
@@ -1764,7 +1796,7 @@ def render_visual_step_flow(
                     used_sources_set.add(t("source_placeholder"))
                 else:
                     src = s.actual_source or s.requested_source or "stock"
-                    used_sources_set.add(src.capitalize())
+                    used_sources_set.add(src if str(src).startswith("AI Video") else str(src).capitalize())
     sources_str = ", ".join(sorted(used_sources_set)) if used_sources_set else t("source_none_yet")
 
     col_m1, col_m2, col_m3, col_m4 = st.columns(4)
@@ -1808,6 +1840,7 @@ def render_visual_step_flow(
             t("prov_ai_ready", provider=ai_readiness["backend_label"]) if has_ai_image else t("prov_ai_no_mpt_key"),
             value=bool(st.session_state.get(f"cb_prov_ai_{project_id}", False)) if has_ai_image else False,
             disabled=not has_ai_image,
+            help=None if has_ai_image else t("prov_ai_no_mpt_key_help"),
             key=f"cb_prov_ai_{project_id}",
         )
         if has_ai_image and cb_ai:
@@ -1822,6 +1855,37 @@ def render_visual_step_flow(
         elif not has_ai_image:
             if col_s5.button(t("btn_open_image_settings"), key=f"btn_ai_img_cfg_{project_id}"):
                 _open_mpt_settings_dialog("image")
+
+        st.divider()
+        vision_ok = bool(vision_info.get("vision_supported", False))
+        cb_ai_rel = st.checkbox(
+            t("chk_ai_relevance_vision"),
+            value=bool(st.session_state.get(f"cb_ai_rel_{project_id}", False)) if vision_ok else False,
+            disabled=not vision_ok,
+            key=f"cb_ai_rel_{project_id}",
+        )
+        if not vision_ok:
+            st.caption(t("ai_relevance_no_vision_notice"))
+        elif cb_ai_rel:
+            est_rel = estimate_relevance_check_calls(manifest)
+            st.info(
+                t(
+                    "ai_relevance_estimate_notice",
+                    model=vision_info.get("model") or vision_info.get("provider"),
+                    calls=est_rel["estimated_calls"],
+                    cached=est_rel["cached"],
+                )
+            )
+
+    if needs_review_count > 0 and ai_vid_providers:
+        if st.button(
+            t("btn_bulk_ai_video_review", count=needs_review_count),
+            key=f"btn_bulk_ai_video_{project_id}",
+            disabled=is_job_running,
+        ):
+            st.session_state[f"ai_video_confirm_single_{project_id}"] = None
+            st.session_state[f"ai_video_confirm_batch_{project_id}"] = True
+            st.rerun()
 
     # --- V2: Interactive 2-Column Side-by-Side Gallery & Detail Layout (Mockup 2 V3) ---
     if total_shots > 0:
@@ -1975,6 +2039,43 @@ def render_visual_step_flow(
                         )
 
                     st.markdown(t("shot_keywords_label", kw=html.escape(short_q or "-")))
+                    kw_en_val = getattr(target_shot, "search_query_en", None)
+                    if kw_en_val:
+                        st.markdown(t("shot_keywords_en_label", kw_en=html.escape(kw_en_val)))
+
+                    # F1: AI Relevance verdict & single-shot re-check button
+                    rel_status = getattr(target_shot, "ai_relevance_status", None)
+                    rel_reason = getattr(target_shot, "ai_relevance_reason", None) or "-"
+                    if rel_status in ("ya", "tidak", "ragu"):
+                        msg_rel = t(f"ai_relevance_result_{rel_status}", reason=rel_reason)
+                        if rel_status == "ya":
+                            st.success(msg_rel)
+                        elif rel_status == "tidak":
+                            st.error(msg_rel)
+                        else:
+                            st.warning(msg_rel)
+
+                    if st.button(
+                        t("btn_recheck_ai_relevance"),
+                        key=f"btn_recheck_ai_{project_id}_{target_shot.shot_id}",
+                        disabled=not bool(vision_info.get("vision_supported")) or is_job_running,
+                    ):
+                        try:
+                            vis_svc_rel = VisualService(p_dir)
+                            _ = vis_svc_rel
+                            check_shot_relevance(
+                                target_shot,
+                                target_chapter,
+                                p_dir,
+                                manifest,
+                                force_refresh=True,
+                                clear_on_yes=True,
+                            )
+                            save_manifest(manifest, p_dir)
+                            st.session_state.pop(f"chk_rev_{project_id}_{target_shot.shot_id}", None)
+                            st.rerun()
+                        except Exception as exc:
+                            _render_friendly_error(t("err_ai_relevance_friendly"), exc)
 
                     # Needs review checkbox
                     is_rev = getattr(target_shot, "needs_review", False)
@@ -1986,7 +2087,12 @@ def render_visual_step_flow(
 
                     st.markdown("---")
                     st.markdown(t("visual_replace_heading"))
-                    tab_cands, tab_srch, tab_up = st.tabs([t("tab_cand"), t("tab_search"), t("tab_upload")])
+                    tab_cands, tab_srch, tab_up, tab_ai_vid = st.tabs([
+                        t("tab_cand"),
+                        t("tab_search"),
+                        t("tab_upload"),
+                        t("tab_ai_video"),
+                    ])
 
                     with tab_cands:
                         raw_cands = target_shot.candidates or []
@@ -2075,9 +2181,10 @@ def render_visual_step_flow(
                                                             _render_friendly_error(t("err_replace_cand_friendly"), exc)
 
                     with tab_srch:
+                        search_prefill = kw_en_val or short_q
                         q_input = st.text_input(
                             t("field_new_search_query"),
-                            value=short_q,
+                            value=search_prefill,
                             key=f"txt_srch_{project_id}_{target_shot.shot_id}",
                         )
                         p_opts = ["pixabay", "coverr"] if has_coverr else ["pixabay"]
@@ -2085,11 +2192,24 @@ def render_visual_step_flow(
                         if st.button(t("btn_search_apply_footage"), key=f"btn_srch_apply_{project_id}_{target_shot.shot_id}", use_container_width=True):
                             with st.spinner(t("spinner_searching_footage")):
                                 try:
+                                    eff_prompt = q_input
+                                    proj_lang = resolve_project_language(manifest)
+                                    if is_non_english_language(proj_lang) and (not kw_en_val or q_input.strip() != kw_en_val.strip()):
+                                        translated_q, tr_warn = translate_single_query_to_english(
+                                            q_input,
+                                            preset_snapshot=preset_snap,
+                                            project_lang=proj_lang,
+                                        )
+                                        if translated_q:
+                                            eff_prompt = translated_q
+                                            target_shot.search_query_en = translated_q
+                                        if tr_warn:
+                                            st.warning(t("f2_translation_warning_prefix", msg=tr_warn))
                                     vis_svc = VisualService(p_dir)
                                     vis_svc.replace_shot(
                                         manifest=manifest,
                                         shot_id=target_shot.shot_id,
-                                        prompt=q_input,
+                                        prompt=eff_prompt,
                                         provider_name=sel_p,
                                         rebuild=True,
                                     )
@@ -2133,6 +2253,257 @@ def render_visual_step_flow(
                                         st.rerun()
                                     except Exception as exc:
                                         _render_friendly_error(t("err_upload_footage_friendly"), exc)
+
+                    with tab_ai_vid:
+                        if not ai_vid_providers:
+                            st.info(t("ai_video_not_configured"))
+                            if st.button(t("btn_open_video_ai_settings"), key=f"btn_cfg_aiv_{project_id}_{target_shot.shot_id}"):
+                                _open_mpt_settings_dialog("video")
+                        else:
+                            prov_ids = [p["provider_id"] for p in ai_vid_providers]
+                            prov_lbls = {p["provider_id"]: p["label"] for p in ai_vid_providers}
+                            sel_aiv_prov = st.selectbox(
+                                t("field_ai_video_provider"),
+                                options=prov_ids,
+                                format_func=lambda x: prov_lbls.get(x, x),
+                                key=f"sel_aiv_prov_{project_id}_{target_shot.shot_id}",
+                            )
+                            aiv_meta = get_ai_video_provider_meta(sel_aiv_prov)
+                            sel_aiv_model = st.selectbox(
+                                t("field_ai_video_model"),
+                                options=aiv_meta["models"],
+                                key=f"sel_aiv_model_{project_id}_{target_shot.shot_id}_{sel_aiv_prov}",
+                            )
+                            sup_durs = get_model_supported_durations(sel_aiv_prov, sel_aiv_model)
+                            def_dur = round_up_supported_duration(target_shot.duration_seconds, sup_durs)
+                            col_vr1, col_vr2 = st.columns(2)
+                            with col_vr1:
+                                sel_aiv_res = st.selectbox(
+                                    t("field_ai_video_resolution"),
+                                    options=aiv_meta["resolutions"],
+                                    index=min(1, len(aiv_meta["resolutions"]) - 1),
+                                    key=f"sel_aiv_res_{project_id}_{target_shot.shot_id}_{sel_aiv_prov}",
+                                )
+                            with col_vr2:
+                                sel_aiv_dur = st.selectbox(
+                                    t("field_ai_video_duration"),
+                                    options=sup_durs,
+                                    index=sup_durs.index(def_dur) if def_dur in sup_durs else 0,
+                                    key=f"sel_aiv_dur_{project_id}_{target_shot.shot_id}_{sel_aiv_prov}",
+                                )
+                            st.caption(
+                                t(
+                                    "ai_video_duration_trim_note",
+                                    shot_dur=f"{target_shot.duration_seconds:.1f}",
+                                    gen_dur=sel_aiv_dur,
+                                )
+                            )
+                            default_aiv_prompt = build_ai_video_prompt(
+                                narration=target_narr,
+                                keywords=kw_en_val or short_q,
+                                preset_snapshot=preset_snap,
+                            )
+                            aiv_prompt = st.text_area(
+                                t("field_ai_video_prompt"),
+                                value=default_aiv_prompt,
+                                height=90,
+                                key=f"txt_aiv_prompt_{project_id}_{target_shot.shot_id}",
+                            )
+                            cost_est = estimate_ai_video_cost(sel_aiv_model, sel_aiv_dur, sel_aiv_res)
+                            if cost_est.get("known") and cost_est.get("estimated_usd") is not None:
+                                st.info(
+                                    t(
+                                        "ai_video_cost_known",
+                                        usd=f"{cost_est['estimated_usd']:.2f}",
+                                        date=cost_est["updated_at"],
+                                    )
+                                )
+                            else:
+                                st.info(t("ai_video_cost_unknown"))
+
+                            if st.button(
+                                t("btn_generate_ai_video_shot"),
+                                type="primary",
+                                disabled=is_job_running or not aiv_prompt.strip(),
+                                key=f"btn_gen_aiv_{project_id}_{target_shot.shot_id}",
+                                use_container_width=True,
+                            ):
+                                st.session_state[f"ai_video_confirm_batch_{project_id}"] = False
+                                st.session_state[f"ai_video_confirm_single_{project_id}"] = {
+                                    "shot_id": target_shot.shot_id,
+                                    "shot_duration": target_shot.duration_seconds,
+                                    "provider_id": sel_aiv_prov,
+                                    "provider_label": prov_lbls.get(sel_aiv_prov, sel_aiv_prov),
+                                    "model_id": sel_aiv_model,
+                                    "resolution": sel_aiv_res,
+                                    "duration_seconds": int(sel_aiv_dur),
+                                    "prompt": aiv_prompt.strip(),
+                                    "cost_known": bool(cost_est.get("known")),
+                                    "estimated_usd": cost_est.get("estimated_usd"),
+                                    "updated_at": cost_est.get("updated_at"),
+                                }
+                                st.rerun()
+
+    # --- F3: Mandatory Cost Confirmation Dialogs (Single Shot & Bulk Needs-Review) ---
+    if not st.session_state.get("settings_dialog_open", False):
+        single_req = st.session_state.get(f"ai_video_confirm_single_{project_id}")
+        batch_open = bool(st.session_state.get(f"ai_video_confirm_batch_{project_id}", False))
+
+        if isinstance(single_req, dict):
+            @st.dialog(t("dlg_confirm_ai_video_title"))
+            def _confirm_single_ai_video_dialog():
+                st.warning(t("dlg_confirm_ai_video_warn"))
+                st.markdown(
+                    t(
+                        "dlg_confirm_ai_video_detail",
+                        shot=single_req["shot_id"],
+                        provider=single_req["provider_label"],
+                        model=single_req["model_id"],
+                        res=single_req["resolution"],
+                        dur=single_req["duration_seconds"],
+                        shot_dur=f"{single_req['shot_duration']:.1f}",
+                    )
+                )
+                st.code(single_req["prompt"], language="text")
+                if single_req.get("cost_known") and single_req.get("estimated_usd") is not None:
+                    st.info(
+                        t(
+                            "ai_video_cost_known",
+                            usd=f"{single_req['estimated_usd']:.2f}",
+                            date=single_req.get("updated_at", ""),
+                        )
+                    )
+                else:
+                    st.info(t("ai_video_cost_unknown"))
+                col_c1, col_c2 = st.columns(2)
+                with col_c1:
+                    if st.button(
+                        t("btn_confirm_generate"),
+                        type="primary",
+                        key=f"btn_dlg_conf_aiv_{project_id}",
+                        use_container_width=True,
+                    ):
+                        req_copy = dict(single_req)
+                        st.session_state[f"ai_video_confirm_single_{project_id}"] = None
+                        cmd = jobs.build_longform_cli_command(
+                            "visual",
+                            "ai-video",
+                            project_id,
+                            "--shot",
+                            req_copy["shot_id"],
+                            "--provider",
+                            req_copy["provider_id"],
+                            "--model",
+                            req_copy["model_id"],
+                            "--resolution",
+                            req_copy["resolution"],
+                            "--duration",
+                            str(req_copy["duration_seconds"]),
+                            "--prompt",
+                            req_copy["prompt"],
+                        )
+                        _start_job_safe(project_id, "visual_ai_video", cmd)
+                with col_c2:
+                    if st.button(
+                        t("btn_cancel_dialog"),
+                        key=f"btn_dlg_canc_aiv_{project_id}",
+                        use_container_width=True,
+                    ):
+                        st.session_state[f"ai_video_confirm_single_{project_id}"] = None
+                        st.rerun()
+
+            _confirm_single_ai_video_dialog()
+
+        elif batch_open and ai_vid_providers:
+            @st.dialog(t("dlg_confirm_ai_video_batch_title"))
+            def _confirm_batch_ai_video_dialog():
+                st.warning(t("dlg_confirm_ai_video_warn"))
+                b_prov_ids = [p["provider_id"] for p in ai_vid_providers]
+                b_prov_lbls = {p["provider_id"]: p["label"] for p in ai_vid_providers}
+                sel_bp = st.selectbox(
+                    t("field_ai_video_provider"),
+                    options=b_prov_ids,
+                    format_func=lambda x: b_prov_lbls.get(x, x),
+                    key=f"sel_batch_aiv_prov_{project_id}",
+                )
+                b_meta = get_ai_video_provider_meta(sel_bp)
+                sel_bm = st.selectbox(
+                    t("field_ai_video_model"),
+                    options=b_meta["models"],
+                    key=f"sel_batch_aiv_model_{project_id}_{sel_bp}",
+                )
+                sel_br = st.selectbox(
+                    t("field_ai_video_resolution"),
+                    options=b_meta["resolutions"],
+                    index=min(1, len(b_meta["resolutions"]) - 1),
+                    key=f"sel_batch_aiv_res_{project_id}_{sel_bp}",
+                )
+                b_plan = plan_needs_review_ai_video_batch(manifest, sel_bp, sel_bm, sel_br)
+                st.markdown(t("dlg_confirm_batch_summary", count=b_plan["count"]))
+                budget_cap = st.number_input(
+                    t("field_ai_video_budget_cap"),
+                    min_value=0.10,
+                    max_value=500.0,
+                    value=5.0,
+                    step=0.50,
+                    key=f"num_batch_aiv_budget_{project_id}",
+                )
+                tot_est = b_plan.get("total_estimated_usd")
+                exceeds = False
+                if tot_est is not None:
+                    st.info(
+                        t(
+                            "ai_video_cost_known",
+                            usd=f"{tot_est:.2f}",
+                            date=estimate_ai_video_cost(sel_bm, 4, sel_br).get("updated_at", ""),
+                        )
+                    )
+                    if tot_est > float(budget_cap):
+                        exceeds = True
+                        st.error(
+                            t(
+                                "dlg_budget_exceeded_warn",
+                                est=f"{tot_est:.2f}",
+                                cap=f"{float(budget_cap):.2f}",
+                            )
+                        )
+                else:
+                    st.info(t("ai_video_cost_unknown"))
+
+                col_bc1, col_bc2 = st.columns(2)
+                with col_bc1:
+                    if st.button(
+                        t("btn_confirm_generate"),
+                        type="primary",
+                        disabled=exceeds or b_plan["count"] == 0,
+                        key=f"btn_dlg_conf_batch_aiv_{project_id}",
+                        use_container_width=True,
+                    ):
+                        st.session_state[f"ai_video_confirm_batch_{project_id}"] = False
+                        cmd = jobs.build_longform_cli_command(
+                            "visual",
+                            "ai-video-batch",
+                            project_id,
+                            "--provider",
+                            sel_bp,
+                            "--model",
+                            sel_bm,
+                            "--resolution",
+                            sel_br,
+                            "--max-budget",
+                            f"{float(budget_cap):.2f}",
+                        )
+                        _start_job_safe(project_id, "visual_ai_video_batch", cmd)
+                with col_bc2:
+                    if st.button(
+                        t("btn_cancel_dialog"),
+                        key=f"btn_dlg_canc_batch_aiv_{project_id}",
+                        use_container_width=True,
+                    ):
+                        st.session_state[f"ai_video_confirm_batch_{project_id}"] = False
+                        st.rerun()
+
+            _confirm_batch_ai_video_dialog()
 
     # --- V4: Cache & Pemeliharaan ---
     with st.expander(t("expander_cache_maintenance"), expanded=False):

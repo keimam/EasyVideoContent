@@ -958,6 +958,7 @@ def cmd_visual_pipeline(args: argparse.Namespace) -> int:
                 manifest=manifest,
                 provider_name=getattr(args, "provider", None),
                 allow_fallback=getattr(args, "allow_fallback", True),
+                check_ai_relevance=bool(getattr(args, "check_ai_relevance", False)),
             )
             return 0
 
@@ -1014,6 +1015,7 @@ def cmd_visual_fetch(args: argparse.Namespace) -> int:
                 manifest=manifest,
                 provider_name=args.provider,
                 allow_fallback=args.allow_fallback,
+                check_ai_relevance=bool(getattr(args, "check_ai_relevance", False)),
             )
             save_manifest(manifest, proj_dir)
 
@@ -1559,6 +1561,127 @@ def cmd_visual_unlock(args: argparse.Namespace) -> int:
             return 0
     except Exception as exc:
         print(f"Error unlocking shot: {exc}", file=sys.stderr)
+        return 1
+
+
+def cmd_visual_ai_relevance(args: argparse.Namespace) -> int:
+    """Evaluate footage relevance using AI Vision for a shot or project (8B.2 F1)."""
+    from app.services.longform.visual.ai_relevance import check_project_relevance, check_shot_relevance
+
+    proj_dir = get_project_dir(args.project_id)
+    if not proj_dir.is_dir():
+        print(f"Error: Project '{args.project_id}' not found at {proj_dir}", file=sys.stderr)
+        return 1
+
+    try:
+        with ProjectLock(proj_dir):
+            manifest = load_manifest(proj_dir)
+            shot_id = getattr(args, "shot", None)
+            force = bool(getattr(args, "force", False))
+            if shot_id:
+                target_ch = None
+                target_sh = None
+                for ch in manifest.chapters:
+                    for s in ch.shots:
+                        if s.shot_id == shot_id:
+                            target_ch, target_sh = ch, s
+                            break
+                    if target_sh:
+                        break
+                if not target_sh or not target_ch:
+                    print(f"Error: Shot '{shot_id}' not found", file=sys.stderr)
+                    return 1
+                res = check_shot_relevance(
+                    target_sh, target_ch, proj_dir, manifest, force_refresh=force, clear_on_yes=True
+                )
+                save_manifest(manifest, proj_dir)
+                verdict = res["verdict"]
+                print(f"Shot '{shot_id}': relevan={verdict['relevan']} ({verdict['alasan']})")
+                return 0
+            stats = check_project_relevance(manifest, proj_dir, force_refresh=force)
+            save_manifest(manifest, proj_dir)
+            if stats.get("errors"):
+                print(f"Warnings/Errors: {stats['errors'][:3]}", file=sys.stderr)
+            print(f"AI Relevance check complete: {stats}")
+            return 0
+    except Exception as exc:
+        err_msg = str(exc)
+        print(f"Error checking AI relevance: {err_msg}", file=sys.stderr)
+        _record_job_failure(proj_dir, "visual_ai_relevance", err_msg, 1)
+        return 1
+
+
+def cmd_visual_ai_video(args: argparse.Namespace) -> int:
+    """Generate an AI video for one shot and rebuild only its clip (8B.2 F3)."""
+    from app.services.longform.visual.ai_video import generate_ai_video_for_shot
+
+    proj_dir = get_project_dir(args.project_id)
+    if not proj_dir.is_dir():
+        print(f"Error: Project '{args.project_id}' not found at {proj_dir}", file=sys.stderr)
+        return 1
+
+    try:
+        with ProjectLock(proj_dir):
+            manifest = load_manifest(proj_dir)
+            shot = generate_ai_video_for_shot(
+                project_dir=proj_dir,
+                manifest=manifest,
+                shot_id=args.shot,
+                provider_id=args.provider,
+                model_id=args.model,
+                prompt=args.prompt,
+                resolution=getattr(args, "resolution", "720p"),
+                duration_seconds=getattr(args, "duration", None),
+                rebuild=True,
+            )
+            print(f"SUCCESS: Shot '{shot.shot_id}' updated from {shot.actual_source} and locked.")
+            return 0
+    except ProjectLockedError:
+        err_msg = f"Project '{args.project_id}' is locked by another process."
+        print(f"Error: {err_msg}", file=sys.stderr)
+        _record_job_failure(proj_dir, "visual_ai_video", err_msg, 1)
+        return 1
+    except Exception as exc:
+        err_msg = str(exc)
+        print(f"Error generating AI video for shot '{args.shot}': {err_msg}", file=sys.stderr)
+        _record_job_failure(proj_dir, "visual_ai_video", err_msg, 1)
+        return 1
+
+
+def cmd_visual_ai_video_batch(args: argparse.Namespace) -> int:
+    """Generate AI video for needs_review shots within max budget cap (8B.2 F3)."""
+    from app.services.longform.visual.ai_video import generate_ai_video_for_needs_review
+
+    proj_dir = get_project_dir(args.project_id)
+    if not proj_dir.is_dir():
+        print(f"Error: Project '{args.project_id}' not found at {proj_dir}", file=sys.stderr)
+        return 1
+
+    try:
+        with ProjectLock(proj_dir):
+            manifest = load_manifest(proj_dir)
+            stats = generate_ai_video_for_needs_review(
+                project_dir=proj_dir,
+                manifest=manifest,
+                provider_id=args.provider,
+                model_id=args.model,
+                resolution=getattr(args, "resolution", "720p"),
+                max_budget_usd=float(getattr(args, "max_budget", 5.0)),
+            )
+            print(f"AI Video batch complete: {stats}")
+            if stats.get("errors") and stats.get("generated", 0) == 0:
+                _record_job_failure(proj_dir, "visual_ai_video_batch", "; ".join(stats["errors"][:3]), 1)
+                return 1
+            return 0
+    except ProjectLockedError:
+        err_msg = f"Project '{args.project_id}' is locked by another process."
+        print(f"Error: {err_msg}", file=sys.stderr)
+        _record_job_failure(proj_dir, "visual_ai_video_batch", err_msg, 1)
+        return 1
+    except Exception as exc:
+        err_msg = str(exc)
+        print(f"Error running AI video batch: {err_msg}", file=sys.stderr)
+        _record_job_failure(proj_dir, "visual_ai_video_batch", err_msg, 1)
         return 1
 
 
@@ -2275,12 +2398,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_v_pipe.add_argument("project_id", help="Project ID")
     p_v_pipe.add_argument("--provider", default=None, help="Visual provider ('fake', 'pexels', 'pixabay', 'ai_image', 'local')")
     p_v_pipe.add_argument("--allow-fallback", action="store_true", help="Allow fallback to fake provider if credentials missing")
+    p_v_pipe.add_argument("--check-ai-relevance", action="store_true", help="Verify fetched footage relevance with AI Vision (8B.2 F1)")
 
     # visual fetch
     p_v_fetch = visual_subs.add_parser("fetch", help="Search and acquire visual assets (stock, AI, local, fake)")
     p_v_fetch.add_argument("project_id", help="Project ID")
     p_v_fetch.add_argument("--provider", default=None, help="Visual provider ('fake', 'pexels', 'pixabay', 'ai_image', 'local')")
     p_v_fetch.add_argument("--allow-fallback", action="store_true", help="Allow fallback to fake provider if credentials missing")
+    p_v_fetch.add_argument("--check-ai-relevance", action="store_true", help="Verify fetched footage relevance with AI Vision (8B.2 F1)")
 
     # visual build
     p_v_build = visual_subs.add_parser("build", help="Render shot clips (Ken Burns or trimmed stock video) with uniform parameters")
@@ -2335,6 +2460,30 @@ def build_parser() -> argparse.ArgumentParser:
     p_v_unlock = visual_subs.add_parser("unlock", help="Unlock a shot to allow re-fetch and updates")
     p_v_unlock.add_argument("project_id", help="Project ID")
     p_v_unlock.add_argument("--shot", required=True, help="Shot ID to unlock")
+
+    # visual ai-relevance (8B.2 F1)
+    p_v_airel = visual_subs.add_parser("ai-relevance", help="Evaluate footage relevance with AI vision")
+    p_v_airel.add_argument("project_id", help="Project ID")
+    p_v_airel.add_argument("--shot", default=None, help="Optional single shot ID to re-check")
+    p_v_airel.add_argument("--force", action="store_true", help="Ignore relevance cache")
+
+    # visual ai-video (8B.2 F3)
+    p_v_aivid = visual_subs.add_parser("ai-video", help="Generate AI video for a single shot and rebuild its clip")
+    p_v_aivid.add_argument("project_id", help="Project ID")
+    p_v_aivid.add_argument("--shot", required=True, help="Target shot ID")
+    p_v_aivid.add_argument("--provider", required=True, help="AI video provider ID")
+    p_v_aivid.add_argument("--model", required=True, help="AI video model ID")
+    p_v_aivid.add_argument("--resolution", default="720p", help="Output resolution (480p/720p/1080p)")
+    p_v_aivid.add_argument("--duration", type=int, default=None, help="Provider-supported duration in seconds")
+    p_v_aivid.add_argument("--prompt", required=True, help="Editable AI video generation prompt")
+
+    # visual ai-video-batch (8B.2 F3)
+    p_v_aivid_b = visual_subs.add_parser("ai-video-batch", help="Generate AI video for needs_review shots within budget cap")
+    p_v_aivid_b.add_argument("project_id", help="Project ID")
+    p_v_aivid_b.add_argument("--provider", required=True, help="AI video provider ID")
+    p_v_aivid_b.add_argument("--model", required=True, help="AI video model ID")
+    p_v_aivid_b.add_argument("--resolution", default="720p", help="Output resolution")
+    p_v_aivid_b.add_argument("--max-budget", type=float, default=5.0, help="Maximum budget cap in USD")
 
     # 7. cache (Stage 4.2, S2)
     p_cache = subparsers.add_parser("cache", help="Manage global media cache and LRU pruning")
@@ -2501,6 +2650,12 @@ def main() -> int:
                 return cmd_visual_unlock(args)
             elif args.visual_command == "review":
                 return cmd_visual_review(args)
+            elif args.visual_command == "ai-relevance":
+                return cmd_visual_ai_relevance(args)
+            elif args.visual_command == "ai-video":
+                return cmd_visual_ai_video(args)
+            elif args.visual_command == "ai-video-batch":
+                return cmd_visual_ai_video_batch(args)
         elif args.command == "cache":
             if args.cache_command == "status":
                 return cmd_cache_status(args)

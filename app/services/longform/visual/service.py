@@ -268,6 +268,8 @@ class VisualService:
         manifest: ProjectManifest,
         provider_name: Optional[str] = None,
         allow_fallback: bool = False,
+        check_ai_relevance: bool = False,
+        translate_keywords: bool = True,
     ) -> ProjectManifest:
         """Search and download/generate visual assets for all pending shots (4.1, V1).
 
@@ -361,11 +363,44 @@ class VisualService:
                 logger.warning(f"Could not backfill preset snapshot for preset '{manifest.preset_id}': {e}")
 
         stop_requested = False
+        translation_warnings: List[str] = []
+        from app.services.longform.language_guard import resolve_project_language
+        from app.services.longform.visual.keyword_translator import (
+            is_non_english_language,
+            translate_chapter_queries_to_english,
+        )
+        proj_lang = resolve_project_language(manifest)
+
         for ch in manifest.chapters:
             if is_stop_requested(self.project_dir):
                 logger.info(f"Stop requested for project '{manifest.project_id}'. Exiting visual matching gracefully.")
                 stop_requested = True
                 break
+
+            # F2: Batch translate short search queries to English per chapter for non-English projects
+            # ONLY for newly allocated / needing-fetch unlocked shots; locked/valid shots remain untouched.
+            if translate_keywords and is_non_english_language(proj_lang):
+                shots_needing_fetch = [
+                    sh for sh in ch.shots
+                    if not sh.locked and not self._is_shot_asset_valid_for_provider(
+                        sh,
+                        effective_provider_name,
+                        req_terms,
+                        block_terms,
+                        neg_terms,
+                        min_rel_score,
+                        visual_kws,
+                    )
+                ]
+                if shots_needing_fetch:
+                    tr_res = translate_chapter_queries_to_english(
+                        shots_needing_fetch,
+                        preset_snapshot=preset_snap,
+                        project_lang=proj_lang,
+                    )
+                    if tr_res.get("warning"):
+                        translation_warnings.append(str(tr_res["warning"]))
+
             for shot in ch.shots:
                 if is_stop_requested(self.project_dir):
                     logger.info(f"Stop requested for project '{manifest.project_id}'. Exiting visual matching gracefully.")
@@ -417,7 +452,12 @@ class VisualService:
                     restructure_stock_query,
                 )
 
-                raw_query = shot.search_query or shot.visual_prompt or "cinematic scene"
+                raw_query = (
+                    getattr(shot, "search_query_en", None)
+                    or shot.search_query
+                    or shot.visual_prompt
+                    or "cinematic scene"
+                )
                 candidates = []
                 chosen_query = raw_query
 
@@ -534,6 +574,21 @@ class VisualService:
                     shot.needs_review = False
                 shot.status = ItemStatus.pending
                 save_manifest(manifest, self.project_dir)
+
+        if translation_warnings:
+            logger.warning(f"Keyword translation warnings for '{manifest.project_id}': {translation_warnings[0]}")
+
+        # F1: Optional AI Vision relevance verification (default off, strictly after fetch)
+        if check_ai_relevance and not stop_requested and not is_stop_requested(self.project_dir):
+            from app.services.longform.visual.ai_relevance import check_project_relevance
+
+            rel_stats = check_project_relevance(manifest, self.project_dir)
+            logger.info(
+                f"AI relevance check completed for '{manifest.project_id}': "
+                f"checked={rel_stats.get('checked')}, cached={rel_stats.get('cached')}, "
+                f"ya={rel_stats.get('ya')}, tidak={rel_stats.get('tidak')}, ragu={rel_stats.get('ragu')}"
+            )
+            save_manifest(manifest, self.project_dir)
 
         return manifest
 
@@ -1122,6 +1177,7 @@ class VisualService:
         manifest: Optional[ProjectManifest] = None,
         provider_name: Optional[str] = None,
         allow_fallback: bool = True,
+        check_ai_relevance: bool = False,
     ) -> Tuple[ProjectManifest, Dict[str, Any]]:
         """Execute the full 3-phase visual pipeline sequentially (Allocation -> Fetch -> Build).
 
@@ -1160,6 +1216,7 @@ class VisualService:
             manifest=manifest,
             provider_name=provider_name,
             allow_fallback=allow_fallback,
+            check_ai_relevance=check_ai_relevance,
         )
         save_manifest(manifest, self.project_dir)
 

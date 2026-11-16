@@ -162,6 +162,12 @@ class Shot(BaseModel):
     chosen_rendition: Optional[str] = None
     is_low_res: bool = False
     effective_query: Optional[str] = None
+    search_query_en: Optional[str] = None
+    ai_relevance_status: Optional[str] = None
+    ai_relevance_reason: Optional[str] = None
+    ai_relevance_asset_hash: Optional[str] = None
+    ai_video_provider: Optional[str] = None
+    ai_video_model: Optional[str] = None
     status: ItemStatus = ItemStatus.pending
 
     model_config = {"extra": "forbid"}

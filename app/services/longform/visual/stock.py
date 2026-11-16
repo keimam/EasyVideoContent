@@ -189,18 +189,18 @@ def restructure_stock_query(
             chosen_subject = st
             break
 
-    if not chosen_subject:
+    if not chosen_subject and req:
         for common in ["car", "vehicle", "automobile", "truck", "motorcycle"]:
             if re.search(r"\b" + common + r"\b", clean_q):
                 chosen_subject = common
                 break
 
     if not chosen_subject:
-        chosen_subject = req[0] if req else "car"
+        chosen_subject = req[0] if req else ""
 
     # 2. Extract remaining concrete nouns/keywords
     words = re.findall(r"[a-z0-9]+", clean_q)
-    subj_tokens = set(chosen_subject.split())
+    subj_tokens = set(chosen_subject.split()) if chosen_subject else set()
     p_nouns = []
     others = []
     for w in words:
@@ -212,7 +212,10 @@ def restructure_stock_query(
             others.append(w)
 
     combined = p_nouns + others
-    final_parts = [chosen_subject] + combined[:2]
+    if chosen_subject:
+        final_parts = [chosen_subject] + combined[:2]
+    else:
+        final_parts = combined[:3] or words[:3]
     return " ".join(final_parts)
 
 

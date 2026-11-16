@@ -71,3 +71,84 @@ def load_longform_config(reload: bool = False) -> LongformConfig:
 
     _CONFIG_CACHE = LongformConfig(**defaults)
     return _CONFIG_CACHE
+
+
+_PRICING_DEFAULTS: dict[str, Any] = {
+    "updated_at": "2026-11-16",
+    "source": "Default reference pricing in config/longform.toml",
+    "models": {
+        "bytedance/seedance-2.0-fast/text-to-video": {
+            "per_second": 0.045,
+            "resolution_multipliers": {"480p": 0.7, "720p": 1.0, "1080p": 1.6},
+        },
+        "bytedance/seedance-2.0-fast": {
+            "per_second": 0.045,
+            "resolution_multipliers": {"480p": 0.7, "720p": 1.0, "1080p": 1.6},
+        },
+        "bytedance/seedance-1-pro-fast/text-to-video": {
+            "per_second": 0.060,
+            "resolution_multipliers": {"480p": 0.7, "720p": 1.0, "1080p": 1.6},
+        },
+        "alibaba/wan-2.5/text-to-video": {
+            "per_second": 0.050,
+            "resolution_multipliers": {"480p": 0.7, "720p": 1.0, "1080p": 1.5},
+        },
+        "kwaivgi/kling-v2.1-t2v-std": {
+            "per_second": 0.070,
+            "resolution_multipliers": {"480p": 0.8, "720p": 1.0, "1080p": 1.5},
+        },
+        "doubao-seedance-1-0-pro-250528": {
+            "per_second": 0.060,
+            "resolution_multipliers": {"480p": 0.7, "720p": 1.0, "1080p": 1.6},
+        },
+        "doubao-seedance-2-0-fast-260128": {
+            "per_second": 0.045,
+            "resolution_multipliers": {"480p": 0.7, "720p": 1.0, "1080p": 1.6},
+        },
+        "Doubao-Seedance-2-5-260628": {
+            "per_second": 0.055,
+            "resolution_multipliers": {"480p": 0.7, "720p": 1.0, "1080p": 1.6},
+        },
+        "MiniMax-H3": {
+            "per_second": 0.060,
+            "resolution_multipliers": {"720p": 1.0, "1080p": 1.5, "2K": 2.0},
+        },
+        "seedance-lite-t2v": {
+            "per_second": 0.040,
+            "resolution_multipliers": {"480p": 0.7, "720p": 1.0, "1080p": 1.5},
+        },
+        "veo31fast": {
+            "per_second": 0.100,
+            "resolution_multipliers": {"720p": 1.0, "1080p": 1.4},
+        },
+    },
+}
+
+
+def load_ai_video_pricing(config_path: Path | None = None) -> dict[str, Any]:
+    """Load editable AI Video pricing table from config/longform.toml."""
+    path = config_path or get_config_file_path()
+    result = {
+        "updated_at": _PRICING_DEFAULTS["updated_at"],
+        "source": _PRICING_DEFAULTS["source"],
+        "models": dict(_PRICING_DEFAULTS["models"]),
+    }
+    if path.is_file() and toml is not None:
+        try:
+            with open(path, "r", encoding="utf-8") as fp:
+                data = toml.load(fp)
+            section = data.get("ai_video_pricing")
+            if isinstance(section, dict):
+                if section.get("updated_at"):
+                    result["updated_at"] = str(section["updated_at"])
+                if section.get("source"):
+                    result["source"] = str(section["source"])
+                raw_models = section.get("models")
+                if isinstance(raw_models, dict):
+                    result["models"] = {
+                        str(m_key).strip(): m_val
+                        for m_key, m_val in raw_models.items()
+                    }
+        except Exception as exc:
+            logger.warning(f"Failed to load ai_video_pricing from {path}: {exc}")
+    return result

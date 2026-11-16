@@ -138,10 +138,15 @@ def is_job_step_completed(project_id: str, step: str) -> bool:
                 if g.audio and g.audio.file_path and (p_dir / g.audio.file_path).is_file() and (p_dir / g.audio.file_path).stat().st_size > 44
             )
             return done_g == total_g
-        elif step in ("visual_generate", "visual_pipeline", "visual", "visual_build"):
+        elif step in ("visual_generate", "visual_pipeline", "visual", "visual_build", "visual_ai_video", "visual_ai_video_batch", "visual_ai_relevance"):
             total_s = sum(len(ch.shots) for ch in manifest.chapters)
             if total_s == 0:
                 return False
+            if step in ("visual_ai_video", "visual_ai_video_batch", "visual_ai_relevance"):
+                return any(
+                    sh.rendered_clip and (p_dir / sh.rendered_clip).is_file()
+                    for ch in manifest.chapters for sh in ch.shots
+                )
             done_s = sum(
                 1 for ch in manifest.chapters for sh in ch.shots
                 if sh.rendered_clip and (p_dir / sh.rendered_clip).is_file()

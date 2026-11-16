@@ -24,6 +24,7 @@ Tujuannya adalah menjaga kemudahan sinkronisasi (merge/rebase) dari repositori u
 | **Addendum 8A.2 v2 (V6)** | Tidak Ada | 0 baris | Resolusi tumpang tindih visual step, margin vertikal seragam 16-24px, automated CDP bounding box checks |
 | **Addendum 8A.2 v2 (V7)** | Tidak Ada | 0 baris | Pemulihan regresi logika Visual (is_replaced, upload file_path, provider), i18n tuntas seluruh langkah & dialog, AST scanner literal UI, pratinjau suara aman, expander Detail error |
 | **Tahap 8B.1** | `webui/Main.py` (B3) | ~31 baris | Penyatuan penyedia AI Long Video; Addendum B3 menambahkan guard `_efs_settings_library_only` + `render_embedded_settings_dialog()` di `webui/Main.py` agar dialog Settings MPT dapat dibuka langsung di halaman aktif Long Video tanpa `switch_page` |
+| **Tahap 8B.2** | Tidak Ada | 0 baris baru | Fitur AI opsional terintegrasi (F1: cek relevansi vision + cache + 429 retry, F2: batch terjemah kata kunci ke English per bab + fallback, F3: AI Video per shot & batch Perlu dicek + tabel tarif `config/longform.toml` + konfirmasi wajib + batas anggaran, F4: sembunyikan ikon jangkar heading & ringkas checkbox Gambar AI + tooltip) |
 
 ---
 
@@ -335,6 +336,14 @@ Tujuannya adalah menjaga kemudahan sinkronisasi (merge/rebase) dari repositori u
   - Memperbaiki aturan pengecualian ikon Material Symbols di `app/services/branding/theme.py` (`span[role="img"][aria-label$=" icon"]`, `span[style*="Material Symbols"]`, dan aturan di dalam `st.dialog` / `stSubheader`) sehingga ikon `:material/psychology:`, `:material/movie:`, `:material/image:`, dan `:material/video_library:` pada tab Umum tampil sebagai glif, bukan teks mentah.
   - Menambahkan `_get_step_subtitle()` di `components.py` dan kunci `*_subtitle_{belum,berjalan,terhenti,perlu_diperbarui,selesai}` simetris ID/EN di `i18n.py` untuk semua 5 langkah serta memperjelas label `prov_ai_no_mpt_key`.
   - **Cara Melepas Hook `webui/Main.py` saat Merge Upstream:** Hapus blok `if not st.session_state.get("_efs_settings_library_only", False):` (kembalikan indentasi baris `st.set_page_config`–`render_brand_sidebar` dan `_render_application()`) serta hapus fungsi `render_embedded_settings_dialog()`.
+
+### Tahap 8B.2: Fitur AI Opsional (Relevansi Vision, Terjemah Kata Kunci, AI Video per Shot) & Perapian UI
+- **File Kode Upstream yang Disentuh:** **Nihil (0 berkas kode baru)** — Seluruh fitur memakai adapter/konfigurasi MPT yang sudah ada melalui modul terisolasi di `app/services/longform/visual/`.
+- **F1 (`app/services/longform/visual/ai_relevance.py`):** Toggle *"Cek relevansi dengan AI"* (default mati) di expander *Sumber footage*, deteksi kapabilitas vision model aktif, ekstraksi frame thumbnail + narasi + subjek preset, cache per hash aset, batas konkurensi, retry 429, estimasi jumlah panggilan, penandaan `needs_review=True` tanpa mengganti aset, serta tombol *"Cek ulang dengan AI"* di panel detail shot.
+- **F2 (`app/services/longform/visual/keyword_translator.py`):** Terjemahan kata kunci pendek ke English secara batch per bab untuk proyek non-English (hanya alokasi baru / cari ulang, menjaga `shot_hash` lama tetap utuh), cache global, fallback aman dengan peringatan ringan bila LLM belum siap, serta tampilan kata kunci asli + English dan praisi *"Cari lagi"* di panel detail shot.
+- **F3 (`app/services/longform/visual/ai_video.py`, `config/longform.toml`, `app/services/longform/config.py`):** Tab *"AI Video"* per shot (prioritas WaveSpeed, dukungan penyedia AI video MPT lain), pembulatan durasi ke dukungan penyedia `>= durasi shot`, tabel harga yang dapat diedit pengguna di `config/longform.toml`, dialog konfirmasi biaya wajib sebelum memanggil job runner (tahan F5 & Batal, kunci otomatis & rebuild 1 klip saja + perbarui thumbnail), serta aksi massal *"Buat AI Video untuk shot Perlu dicek"* dengan batas anggaran `$`.
+- **F4 (`app/services/branding/theme.py`, `app/services/longform/ui/i18n.py`):** Menyembunyikan ikon tautan jangkar heading (`🔗` / `[data-testid="stHeaderActionElements"]`) dan meringkas label checkbox Gambar AI belum diatur dengan tooltip lengkap (`help`).
+- **Tangkapan Layar Verifikasi ID & EN:** `docs/branding/screens/8b2_ai_video_tab_{id,en}.png`, `docs/branding/screens/8b2_ai_video_confirm_{id,en}.png`.
 
 
 

@@ -6,3 +6,22 @@ max_size_gb = 10.0
 
 # Default age in days for cache pruning (default 30 days)
 max_age_days = 30
+
+[ai_video_pricing]
+# Tabel perkiraan biaya AI Video (USD per detik) yang dapat diedit pengguna.
+# Selalu cek tarif terbaru pada dashboard penyedia sebelum eksekusi massal.
+updated_at = "2026-11-16"
+source = "Public reference pricing pages (WaveSpeed, Volcano Engine Ark, MiniMax/Ofox, MuAPI) checked 2026-11-16"
+
+[ai_video_pricing.models]
+"bytedance/seedance-2.0-fast/text-to-video" = { per_second = 0.045, resolution_multipliers = { "480p" = 0.7, "720p" = 1.0, "1080p" = 1.6 } }
+"bytedance/seedance-2.0-fast" = { per_second = 0.045, resolution_multipliers = { "480p" = 0.7, "720p" = 1.0, "1080p" = 1.6 } }
+"bytedance/seedance-1-pro-fast/text-to-video" = { per_second = 0.060, resolution_multipliers = { "480p" = 0.7, "720p" = 1.0, "1080p" = 1.6 } }
+"alibaba/wan-2.5/text-to-video" = { per_second = 0.050, resolution_multipliers = { "480p" = 0.7, "720p" = 1.0, "1080p" = 1.5 } }
+"kwaivgi/kling-v2.1-t2v-std" = { per_second = 0.070, resolution_multipliers = { "480p" = 0.8, "720p" = 1.0, "1080p" = 1.5 } }
+"doubao-seedance-1-0-pro-250528" = { per_second = 0.060, resolution_multipliers = { "480p" = 0.7, "720p" = 1.0, "1080p" = 1.6 } }
+"doubao-seedance-2-0-fast-260128" = { per_second = 0.045, resolution_multipliers = { "480p" = 0.7, "720p" = 1.0, "1080p" = 1.6 } }
+"Doubao-Seedance-2-5-260628" = { per_second = 0.055, resolution_multipliers = { "480p" = 0.7, "720p" = 1.0, "1080p" = 1.6 } }
+"MiniMax-H3" = { per_second = 0.060, resolution_multipliers = { "720p" = 1.0, "1080p" = 1.5, "2K" = 2.0 } }
+"seedance-lite-t2v" = { per_second = 0.040, resolution_multipliers = { "480p" = 0.7, "720p" = 1.0, "1080p" = 1.5 } }
+"veo31fast" = { per_second = 0.100, resolution_multipliers = { "720p" = 1.0, "1080p" = 1.4 } }

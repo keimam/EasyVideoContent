@@ -89,6 +89,15 @@ def get_global_css() -> str:
         font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
     }}
 
+    /* --- R1 & 8B.2-F4: Hide Streamlit heading link anchor (🔗) next to step/section headings --- */
+    [data-testid="stHeaderActionElements"],
+    [data-testid="stHeading"] a[href^="#"],
+    .stHeadingActionElements,
+    a.header-anchor {{
+        display: none !important;
+        visibility: hidden !important;
+    }}
+
     /* --- R1 & 8B.1-B3: Strictly preserve Streamlit's bundled offline Material Symbols everywhere (including st.dialog / st.subheader) --- */
     [data-testid="stIconMaterial"],
     [class*="material-symbols"],
