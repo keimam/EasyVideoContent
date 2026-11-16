@@ -23,6 +23,7 @@ Tujuannya adalah menjaga kemudahan sinkronisasi (merge/rebase) dari repositori u
 | **Revisi 8A.2 v2** | Tidak Ada | 0 baris | Audit i18n scanner, custom stepper & metric tile, penyesuaian presisi mockup 1-3, pembersihan emoji |
 | **Addendum 8A.2 v2 (V6)** | Tidak Ada | 0 baris | Resolusi tumpang tindih visual step, margin vertikal seragam 16-24px, automated CDP bounding box checks |
 | **Addendum 8A.2 v2 (V7)** | Tidak Ada | 0 baris | Pemulihan regresi logika Visual (is_replaced, upload file_path, provider), i18n tuntas seluruh langkah & dialog, AST scanner literal UI, pratinjau suara aman, expander Detail error |
+| **Tahap 8B.1** | Tidak Ada | 0 baris | Penyatuan penyedia AI Long Video (LLM/Naskah, TTS/Suara, Gambar AI) ke lapisan konfigurasi, kesiapan, katalog/model, & dialog Settings MoneyPrinterTurbo tanpa duplikasi key; fallback Whisper & Azure TTS v2 |
 
 ---
 
@@ -306,6 +307,21 @@ Tujuannya adalah menjaga kemudahan sinkronisasi (merge/rebase) dari repositori u
   - Menambahkan `test_all_steps_no_mixed_language_apptest` (Beranda + 5 langkah dalam ID & EN) dengan daftar kata terlarang lintas bahasa.
   - Menambahkan `test_v7_visual_use_candidate_replaces_asset_and_locks`, `test_v7_visual_lock_toggle_and_upload_wiring`, `test_v7_voice_preview_disabled_before_audio_synth`, dan `test_v7_friendly_error_with_detail_expander`.
 - **Tangkapan Layar Verifikasi ID & EN Semua Langkah:** `docs/branding/screens/8a2v3_*.png`.
+
+### Tahap 8B.1: Penyatuan Penyedia AI Long Video dengan MoneyPrinterTurbo (Naskah, Suara, Gambar AI)
+- **File Kode Upstream yang Disentuh:** **Nihil (0 berkas kode)** — Dialog Settings MPT (`webui/Main.py`) sudah mendukung pembukaan langsung ke tab `"llm"`, `"general"`, dan `"image"` melalui `st.session_state["settings_dialog_open"] = True` dan `st.session_state["settings_dialog_target_tab"]`.
+- **Dokumentasi Audit:** `docs/longform/AI_PROVIDERS.md` (tabel lengkap penyedia LLM/TTS/Gambar AI, akar masalah pengecekan Gemini di UI, dan arsitektur satu adapter).
+- **LLM / Naskah (`app/services/longform/llm_adapter.py`, `script_generator.py`, `ui/security.py`, `cli_longform.py`):**
+  - Menghapus pengecekan manual ganda (`check_has_llm_key`); seluruh 44 penyedia MPT dinilai melalui `get_llm_readiness()` berbasis `configured_llm_providers`, `codex_oauth.account_status`, `chatgpt_oauth.account_status`, `kimi_code_oauth.is_authorized`, CLI, dan Ollama. Validasi prefiks `AIza` hanya berjalan saat penyedia aktif adalah Gemini.
+  - Deteksi keluaran string `"Error: ..."` dari `_generate_response()`: retry backoff eksponensial (maks 3x) untuk HTTP 429 (`LLMRateLimitError`) dan kegagalan cepat dengan pesan ramah (`LLMModelNotFoundError`) saat model tidak tersedia/pensiun. `ScriptGenerator` menjaga bab yang sudah selesai agar **Lanjutkan** meneruskan bab tersisa.
+  - Penambahan `test_llm_connection()`, `list_llm_models()` (mendukung katalog Codex/ChatGPT/Groq dan endpoint `/models` OpenAI/OpenRouter/Gemini + fallback teks bebas), serta `set_active_llm_model()` yang langsung menulis ke `config.app` MPT.
+- **TTS / Suara (`app/services/longform/tts_adapter.py`, `voice_service.py`):**
+  - Mendukung pemilihan penyedia TTS terkonfigurasi MPT (`edge` / `azure-tts-v1` selalu tersedia; `azure-tts-v2`, `siliconflow`, `gemini-tts`, `mimo-tts`, `minimax-tts`, `elevenlabs`, `chatterbox`, `kokoro`, `fish_audio`, `voxcpm` bila terkonfigurasi), pengambilan daftar suara per penyedia, ekstraksi word boundary `azure-tts-v2` (`.subs`/`.offset`), dan fallback Whisper (`allow_whisper=True`) untuk penyedia tanpa word timing dengan konversi tetap WAV PCM mono 48 kHz.
+  - `VoiceService.set_voice(..., tts_provider=...)` menyimpan `tts_provider` di `preset_snapshot` dan menghitung `compute_audio_group_hash()` sehingga pergantian penyedia hanya menandai grup terdampak `perlu_diperbarui`.
+- **Gambar AI / Visual (`app/services/longform/visual/ai_image.py`, `visual/service.py`):**
+  - Mendukung kedua backend Gambar AI MPT (`openai_image` dan `codex_image`), mengaktifkan checkbox *"Gambar AI ({provider})"* di Langkah Visual saat terkonfigurasi di MPT, serta menampilkan perkiraan jumlah gambar dan informasi biaya sebelum job berjalan.
+- **Tangkapan Layar Verifikasi ID & EN:** `docs/branding/screens/8b1_*.png`.
+
 
 
 

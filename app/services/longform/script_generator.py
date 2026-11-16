@@ -296,21 +296,26 @@ class ScriptGenerator:
             idx_str = str(ch.chapter_index)
             ch_file = self.script_dir / f"chapter_{ch.chapter_index:02d}.md"
 
-            # Compute input hash for this chapter (MUST include provider and model!)
+            # Compute input hash for this chapter (preserve finished real chapters if user switches model/provider on resume)
             ch_canonical = ch.model_dump_json()
-            input_hash_material = (
-                f"{self.adapter.provider}:{self.adapter.model or ''}|{ch_canonical}|"
-                f"{preset_hash}|{manifest.sub_niche_focus or ''}|"
+            content_hash_material = (
+                f"{ch_canonical}|{preset_hash}|{manifest.sub_niche_focus or ''}|"
                 f"{';'.join(previous_summaries_list)}"
             )
+            expected_content_hash = hashlib.sha256(content_hash_material.encode("utf-8")).hexdigest()
+            input_hash_material = f"{self.adapter.provider}:{self.adapter.model or ''}|{content_hash_material}"
             expected_input_hash = hashlib.sha256(input_hash_material.encode("utf-8")).hexdigest()
 
             ch_state = chapters_state.get(idx_str, {})
+            prev_is_fake = (ch_state.get("provider") == "fake")
             already_done = (
                 not force_refresh
                 and ch_file.is_file()
                 and ch_state.get("status") == "completed"
-                and ch_state.get("input_hash") == expected_input_hash
+                and (
+                    ch_state.get("input_hash") == expected_input_hash
+                    or (not prev_is_fake and not self.adapter.is_fake and ch_state.get("content_hash") == expected_content_hash)
+                )
             )
 
             if already_done:
@@ -445,6 +450,7 @@ class ScriptGenerator:
                     "provider": self.adapter.provider,
                     "model": self.adapter.model,
                     "input_hash": expected_input_hash,
+                    "content_hash": expected_content_hash,
                     "word_count": words,
                     "target_words": ch.target_words,
                     "revised": revised,

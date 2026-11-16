@@ -39,6 +39,196 @@ _SENSITIVE_KEY_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Canonical MoneyPrinterTurbo TTS providers (matches webui/Main.py tts_servers)
+MPT_TTS_PROVIDERS: Tuple[Tuple[str, str, bool], ...] = (
+    ("edge", "Azure TTS V1 (Edge TTS)", True),
+    ("azure-tts-v2", "Azure TTS V2", True),
+    ("siliconflow", "SiliconFlow TTS", False),
+    ("gemini-tts", "Google Gemini TTS", False),
+    ("mimo-tts", "Xiaomi MiMo TTS", False),
+    ("minimax-tts", "MiniMax TTS", False),
+    ("elevenlabs", "ElevenLabs TTS", False),
+    ("chatterbox", "Chatterbox TTS", False),
+    ("kokoro", "Kokoro TTS", False),
+    ("fish_audio", "Fish Audio TTS", False),
+    ("voxcpm", "VoxCPM TTS", False),
+)
+
+_TTS_PROVIDER_ALIASES: Dict[str, str] = {
+    "azure-tts-v1": "edge",
+    "azure_tts_v1": "edge",
+    "edge-tts": "edge",
+    "azure_tts_v2": "azure-tts-v2",
+    "gemini": "gemini-tts",
+    "gemini_tts": "gemini-tts",
+    "mimo": "mimo-tts",
+    "mimo_tts": "mimo-tts",
+    "minimax": "minimax-tts",
+    "minimax_tts": "minimax-tts",
+}
+
+
+def normalize_tts_provider_id(provider: Optional[str]) -> str:
+    """Normalize MPT & longform TTS provider aliases into canonical longform ID."""
+    raw = (provider or "edge").strip().lower()
+    return _TTS_PROVIDER_ALIASES.get(raw, raw)
+
+
+def provider_has_word_timings(provider: Optional[str]) -> bool:
+    """Return True if the MPT TTS provider emits native word-level boundary timings."""
+    pid = normalize_tts_provider_id(provider)
+    for key, _, has_words in MPT_TTS_PROVIDERS:
+        if key == pid:
+            return has_words
+    return False
+
+
+def get_tts_provider_label(provider: Optional[str]) -> str:
+    """Return human-readable label matching MPT UI for a TTS provider."""
+    pid = normalize_tts_provider_id(provider)
+    for key, label, _ in MPT_TTS_PROVIDERS:
+        if key == pid:
+            return label
+    return pid
+
+
+def is_tts_provider_configured(provider: Optional[str]) -> bool:
+    """Return True if the MPT TTS provider has required credentials or config ready."""
+    from app.config import config
+
+    pid = normalize_tts_provider_id(provider)
+    if pid == "edge":
+        return True
+    if pid == "azure-tts-v2":
+        az = getattr(config, "azure", {}) or {}
+        return bool(str(az.get("speech_key", "") or "").strip() and str(az.get("speech_region", "") or "").strip())
+    if pid == "siliconflow":
+        sf = getattr(config, "siliconflow", {}) or {}
+        return bool(str(sf.get("api_key", "") or "").strip())
+    if pid == "gemini-tts":
+        return bool(str(config.app.get("gemini_api_key", "") or "").strip())
+    if pid == "mimo-tts":
+        return bool(str(config.app.get("mimo_api_key", "") or "").strip())
+    if pid == "minimax-tts":
+        try:
+            return bool(str(upstream_voice.get_minimax_tts_api_key() or "").strip())
+        except Exception:
+            mm = getattr(config, "minimax_tts", {}) or {}
+            return bool(str(mm.get("api_key", "") or config.app.get("minimax_api_key", "") or "").strip())
+    if pid == "elevenlabs":
+        try:
+            return bool(str(upstream_voice.get_elevenlabs_api_key() or "").strip())
+        except Exception:
+            el = getattr(config, "elevenlabs", {}) or {}
+            return bool(str(el.get("api_key", "") or "").strip())
+    if pid == "fish_audio":
+        try:
+            return bool(str(upstream_voice.get_fish_audio_api_key() or "").strip())
+        except Exception:
+            fa = getattr(config, "fish_audio", {}) or {}
+            return bool(str(fa.get("api_key", "") or "").strip())
+    if pid == "voxcpm":
+        vx = getattr(config, "voxcpm", {}) or {}
+        return bool(str(vx.get("api_key", "") or "").strip() and str(vx.get("model_id", "") or "").strip())
+    if pid == "chatterbox":
+        cb = getattr(config, "chatterbox", {}) or {}
+        ui_srv = str(getattr(config, "ui", {}).get("tts_server", "") or "").strip().lower()
+        base_url = str(cb.get("base_url", "") or "").strip()
+        api_key = str(cb.get("api_key", "") or "").strip()
+        voices = [v for v in (cb.get("voices") or []) if str(v).strip() and str(v).strip() != "default-Female"]
+        return bool(api_key or voices or ui_srv == "chatterbox" or (base_url and base_url != "http://127.0.0.1:4123/v1"))
+    if pid == "kokoro":
+        kk = getattr(config, "kokoro", {}) or {}
+        ui_srv = str(getattr(config, "ui", {}).get("tts_server", "") or "").strip().lower()
+        base_url = str(kk.get("base_url", "") or "").strip()
+        api_key = str(kk.get("api_key", "") or "").strip()
+        voices = [v for v in (kk.get("voices") or []) if str(v).strip()]
+        return bool(api_key or voices or ui_srv == "kokoro" or (base_url and base_url != "http://127.0.0.1:8880/v1"))
+    if pid == "openai":
+        return bool(str(config.app.get("openai_api_key", "") or "").strip())
+    return False
+
+
+def list_configured_tts_providers() -> List[Dict[str, Any]]:
+    """Return configured MPT TTS providers in UI display order (Edge always present)."""
+    out: List[Dict[str, Any]] = []
+    for pid, label, has_words in MPT_TTS_PROVIDERS:
+        if is_tts_provider_configured(pid):
+            out.append(
+                {
+                    "id": pid,
+                    "label": label,
+                    "has_word_timings": has_words,
+                }
+            )
+    return out
+
+
+def _ensure_provider_voice_name(provider: str, voice_name: str) -> str:
+    """Format voice_name so upstream ``voice.tts`` dispatches cleanly to the selected provider."""
+    pid = normalize_tts_provider_id(provider)
+    vn = (voice_name or "").strip()
+    if not vn:
+        return vn
+    if pid == "azure-tts-v2":
+        if ":" in vn or vn.endswith("-V2") or "-V2-" in vn:
+            return vn
+        if vn.endswith("-Female"):
+            return f"{vn.removesuffix('-Female')}-V2-Female"
+        if vn.endswith("-Male"):
+            return f"{vn.removesuffix('-Male')}-V2-Male"
+        return f"{vn}-V2"
+    prefix_map = {
+        "siliconflow": "siliconflow:",
+        "gemini-tts": "gemini:",
+        "mimo-tts": "mimo:",
+        "minimax-tts": "minimax:",
+        "elevenlabs": "elevenlabs:",
+        "chatterbox": "chatterbox:",
+        "kokoro": "kokoro:",
+        "fish_audio": "fish_audio:",
+        "voxcpm": "voxcpm:",
+    }
+    pref = prefix_map.get(pid)
+    if pref and not vn.startswith(pref) and ":" not in vn:
+        return f"{pref}{vn}"
+    return vn
+
+
+def list_voices_for_provider(
+    provider: Optional[str] = None,
+    language_prefix: Optional[str] = None,
+) -> List[str]:
+    """Query available voices for any MPT TTS provider using upstream ``voice`` helpers."""
+    pid = normalize_tts_provider_id(provider)
+    filters = [language_prefix.strip()] if (language_prefix and language_prefix.strip()) else None
+
+    if pid == "edge":
+        return upstream_voice.get_all_azure_voices(filters)
+    if pid == "azure-tts-v2":
+        raw = upstream_voice.get_all_azure_voices(filters)
+        return [_ensure_provider_voice_name("azure-tts-v2", v) for v in raw]
+    if pid == "siliconflow":
+        return upstream_voice.get_siliconflow_voices()
+    if pid == "gemini-tts":
+        return upstream_voice.get_gemini_voices()
+    if pid == "mimo-tts":
+        return upstream_voice.get_mimo_voices()
+    if pid == "minimax-tts":
+        return upstream_voice.get_minimax_voices()
+    if pid == "elevenlabs":
+        api_key = upstream_voice.get_elevenlabs_api_key()
+        return upstream_voice.get_elevenlabs_voices(api_key)
+    if pid == "chatterbox":
+        return upstream_voice.get_chatterbox_voices()
+    if pid == "kokoro":
+        return upstream_voice.get_kokoro_voices()
+    if pid == "fish_audio":
+        return upstream_voice.get_fish_audio_voices()
+    if pid == "voxcpm":
+        return upstream_voice.get_voxcpm_voices()
+    return upstream_voice.get_all_azure_voices(filters)
+
 
 def sanitize_error(msg: str) -> str:
     """Mask potential API keys or secrets in error messages."""
@@ -100,7 +290,7 @@ class TTSAdapter:
         words_per_minute: int = 145,
         word_cue_threshold: float = 0.85,
     ) -> None:
-        self.provider = provider.strip().lower() if provider else "edge"
+        self.provider = normalize_tts_provider_id(provider)
         self.voice_name = voice_name.strip()
         self.voice_rate = float(voice_rate)
         self.output_dir = Path(output_dir).resolve() if output_dir else Path.cwd()
@@ -128,24 +318,21 @@ class TTSAdapter:
         if self.is_fake:
             return
 
-        if self.provider == "edge":
-            if not self.voice_name:
-                raise TTSConfigurationError("Edge TTS requires a valid voice_name (e.g. 'en-US-ChristopherNeural-Male').")
-            return
+        if not self.voice_name:
+            raise TTSConfigurationError(
+                f"TTS provider '{self.provider}' requires a valid voice_name (e.g. 'en-US-ChristopherNeural-Male')."
+            )
 
-        from app.config import config
-        if self.provider == "openai":
-            key = config.app.get("openai_api_key", "").strip()
-            if not key:
-                raise TTSConfigurationError("OpenAI TTS selected, but 'openai_api_key' is empty in config.toml.")
-        elif self.provider == "gemini":
-            key = config.app.get("gemini_api_key", "").strip()
-            if not key:
-                raise TTSConfigurationError("Gemini TTS selected, but 'gemini_api_key' is empty in config.toml.")
-        else:
+        known_ids = {pid for pid, _, _ in MPT_TTS_PROVIDERS} | {"openai"}
+        if self.provider not in known_ids:
             raise TTSConfigurationError(
                 f"TTS provider '{self.provider}' is not supported for longform synthesis. "
-                "Supported providers: 'edge' (primary) or 'fake' (testing)."
+                "Supported providers include 'edge', 'azure-tts-v2', and configured MPT TTS services."
+            )
+
+        if not is_tts_provider_configured(self.provider):
+            raise TTSConfigurationError(
+                f"TTS provider '{self.provider}' is selected, but its credentials/configuration are missing in MPT Settings."
             )
 
     def _write_word_timings_sidecar(
@@ -329,12 +516,13 @@ class TTSAdapter:
         last_error = ""
 
         tmp_raw_mp3 = target_raw_mp3.parent / f"{target_raw_mp3.name}.tmp.{uuid.uuid4().hex}.mp3"
+        dispatched_voice = _ensure_provider_voice_name(self.provider, effective_voice)
 
         for attempt in range(1, self.max_retries + 1):
             try:
                 sub_maker = upstream_voice.tts(
                     text=clean_text,
-                    voice_name=effective_voice,
+                    voice_name=dispatched_voice,
                     voice_rate=self.voice_rate,
                     voice_file=str(tmp_raw_mp3),
                 )
@@ -356,7 +544,7 @@ class TTSAdapter:
                 dur_measured, frames, rate = measure_wav_duration_and_samples(target_wav)
 
                 cues: List[WordCue] = []
-                if hasattr(sub_maker, "cues") and sub_maker.cues:
+                if self.provider == "edge" and hasattr(sub_maker, "cues") and sub_maker.cues:
                     for c in sub_maker.cues:
                         cues.append(
                             WordCue(
@@ -365,13 +553,26 @@ class TTSAdapter:
                                 end=c.end.total_seconds(),
                             )
                         )
+                elif self.provider == "azure-tts-v2":
+                    # azure_tts_v2 stores word boundaries in .subs & .offset (100ns ticks)
+                    subs = getattr(sub_maker, "subs", None) or []
+                    offsets = getattr(sub_maker, "offset", None) or []
+                    for word_txt, span in zip(subs, offsets):
+                        if isinstance(span, (list, tuple)) and len(span) >= 2:
+                            s_sec = float(span[0]) / 10_000_000.0
+                            e_sec = float(span[1]) / 10_000_000.0
+                            if str(word_txt).strip() and e_sec >= s_sec:
+                                cues.append(WordCue(word=str(word_txt), start=s_sec, end=e_sec))
 
+                # Non-word-cue MPT providers fall back to Whisper when native cues are absent
+                allow_whisper = not cues
                 align_res = align_group_segments(
                     segments=group.segments,
                     group_duration=dur_measured,
                     word_cues=cues,
                     wav_path=target_wav,
                     word_cue_threshold=self.word_cue_threshold,
+                    allow_whisper=allow_whisper,
                 )
 
                 self._write_word_timings_sidecar(
@@ -392,8 +593,8 @@ class TTSAdapter:
                     sample_rate=rate,
                     alignment_method=align_res.method,
                     is_fake=False,
-                    provider="edge",
-                    voice_name=effective_voice,
+                    provider=self.provider,
+                    voice_name=dispatched_voice,
                     voice_rate=self.voice_rate,
                     updated_segments=align_res.segments,
                     word_match_ratio=align_res.match_ratio,

@@ -513,7 +513,11 @@ def cmd_script_outline(args: argparse.Namespace) -> int:
         print(f"Error: Project '{args.project_id}' not found at {project_dir}", file=sys.stderr)
         return 1
 
-    from app.services.longform.llm_adapter import LLMConfigurationError
+    from app.services.longform.llm_adapter import (
+        LLMConfigurationError,
+        LLMModelNotFoundError,
+        LLMRateLimitError,
+    )
     from app.services.longform.script_generator import ScriptGenerator
     generator = ScriptGenerator(project_dir=project_dir, provider=args.provider, model=args.model)
 
@@ -529,8 +533,16 @@ def cmd_script_outline(args: argparse.Namespace) -> int:
             topic=eff_topic,
             target_duration_minutes=args.minutes,
         )
+        if getattr(args, "write", False):
+            generator.write_chapters()
     except LLMConfigurationError as exc:
         print(f"\n[CONFIGURATION ERROR] {exc}\n", file=sys.stderr)
+        return 1
+    except LLMModelNotFoundError as exc:
+        print(f"\n[MODEL_NOT_FOUND] Model={exc.model} | {exc}\n", file=sys.stderr)
+        return 1
+    except LLMRateLimitError as exc:
+        print(f"\n[RATE_LIMIT] {exc}\n", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         print("\n[SCRIPT OUTLINE INTERRUPTED] KeyboardInterrupt received. Safely exiting.\n", file=sys.stderr)
@@ -564,7 +576,11 @@ def cmd_script_write(args: argparse.Namespace) -> int:
         print(f"Error: Project '{args.project_id}' not found at {project_dir}", file=sys.stderr)
         return 1
 
-    from app.services.longform.llm_adapter import LLMConfigurationError
+    from app.services.longform.llm_adapter import (
+        LLMConfigurationError,
+        LLMModelNotFoundError,
+        LLMRateLimitError,
+    )
     from app.services.longform.script_generator import ScriptGenerator
     generator = ScriptGenerator(
         project_dir=project_dir,
@@ -583,6 +599,12 @@ def cmd_script_write(args: argparse.Namespace) -> int:
         )
     except LLMConfigurationError as exc:
         print(f"\n[CONFIGURATION ERROR] {exc}\n", file=sys.stderr)
+        return 1
+    except LLMModelNotFoundError as exc:
+        print(f"\n[MODEL_NOT_FOUND] Model={exc.model} | {exc}\n", file=sys.stderr)
+        return 1
+    except LLMRateLimitError as exc:
+        print(f"\n[RATE_LIMIT] {exc}\n", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         print("\n[SCRIPT WRITE INTERRUPTED] KeyboardInterrupt received. Safely exiting without saving incomplete chapter.\n", file=sys.stderr)
@@ -2143,6 +2165,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_s_outline.add_argument("--minutes", type=float, default=12.0, help="Target duration in minutes (default: 12)")
     p_s_outline.add_argument("--provider", default=None, help="LLM provider (defaults to upstream config.toml; pass 'fake' for offline test mock)")
     p_s_outline.add_argument("--model", help="Optional model name override")
+    p_s_outline.add_argument("--write", action="store_true", help="Also draft all chapters after generating outline")
 
     # script write
     p_s_write = script_subs.add_parser("write", help="Draft chapters sequentially with context and length control")

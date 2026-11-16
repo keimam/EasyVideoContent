@@ -115,14 +115,15 @@ class VisualService:
                 cache=self.cache,
                 credits_manager=self.credits_manager,
             )
-        elif p_name in ("ai_image", "openai", "ai"):
-            # V5: lazy import of AIImageProvider (pulls in material.py openai path)
+        elif p_name in ("ai_image", "openai", "ai", "openai_image", "codex_image"):
+            # V5: lazy import of AIImageProvider (pulls in material.py openai/codex path)
             from app.services.longform.visual.ai_image import AIImageProvider  # noqa: F811
             template = None
             style = None
             if manifest.preset_snapshot:
                 style = manifest.preset_snapshot.visual.get("style") if hasattr(manifest.preset_snapshot, "visual") else None
-            return AIImageProvider(prompt_template=template, visual_style=style)
+            backend = p_name if p_name in ("openai_image", "codex_image") else None
+            return AIImageProvider(prompt_template=template, visual_style=style, backend=backend)
         elif p_name == "local":
             return LocalVisualProvider(self.project_dir, credits_manager=self.credits_manager)
         else:
