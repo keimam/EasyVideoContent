@@ -1,7 +1,11 @@
 You are an expert script editor refining a documentary video chapter to strictly meet word count and pacing constraints.
 
+CRITICAL LANGUAGE REQUIREMENT (PROJECT NARRATION LANGUAGE ONLY):
+Write and preserve the ENTIRE chapter heading and ALL spoken narration strictly in **{language_name}** (`{language}`). Do NOT translate or switch languages.
+
 ## Current Chapter Status:
 - Chapter Title: {chapter_title}
+- Target Narration Language: {language_name} ({language})
 - Target Word Count: {target_words} words
 - Current Word Count: {current_words} words
 - Required Action: {action} (Target word count: {target_words} words)
@@ -18,4 +22,5 @@ You are an expert script editor refining a documentary video chapter to strictly
 3. Preserve all `[visual: ...]`, `[motion: ...]`, `[source: ...]`, `[search: ...]`, and `[verify: ...]` tags for existing and newly added sentences.
 4. If expanding: deepen the historical context, engineering technicalities, sensory descriptions of sound and machinery, and drama without adding fluff.
 5. If condensing: eliminate repetitive phrases, passive voice, and wordy explanations while preserving all key factual points.
-6. Return ONLY the revised markdown chapter text.
+6. FINAL LANGUAGE CHECK: Every spoken word and the chapter heading MUST remain 100% in **{language_name}** (`{language}`), grouped in coherent multi-sentence paragraphs (40–120 spoken words each).
+7. Return ONLY the revised markdown chapter text.

@@ -325,6 +325,11 @@ Tujuannya adalah menjaga kemudahan sinkronisasi (merge/rebase) dari repositori u
   - Menambahkan `get_repo_root()`, `get_cli_script_path()`, `build_longform_cli_command()`, `JobLaunchError`, serta validasi executable & skrip CLI sebelum `subprocess.Popen` di `app/services/longform/ui/jobs.py`.
   - Memindahkan seluruh pemanggil `jobs.start_job` di `app/services/longform/ui/components.py` (`script_outline`, `script_generate`, `audio_synthesize`, `visual_pipeline`, `render_all`, `capcut_export`, `pipeline_auto`) ke `jobs.build_longform_cli_command(...)` + `_start_job_safe(...)` agar kegagalan launch menampilkan pesan ramah + expander `Detail`.
   - Memperbaiki teks tes koneksi saat balasan kosong (`llm_connection_ok_plain`) di `i18n.py` dan `components.py` agar tidak berakhiran titik dua kosong.
+- **Addendum 8B.1 (B2 — Isolasi Bahasa Narasi Proyek, Deteksi & Retry Bahasa, Normalisasi Paragraf, Tulis Ulang Per Bab):**
+  - Menambahkan `app/services/longform/language_guard.py` (`resolve_project_language`, `format_language_directive`, `detect_text_language`, `check_language_compliance`) dan field opsional `ProjectManifest.language`, `Chapter.needs_language_review`, `Chapter.language_warning` di `schema.py`.
+  - Memastikan `store.create_project()` menyinkronkan `umum`/`umum.id`/`umum.en` sesuai `language`, menyimpan `manifest.language`, dan menimpa `preset_snapshot["language"]`; serta memperbaiki key `sel_root_niche_{eff_lang_code}` di `components.py` agar state preset tidak tertinggal saat pengguna menukar bahasa narasi.
+  - Mempertegas target bahasa narasi proyek di bagian AWAL & AKHIR seluruh template prompt (`resource/longform/prompts/{outline,chapter,revise_length,summary}.md`) termasuk untuk judul bab.
+  - Menambahkan validasi bahasa otomatis pasca-panggilan di `ScriptGenerator` dengan retry hingga 2× (`max_lang_retries=2`), penandaan `"Perlu dicek: bahasa"` pada `quality_report.md` & UI, tombol *"Tulis ulang bab ini"* (`script rewrite --chapter <idx>`) untuk memperbaiki bab rusak tanpa menghapus bab lain, serta normalisasi paragraf pendek ke ±40–120 kata secara seragam di `script_import.py::normalize_short_paragraphs()`.
 
 
 

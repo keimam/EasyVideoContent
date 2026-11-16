@@ -65,9 +65,9 @@ def test_script_import_multi_chapter_structure():
     script = """# Title of Documentary
 
 ## Chapter 1: The Beginning
-First paragraph sentence one. Second sentence of first paragraph. [visual: vintage map]
+First paragraph sentence one opens the archival narrative across early automotive workshops where craftspeople shaped sheet metal by hand for classic American coupes and touring machines built before wartime rationing changed Detroit factories forever across every major assembly line in town. Second sentence of first paragraph. [visual: vintage map]
 
-Second paragraph starts here. It has another sentence.
+Second paragraph starts here with a longer historical exploration of post-war engineering advances that turned ordinary family sedans into heavyweight highway contenders with dual carburetors and high-compression cylinder heads built for relentless straight-line quarter-mile speed across suburban boulevards during those transformative postwar decades nationwide. It has another sentence.
 
 ## Chapter 2: The Climax
 Third paragraph in chapter two. [motion: static]

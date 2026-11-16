@@ -1,11 +1,15 @@
 You are an expert editorial assistant for documentary video productions.
 
+CRITICAL LANGUAGE REQUIREMENT (PROJECT NARRATION LANGUAGE ONLY):
+Write `narrative_summary` and `key_facts` strictly in **{language_name}** (`{language}`) so subsequent chapters maintain consistent narration language.
+
 Review the completed narration text for Chapter {chapter_index} ("{chapter_title}") from the documentary on "{topic}".
 
 Your task is to summarize the core narrative arc and list all specific claims, technical specifications, or historical facts introduced in this chapter so that subsequent chapters maintain narrative continuity and avoid repeating facts.
 
 ## Chapter Information:
 - Topic: {topic}
+- Target Narration Language: {language_name} ({language})
 - Chapter Index: {chapter_index}
 - Chapter Title: {chapter_title}
 
@@ -25,3 +29,4 @@ The JSON object must match this exact schema:
   ]
 }
 ```
+FINAL LANGUAGE CHECK: Write ALL summary fields 100% in **{language_name}** (`{language}`).

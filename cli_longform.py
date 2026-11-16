@@ -214,6 +214,8 @@ def cmd_project_show(args: argparse.Namespace) -> int:
         return 1
 
     preset = get_preset(manifest.preset_id)
+    from app.services.longform.language_guard import resolve_project_language
+    eff_lang = resolve_project_language(manifest, preset)
     duration_stats = estimate_script_duration(manifest.chapters, preset.words_per_minute)
 
     print(f"\nProject Overview: {manifest.project_id}")
@@ -221,6 +223,7 @@ def cmd_project_show(args: argparse.Namespace) -> int:
     print(f"  Title:          {manifest.title}")
     if getattr(manifest, "topic", None):
         print(f"  Topic:          \"{manifest.topic}\"")
+    print(f"  Language:       {eff_lang}")
     print(f"  Status:         {manifest.status.value}")
     print(f"  Preset:         {manifest.preset_id}")
     if manifest.preset_inheritance_chain:
@@ -620,6 +623,45 @@ def cmd_script_write(args: argparse.Namespace) -> int:
     print("  Manifest chapters and groups updated successfully via single pipeline path.")
     print("-" * 65)
     print(f"Run 'python cli_longform.py script quality {args.project_id}' to re-inspect quality anytime.\n")
+    return 0
+
+
+def cmd_script_rewrite(args: argparse.Namespace) -> int:
+    """Rewrite a single chapter in the project's narration language without altering others (8B.1 B2)."""
+    project_dir = get_project_dir(args.project_id)
+    if not project_dir.is_dir():
+        print(f"Error: Project '{args.project_id}' not found at {project_dir}", file=sys.stderr)
+        return 1
+
+    from app.services.longform.llm_adapter import (
+        LLMConfigurationError,
+        LLMModelNotFoundError,
+        LLMRateLimitError,
+    )
+    from app.services.longform.script_generator import ScriptGenerator
+
+    generator = ScriptGenerator(
+        project_dir=project_dir,
+        provider=args.provider,
+        model=args.model,
+    )
+    try:
+        full_script = generator.rewrite_chapter(chapter_index=int(args.chapter))
+    except LLMConfigurationError as exc:
+        print(f"\n[CONFIGURATION ERROR] {exc}\n", file=sys.stderr)
+        return 1
+    except LLMModelNotFoundError as exc:
+        print(f"\n[MODEL_NOT_FOUND] Model={exc.model} | {exc}\n", file=sys.stderr)
+        return 1
+    except LLMRateLimitError as exc:
+        print(f"\n[RATE_LIMIT] {exc}\n", file=sys.stderr)
+        return 1
+    except Exception as exc:
+        print(f"Error rewriting chapter {args.chapter}: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"\nChapter {args.chapter} Rewritten Successfully for Project: {args.project_id}")
+    print(f"  Saved Full Script: {full_script}\n")
     return 0
 
 
@@ -2175,6 +2217,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_s_write.add_argument("--fake-delay", type=float, default=0.0, help="Artificial delay per chapter generation step in seconds (useful for testing Ctrl+C)")
     p_s_write.add_argument("--fail-at", type=int, help="Simulate failure at chapter index for resume testing")
 
+    # script rewrite
+    p_s_rewrite = script_subs.add_parser("rewrite", help="Rewrite a single chapter cleanly in the project narration language")
+    p_s_rewrite.add_argument("project_id", help="Project ID")
+    p_s_rewrite.add_argument("--chapter", type=int, required=True, help="1-based chapter index to rewrite")
+    p_s_rewrite.add_argument("--provider", default=None, help="LLM provider (defaults to upstream config.toml; pass 'fake' for offline test mock)")
+    p_s_rewrite.add_argument("--model", help="Optional model name override")
+
     # script status
     p_s_status = script_subs.add_parser("status", help="Show status of outline, chapters, and word counts")
     p_s_status.add_argument("project_id", help="Project ID")
@@ -2410,6 +2459,8 @@ def main() -> int:
                 return cmd_script_outline(args)
             elif args.script_command == "write":
                 return cmd_script_write(args)
+            elif args.script_command == "rewrite":
+                return cmd_script_rewrite(args)
             elif args.script_command == "status":
                 return cmd_script_status(args)
             elif args.script_command == "quality":

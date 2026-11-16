@@ -184,9 +184,64 @@ def clean_chapter_title(title: str, fallback_index: Optional[int] = None) -> str
     return cleaned
 
 
+def _count_spoken_words(paragraph: str) -> int:
+    """Count spoken narration words in a paragraph, excluding bracket tags."""
+    spoken = TAG_PATTERN.sub(" ", paragraph or "").strip()
+    return len(spoken.split())
+
+
+def normalize_short_paragraphs(
+    paragraphs: List[str],
+    min_words: int = 33,
+    max_words: int = 120,
+    soft_target: int = 75,
+) -> List[str]:
+    """Merge very short adjacent paragraphs into coherent ~40-120 word narration groups (8B.1 B2).
+
+    Targets ~80 words per merged group before splitting so trailing paragraphs stay within
+    40-120 words whenever total words permit. Never alters words, punctuation, or tags.
+    """
+    non_empty = [p.strip() for p in paragraphs if _count_spoken_words(p) > 0]
+    if len(non_empty) <= 1:
+        return non_empty
+
+    merged: List[str] = []
+    buf_parts: List[str] = []
+    buf_words = 0
+
+    for para in non_empty:
+        pw = _count_spoken_words(para)
+        if not buf_parts:
+            buf_parts.append(para)
+            buf_words = pw
+        elif buf_words < min_words and (buf_words + pw <= max_words or buf_words < 20):
+            buf_parts.append(para)
+            buf_words += pw
+        elif pw < min_words and (buf_words + pw <= soft_target):
+            buf_parts.append(para)
+            buf_words += pw
+        else:
+            merged.append(" ".join(buf_parts))
+            buf_parts = [para]
+            buf_words = pw
+
+    if buf_parts:
+        if merged and buf_words < min_words:
+            prev_words = _count_spoken_words(merged[-1])
+            if prev_words + buf_words <= max_words:
+                merged[-1] = f"{merged[-1]} {' '.join(buf_parts)}"
+            else:
+                merged.append(" ".join(buf_parts))
+        else:
+            merged.append(" ".join(buf_parts))
+
+    return merged
+
+
 def parse_markdown_script(
     script_markdown: str,
     preset: Preset,
+    normalize_paragraphs: bool = True,
 ) -> Tuple[List[Chapter], Optional[str]]:
     """Parse Markdown script into structured Chapter, TtsGroup, and Segment models.
 
@@ -208,8 +263,14 @@ def parse_markdown_script(
         chapter_index = len(chapters) + 1
         tts_groups: List[TtsGroup] = []
 
+        paragraphs_to_use = (
+            normalize_short_paragraphs(current_paragraphs, min_words=33, max_words=120, soft_target=75)
+            if normalize_paragraphs
+            else list(current_paragraphs)
+        )
+
         global_seg_counter = 1
-        for p_idx, para in enumerate(current_paragraphs, start=1):
+        for p_idx, para in enumerate(paragraphs_to_use, start=1):
             sentences = split_sentences(para)
             if not sentences:
                 continue

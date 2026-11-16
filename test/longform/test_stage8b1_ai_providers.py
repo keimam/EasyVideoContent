@@ -817,3 +817,267 @@ def test_b1_end_to_end_fake_script_background_job():
         shutil.rmtree(p_dir, ignore_errors=True)
 
 
+# ---------------------------------------------------------------------------
+# B2 Addendum: Narration Language Isolation, Auto-Retry/Flag, Normalization, Rewrite
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("proj_lang,ui_lang,expected_token", [
+    ("en-US", "id", "English (en-US)"),
+    ("id-ID", "en", "Indonesian / Bahasa Indonesia (id-ID)"),
+])
+def test_b2_prompts_enforce_project_language_regardless_of_ui_language(
+    tmp_path: Path, monkeypatch, proj_lang, ui_lang, expected_token
+):
+    """Outline, chapter, revise_length, and summary prompts specify project language at top & bottom regardless of UI language."""
+    monkeypatch.setitem(config.ui, "language", ui_lang)
+    monkeypatch.setitem(config.app, "llm_provider", "openrouter")
+    monkeypatch.setitem(config.app, "openrouter_api_key", "sk-or-v1-test1234567890")
+    monkeypatch.setitem(config.app, "openrouter_model_name", "openrouter/free")
+
+    # Intentionally pass umum.id when testing en-US to confirm create_project resolves language cleanly
+    _, p_dir = create_project(
+        project_id=f"b2_prompt_{proj_lang}_{ui_lang}",
+        title="Test Narrative Language",
+        preset_id="umum.id",
+        language=proj_lang,
+        projects_root=tmp_path,
+    )
+    m = load_manifest(p_dir)
+    assert m.language == proj_lang
+    assert m.preset_snapshot["language"] == proj_lang
+
+    captured_prompts = []
+    is_id = proj_lang.startswith("id")
+
+    def _mock_generate(prompt, **kwargs):
+        captured_prompts.append(prompt)
+        if "Required JSON Output Structure:" in prompt:
+            return json.dumps({
+                "topic": "Test",
+                "target_duration_minutes": 10.0,
+                "words_per_minute": 130,
+                "total_target_words": 200,
+                "candidate_titles": (
+                    ["Kisah Mobil Klasik Amerika", "Sejarah Mesin Besar Dunia", "Era Keemasan Otomotif Modern"]
+                    if is_id else
+                    ["History of Classic Cars", "The Golden V8 Revolution", "How Detroit Built Speed"]
+                ),
+                "opening_hook": (
+                    "Pada tahun 1964, industri otomotif mengalami perubahan besar yang mengejutkan semua pengamat dan penggemar di jalan raya."
+                    if is_id else
+                    "In nineteen sixty four, engineers transformed the automobile with an option that forever reshaped highway performance."
+                ),
+                "chapters": [
+                    {
+                        "chapter_index": 1,
+                        "title": "Latar Belakang Sejarah Mobil" if is_id else "Origins of the Power War",
+                        "purpose": "Menjelaskan asal-usul" if is_id else "Explain early origins",
+                        "key_points": ["1964 debut"],
+                        "target_words": 200,
+                    }
+                ],
+            })
+        if "narrative_summary" in prompt:
+            return json.dumps({
+                "narrative_summary": "Bab ini membahas sejarah awal yang sangat penting." if is_id else "This chapter covered the essential early developments.",
+                "key_facts": ["1964"],
+            })
+        if "Current Chapter Draft:" in prompt:
+            # Revise length output (>= 40 words in target language)
+            return (
+                "## Latar Belakang Sejarah Mobil\n\n" + ("Sejarah mobil klasik terus berkembang dari masa ke masa dengan mesin besar dan tenaga yang sangat luar biasa untuk para pengemudi di seluruh dunia. [visual: classic car]\n" * 6)
+                if is_id else
+                "## Origins of the Power War\n\n" + ("Classic American automobiles transformed every highway with roaring engines and daring mechanical engineering crafted for everyday drivers across the nation. [visual: classic car]\n" * 6)
+            )
+        # Initial chapter draft deliberately short (<160 words) to trigger revise_length prompt too!
+        return (
+            "## Latar Belakang Sejarah Mobil\n\nSejarah ini bermula pada dekade enam puluhan di kota industri utama yang penuh dengan inovasi teknis yang sangat berani dan menarik. [visual: vintage factory]"
+            if is_id else
+            "## Origins of the Power War\n\nThis story begins in the nineteen sixties inside an industrial city fueled by daring engineering and bold ambition on every street. [visual: vintage factory]"
+        )
+
+    monkeypatch.setattr("app.services.llm._generate_response", _mock_generate)
+    gen = ScriptGenerator(project_dir=p_dir, provider="openrouter", model="openrouter/free")
+    gen.generate_outline(topic="Classic Cars", target_duration_minutes=10.0)
+    gen.write_chapters()
+
+    # Outline, Chapter, Revise-length, Summary -> all 4 prompt types captured
+    assert len(captured_prompts) >= 4
+    for p in captured_prompts:
+        head = p[:450]
+        tail = p[-350:]
+        assert expected_token in head, f"Missing target language {expected_token} in prompt top:\n{head}"
+        assert expected_token in tail, f"Missing target language {expected_token} in prompt bottom:\n{tail}"
+
+
+def test_b2_wrong_language_triggers_retry_and_flags_quality_and_ui(tmp_path: Path, monkeypatch):
+    """Wrong language output retries up to 2x; if persistent, marks chapter needs_language_review & flags UI/report."""
+    from app.services.longform.quality_checker import ScriptQualityChecker
+
+    monkeypatch.setitem(config.ui, "language", "id")
+    monkeypatch.setitem(config.app, "llm_provider", "openrouter")
+    monkeypatch.setitem(config.app, "openrouter_api_key", "sk-or-v1-test1234567890")
+    monkeypatch.setitem(config.app, "openrouter_model_name", "openrouter/free")
+
+    _, p_dir = create_project(
+        project_id="b2_lang_flag_test",
+        title="Wrong Lang Project",
+        preset_id="automotive.muscle_car",
+        language="en-US",
+        projects_root=tmp_path,
+    )
+
+    from app.services.longform.schema import OutlineChapter, ScriptOutline
+
+    (p_dir / "script").mkdir(parents=True, exist_ok=True)
+    outline = ScriptOutline(
+        topic="Muscle Cars",
+        target_duration_minutes=6.0,
+        words_per_minute=145,
+        total_target_words=100,
+        candidate_titles=["A", "B", "C"],
+        opening_hook="In 1964 everything changed on American highways forever.",
+        chapters=[OutlineChapter(chapter_index=1, title="The Birth of Speed", purpose="Origins", key_points=[], target_words=100)],
+    )
+    (p_dir / "script" / "outline.json").write_text(outline.model_dump_json(indent=2), encoding="utf-8")
+
+    # Stub LLM: always returns Indonesian for Chapter 1 despite English target (exhausts 2 retries -> 3 calls)
+    ch_calls = {"n": 0}
+
+    def _always_indonesian(prompt, **kwargs):
+        if "narrative_summary" in prompt:
+            return json.dumps({"narrative_summary": "Summary in English.", "key_facts": []})
+        if "Current Chapter Draft:" in prompt:
+            return prompt.split("Current Chapter Draft:")[1].split("## Rules")[0].strip()
+        ch_calls["n"] += 1
+        return (
+            "## Latar Belakang Sejarah Mobil\n\n"
+            + ("Pada masa lalu industri otomotif mengalami perkembangan yang sangat pesat di jalan raya untuk para pengemudi dan keluarga mereka dengan mesin yang kuat. [visual: car] " * 4)
+        )
+
+    monkeypatch.setattr("app.services.llm._generate_response", _always_indonesian)
+    gen = ScriptGenerator(project_dir=p_dir, provider="openrouter", model="openrouter/free")
+    gen.write_chapters()
+
+    # Initial attempt + 2 language correction retries = 3 chapter draft calls
+    assert ch_calls["n"] == 3
+
+    m = load_manifest(p_dir)
+    assert m.chapters[0].needs_language_review is True
+    assert "Perlu dicek: bahasa" in (m.chapters[0].language_warning or "")
+
+    report_md = (p_dir / "script" / "quality_report.md").read_text(encoding="utf-8")
+    assert "Perlu dicek: bahasa" in report_md
+
+    q_data = ScriptQualityChecker(p_dir).inspect()
+    assert len(q_data["language_warnings"]) == 1
+    assert q_data["language_warnings"][0]["status"] == "Perlu dicek: bahasa"
+
+    # AppTest verifies UI renders language warning & "Tulis ulang bab ini" inside Chapter Editor
+    monkeypatch.setattr("app.services.longform.store.get_projects_root", lambda: tmp_path)
+    monkeypatch.setattr("app.services.longform.ui.components.get_projects_root", lambda: tmp_path)
+    at = AppTest.from_file(_get_long_video_app_file())
+    at.query_params["project"] = "b2_lang_flag_test"
+    at.session_state["active_step_b2_lang_flag_test"] = "script"
+    at.run(timeout=20)
+    assert not at.exception
+    warn_txt = " ".join(w.value for w in at.warning)
+    btn_labels = [b.label for b in at.button]
+    assert "Perlu dicek: bahasa" in warn_txt
+    assert "Tulis ulang bab ini" in btn_labels
+
+
+def test_b2_paragraph_normalization_merges_short_paragraphs_without_text_loss():
+    """Both imported and AI scripts merge <40-word paragraphs into ~40-120 word groups identically."""
+    from app.services.longform.presets import get_preset
+    from app.services.longform.script_import import parse_markdown_script
+
+    preset = get_preset("automotive.muscle_car")
+    # 10 short 12-word sentences separated by blank lines (total ~120 spoken words)
+    short_paras = [
+        f"Sentence number {i} describes classic Detroit V8 engineering and bold road performance cleanly."
+        for i in range(1, 11)
+    ]
+    md = "# Title\n\n## Chapter 1: Normalized Flow\n\n" + "\n\n".join(
+        f"{p} [visual: classic car {idx}] [motion: static]" for idx, p in enumerate(short_paras, 1)
+    )
+    chapters, _ = parse_markdown_script(md, preset)
+    assert len(chapters) == 1
+    groups = chapters[0].tts_groups
+    # Merged from 10 short groups down into 2-3 coherent ~40-120 word groups
+    assert 1 <= len(groups) <= 3
+    for g in groups:
+        wc = len(g.paragraph_text.split())
+        assert 40 <= wc <= 125
+    # Zero spoken words/sentences altered
+    rejoined = " ".join(g.paragraph_text for g in groups)
+    for orig in short_paras:
+        assert orig in rejoined
+
+
+def test_b2_rewrite_single_chapter_preserves_other_chapters(tmp_path: Path, monkeypatch):
+    """Rewriting Chapter 2 updates ONLY Chapter 2 & its heading without modifying Chapter 1."""
+    monkeypatch.setitem(config.app, "llm_provider", "openrouter")
+    monkeypatch.setitem(config.app, "openrouter_api_key", "sk-or-v1-test1234567890")
+    monkeypatch.setitem(config.app, "openrouter_model_name", "openrouter/free")
+
+    _, p_dir = create_project(
+        project_id="b2_rewrite_single",
+        title="Muscle Car History",
+        preset_id="automotive.muscle_car",
+        language="en-US",
+        projects_root=tmp_path,
+    )
+    from app.services.longform.schema import OutlineChapter, ScriptOutline
+    from app.services.longform.store import update_project_script
+
+    (p_dir / "script").mkdir(parents=True, exist_ok=True)
+    outline = ScriptOutline(
+        topic="Muscle Cars",
+        target_duration_minutes=6.0,
+        words_per_minute=145,
+        total_target_words=240,
+        candidate_titles=["A", "B", "C"],
+        opening_hook="An era of iron and speed.",
+        chapters=[
+            OutlineChapter(chapter_index=1, title="The Opening Act", purpose="Hook", key_points=[], target_words=120),
+            OutlineChapter(chapter_index=2, title="Latar Belakang Mobil", purpose="Origins", key_points=[], target_words=120),
+        ],
+    )
+    (p_dir / "script" / "outline.json").write_text(outline.model_dump_json(indent=2), encoding="utf-8")
+
+    ch1_body = "## The Opening Act\n\n" + (
+        "American performance automobiles captured every street corner in nineteen sixty four with unstoppable big-block energy and bold factory styling that thrilled young buyers everywhere. [visual: car]"
+    )
+    ch2_bad = "## Latar Belakang Mobil\n\n" + (
+        "Pada awalnya perusahaan mobil membuat kendaraan keluarga sederhana untuk keperluan harian di kota besar dan desa terpencil. [visual: car]"
+    )
+    (p_dir / "script" / "chapter_01.md").write_text(ch1_body, encoding="utf-8")
+    (p_dir / "script" / "chapter_02.md").write_text(ch2_bad, encoding="utf-8")
+    update_project_script(p_dir, f"# Muscle Car History\n\n{ch1_body}\n\n{ch2_bad}\n")
+
+    def _rewrite_mock(prompt, **kwargs):
+        if "narrative_summary" in prompt:
+            return json.dumps({"narrative_summary": "Origins rewritten cleanly.", "key_facts": ["1949 Rocket 88"]})
+        if "The Opening Act" in prompt and "rewrite" not in prompt.lower() and "Previous Story Context" not in prompt:
+            raise AssertionError("Chapter 1 must not be rewritten!")
+        return "## Corporate Loopholes and Origins\n\n" + (
+            "General Motors restricted displacement across divisions, yet Pontiac engineers slipped a massive three hundred eighty nine cubic inch V8 into the lighter Tempest coupe with stunning results for street racers nationwide across the United States. [visual: pontiac gto engine] " * 2
+        )
+
+    monkeypatch.setattr("app.services.llm._generate_response", _rewrite_mock)
+    gen = ScriptGenerator(project_dir=p_dir, provider="openrouter", model="openrouter/free")
+    gen.rewrite_chapter(chapter_index=2)
+
+    # Ch 1 file untouched; Ch 2 updated to English heading & body
+    assert (p_dir / "script" / "chapter_01.md").read_text(encoding="utf-8") == ch1_body
+    ch2_new = (p_dir / "script" / "chapter_02.md").read_text(encoding="utf-8")
+    assert "## Corporate Loopholes and Origins" in ch2_new
+    m_after = load_manifest(p_dir)
+    assert m_after.chapters[0].chapter_title == "The Opening Act"
+    assert m_after.chapters[1].chapter_title == "Corporate Loopholes and Origins"
+    assert m_after.chapters[1].needs_language_review is False
+
+
+

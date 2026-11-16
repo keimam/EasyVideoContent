@@ -552,6 +552,8 @@ def render_home_page():
 
             col_n, col_sub = st.columns(2)
             with col_n:
+                if st.session_state.get("sel_root_niche") not in root_ids:
+                    st.session_state["sel_root_niche"] = root_ids[0]
                 chosen_root = st.selectbox(
                     t("field_main_niche"),
                     options=root_ids,
@@ -1095,6 +1097,14 @@ def render_script_step_flow(
     # If script is already finished: show chapter list and continue button
     if status == "selesai":
         st.success(t("script_summary_format", chapters=len(manifest.chapters)))
+        for ch in manifest.chapters:
+            if getattr(ch, "needs_language_review", False):
+                st.warning(
+                    t(
+                        "chapter_lang_review_warning",
+                        reason=f"Bab {ch.chapter_index} ({ch.chapter_title}): {getattr(ch, 'language_warning', '') or ''}",
+                    )
+                )
 
         with st.expander(t("expander_view_script"), expanded=False):
             for ch in manifest.chapters:
@@ -1279,34 +1289,57 @@ def render_script_step_flow(
             )
             ch_obj = next((c for c in manifest.chapters if c.chapter_index == sel_ch_idx), None)
             if ch_obj:
+                from app.services.longform.language_guard import (
+                    check_language_compliance,
+                    resolve_project_language,
+                )
+
                 ch_paras = "\n\n".join(g.paragraph_text for g in ch_obj.tts_groups if g.paragraph_text)
+                proj_lang = resolve_project_language(manifest)
+                live_lang = check_language_compliance(ch_paras, proj_lang, title_text=ch_obj.chapter_title)
+                if getattr(ch_obj, "needs_language_review", False) or not live_lang["ok"]:
+                    lang_reason = getattr(ch_obj, "language_warning", None) or live_lang["reason"]
+                    st.warning(t("chapter_lang_review_warning", reason=lang_reason))
+
                 new_ch_text = st.text_area(t("field_chapter_narration_text"), value=ch_paras, height=180, key=f"ch_txt_{project_id}_{sel_ch_idx}")
-                if st.button(t("btn_save_chapter"), key=f"btn_save_ch_{project_id}_{sel_ch_idx}"):
-                    if new_ch_text.strip():
-                        ch_file = p_dir / "script" / f"chapter_{sel_ch_idx:02d}.md"
-                        ch_file.parent.mkdir(parents=True, exist_ok=True)
-                        ch_file.write_text(f"## {ch_obj.chapter_title}\n\n{new_ch_text.strip()}\n", encoding="utf-8")
-                        st.success(t("chapter_saved_success", idx=sel_ch_idx))
-                        time.sleep(0.5)
-                        st.rerun()
+                col_ch_save, col_ch_rewrite = st.columns(2)
+                with col_ch_save:
+                    if st.button(t("btn_save_chapter"), key=f"btn_save_ch_{project_id}_{sel_ch_idx}", use_container_width=True):
+                        if new_ch_text.strip():
+                            ch_file = p_dir / "script" / f"chapter_{sel_ch_idx:02d}.md"
+                            ch_file.parent.mkdir(parents=True, exist_ok=True)
+                            ch_file.write_text(f"## {ch_obj.chapter_title}\n\n{new_ch_text.strip()}\n", encoding="utf-8")
+                            st.success(t("chapter_saved_success", idx=sel_ch_idx))
+                            time.sleep(0.5)
+                            st.rerun()
+                with col_ch_rewrite:
+                    rewrite_disabled = is_job_running or (not check_has_llm_key() and not st.session_state.get(f"fake_toggle_{project_id}", False))
+                    if st.button(
+                        t("btn_rewrite_chapter"),
+                        disabled=rewrite_disabled,
+                        key=f"btn_rewrite_ch_{project_id}_{sel_ch_idx}",
+                        use_container_width=True,
+                    ):
+                        provider_arg = ["--provider", "fake"] if st.session_state.get(f"fake_toggle_{project_id}", False) else []
+                        cmd = jobs.build_longform_cli_command(
+                            "script", "rewrite", project_id, "--chapter", str(sel_ch_idx), *provider_arg
+                        )
+                        _start_job_safe(project_id, "script_generate", cmd)
 
             st.write("---")
             st.write(t("quality_report_heading"))
             try:
-                preset_obj = get_preset(manifest.preset_id)
-                checker = ScriptQualityChecker(preset_obj)
-                full_script_text = "\n\n".join(
-                    g.paragraph_text for ch in manifest.chapters for g in ch.tts_groups if g.paragraph_text
-                )
-                if full_script_text.strip():
-                    q_report = checker.check_script(full_script_text, manifest.chapters)
-                    col_q1, col_q2 = st.columns(2)
-                    with col_q1:
-                        render_metric_tile(t("metric_hook_score"), f"{q_report.get('hook_score', 85)}/100", status="accent")
-                        render_metric_tile(t("metric_hook_violations"), str(len(q_report.get("hook_violations", []))))
-                    with col_q2:
-                        render_metric_tile(t("metric_cliche_matches"), str(len(q_report.get("cliche_matches", []))))
-                        render_metric_tile(t("metric_verify_claims"), str(len(q_report.get("verify_claims", []))))
+                checker = ScriptQualityChecker(p_dir)
+                q_report = checker.inspect()
+                col_q1, col_q2 = st.columns(2)
+                with col_q1:
+                    render_metric_tile(t("metric_language_warnings"), str(len(q_report.get("language_warnings", []))))
+                    render_metric_tile(t("metric_hook_violations"), str(len(q_report.get("hook_violations", []))))
+                with col_q2:
+                    render_metric_tile(t("metric_cliche_matches"), str(len(q_report.get("cliche_matches", []))))
+                    render_metric_tile(t("metric_verify_claims"), str(len(q_report.get("verify_claims", []))))
+                for lw in q_report.get("language_warnings", []):
+                    st.warning(t("chapter_lang_review_warning", reason=f"Ch {lw['chapter']} ({lw['title']}): {lw['reason']}"))
             except Exception as exc:
                 logger.warning(f"Script quality report failed: {exc}")
                 st.caption(t("err_quality_report_unavailable"))

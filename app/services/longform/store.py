@@ -326,13 +326,22 @@ def create_project(
     for d in subdirs:
         d.mkdir(parents=True, exist_ok=True)
 
-    # Resolve generic "umum" to language-specific preset (H1)
-    if preset_id == "umum":
-        preset_id = "umum.en" if (language and language.startswith("en")) else "umum.id"
+    # Resolve generic "umum" (and explicit language mismatch on umum.*) to language-specific preset (H1, B2)
+    from app.services.longform.language_guard import canonical_language_tag
+
+    eff_language: Optional[str] = None
+    if language and str(language).strip():
+        eff_language = canonical_language_tag(language)
+        if preset_id in ("umum", "umum.id", "umum.en"):
+            preset_id = "umum.en" if eff_language.startswith("en") else "umum.id"
+    elif preset_id == "umum":
+        preset_id = "umum.id"
 
     # Fetch preset & snapshot
     preset = get_preset(preset_id)
     preset_snapshot = preset.model_dump()
+    if eff_language:
+        preset_snapshot["language"] = eff_language
     preset_chain = get_preset_inheritance_chain(preset_id)
 
     # Create chapters from script if provided
@@ -347,6 +356,7 @@ def create_project(
         project_id=clean_id,
         title=title,
         topic=topic.strip() if topic else None,
+        language=eff_language or canonical_language_tag(preset.language),
         target_duration_minutes=target_duration_minutes,
         aspect_ratio=aspect_ratio,
         preset_id=preset_id,

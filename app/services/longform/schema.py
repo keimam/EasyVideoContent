@@ -257,6 +257,8 @@ class Chapter(BaseModel):
     preview_video_file: Optional[str] = None
     min_word_match_ratio: Optional[float] = None
     avg_word_match_ratio: Optional[float] = None
+    needs_language_review: bool = False
+    language_warning: Optional[str] = None
     status: ItemStatus = ItemStatus.pending
 
     model_config = {"extra": "forbid"}
@@ -317,6 +319,7 @@ class ProjectManifest(BaseModel):
     project_id: str
     title: str
     topic: Optional[str] = None
+    language: Optional[str] = None
     target_duration_minutes: Optional[int] = None
     aspect_ratio: str = "16:9"
     preset_id: str
