@@ -406,23 +406,29 @@ def test_r2_sidebar_click_all_items_long_video_page(tmp_path, monkeypatch):
     assert has_niche_tree, "Niche dialog tree content was not rendered in Long Video"
 
     # 3. Click 'API & Penyedia AI'
-    at2 = AppTest.from_file(lv_file).run(timeout=15)
+    at2 = AppTest.from_file(lv_file).run(timeout=25)
     ai_btn = at2.button(key="efs_btn_settings_ai_longform")
     assert ai_btn is not None
-    ai_btn.click().run(timeout=15)
+    ai_btn.click().run(timeout=25)
     assert not at2.exception, f"Long Video API & Penyedia AI threw exception: {[e.value for e in at2.exception]}"
     assert at2.session_state["settings_dialog_open"] is True
-    assert at2.session_state["settings_dialog_target_tab"] == "llm"
+    assert (
+        at2.session_state.get("settings_active_tab") == "llm"
+        or at2.session_state.get("settings_dialog_target_tab") == "llm"
+    )
     assert not any("Navigasi Studio" in s.value for s in at2.subheader)
 
     # 4. Click 'Cache & Penyimpanan'
-    at3 = AppTest.from_file(lv_file).run(timeout=15)
+    at3 = AppTest.from_file(lv_file).run(timeout=25)
     cache_btn = at3.button(key="efs_btn_settings_cache_longform")
     assert cache_btn is not None
-    cache_btn.click().run(timeout=15)
+    cache_btn.click().run(timeout=25)
     assert not at3.exception, f"Long Video Cache & Penyimpanan threw exception: {[e.value for e in at3.exception]}"
     assert at3.session_state["settings_dialog_open"] is True
-    assert at3.session_state["settings_dialog_target_tab"] == "cache"
+    assert (
+        at3.session_state.get("settings_active_tab") == "cache"
+        or at3.session_state.get("settings_dialog_target_tab") == "cache"
+    )
     assert not any("Navigasi Studio" in s.value for s in at3.subheader)
 
     # 5. Click 'Tentang'

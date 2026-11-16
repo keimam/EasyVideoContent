@@ -41,6 +41,9 @@ from app.services.longform.tts_adapter import (
     TTSAdapter,
     TTSAdapterError,
     TTSConfigurationError,
+    list_configured_tts_providers,
+    list_voices_for_provider,
+    normalize_tts_provider_id,
 )
 
 
@@ -68,6 +71,7 @@ class VoiceService:
                 selected_provider = preset_tts
 
             preset_voice = manifest.preset_snapshot.get("default_voice", "en-US-ChristopherNeural-Male")
+            preset_rate = float(manifest.preset_snapshot.get("voice_rate", 1.0) or 1.0)
             pause_ms = manifest.preset_snapshot.get("pause_between_groups_ms", 350)
             wpm = manifest.preset_snapshot.get("words_per_minute", 145)
             eff_threshold = manifest.preset_snapshot.get("word_cue_threshold", word_cue_threshold)
@@ -75,7 +79,7 @@ class VoiceService:
             adapter = TTSAdapter(
                 provider=selected_provider,
                 voice_name=preset_voice,
-                voice_rate=1.0,
+                voice_rate=preset_rate,
                 output_dir=self.project_dir,
                 fake_delay=fake_delay,
                 words_per_minute=wpm,
@@ -295,29 +299,35 @@ class VoiceService:
 
     get_audio_status = get_status
 
-    def set_voice(self, voice_name: str, voice_rate: float = 1.0) -> ProjectManifest:
-        """Set project default narrator voice using hash-based invalidation (3.5, 3.7, R4, V3).
+    def set_voice(
+        self,
+        voice_name: str,
+        voice_rate: float = 1.0,
+        tts_provider: Optional[str] = None,
+    ) -> ProjectManifest:
+        """Set project narrator TTS provider, voice, and rate with hash-based invalidation (3.5, R4, V3, 8B.1).
 
-        V3 fix: Instead of clearing audio_hash and marking all groups stale unconditionally,
-        we recompute the expected audio_hash for each group with the new voice+rate. If the
-        new hash matches the stored hash (meaning the group was previously synthesized with
-        this exact voice+rate and the file is still present), the group stays 'completed'
-        without re-synthesis. This makes A→B→A a no-op for synthesis.
+        Only marks groups whose audio_hash differs from the selected (provider, voice, rate) as stale,
+        and restores 'completed' if disk audio matches the new hash.
         """
         clean_voice = voice_name.strip()
         with ProjectLock(self.project_dir):
             manifest = load_manifest(self.project_dir)
 
+            clean_provider = normalize_tts_provider_id(
+                tts_provider if tts_provider is not None else manifest.preset_snapshot.get("tts_provider", "edge")
+            )
+            manifest.preset_snapshot["tts_provider"] = clean_provider
             manifest.preset_snapshot["default_voice"] = clean_voice
             manifest.preset_snapshot["voice_rate"] = float(voice_rate)
 
             for ch in manifest.chapters:
                 ch_needs_stale = False
                 for g in ch.tts_groups:
-                    # Compute what the hash would be for the new voice
+                    # Compute what the hash would be for the new provider + voice + rate
                     new_hash = compute_audio_group_hash(
                         paragraph_text=g.get_effective_paragraph_text(),
-                        tts_provider=g.audio.tts_provider or "edge",
+                        tts_provider=clean_provider,
                         tts_model=g.audio.tts_model or "",
                         voice_name=clean_voice,
                         voice_rate=float(voice_rate),
@@ -325,16 +335,17 @@ class VoiceService:
                         audio_format=g.audio.audio_format or "wav_48k_pcm",
                     )
 
-                    # Update voice metadata unconditionally
+                    # Update voice & provider metadata unconditionally
+                    g.audio.tts_provider = clean_provider
                     g.audio.voice_name = clean_voice
                     g.audio.voice_rate = float(voice_rate)
 
                     # V3: Hash-based staleness — if hash matches, group is still valid
                     target_wav = self.project_dir / (g.audio.file_path or f"assets/audio/groups/ch{ch.chapter_index}_g{g.group_index}.wav")
                     if g.audio.audio_hash == new_hash and target_wav.is_file() and target_wav.stat().st_size > 44:
-                        # Audio on disk was synthesized with this voice/rate: keep/restore completed!
+                        # Audio on disk was synthesized with this provider/voice/rate: keep/restore completed!
                         g.status = ItemStatus.completed
-                        logger.debug(f"Group ch{ch.chapter_index}_g{g.group_index}: hash matches new voice, keeping completed")
+                        logger.debug(f"Group ch{ch.chapter_index}_g{g.group_index}: hash matches new settings, keeping completed")
                     else:
                         # Setting does not match audio on disk: mark stale
                         # (Preserve g.audio.audio_hash so switching back restores completed without synth)
@@ -364,7 +375,9 @@ class VoiceService:
         )
 
 
-def list_available_voices(language_prefix: Optional[str] = None) -> List[str]:
-    """Query available Edge TTS voices from upstream azure_voices catalog (3.6)."""
-    filters = [language_prefix.strip()] if language_prefix else None
-    return upstream_voice.get_all_azure_voices(filters)
+def list_available_voices(
+    language_prefix: Optional[str] = None,
+    provider: Optional[str] = None,
+) -> List[str]:
+    """Query available TTS voices from upstream MPT voice catalogs for a provider."""
+    return list_voices_for_provider(provider=provider or "edge", language_prefix=language_prefix)

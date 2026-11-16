@@ -72,16 +72,16 @@ def get_global_css() -> str:
         font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
     }}
 
-    /* Scope font specifically to text elements, never wildcard or override icons (R1) */
+    /* Scope font specifically to text elements, never wildcard or override icons (R1, 8B.1-B3) */
     h1, h2, h3, h4, h5, h6,
     p, label,
     textarea, select,
     .stMarkdown,
     [data-testid="stMarkdownContainer"] p,
-    [data-testid="stMarkdownContainer"] span:not([data-testid="stIconMaterial"]):not([class*="material-symbols"]),
+    [data-testid="stMarkdownContainer"] span:not([data-testid="stIconMaterial"]):not([class*="material-symbols"]):not([role="img"][aria-label$=" icon"]):not([style*="Material Symbols"]),
     div.stButton > button p,
-    div.stButton > button span:not([data-testid="stIconMaterial"]):not([class*="material-symbols"]),
-    div.stPageLink a span:not([data-testid="stIconMaterial"]):not([class*="material-symbols"]),
+    div.stButton > button span:not([data-testid="stIconMaterial"]):not([class*="material-symbols"]):not([role="img"][aria-label$=" icon"]):not([style*="Material Symbols"]),
+    div.stPageLink a span:not([data-testid="stIconMaterial"]):not([class*="material-symbols"]):not([role="img"][aria-label$=" icon"]):not([style*="Material Symbols"]),
     div.stPageLink p,
     .efs-main-brand__name,
     .efs-main-brand__badge,
@@ -89,13 +89,17 @@ def get_global_css() -> str:
         font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
     }}
 
-    /* --- R1: Strictly preserve Streamlit's bundled offline Material Symbols --- */
+    /* --- R1 & 8B.1-B3: Strictly preserve Streamlit's bundled offline Material Symbols everywhere (including st.dialog / st.subheader) --- */
     [data-testid="stIconMaterial"],
     [class*="material-symbols"],
     .material-symbols-rounded,
     .material-symbols-outlined,
     .material-symbols-sharp,
     i.material-icons,
+    span[role="img"][aria-label$=" icon"],
+    span[style*="Material Symbols"],
+    [role="dialog"] [data-testid="stIconMaterial"],
+    [data-testid="stDialog"] [data-testid="stIconMaterial"],
     [data-testid="stExpandSidebarButton"] span,
     [data-testid="stSidebarCollapseButton"] span {{
         font-family: 'Material Symbols Rounded', 'Material Symbols Outlined', 'Material Icons', sans-serif !important;

@@ -29,67 +29,28 @@ def mask_api_key(key: Optional[str]) -> str:
 
 
 def check_llm_status() -> Dict[str, Any]:
-    """Check active LLM provider configuration and credential status."""
-    provider_id = (config.app.get("llm_provider") or DEFAULT_LLM_PROVIDER_ID).lower().strip()
+    """Check active LLM provider configuration and credential status via unified LLM adapter."""
+    from app.services.longform.llm_adapter import get_llm_readiness
+
+    readiness = get_llm_readiness()
+    provider_id = readiness["provider"]
     prov_def = get_llm_provider(provider_id)
+    key_name = prov_def.config_key("api_key") if (prov_def and prov_def.requires_api_key) else None
+    requires_key = bool(readiness.get("requires_api_key", True))
 
-    if not prov_def:
-        return {
-            "configured": False,
-            "provider": provider_id,
-            "requires_key": True,
-            "key_name": None,
-            "masked_key": None,
-            "message": f"Provider '{provider_id}' tidak terdaftar dalam sistem.",
-        }
-
-    if not prov_def.requires_api_key:
-        label = getattr(prov_def, "default_label", prov_def.provider_id)
-        return {
-            "configured": True,
-            "provider": provider_id,
-            "requires_key": False,
-            "key_name": None,
-            "masked_key": "(tidak memerlukan API key)",
-            "message": f"Provider '{label}' aktif (lokal/tanpa kunci).",
-        }
-
-    key_name = prov_def.config_key("api_key")
-    raw_key = (config.app.get(key_name) or "").strip()
-
-    if not raw_key:
-        return {
-            "configured": False,
-            "provider": provider_id,
-            "requires_key": True,
-            "key_name": key_name,
-            "masked_key": None,
-            "api_key_url": prov_def.api_key_url,
-            "message": f"Kunci API '{key_name}' belum dikonfigurasi di config.toml.",
-        }
-
-    # Gemini key validation (E5)
-    if "gemini" in provider_id or "google" in provider_id:
-        if not raw_key.startswith("AIza"):
-            return {
-                "configured": False,
-                "provider": provider_id,
-                "requires_key": True,
-                "key_name": key_name,
-                "masked_key": mask_api_key(raw_key),
-                "api_key_url": prov_def.api_key_url,
-                "is_invalid": True,
-                "message": "Key Gemini tampaknya tidak valid (bukan dari Google AI Studio)",
-            }
-
-    label = getattr(prov_def, "default_label", prov_def.provider_id)
     return {
-        "configured": True,
+        "configured": bool(readiness.get("configured", False)),
         "provider": provider_id,
-        "requires_key": True,
+        "provider_label": readiness.get("provider_label", provider_id),
+        "model": readiness.get("model", ""),
+        "adapter": readiness.get("adapter", ""),
+        "requires_key": requires_key,
         "key_name": key_name,
-        "masked_key": mask_api_key(raw_key),
-        "message": f"Provider '{label}' siap.",
+        "masked_key": readiness.get("masked_key") or ("(tidak memerlukan API key)" if not requires_key else None),
+        "api_key_url": prov_def.api_key_url if prov_def else None,
+        "is_invalid": bool(readiness.get("is_invalid", False)),
+        "message": readiness.get("message", ""),
+        "configured_providers": readiness.get("configured_providers", ()),
     }
 
 

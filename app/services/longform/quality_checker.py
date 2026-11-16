@@ -17,6 +17,10 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from app.services.longform.language_guard import (
+    check_language_compliance,
+    resolve_project_language,
+)
 from app.services.longform.schema import Chapter, ProjectManifest, Segment
 from app.services.longform.script_import import estimate_script_duration, extract_tags, split_sentences
 from app.services.longform.store import load_manifest
@@ -93,6 +97,8 @@ class ScriptQualityChecker:
             manifest.chapters,
             words_per_minute=preset_snap.get("words_per_minute", 140),
         )
+        target_lang = resolve_project_language(manifest)
+        language_warnings: List[Dict[str, Any]] = []
 
         # 2. Clichés and slop detection
         cliche_matches: List[Dict[str, Any]] = []
@@ -216,6 +222,25 @@ class ScriptQualityChecker:
             ch_ng = set(_get_ngrams(ch_tokens, n=6))
             chapter_ngrams[ch.chapter_index] = ch_ng
             all_ngrams.extend(_get_ngrams(ch_tokens, n=6))
+
+            # Language consistency check per chapter (body + chapter heading)
+            ch_full_text = " ".join(
+                g.paragraph_text for g in ch.tts_groups if g.paragraph_text
+            )
+            lang_res = check_language_compliance(
+                ch_full_text, target_lang, title_text=ch.chapter_title
+            )
+            if not lang_res["ok"] or getattr(ch, "needs_language_review", False):
+                reason = getattr(ch, "language_warning", None) or lang_res["reason"] or f"Mismatch with {target_lang}"
+                language_warnings.append(
+                    {
+                        "chapter": ch.chapter_index,
+                        "title": ch.chapter_title,
+                        "status": "Perlu dicek: bahasa",
+                        "reason": reason,
+                    }
+                )
+
             is_first_chapter = False
 
         # Find n-grams repeated across multiple chapters
@@ -238,6 +263,7 @@ class ScriptQualityChecker:
             "title": manifest.title,
             "project_id": manifest.project_id,
             "preset_id": manifest.preset_id,
+            "target_language": target_lang,
             "is_fake": is_fake,
             "duration_info": duration_info,
             "cliche_matches": cliche_matches,
@@ -247,6 +273,7 @@ class ScriptQualityChecker:
             "verify_claims": verify_claims,
             "unverified_specs": unverified_specs,
             "excessive_search_queries": excessive_search_queries,
+            "language_warnings": language_warnings,
         }
 
         # Render markdown report
@@ -346,6 +373,24 @@ class ScriptQualityChecker:
                 lines.append(f"- Ch {mv['chapter']} Seg {mv['segment']}: \"{mv['text']}\"")
         else:
             lines.append("✓ 100% of segments have valid visual descriptions and motion tags.")
+
+        lines.extend([
+            "",
+            "---",
+            "",
+            "## 7. Konsistensi Bahasa Naskah (Perlu Dicek: Bahasa)",
+            "",
+            f"- **Target Narration Language**: `{data.get('target_language', 'en-US')}`",
+        ])
+        lang_warns = data.get("language_warnings") or []
+        if lang_warns:
+            lines.append("> [!WARNING] Perlu dicek: bahasa tidak sesuai di bab berikut:")
+            for lw in lang_warns:
+                lines.append(
+                    f"- **Ch {lw['chapter']}** ({lw['title']}): **Perlu dicek: bahasa** — {lw['reason']}"
+                )
+        else:
+            lines.append("✓ Semua judul dan isi bab sesuai dengan bahasa narasi proyek.")
 
         lines.extend([
             "",

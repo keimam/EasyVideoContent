@@ -188,7 +188,7 @@ def test_update_project_script_edit_add_remove(tmp_path: Path):
 Sentence one of group one. Sentence two of group one.
 
 ## Chapter 2: Conflict
-Sentence one of group two.
+Sentence one of group two introduces an archival chapter describing early industrial changes, neighborhood workshops, factory expansion, highway engineering breakthroughs, and competitive automotive racing stories across towns and highways during a pivotal transformative era for modern American transportation.
 
 ## Chapter 3: Departure
 Sentence one of group three.
@@ -223,9 +223,9 @@ Sentence one of group three.
 Sentence one MODIFIED. Sentence two of group one.
 
 ## Chapter 2: Conflict
-Sentence one of group two.
+Sentence one of group two introduces an archival chapter describing early industrial changes, neighborhood workshops, factory expansion, highway engineering breakthroughs, and competitive automotive racing stories across towns and highways during a pivotal transformative era for modern American transportation.
 
-New second paragraph in chapter two.
+New second paragraph in chapter two continues the documentary narrative by examining fuel availability, post-war manufacturing momentum, consumer expectations, and the mechanical innovation that shaped decades of subsequent street performance machines built for everyday drivers.
 
 """
     stats = update_project_script(proj_dir, new_script)

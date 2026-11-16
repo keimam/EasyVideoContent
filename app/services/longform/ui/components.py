@@ -69,11 +69,39 @@ from app.services.branding.theme import (
     render_stepper_card_html,
     render_success_banner,
 )
-from app.services.longform.tts_adapter import TTSAdapter, clean_narration_text
+from app.services.longform.llm_adapter import (
+    get_llm_readiness,
+    list_llm_models,
+    set_active_llm_model,
+    supports_model_listing,
+    test_llm_connection,
+)
+from app.services.longform.tts_adapter import (
+    TTSAdapter,
+    clean_narration_text,
+    list_configured_tts_providers,
+    normalize_tts_provider_id,
+    provider_has_word_timings,
+)
 from app.services.longform.ui import jobs
 from app.services.longform.ui.i18n import t
 from app.services.longform.ui.security import check_llm_status, mask_api_key, safe_windows_path
 from app.services.longform.voice_service import VoiceService, list_available_voices
+
+
+def _open_mpt_settings_dialog(target_tab: str = "llm") -> None:
+    """Trigger MoneyPrinterTurbo's native Settings dialog on the active page at the requested tab."""
+    st.session_state["settings_dialog_open"] = True
+    st.session_state["settings_dialog_target_tab"] = target_tab
+    st.rerun()
+
+
+def _get_step_subtitle(step_key: str, status: str, is_job_running: bool = False) -> str:
+    """Return status-aware localized subtitle for the given workflow step."""
+    eff = "berjalan" if is_job_running else (status or "belum")
+    if eff not in {"belum", "berjalan", "terhenti", "perlu_diperbarui", "selesai"}:
+        eff = "belum"
+    return t(f"{step_key}_subtitle_{eff}")
 
 
 def _render_friendly_error(friendly_msg: str, exc: Optional[BaseException | str] = None, expanded: bool = False):
@@ -84,6 +112,24 @@ def _render_friendly_error(friendly_msg: str, exc: Optional[BaseException | str]
         if detail_txt:
             with st.expander(t("error_details_expander"), expanded=expanded):
                 st.code(detail_txt, language="text")
+
+
+def _start_job_safe(
+    project_id: str,
+    step_name: str,
+    cmd: List[str],
+    sleep_after: float = 0.0,
+) -> bool:
+    """Start a background CLI job and show friendly error + Detail on failure instead of crashing."""
+    try:
+        jobs.start_job(project_id, step_name, cmd)
+        if sleep_after > 0:
+            time.sleep(sleep_after)
+        st.rerun()
+        return True
+    except Exception as exc:
+        _render_friendly_error(t("err_job_start_friendly"), exc)
+        return False
 
 
 def get_project_thumbnail_path(p_dir: Path) -> Optional[Path]:
@@ -142,16 +188,9 @@ def render_project_thumbnail_html(thumb_path: Optional[Path], duration_str: str)
 # --- Project Discovery via Single Status Resolver (C2, D5) ---
 
 def check_has_llm_key() -> bool:
-    """Check if an actual LLM API key is configured in MoneyPrinterTurbo config (D3, E5)."""
+    """Check if active MPT LLM provider is configured via unified readiness helper (8B.1)."""
     try:
-        from app.config import config
-        prov = (config.app.get("llm_provider") or "openai").lower().strip()
-        key = (config.app.get(f"{prov}_api_key") or "").strip()
-        if not key:
-            return False
-        if ("gemini" in prov or "google" in prov) and not key.startswith("AIza"):
-            return False
-        return True
+        return bool(get_llm_readiness().get("configured", False))
     except Exception:
         return False
 
@@ -321,7 +360,25 @@ def _render_job_monitor_content(project_id: str, state: Dict[str, Any], current_
             if failed_step_name:
                 st.caption(t("job_failed_step_caption", step=failed_step_name.capitalize()))
 
-            err_detail = state.get("error_message") or f"{t('job_exit_code_label')}: {state.get('exit_code', 'unknown')}"
+            err_detail = str(state.get("error_message") or f"{t('job_exit_code_label')}: {state.get('exit_code', 'unknown')}")
+            logs_tail = jobs.get_job_logs(project_id, max_lines=20)
+            combined_err = "\n".join([err_detail] + list(logs_tail or []))
+
+            # Detect structured LLM failure reasons (Model not found / Rate limit)
+            model_match = re.search(r"\[MODEL_NOT_FOUND\]\s*Model=([^\s|]+)", combined_err)
+            if model_match or "model_not_found" in combined_err.lower() or "does not exist" in combined_err.lower():
+                bad_model = model_match.group(1) if model_match else (get_llm_readiness().get("model") or "selected")
+                st.error(t("llm_err_model_not_found", model=bad_model))
+                if st.button(t("btn_change_llm_provider"), key=f"btn_err_chg_prov_{project_id}"):
+                    _open_mpt_settings_dialog("llm")
+            elif "[RATE_LIMIT]" in combined_err or "429" in combined_err or "rate limit" in combined_err.lower():
+                st.warning(t("llm_err_rate_limit"))
+
+            if failed_step_name in ("script_outline", "script_generate", "script"):
+                script_dir = get_project_dir(project_id) / "script"
+                if script_dir.is_dir() and any(script_dir.glob("chapter_*.md")):
+                    st.info(t("llm_completed_chapters_preserved"))
+
             if err_detail:
                 with st.expander(t("error_details_expander"), expanded=False):
                     st.code(str(err_detail), language="text")
@@ -332,14 +389,11 @@ def _render_job_monitor_content(project_id: str, state: Dict[str, Any], current_
                     cmd = state.get("command")
                     if cmd:
                         jobs.dismiss_job(project_id)
-                        jobs.start_job(project_id, state.get("step", "pipeline_auto"), cmd)
-                        time.sleep(0.5)
-                        st.rerun()
+                        _start_job_safe(project_id, state.get("step", "pipeline_auto"), cmd, sleep_after=0.5)
 
-            logs = jobs.get_job_logs(project_id, max_lines=20)
-            if logs:
+            if logs_tail:
                 with st.expander(t("job_error_log_expander"), expanded=False):
-                    st.code("\n".join(logs), language="text")
+                    st.code("\n".join(logs_tail), language="text")
 
 
 @st.fragment(run_every=2)
@@ -503,6 +557,8 @@ def render_home_page():
 
             col_n, col_sub = st.columns(2)
             with col_n:
+                if st.session_state.get("sel_root_niche") not in root_ids:
+                    st.session_state["sel_root_niche"] = root_ids[0]
                 chosen_root = st.selectbox(
                     t("field_main_niche"),
                     options=root_ids,
@@ -837,12 +893,11 @@ def render_project_page(project_id: str):
                     phase_msg = f" ({job_state.get('phase')})" if job_state.get("phase") else ""
                     st.warning(t("auto_review_paused_warn", phase=phase_msg))
                     if st.button(t("btn_resume_auto_skip"), key=f"btn_resume_auto_{project_id}", type="primary", use_container_width=True):
-                        cmd = ["python", "cli_longform.py", "pipeline", "auto", project_id, "--skip-review-check"]
+                        auto_args = ["pipeline", "auto", project_id, "--skip-review-check"]
                         if auto_with_capcut:
-                            cmd.append("--with-capcut")
-                        jobs.start_job(project_id, "pipeline_auto", cmd)
-                        time.sleep(0.5)
-                        st.rerun()
+                            auto_args.append("--with-capcut")
+                        cmd = jobs.build_longform_cli_command(*auto_args)
+                        _start_job_safe(project_id, "pipeline_auto", cmd, sleep_after=0.5)
                 elif not script_done:
                     st.caption(t("auto_need_script_caption"))
                     st.button(f"▷ {t('btn_auto_run_until_done')}", disabled=True, key=f"btn_auto_dis_{project_id}", use_container_width=True)
@@ -850,14 +905,13 @@ def render_project_page(project_id: str):
                     st.button(t("status_done"), disabled=True, key=f"btn_auto_done_{project_id}", use_container_width=True)
                 else:
                     if st.button(f"▷ {t('btn_auto_run_until_done')}", disabled=is_job_running, type="primary", key=f"btn_start_auto_{project_id}", use_container_width=True):
-                        cmd = ["python", "cli_longform.py", "pipeline", "auto", project_id]
+                        auto_args = ["pipeline", "auto", project_id]
                         if auto_with_capcut:
-                            cmd.append("--with-capcut")
+                            auto_args.append("--with-capcut")
                         if auto_stop_review:
-                            cmd.append("--stop-on-review")
-                        jobs.start_job(project_id, "pipeline_auto", cmd)
-                        time.sleep(0.5)
-                        st.rerun()
+                            auto_args.append("--stop-on-review")
+                        cmd = jobs.build_longform_cli_command(*auto_args)
+                        _start_job_safe(project_id, "pipeline_auto", cmd, sleep_after=0.5)
 
         with col_opt_btn:
             with st.popover("⋯", help=t("popover_project_settings_help"), use_container_width=True):
@@ -1037,7 +1091,7 @@ def render_script_step_flow(
     col_hdr, col_act = st.columns([3, 1])
     with col_hdr:
         st.markdown(f"### {t('script_step_title')}")
-        st.caption(t("script_step_subtitle"))
+        st.caption(_get_step_subtitle("script", status, is_job_running))
     with col_act:
         st.write("")
         if status == "selesai":
@@ -1048,6 +1102,14 @@ def render_script_step_flow(
     # If script is already finished: show chapter list and continue button
     if status == "selesai":
         st.success(t("script_summary_format", chapters=len(manifest.chapters)))
+        for ch in manifest.chapters:
+            if getattr(ch, "needs_language_review", False):
+                st.warning(
+                    t(
+                        "chapter_lang_review_warning",
+                        reason=f"Bab {ch.chapter_index} ({ch.chapter_title}): {getattr(ch, 'language_warning', '') or ''}",
+                    )
+                )
 
         with st.expander(t("expander_view_script"), expanded=False):
             for ch in manifest.chapters:
@@ -1105,16 +1167,84 @@ def render_script_step_flow(
             st.caption(t("ai_script_desc"))
 
             llm_status = check_llm_status()
-            llm_ok = check_has_llm_key()
+            llm_ok = bool(llm_status.get("configured", False))
+            active_prov_id = str(llm_status.get("provider") or "")
+            active_prov_label = str(llm_status.get("provider_label") or active_prov_id)
+            active_model = str(llm_status.get("model") or "-")
             use_fake = st.session_state.get(f"fake_toggle_{project_id}", False)
 
-            if llm_status.get("is_invalid"):
+            st.markdown(t("ai_active_provider_model", provider=active_prov_label, model=active_model))
+            if llm_ok:
+                st.caption(t("ai_provider_ready_badge", masked=llm_status.get("masked_key") or "OK"))
+            elif llm_status.get("is_invalid"):
                 st.warning(f"{llm_status['message']}")
-            elif not llm_ok and not use_fake:
-                st.warning(t("ai_missing_key_warning"))
+            elif not use_fake:
+                st.warning(llm_status.get("message") or t("ai_missing_key_warning"))
+
+            col_llm_test, col_llm_cfg = st.columns(2)
+            with col_llm_test:
+                if st.button(t("btn_test_llm_connection"), key=f"btn_test_llm_{project_id}", disabled=(not llm_ok or is_job_running), use_container_width=True):
+                    ok_conn, conn_msg, conn_lat = test_llm_connection()
+                    st.session_state[f"llm_conn_res_{project_id}"] = (ok_conn, conn_msg, conn_lat)
+            with col_llm_cfg:
+                if st.button(t("btn_change_llm_provider"), key=f"btn_chg_llm_{project_id}", use_container_width=True):
+                    _open_mpt_settings_dialog("llm")
+
+            conn_res = st.session_state.get(f"llm_conn_res_{project_id}")
+            if conn_res:
+                ok_conn, conn_msg, conn_lat = conn_res
+                if ok_conn:
+                    clean_msg = (conn_msg or "").strip()
+                    if clean_msg:
+                        st.success(t("llm_connection_ok", latency=conn_lat, msg=clean_msg))
+                    else:
+                        st.success(t("llm_connection_ok_plain", latency=conn_lat))
+                else:
+                    lower_c = conn_msg.lower()
+                    if "does not exist" in lower_c or "model_not_found" in lower_c or ("not found" in lower_c and "model" in lower_c):
+                        st.error(t("llm_err_model_not_found", model=active_model))
+                    elif "429" in lower_c or "rate limit" in lower_c:
+                        st.warning(t("llm_err_rate_limit"))
+                    else:
+                        st.error(t("llm_connection_failed", msg=conn_msg))
 
             with st.expander(t("expander_ai_options"), expanded=False):
                 custom_topic = st.text_input(t("field_ai_topic"), value=getattr(manifest, "topic", None) or manifest.sub_niche_focus or "", key=f"ai_topic_{project_id}")
+
+                if supports_model_listing(active_prov_id):
+                    if st.button(t("btn_load_llm_models"), key=f"btn_load_models_{project_id}", disabled=is_job_running):
+                        fetched_models, fetch_err = list_llm_models(active_prov_id, force_refresh=True)
+                        st.session_state[f"llm_models_cache_{active_prov_id}"] = (fetched_models, fetch_err)
+
+                    cached_models, fetch_err = st.session_state.get(f"llm_models_cache_{active_prov_id}", ([], None))
+                    if fetch_err:
+                        st.caption(t("llm_models_load_fallback", error=fetch_err))
+                    elif cached_models:
+                        st.caption(t("llm_models_loaded_count", count=len(cached_models), provider=active_prov_label))
+                        sel_idx = cached_models.index(active_model) if active_model in cached_models else 0
+                        picked_model = st.selectbox(
+                            t("field_llm_model_select"),
+                            options=cached_models,
+                            index=sel_idx,
+                            key=f"sel_llm_model_{project_id}_{active_prov_id}",
+                        )
+                    else:
+                        picked_model = ""
+                else:
+                    picked_model = ""
+
+                manual_model = st.text_input(
+                    t("field_llm_model_custom"),
+                    value=picked_model or ("" if active_model == "-" else active_model),
+                    key=f"txt_llm_model_{project_id}_{active_prov_id}",
+                )
+                if st.button(t("btn_apply_llm_model"), key=f"btn_apply_model_{project_id}", disabled=is_job_running):
+                    chosen_model = (manual_model or picked_model or "").strip()
+                    if chosen_model:
+                        set_active_llm_model(chosen_model, active_prov_id)
+                        st.success(t("llm_model_saved_success", model=chosen_model))
+                        st.rerun()
+
                 fake_val = st.checkbox(t("field_use_fake_provider"), value=use_fake, key=f"fake_cb_{project_id}")
                 if fake_val != use_fake:
                     st.session_state[f"fake_toggle_{project_id}"] = fake_val
@@ -1123,14 +1253,33 @@ def render_script_step_flow(
             if use_fake:
                 st.error(t("ai_fake_mode_banner"))
 
+            outline_exists = (p_dir / "script" / "outline.json").is_file()
+            script_partial = outline_exists and status != "selesai"
+            if script_partial and any((p_dir / "script").glob("chapter_*.md")):
+                st.info(t("llm_completed_chapters_preserved"))
+
             ai_disabled = is_job_running or (not llm_ok and not use_fake)
-            ai_btn_label = t("btn_ai_writing") if is_job_running else (t("btn_ai_start") if len(manifest.chapters) == 0 else t("btn_ai_regenerate"))
+            if is_job_running:
+                ai_btn_label = t("btn_ai_writing")
+            elif script_partial:
+                ai_btn_label = t("btn_ai_resume_chapters")
+            elif len(manifest.chapters) == 0:
+                ai_btn_label = t("btn_ai_start")
+            else:
+                ai_btn_label = t("btn_ai_regenerate")
+
             if st.button(ai_btn_label, type="primary" if not ai_disabled else "secondary", disabled=ai_disabled, key=f"btn_start_ai_{project_id}"):
                 provider_arg = ["--provider", "fake"] if use_fake else []
-                topic = custom_topic.strip() if custom_topic.strip() else (getattr(manifest, "topic", None) or manifest.title)
-                cmd = ["script", "outline", project_id, "--topic", topic] + provider_arg
-                jobs.start_job(project_id, "script_outline", cmd)
-                st.rerun()
+                if script_partial:
+                    cmd = jobs.build_longform_cli_command("script", "write", project_id, *provider_arg)
+                    step_name = "script_generate"
+                else:
+                    topic = custom_topic.strip() if custom_topic.strip() else (getattr(manifest, "topic", None) or manifest.title)
+                    dur_val = getattr(manifest, "target_duration_minutes", None)
+                    dur_args = ["--minutes", str(dur_val)] if dur_val else []
+                    cmd = jobs.build_longform_cli_command("script", "outline", project_id, "--topic", topic, *dur_args, "--write", *provider_arg)
+                    step_name = "script_outline"
+                _start_job_safe(project_id, step_name, cmd)
 
     # Chapter Editor & Quality Report if chapters exist
     if manifest.chapters:
@@ -1145,34 +1294,57 @@ def render_script_step_flow(
             )
             ch_obj = next((c for c in manifest.chapters if c.chapter_index == sel_ch_idx), None)
             if ch_obj:
+                from app.services.longform.language_guard import (
+                    check_language_compliance,
+                    resolve_project_language,
+                )
+
                 ch_paras = "\n\n".join(g.paragraph_text for g in ch_obj.tts_groups if g.paragraph_text)
+                proj_lang = resolve_project_language(manifest)
+                live_lang = check_language_compliance(ch_paras, proj_lang, title_text=ch_obj.chapter_title)
+                if getattr(ch_obj, "needs_language_review", False) or not live_lang["ok"]:
+                    lang_reason = getattr(ch_obj, "language_warning", None) or live_lang["reason"]
+                    st.warning(t("chapter_lang_review_warning", reason=lang_reason))
+
                 new_ch_text = st.text_area(t("field_chapter_narration_text"), value=ch_paras, height=180, key=f"ch_txt_{project_id}_{sel_ch_idx}")
-                if st.button(t("btn_save_chapter"), key=f"btn_save_ch_{project_id}_{sel_ch_idx}"):
-                    if new_ch_text.strip():
-                        ch_file = p_dir / "script" / f"chapter_{sel_ch_idx:02d}.md"
-                        ch_file.parent.mkdir(parents=True, exist_ok=True)
-                        ch_file.write_text(f"## {ch_obj.chapter_title}\n\n{new_ch_text.strip()}\n", encoding="utf-8")
-                        st.success(t("chapter_saved_success", idx=sel_ch_idx))
-                        time.sleep(0.5)
-                        st.rerun()
+                col_ch_save, col_ch_rewrite = st.columns(2)
+                with col_ch_save:
+                    if st.button(t("btn_save_chapter"), key=f"btn_save_ch_{project_id}_{sel_ch_idx}", use_container_width=True):
+                        if new_ch_text.strip():
+                            ch_file = p_dir / "script" / f"chapter_{sel_ch_idx:02d}.md"
+                            ch_file.parent.mkdir(parents=True, exist_ok=True)
+                            ch_file.write_text(f"## {ch_obj.chapter_title}\n\n{new_ch_text.strip()}\n", encoding="utf-8")
+                            st.success(t("chapter_saved_success", idx=sel_ch_idx))
+                            time.sleep(0.5)
+                            st.rerun()
+                with col_ch_rewrite:
+                    rewrite_disabled = is_job_running or (not check_has_llm_key() and not st.session_state.get(f"fake_toggle_{project_id}", False))
+                    if st.button(
+                        t("btn_rewrite_chapter"),
+                        disabled=rewrite_disabled,
+                        key=f"btn_rewrite_ch_{project_id}_{sel_ch_idx}",
+                        use_container_width=True,
+                    ):
+                        provider_arg = ["--provider", "fake"] if st.session_state.get(f"fake_toggle_{project_id}", False) else []
+                        cmd = jobs.build_longform_cli_command(
+                            "script", "rewrite", project_id, "--chapter", str(sel_ch_idx), *provider_arg
+                        )
+                        _start_job_safe(project_id, "script_generate", cmd)
 
             st.write("---")
             st.write(t("quality_report_heading"))
             try:
-                preset_obj = get_preset(manifest.preset_id)
-                checker = ScriptQualityChecker(preset_obj)
-                full_script_text = "\n\n".join(
-                    g.paragraph_text for ch in manifest.chapters for g in ch.tts_groups if g.paragraph_text
-                )
-                if full_script_text.strip():
-                    q_report = checker.check_script(full_script_text, manifest.chapters)
-                    col_q1, col_q2 = st.columns(2)
-                    with col_q1:
-                        render_metric_tile(t("metric_hook_score"), f"{q_report.get('hook_score', 85)}/100", status="accent")
-                        render_metric_tile(t("metric_hook_violations"), str(len(q_report.get("hook_violations", []))))
-                    with col_q2:
-                        render_metric_tile(t("metric_cliche_matches"), str(len(q_report.get("cliche_matches", []))))
-                        render_metric_tile(t("metric_verify_claims"), str(len(q_report.get("verify_claims", []))))
+                checker = ScriptQualityChecker(p_dir)
+                q_report = checker.inspect()
+                col_q1, col_q2 = st.columns(2)
+                with col_q1:
+                    render_metric_tile(t("metric_language_warnings"), str(len(q_report.get("language_warnings", []))))
+                    render_metric_tile(t("metric_hook_violations"), str(len(q_report.get("hook_violations", []))))
+                with col_q2:
+                    render_metric_tile(t("metric_cliche_matches"), str(len(q_report.get("cliche_matches", []))))
+                    render_metric_tile(t("metric_verify_claims"), str(len(q_report.get("verify_claims", []))))
+                for lw in q_report.get("language_warnings", []):
+                    st.warning(t("chapter_lang_review_warning", reason=f"Ch {lw['chapter']} ({lw['title']}): {lw['reason']}"))
             except Exception as exc:
                 logger.warning(f"Script quality report failed: {exc}")
                 st.caption(t("err_quality_report_unavailable"))
@@ -1199,7 +1371,7 @@ def render_voice_step_flow(
     col_hdr, col_act = st.columns([3, 1])
     with col_hdr:
         st.markdown(f"### {t('voice_step_title')}")
-        st.caption(t("voice_step_subtitle"))
+        st.caption(_get_step_subtitle("voice", status, is_job_running))
     with col_act:
         st.write("")
         if is_job_running:
@@ -1210,38 +1382,63 @@ def render_voice_step_flow(
                 st.rerun()
         elif status == "terhenti":
             if st.button(t("btn_resume_voice"), type="primary", key=f"btn_resume_voice_{project_id}", use_container_width=True):
-                cmd = [sys.executable, "cli_longform.py", "audio", "synth", project_id]
-                jobs.start_job(project_id, "audio_synthesize", cmd)
-                st.rerun()
+                cmd = jobs.build_longform_cli_command("audio", "synth", project_id)
+                _start_job_safe(project_id, "audio_synthesize", cmd)
         elif status == "perlu_diperbarui":
             if st.button(t("btn_stale_voice"), type="primary", key=f"btn_stale_voice_{project_id}", use_container_width=True):
-                cmd = [sys.executable, "cli_longform.py", "audio", "synth", project_id]
-                jobs.start_job(project_id, "audio_synthesize", cmd)
-                st.rerun()
+                cmd = jobs.build_longform_cli_command("audio", "synth", project_id)
+                _start_job_safe(project_id, "audio_synthesize", cmd)
         else:  # belum
             btn_disabled = bool(len(manifest.chapters) == 0) or is_job_running
             if st.button(t("btn_start_voice"), type="primary", disabled=btn_disabled, key=f"btn_start_voice_{project_id}", use_container_width=True):
-                cmd = [sys.executable, "cli_longform.py", "audio", "synth", project_id]
-                jobs.start_job(project_id, "audio_synthesize", cmd)
-                st.rerun()
+                cmd = jobs.build_longform_cli_command("audio", "synth", project_id)
+                _start_job_safe(project_id, "audio_synthesize", cmd)
 
     if status == "belum" and len(manifest.chapters) == 0:
         st.caption(t("voice_missing_script_warning"))
 
     # Options in Expander
     with st.expander(t("expander_voice_options"), expanded=False):
+        configured_tts = list_configured_tts_providers()
+        tts_ids = [item["id"] for item in configured_tts] or ["edge"]
+        tts_labels = {item["id"]: item["label"] for item in configured_tts}
+        curr_tts_prov = normalize_tts_provider_id(manifest.preset_snapshot.get("tts_provider", "edge"))
+        if curr_tts_prov not in tts_ids:
+            curr_tts_prov = "edge"
+
+        col_tp, col_tcfg = st.columns([3, 1])
+        with col_tp:
+            sel_tts_provider = st.selectbox(
+                t("field_tts_provider"),
+                options=tts_ids,
+                index=tts_ids.index(curr_tts_prov),
+                format_func=lambda pid: tts_labels.get(pid, pid),
+                key=f"tts_prov_sel_{project_id}",
+            )
+        with col_tcfg:
+            st.write("")
+            if st.button(t("btn_open_tts_settings"), key=f"btn_tts_settings_{project_id}", use_container_width=True):
+                _open_mpt_settings_dialog("general")
+
+        if not provider_has_word_timings(sel_tts_provider):
+            st.info(t("voice_whisper_sync_note"))
+
         col_vf, col_vr = st.columns([2, 1])
         with col_vf:
-            all_opt = t("voice_lang_all")
-            lang_filter = st.selectbox(t("field_voice_lang_filter"), ["en-US", "id-ID", all_opt], index=0, key=f"vf_lang_{project_id}")
-            filter_val = None if lang_filter == all_opt else lang_filter
-            voices = list_available_voices(filter_val)
+            if sel_tts_provider in ("edge", "azure-tts-v2"):
+                all_opt = t("voice_lang_all")
+                lang_filter = st.selectbox(t("field_voice_lang_filter"), ["en-US", "id-ID", all_opt], index=0, key=f"vf_lang_{project_id}")
+                filter_val = None if lang_filter == all_opt else lang_filter
+            else:
+                filter_val = None
+
+            voices = list_available_voices(filter_val, provider=sel_tts_provider)
             if not voices:
                 voices = ["en-US-ChristopherNeural-Male", "en-US-GuyNeural-Male", "id-ID-ArdiNeural-Male"]
 
             curr_v = manifest.preset_snapshot.get("default_voice", voices[0])
             v_idx = voices.index(curr_v) if curr_v in voices else 0
-            sel_voice = st.selectbox(t("field_voice_character"), voices, index=v_idx, key=f"voice_picker_{project_id}")
+            sel_voice = st.selectbox(t("field_voice_character"), voices, index=v_idx, key=f"voice_picker_{project_id}_{sel_tts_provider}")
 
         with col_vr:
             curr_rate = float(manifest.preset_snapshot.get("voice_rate", 1.0) or 1.0)
@@ -1254,7 +1451,7 @@ def render_voice_step_flow(
                     try:
                         with tempfile.TemporaryDirectory() as tmp_dir:
                             adapter = TTSAdapter(
-                                provider="edge",
+                                provider=sel_tts_provider,
                                 voice_name=sel_voice,
                                 voice_rate=sel_rate,
                                 output_dir=Path(tmp_dir),
@@ -1268,7 +1465,7 @@ def render_voice_step_flow(
 
         with col_save:
             if st.button(t("btn_apply_voice"), key=f"btn_apply_voice_{project_id}"):
-                voice_svc.set_voice(sel_voice, sel_rate)
+                voice_svc.set_voice(sel_voice, sel_rate, tts_provider=sel_tts_provider)
                 st.success(t("voice_applied_success"))
                 time.sleep(0.5)
                 st.rerun()
@@ -1476,16 +1673,24 @@ def render_visual_step_flow(
     raw_ck = coverr_keys[0] if (isinstance(coverr_keys, list) and coverr_keys) else str(coverr_keys)
     mask_coverr = mask_api_key(raw_ck) if has_coverr else ""
 
+    from app.services.longform.visual.ai_image import estimate_ai_image_usage, get_ai_image_readiness
+
+    ai_readiness = get_ai_image_readiness()
+    has_ai_image = bool(ai_readiness.get("ready", False))
+
     _cb_pix = st.session_state.get(f"cb_prov_pixabay_{project_id}", has_pixabay) if has_pixabay else False
     _cb_cov = st.session_state.get(f"cb_prov_coverr_{project_id}", has_coverr) if has_coverr else False
+    _cb_ai = st.session_state.get(f"cb_prov_ai_{project_id}", False) if has_ai_image else False
     _cb_loc = st.session_state.get(f"cb_prov_local_{project_id}", True)
-    target_prov = "pixabay" if _cb_pix else ("coverr" if _cb_cov else ("local" if _cb_loc else None))
+    target_prov = "ai_image" if _cb_ai and not (_cb_pix or _cb_cov) else (
+        "pixabay" if _cb_pix else ("coverr" if _cb_cov else ("ai_image" if _cb_ai else ("local" if _cb_loc else None)))
+    )
 
     # --- Clean Header (Mockup 2 V3) ---
     col_hdr, col_act = st.columns([3, 1])
     with col_hdr:
         st.markdown(f"### {t('visual_step_title')}")
-        st.caption(t("visual_step_subtitle"))
+        st.caption(_get_step_subtitle("visual", step_info["status"], is_job_running))
     with col_act:
         st.write("")
         if is_job_running:
@@ -1498,18 +1703,16 @@ def render_visual_step_flow(
                     st.rerun()
             elif st_val == "terhenti":
                 if st.button(t("visual_btn_resume"), type="primary", key=f"btn_resume_vis_{project_id}", use_container_width=True):
-                    cmd = [sys.executable, "cli_longform.py", "visual", "pipeline", project_id, "--allow-fallback"]
+                    vis_args = ["visual", "pipeline", project_id, "--allow-fallback"]
                     if target_prov:
-                        cmd.extend(["--provider", target_prov])
-                    jobs.start_job(project_id, "visual_pipeline", cmd)
-                    st.rerun()
+                        vis_args.extend(["--provider", target_prov])
+                    _start_job_safe(project_id, "visual_pipeline", jobs.build_longform_cli_command(*vis_args))
             elif st_val == "perlu_diperbarui":
                 if st.button(t("visual_btn_rebuild_stale"), type="primary", key=f"btn_update_vis_{project_id}", use_container_width=True):
-                    cmd = [sys.executable, "cli_longform.py", "visual", "pipeline", project_id, "--allow-fallback"]
+                    vis_args = ["visual", "pipeline", project_id, "--allow-fallback"]
                     if target_prov:
-                        cmd.extend(["--provider", target_prov])
-                    jobs.start_job(project_id, "visual_pipeline", cmd)
-                    st.rerun()
+                        vis_args.extend(["--provider", target_prov])
+                    _start_job_safe(project_id, "visual_pipeline", jobs.build_longform_cli_command(*vis_args))
             else:  # belum
                 st_all = compute_project_step_status(p_dir)
                 script_st = st_all["steps"]["script"]["status"]
@@ -1527,11 +1730,10 @@ def render_visual_step_flow(
                         st.caption(t("visual_prereq_voice"))
 
                 if st.button(t("visual_btn_start"), type="primary", disabled=btn_disabled, key=f"btn_start_vis_{project_id}", use_container_width=True):
-                    cmd = [sys.executable, "cli_longform.py", "visual", "pipeline", project_id, "--allow-fallback"]
+                    vis_args = ["visual", "pipeline", project_id, "--allow-fallback"]
                     if target_prov:
-                        cmd.extend(["--provider", target_prov])
-                    jobs.start_job(project_id, "visual_pipeline", cmd)
-                    st.rerun()
+                        vis_args.extend(["--provider", target_prov])
+                    _start_job_safe(project_id, "visual_pipeline", jobs.build_longform_cli_command(*vis_args))
 
     # --- V1: Summary Metric Tiles (Mockup 2 V3) ---
     total_shots = sum(len(ch.shots) for ch in manifest.chapters)
@@ -1602,12 +1804,24 @@ def render_visual_step_flow(
             disabled=False,
             key=f"cb_prov_local_{project_id}",
         )
-        col_s5.checkbox(
-            t("prov_ai_no_key"),
-            value=False,
-            disabled=True,
+        cb_ai = col_s5.checkbox(
+            t("prov_ai_ready", provider=ai_readiness["backend_label"]) if has_ai_image else t("prov_ai_no_mpt_key"),
+            value=bool(st.session_state.get(f"cb_prov_ai_{project_id}", False)) if has_ai_image else False,
+            disabled=not has_ai_image,
             key=f"cb_prov_ai_{project_id}",
         )
+        if has_ai_image and cb_ai:
+            ai_est = estimate_ai_image_usage(manifest, p_dir)
+            st.info(
+                t(
+                    "prov_ai_estimate_notice",
+                    provider=ai_readiness["backend_label"],
+                    count=ai_est["estimated_count"],
+                )
+            )
+        elif not has_ai_image:
+            if col_s5.button(t("btn_open_image_settings"), key=f"btn_ai_img_cfg_{project_id}"):
+                _open_mpt_settings_dialog("image")
 
     # --- V2: Interactive 2-Column Side-by-Side Gallery & Detail Layout (Mockup 2 V3) ---
     if total_shots > 0:
@@ -2188,9 +2402,12 @@ def render_render_step_flow(
             disabled=(not confirm_rerender_all or is_job_running),
             key=f"btn_rerender_all_exp_{project_id}",
         ):
-            jobs.start_job(project_id, "render_all", ["python", "cli_longform.py", "render", "all", project_id, "--force"])
-            time.sleep(0.5)
-            st.rerun()
+            _start_job_safe(
+                project_id,
+                "render_all",
+                jobs.build_longform_cli_command("render", "all", project_id, "--force"),
+                sleep_after=0.5,
+            )
 
     # --- Render Mockup 3 Completed Side-by-Side View (V4) ---
     if is_completed_view:
@@ -2269,7 +2486,7 @@ def render_render_step_flow(
         col_hdr, col_act = st.columns([3, 1])
         with col_hdr:
             st.markdown(f"### {t('render_step_title')}")
-            st.caption(t("render_step_subtitle"))
+            st.caption(_get_step_subtitle("render", st_val, is_job_running))
         with col_act:
             st.write("")
             if st_val == "belum":
@@ -2292,9 +2509,12 @@ def render_render_step_flow(
                     st.session_state[f"active_step_{project_id}"] = "capcut"
                     st.rerun()
                 else:
-                    jobs.start_job(project_id, "render_all", ["python", "cli_longform.py", "render", "all", project_id])
-                    time.sleep(0.5)
-                    st.rerun()
+                    _start_job_safe(
+                        project_id,
+                        "render_all",
+                        jobs.build_longform_cli_command("render", "all", project_id),
+                        sleep_after=0.5,
+                    )
 
         if not can_render:
             if not voice_done and not visual_done:
@@ -2459,7 +2679,7 @@ def render_capcut_step_flow(
         col_cch, col_cc_btn = st.columns([3, 1])
         with col_cch:
             st.markdown(f"### {t('capcut_heading')}")
-            st.caption(t("capcut_subtitle_completed"))
+            st.caption(_get_step_subtitle("capcut", step_info["status"], is_job_running))
         with col_cc_btn:
             st.write("")
             if st.button(t("btn_recheck"), key=f"btn_recheck_capcut_{project_id}", use_container_width=True):
@@ -2497,9 +2717,12 @@ def render_capcut_step_flow(
             key=f"btn_capcut_main_{project_id}",
             use_container_width=True,
         ):
-            jobs.start_job(project_id, "capcut_export", ["python", "cli_longform.py", "capcut", "export", project_id, "--install"])
-            time.sleep(0.5)
-            st.rerun()
+            _start_job_safe(
+                project_id,
+                "capcut_export",
+                jobs.build_longform_cli_command("capcut", "export", project_id, "--install"),
+                sleep_after=0.5,
+            )
 
         if draft_info:
             if st.button(t("btn_open_draft_folder"), key=f"btn_open_draft_{project_id}", use_container_width=True):
@@ -2517,7 +2740,7 @@ def render_capcut_step_flow(
         col_hdr, col_act = st.columns([3, 1])
         with col_hdr:
             st.markdown(f"### {t('step_capcut')}")
-            st.caption(t("capcut_subtitle_step"))
+            st.caption(_get_step_subtitle("capcut", step_info["status"], is_job_running))
         with col_act:
             st.write("")
             btn_label = t("btn_reexport_capcut") if is_exported else t("btn_export_capcut_install")
@@ -2528,9 +2751,12 @@ def render_capcut_step_flow(
                 key=f"btn_capcut_main_{project_id}",
                 use_container_width=True,
             ):
-                jobs.start_job(project_id, "capcut_export", ["python", "cli_longform.py", "capcut", "export", project_id, "--install"])
-                time.sleep(0.5)
-                st.rerun()
+                _start_job_safe(
+                    project_id,
+                    "capcut_export",
+                    jobs.build_longform_cli_command("capcut", "export", project_id, "--install"),
+                    sleep_after=0.5,
+                )
 
         with st.container(border=True):
             col_cch, col_cc_btn = st.columns([3, 1])

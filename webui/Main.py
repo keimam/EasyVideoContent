@@ -91,32 +91,33 @@ except Exception:
         "video.\n\nhttps://github.com/harry0703/MoneyPrinterTurbo"
     )
 
-st.set_page_config(
-    page_title=_main_page_title,
-    page_icon=_main_page_icon,
-    layout="wide",
-    initial_sidebar_state="auto",
-    menu_items={
-        "Report a bug": "https://github.com/harry0703/MoneyPrinterTurbo/issues",
-        "About": _about_content,
-    },
-)
+if not st.session_state.get("_efs_settings_library_only", False):
+    st.set_page_config(
+        page_title=_main_page_title,
+        page_icon=_main_page_icon,
+        layout="wide",
+        initial_sidebar_state="auto",
+        menu_items={
+            "Report a bug": "https://github.com/harry0703/MoneyPrinterTurbo/issues",
+            "About": _about_content,
+        },
+    )
 
 
-# Streamlit 1.59 会在页面右上角默认展示 Deploy、skills nudge 等平台入口。
-# MoneyPrinterTurbo 是面向终端用户的本地工具，这些入口会造成顶部大块空白，
-# 也会让新用户误以为需要安装额外组件。这里统一隐藏 Streamlit 平台工具栏，
-# 并压缩主容器顶部留白，只保留项目自己的标题、语言选择和业务设置区域。
-style_file = Path(__file__).with_name("styles.css")
-streamlit_style = f"<style>{style_file.read_text(encoding='utf-8')}</style>"
-st.markdown(streamlit_style, unsafe_allow_html=True)
-try:
-    from app.services.branding.theme import inject_brand_theme
-    from app.services.branding.sidebar import render_brand_sidebar
-    inject_brand_theme()
-    render_brand_sidebar(current_page="main")
-except Exception:
-    pass
+    # Streamlit 1.59 会在页面右上角默认展示 Deploy、skills nudge 等平台入口。
+    # MoneyPrinterTurbo 是面向终端用户的本地工具，这些入口会造成顶部大块空白，
+    # 也会让新用户误以为需要安装额外组件。这里统一隐藏 Streamlit 平台工具栏，
+    # 并压缩主容器顶部留白，只保留项目自己的标题、语言选择和业务设置区域。
+    style_file = Path(__file__).with_name("styles.css")
+    streamlit_style = f"<style>{style_file.read_text(encoding='utf-8')}</style>"
+    st.markdown(streamlit_style, unsafe_allow_html=True)
+    try:
+        from app.services.branding.theme import inject_brand_theme
+        from app.services.branding.sidebar import render_brand_sidebar
+        inject_brand_theme()
+        render_brand_sidebar(current_page="main")
+    except Exception:
+        pass
 # 定义资源目录
 font_dir = utils.font_dir()
 song_dir = utils.song_dir()
@@ -9534,4 +9535,17 @@ def _render_application():
         _save_runtime_config()
 
 
-_render_application()
+def render_embedded_settings_dialog() -> None:
+    """Render MoneyPrinterTurbo's native Settings dialog on the active page."""
+    _initialize_session_state()
+    qp_lang = str(st.query_params.get("lang", "") or "").strip().lower()
+    if qp_lang.startswith("id") and "id" in locales:
+        st.session_state["ui_language"] = "id"
+    elif qp_lang.startswith("en") and "en" in locales:
+        st.session_state["ui_language"] = "en"
+    _render_settings_dialog()
+    _save_runtime_config()
+
+
+if not st.session_state.get("_efs_settings_library_only", False):
+    _render_application()

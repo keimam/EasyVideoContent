@@ -48,9 +48,11 @@ def run_verification():
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
     server_log = open(SCREENS_DIR / "streamlit_server.log", "w", encoding="utf-8")
+    venv_py = REPO_ROOT / ".venv" / "Scripts" / "python.exe"
+    streamlit_py = str(venv_py) if venv_py.is_file() else sys.executable
     server_proc = subprocess.Popen(
         [
-            sys.executable,
+            streamlit_py,
             "-m",
             "streamlit",
             "run",
@@ -115,99 +117,128 @@ def run_verification():
                 page.screenshot(path=str(sidebar_png))
                 print(f"  -> Captured fallback {sidebar_png}")
 
-            # Verify computed font-family on all icons in Main page
-            print("  -> Checking computed font-family on Main page icon elements...")
-            icons = page.query_selector_all('[data-testid="stIconMaterial"], [class*="material-symbols"]')
-            print(f"  Found {len(icons)} icon elements on Main page.")
-            assert len(icons) > 0, "No icon elements found on Main page!"
-
-            invalid_icon_fonts = []
-            for icon in icons:
-                ff = icon.evaluate("el => window.getComputedStyle(el).fontFamily")
-                text = icon.inner_text().strip()
-                if "Material" not in ff:
-                    invalid_icon_fonts.append((text, ff))
-
-            if invalid_icon_fonts:
-                print(f"  ERROR: Found {len(invalid_icon_fonts)} icons with incorrect font-family:")
-                for text, ff in invalid_icon_fonts[:5]:
-                    print(f"    Icon '{text}' has font-family: {ff}")
-                raise AssertionError(f"Icons do not have Material Symbols font-family: {invalid_icon_fonts[:5]}")
-            print(f"  [OK] All {len(icons)} icons on Main page have valid Material Symbols computed font-family.")
-
-            # Check that icon names are NOT visible as plain text outside of icon glyphs (R1-c)
             known_icon_names = [
                 "keyboard_double_arrow_left", "movie", "bolt", "category",
-                "tune", "cleaning_services", "info", "auto_awesome", "expand_more", "settings"
+                "tune", "cleaning_services", "info", "auto_awesome", "expand_more",
+                "settings", "psychology", "image", "video_library", "key",
+                "refresh", "folder_open", "delete_sweep", "visibility", "network_check",
             ]
-            offenders = page.evaluate("""(names) => {
-                const results = [];
-                const nonIcons = document.querySelectorAll('p, label, h1, h2, h3, h4, span:not([data-testid="stIconMaterial"]):not([class*="material-symbols"])');
-                for (const el of nonIcons) {
-                    if (el.querySelector('[data-testid="stIconMaterial"], [class*="material-symbols"]')) {
-                        continue;
+
+            def assert_icons_valid(scope_label: str, root_selector: str = "document", require_icons: bool = True):
+                check_res = page.evaluate("""({names, rootSel}) => {
+                    const root = rootSel === 'document' ? document : document.querySelector(rootSel);
+                    if (!root) return {error: `Missing container: ${rootSel}`, count: 0, badFonts: [], plainLeaks: []};
+                    const iconSel = '[data-testid="stIconMaterial"], [class*="material-symbols"], span[role="img"][aria-label$=" icon"], span[style*="Material Symbols"]';
+                    const icons = Array.from(root.querySelectorAll(iconSel));
+                    const badFonts = [];
+                    for (const el of icons) {
+                        const ff = window.getComputedStyle(el).fontFamily || '';
+                        if (!ff.includes('Material')) {
+                            badFonts.push({text: (el.innerText || el.textContent || '').trim(), ff, tag: el.tagName, role: el.getAttribute('role')});
+                        }
                     }
-                    const txt = (el.innerText || '').trim();
-                    if (names.includes(txt)) {
-                        results.push({ tag: el.tagName, class: el.className, text: txt });
+                    const plainLeaks = [];
+                    const nonIcons = root.querySelectorAll('p, label, h1, h2, h3, h4, span:not([data-testid="stIconMaterial"]):not([class*="material-symbols"]):not([role="img"][aria-label$=" icon"]):not([style*="Material Symbols"])');
+                    for (const el of nonIcons) {
+                        if (el.querySelector(iconSel)) continue;
+                        const directText = Array.from(el.childNodes)
+                            .filter(n => n.nodeType === 3)
+                            .map(n => n.textContent.trim())
+                            .join(' ')
+                            .trim();
+                        for (const name of names) {
+                            if (directText === name || directText.startsWith(name + ' ')) {
+                                plainLeaks.push({tag: el.tagName, class: el.className, text: directText});
+                            }
+                        }
                     }
-                }
-                return results;
-            }""", known_icon_names)
-            assert len(offenders) == 0, f"Found plain text elements containing icon ligature names: {offenders}"
-            print("  [OK] No icon ligature names found as plain text outside of icon glyphs.")
+                    return {error: null, count: icons.length, badFonts, plainLeaks};
+                }""", {"names": known_icon_names, "rootSel": root_selector})
+                assert not check_res["error"], f"[{scope_label}] {check_res['error']}"
+                if require_icons:
+                    assert check_res["count"] > 0, f"[{scope_label}] No icon elements found!"
+                assert not check_res["badFonts"], f"[{scope_label}] Icons with non-Material font-family: {check_res['badFonts'][:5]}"
+                assert not check_res["plainLeaks"], f"[{scope_label}] Ligature names leaked as plain text: {check_res['plainLeaks'][:5]}"
+                print(f"  [OK] [{scope_label}] {check_res['count']} icons valid, 0 ligature leaks.")
+
+            # Verify computed font-family on all icons in Main page
+            print("  -> Checking computed font-family on Main page icon elements...")
+            assert_icons_valid("Main Page")
 
             # Check UI text font is Plus Jakarta Sans
             h1_ff = page.evaluate("() => { const el = document.querySelector('h1') || document.querySelector('.efs-main-brand__name'); return el ? window.getComputedStyle(el).fontFamily : ''; }")
             print(f"  H1 / Brand computed font-family: {h1_ff}")
             assert "Plus Jakarta Sans" in h1_ff, f"Heading font is not Plus Jakarta Sans: {h1_ff}"
 
-            # --- Page 2: Long Video ---
-            lv_url = f"{base_url}/Long_Video"
-            print(f"[4/5] Navigating to Long Video at {lv_url}...")
-            page.goto(lv_url, wait_until="networkidle")
-            page.wait_for_selector('.efs-sb-header', timeout=30000)
-            page.wait_for_timeout(2000)
+            # --- Page 2: Long Video (?lang=id and ?lang=en) + Same-Page Dialog Verification (B3) ---
+            for ui_lang in ("id", "en"):
+                lv_url = f"{base_url}/Long_Video?lang={ui_lang}"
+                print(f"[4/5] Navigating to Long Video ({ui_lang}) at {lv_url}...")
+                page.goto(lv_url, wait_until="networkidle")
+                page.wait_for_selector('.efs-sb-header', timeout=30000)
+                page.wait_for_timeout(1500)
 
-            lv_png = SCREENS_DIR / "longvideo.png"
-            page.screenshot(path=str(lv_png), full_page=False)
-            print(f"  -> Captured {lv_png}")
+                if ui_lang == "id":
+                    lv_png = SCREENS_DIR / "longvideo.png"
+                    page.screenshot(path=str(lv_png), full_page=False)
+                    print(f"  -> Captured {lv_png}")
 
-            print("  -> Checking computed font-family on Long Video icon elements...")
-            lv_icons = page.query_selector_all('[data-testid="stIconMaterial"], [class*="material-symbols"]')
-            print(f"  Found {len(lv_icons)} icon elements on Long Video page.")
-            assert len(lv_icons) > 0, "No icon elements found on Long Video page!"
+                assert_icons_valid(f"Long Video ({ui_lang})")
 
-            invalid_lv_fonts = []
-            for icon in lv_icons:
-                ff = icon.evaluate("el => window.getComputedStyle(el).fontFamily")
-                text = icon.inner_text().strip()
-                if "Material" not in ff:
-                    invalid_lv_fonts.append((text, ff))
+                # Open MPT Settings right on Long Video via sidebar API & AI Providers button
+                page.mouse.move(900, 10)
+                api_btn = page.locator('[data-testid="stSidebar"] button').filter(has_text="API").first
+                api_btn.scroll_into_view_if_needed()
+                api_btn.evaluate("el => el.click()")
+                dlg = page.locator('[role="dialog"], [data-testid="stDialog"]').first
+                dlg.wait_for(state="visible", timeout=25000)
+                page.wait_for_timeout(1200)
+                assert "/Long_Video" in page.url, f"Settings dialog unexpectedly switched away from Long_Video: {page.url}"
 
-            if invalid_lv_fonts:
-                print(f"  ERROR: Found {len(invalid_lv_fonts)} icons with incorrect font-family:")
-                for text, ff in invalid_lv_fonts[:5]:
-                    print(f"    Icon '{text}' has font-family: {ff}")
-                raise AssertionError(f"Icons do not have Material Symbols font-family: {invalid_lv_fonts[:5]}")
-            print(f"  [OK] All {len(lv_icons)} icons on Long Video page have valid Material Symbols computed font-family.")
+                # Click through every tab in Settings dialog and validate icons
+                tabs = dlg.locator('[role="tab"]')
+                tab_count = tabs.count()
+                assert tab_count >= 5, f"Expected all Settings tabs, got {tab_count}"
+                for idx in range(tab_count):
+                    tabs.nth(idx).click(force=True)
+                    page.wait_for_timeout(900)
+                    if idx == 0:
+                        dlg.locator("h3").first.wait_for(state="visible", timeout=15000)
+                        page.wait_for_timeout(500)
+                        shot_path = SCREENS_DIR / f"8b1_settings_general_{ui_lang}.png"
+                        page.screenshot(path=str(shot_path), full_page=False)
+                        print(f"  -> Captured {shot_path}")
+                    assert_icons_valid(f"Settings Dialog ({ui_lang}) Tab {idx}", root_selector='[role="dialog"], [data-testid="stDialog"]', require_icons=(idx == 0))
 
-            lv_offenders = page.evaluate("""(names) => {
-                const results = [];
-                const nonIcons = document.querySelectorAll('p, label, h1, h2, h3, h4, span:not([data-testid="stIconMaterial"]):not([class*="material-symbols"])');
-                for (const el of nonIcons) {
-                    if (el.querySelector('[data-testid="stIconMaterial"], [class*="material-symbols"]')) {
-                        continue;
-                    }
-                    const txt = (el.innerText || '').trim();
-                    if (names.includes(txt)) {
-                        results.push({ tag: el.tagName, class: el.className, text: txt });
-                    }
-                }
-                return results;
-            }""", known_icon_names)
-            assert len(lv_offenders) == 0, f"Found plain text elements containing icon ligature names on Long Video: {lv_offenders}"
-            print("  [OK] No icon ligature names found as plain text on Long Video page.")
+                # Close Settings dialog cleanly via Close button and wait for backdrop removal
+                close_btn = dlg.locator('button[aria-label="Close"]').first
+                if close_btn.count() > 0:
+                    close_btn.click()
+                else:
+                    page.keyboard.press("Escape")
+                dlg.wait_for(state="detached", timeout=15000)
+                page.wait_for_timeout(400)
+                assert "/Long_Video" in page.url
+
+                # Verify other sidebar dialogs (Kelola Niche, Cache & Tentang) on Long Video in ID
+                if ui_lang == "id":
+                    for btn_text, dlg_label in [("Niche", "Kelola Niche"), ("Cache", "Cache"), ("Tentang", "Tentang")]:
+                        page.mouse.move(900, 10)
+                        page.wait_for_timeout(200)
+                        btn_loc = page.locator('[data-testid="stSidebar"] button', has_text=btn_text).first
+                        btn_loc.scroll_into_view_if_needed()
+                        btn_loc.evaluate("el => el.click()")
+                        d2 = page.locator('[role="dialog"], [data-testid="stDialog"]').first
+                        d2.wait_for(state="visible", timeout=20000)
+                        page.wait_for_timeout(800)
+                        assert_icons_valid(f"Dialog {dlg_label}", root_selector='[role="dialog"], [data-testid="stDialog"]', require_icons=False)
+                        d2_close = d2.locator('button[aria-label="Close"]').first
+                        if d2_close.count() > 0:
+                            d2_close.click()
+                        else:
+                            page.keyboard.press("Escape")
+                        d2.wait_for(state="detached", timeout=15000)
+                        page.wait_for_timeout(400)
 
             browser.close()
 

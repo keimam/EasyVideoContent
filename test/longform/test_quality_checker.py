@@ -17,9 +17,9 @@ def test_new_tags_parsed_by_script_import():
     script_text = """# Muscle Car Legend
 
 ## Chapter 1: The Detroit Beast
-In 1969, the street racing scene exploded in Detroit. [visual: black classic muscle car on highway] [motion: zoom_in] [source: stock] [search: 1969 muscle car highway cruising]
+In 1969, the street racing scene exploded in Detroit. [visual: black classic muscle car on highway] [motion: zoom_in] [source: stock] [search: 1969 muscle car highway cruising] Crowds gathered every warm summer night along Woodward Avenue while factory engineers quietly tested big-block prototypes between red stoplights and empty industrial boulevards across town before launching dealer performance packages nationwide for young American buyers seeking raw quarter-mile acceleration.
 
-Under the sculpted hood lay a dual-quad iron block. [visual: engine bay closeup] [motion: pan_left] [source: local] [search: v8 engine bay carburetor] [verify: 426 Hemi factory rated at 425 horsepower]
+Under the sculpted hood lay a dual-quad iron block. [visual: engine bay closeup] [motion: pan_left] [source: local] [search: v8 engine bay carburetor] [verify: 426 Hemi factory rated at 425 horsepower] Factory mechanics carefully tuned dual four-barrel carburetors and heavy-duty suspension components inside dimly lit Detroit engineering garages so middle-class weekend racers could dominate paved dragstrips straight off neighborhood showroom floors across every major American city.
 """
     chapters, title = parse_markdown_script(script_text, preset)
     assert len(chapters) == 1
