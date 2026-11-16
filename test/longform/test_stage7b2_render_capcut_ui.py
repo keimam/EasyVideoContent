@@ -928,7 +928,8 @@ def test_z2_apptest_pipeline_auto_phases_and_failure(tmp_path, monkeypatch):
     at_failed.query_params["project"] = test_pid
     at_failed.run()
     assert not at_failed.exception
-    assert any("VisualService test failure" in e.value for e in at_failed.error)
+    assert any("Pekerjaan Gagal" in e.value for e in at_failed.error)
+    assert any("VisualService test failure" in c.value for e in at_failed.expander for c in e.code)
     retry_btns = [b for b in at_failed.button if b.key == f"btn_retry_job_{test_pid}"]
     assert len(retry_btns) == 1
 

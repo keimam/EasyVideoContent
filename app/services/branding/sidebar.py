@@ -18,9 +18,8 @@ from app.services.branding.constants import (
 from app.services.longform.ui.i18n import t
 
 
-@st.dialog("Tentang EasyFaceless Studio")
-def show_about_dialog():
-    """Dialog displaying version, description, and MIT upstream attribution."""
+def _render_about_dialog_body():
+    """Dialog body displaying version, description, and MIT upstream attribution."""
     logo_uri = get_logo_data_uri()
     st.markdown(
         f"""
@@ -40,7 +39,7 @@ def show_about_dialog():
     st.markdown(
         f"""
         - **{t('about_dialog_original_proj')}** [{UPSTREAM_REPO_URL}]({UPSTREAM_REPO_URL})
-        - **{t('about_dialog_license_type')}** MIT License (Copyright &copy; 2024 Harry)
+        - **{t('about_dialog_license_type')}** {t('license_mit_detail')}
         - **{t('about_dialog_status')}** {t('about_dialog_status_desc')}
         """
     )
@@ -48,9 +47,13 @@ def show_about_dialog():
         st.rerun()
 
 
-@st.dialog("Kelola Niche & Sub-Niche", width="large")
-def show_niche_dialog():
-    """Dialog for inspecting and managing niches & sub-niches (R2)."""
+def show_about_dialog():
+    """Open localized About dialog dynamically."""
+    st.dialog(t("about_dialog_title"))(_render_about_dialog_body)()
+
+
+def _render_niche_dialog_body():
+    """Dialog body for inspecting and managing niches & sub-niches (R2)."""
     from app.services.longform.presets import (
         list_presets,
         format_preset_tree,
@@ -59,7 +62,7 @@ def show_niche_dialog():
         get_preset,
     )
 
-    st.subheader(f"🏷️ {t('niche_dialog_title')}")
+    st.subheader(t("niche_dialog_title"))
     st.caption(t("niche_dialog_desc"))
 
     all_presets = list_presets()
@@ -79,12 +82,12 @@ def show_niche_dialog():
 
     col1, col2 = st.columns([1.3, 1.7])
     with col1:
-        st.markdown(f"**🌳 {t('niche_tree_heading')}**")
+        st.markdown(f"**{t('niche_tree_heading')}**")
         tree_text = format_preset_tree(all_presets)
         st.code(tree_text, language="text")
 
     with col2:
-        st.markdown(f"**🔍 {t('niche_detail_heading')}**")
+        st.markdown(f"**{t('niche_detail_heading')}**")
         preset_ids = sorted(list(all_presets.keys()))
         chosen_id = st.selectbox(t("niche_select_view"), preset_ids, key="sb_dialog_chosen_preset")
         if chosen_id and chosen_id in all_presets:
@@ -104,7 +107,7 @@ def show_niche_dialog():
     st.markdown("---")
     act_col1, act_col2 = st.columns([1.6, 1])
     with act_col1:
-        if st.button(f"📁 {t('niche_btn_open_manager')}", key="btn_open_niche_manager", type="primary", use_container_width=True):
+        if st.button(t("niche_btn_open_manager"), key="btn_open_niche_manager", type="primary", use_container_width=True):
             st.session_state["show_niche_mgmt"] = True
             try:
                 st.switch_page("pages/1_🎬_Long_Video.py")
@@ -114,6 +117,11 @@ def show_niche_dialog():
     with act_col2:
         if st.button(t("dialog_close"), key="btn_close_niche_dialog", use_container_width=True):
             st.rerun()
+
+
+def show_niche_dialog():
+    """Open localized Manage Niche dialog dynamically."""
+    st.dialog(t("niche_dialog_title"), width="large")(_render_niche_dialog_body)()
 
 
 def _inject_sidebar_styles():

@@ -36,14 +36,15 @@ def render_mpt_entry(show_top_return: bool = True):
 
     # 3. Top-of-page quick return link
     if show_top_return:
+        from app.services.longform.ui.i18n import t
         try:
             st.page_link(
                 "Main.py",
-                label="← MoneyPrinterTurbo (video pendek)",
-                help="Kembali ke halaman utama pembuatan video pendek MoneyPrinterTurbo",
+                label=t("nav_back_mpt"),
+                help=t("nav_back_mpt_help"),
             )
         except Exception:
-            if st.button("← MoneyPrinterTurbo (video pendek)", key="btn_nav_mpt_main"):
+            if st.button(t("nav_back_mpt"), key="btn_nav_mpt_main"):
                 try:
                     st.switch_page("Main.py")
                 except Exception:

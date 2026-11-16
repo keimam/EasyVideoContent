@@ -176,7 +176,7 @@ def test_step3_visual_states_in_apptest(tmp_path, monkeypatch):
     assert not at_selesai.exception
 
     btn_labels_sl = [b.label for b in at_selesai.button if b.label]
-    assert any("Selesai ✔ — Lanjut ke Render" in lbl for lbl in btn_labels_sl)
+    assert any("Lanjut ke Render" in lbl for lbl in btn_labels_sl)
 
     # --- 5. State: berjalan (simulated background job) ---
     worker = subprocess.Popen(

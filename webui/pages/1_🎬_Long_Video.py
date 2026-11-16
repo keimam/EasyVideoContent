@@ -19,14 +19,15 @@ if root_dir not in sys.path:
 import streamlit as st
 
 from app.services.longform.ui import components
+from app.services.longform.ui.i18n import t
 
 try:
     from app.services.branding.constants import APP_NAME, FAVICON_PATH
     from app.services.branding.theme import inject_brand_theme
-    _page_title = f"{APP_NAME} — Video Panjang"
+    _page_title = f"{APP_NAME} — {t('nav_long_video')}"
     _page_icon = str(FAVICON_PATH) if FAVICON_PATH.is_file() else "🎬"
 except Exception:
-    _page_title = "Studio Video Panjang - MoneyPrinterTurbo"
+    _page_title = t("nav_long_video")
     _page_icon = "🎬"
 
 st.set_page_config(

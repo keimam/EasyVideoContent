@@ -272,53 +272,28 @@ def main():
         verify_no_block_overlaps(ws_url, completed_url, viewport_width=1920)
         print("--- All V6 Bounding Box Checks Passed! ---\n")
 
-        # --- Capture the 6 High-Res Screenshots ---
-        # 1. 8a2v2_beranda.png
-        print("[1/6] Capturing 8a2v2_beranda.png...")
-        capture_url(ws_url, "http://localhost:8501/Long_Video?lang=id", SCREENS_DIR / "8a2v2_beranda.png", wait_sec=8.5)
-
-        # 2. 8a2v2_proyek_visual.png
-        print("[2/6] Capturing 8a2v2_proyek_visual.png...")
-        capture_url(
-            ws_url,
-            "http://localhost:8501/Long_Video?project=dodge_charger_stage2&step=visual&lang=id",
-            SCREENS_DIR / "8a2v2_proyek_visual.png",
-            wait_sec=8.5,
-        )
-
-        # 3. 8a2v2_selesai.png
-        print("[3/6] Capturing 8a2v2_selesai.png...")
-        capture_url(
-            ws_url,
-            "http://localhost:8501/Long_Video?project=uji_nokey&step=render&lang=id",
-            SCREENS_DIR / "8a2v2_selesai.png",
-            wait_sec=8.5,
-        )
-
-        print("All Indonesian screenshots captured successfully in docs/branding/screens/!")
-
-        # 4. 8a2v2_beranda_en.png
-        print("[4/6] Capturing 8a2v2_beranda_en.png...")
-        capture_url(ws_url, "http://localhost:8501/Long_Video?lang=en", SCREENS_DIR / "8a2v2_beranda_en.png", wait_sec=8.5)
-
-        # 5. 8a2v2_proyek_visual_en.png
-        print("[5/6] Capturing 8a2v2_proyek_visual_en.png...")
-        capture_url(
-            ws_url,
-            "http://localhost:8501/Long_Video?project=dodge_charger_stage2&step=visual&lang=en",
-            SCREENS_DIR / "8a2v2_proyek_visual_en.png",
-            wait_sec=8.5,
-        )
-
-        # 6. 8a2v2_selesai_en.png
-        print("[6/6] Capturing 8a2v2_selesai_en.png...")
-        capture_url(
-            ws_url,
-            "http://localhost:8501/Long_Video?project=uji_nokey&step=render&lang=en",
-            SCREENS_DIR / "8a2v2_selesai_en.png",
-            wait_sec=8.5,
-        )
-        print("All English screenshots captured successfully!")
+        # --- Capture High-Res V7 Screenshots (ID & EN for Beranda + all 5 steps + Completed) ---
+        targets_v3 = [
+            ("8a2v3_beranda.png", "http://localhost:8501/Long_Video?lang=id"),
+            ("8a2v3_beranda_en.png", "http://localhost:8501/Long_Video?lang=en"),
+            ("8a2v3_naskah.png", "http://localhost:8501/Long_Video?project=dodge_charger_stage2&step=script&lang=id"),
+            ("8a2v3_naskah_en.png", "http://localhost:8501/Long_Video?project=dodge_charger_stage2&step=script&lang=en"),
+            ("8a2v3_suara.png", "http://localhost:8501/Long_Video?project=dodge_charger_stage2&step=voice&lang=id"),
+            ("8a2v3_suara_en.png", "http://localhost:8501/Long_Video?project=dodge_charger_stage2&step=voice&lang=en"),
+            ("8a2v3_visual.png", "http://localhost:8501/Long_Video?project=dodge_charger_stage2&step=visual&lang=id"),
+            ("8a2v3_visual_en.png", "http://localhost:8501/Long_Video?project=dodge_charger_stage2&step=visual&lang=en"),
+            ("8a2v3_render.png", "http://localhost:8501/Long_Video?project=dodge_charger_stage2&step=render&lang=id"),
+            ("8a2v3_render_en.png", "http://localhost:8501/Long_Video?project=dodge_charger_stage2&step=render&lang=en"),
+            ("8a2v3_capcut.png", "http://localhost:8501/Long_Video?project=dodge_charger_stage2&step=capcut&lang=id"),
+            ("8a2v3_capcut_en.png", "http://localhost:8501/Long_Video?project=dodge_charger_stage2&step=capcut&lang=en"),
+            ("8a2v3_selesai.png", "http://localhost:8501/Long_Video?project=uji_nokey&step=render&lang=id"),
+            ("8a2v3_selesai_en.png", "http://localhost:8501/Long_Video?project=uji_nokey&step=render&lang=en"),
+        ]
+        total_v3 = len(targets_v3)
+        for idx, (fname, url) in enumerate(targets_v3, start=1):
+            print(f"[{idx}/{total_v3}] Capturing {fname}...")
+            capture_url(ws_url, url, SCREENS_DIR / fname, wait_sec=7.5)
+        print("All V7 (ID & EN) screenshots captured successfully in docs/branding/screens/!")
 
     finally:
         proc.terminate()

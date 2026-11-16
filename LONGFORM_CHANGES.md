@@ -22,6 +22,7 @@ Tujuannya adalah menjaga kemudahan sinkronisasi (merge/rebase) dari repositori u
 | **Tahap 8A.2** | `webui/Main.py` | 1 baris | Parameter default_language='id' pada resolusi bahasa antarmuka pengguna |
 | **Revisi 8A.2 v2** | Tidak Ada | 0 baris | Audit i18n scanner, custom stepper & metric tile, penyesuaian presisi mockup 1-3, pembersihan emoji |
 | **Addendum 8A.2 v2 (V6)** | Tidak Ada | 0 baris | Resolusi tumpang tindih visual step, margin vertikal seragam 16-24px, automated CDP bounding box checks |
+| **Addendum 8A.2 v2 (V7)** | Tidak Ada | 0 baris | Pemulihan regresi logika Visual (is_replaced, upload file_path, provider), i18n tuntas seluruh langkah & dialog, AST scanner literal UI, pratinjau suara aman, expander Detail error |
 
 ---
 
@@ -285,6 +286,26 @@ Tujuannya adalah menjaga kemudahan sinkronisasi (merge/rebase) dari repositori u
   - Fungsi ini mengukur koordinat bounding box seluruh blok utama (stepper, job banner, success banner, metric tile row, expander, kartu kolom) dan memverifikasi tidak ada dua blok independen yang bertumpukan (`overlapPx <= 0`).
   - Mengukur jarak vertikal baris metrik ke expander secara presisi via JavaScript di peramban dan mengonfirmasi jarak 20 px (dalam batas 16–24 px).
   - Menghasilkan 6 tangkapan layar beresolusi penuh 1600x1280 terbaru di `docs/branding/screens/8a2v2_*.png`.
+
+### Addendum 8A.2 v2: Pemulihan Regresi Logika, i18n Tuntas, Pratinjau Suara Aman, & Audit Pesan Error (V7)
+- **File Kode Upstream yang Disentuh:** **Nihil (0 berkas kode)**
+- **Verifikasi Isolasi Non-UI (`git diff stage-8a1-complete --stat -- app/services/longform`):**
+  - Hanya 2 file antarmuka yang berubah di `app/services/longform/`: `ui/components.py` dan `ui/i18n.py`. Seluruh file non-UI (service, schema, store, CLI, status, render, capcut) **100% utuh**.
+- **Pemulihan Regresi Logika di `app/services/longform/ui/components.py`:**
+  1. Menghapus penugasan atribut ilegal `target_shot.is_replaced = True` pada aksi *"Pakai ini"* di Langkah Visual (karena `Shot` di `schema.py` memakai `extra="forbid"` dan tidak memiliki field `is_replaced`), serta mengganti pengecekan ke `target_shot.locked` (yang memang otomatis disetel `True` oleh `VisualService.replace_shot`).
+  2. Memulihkan parameter `file_path=asset_info["file_path"]` pada tab *"Unggah"* (`tab_up`) menggantikan regresi 8A.2 (`prompt="", provider_name="local"`).
+  3. Memulihkan pemilihan provider dari checkbox di expander *"Sumber footage"* (`target_prov` membaca state `cb_prov_*`).
+  4. Membersihkan kunci `st.session_state` checkbox `"Perlu Dicek"` (`chk_rev_{pid}_{shot_id}`) setelah `replace_shot` berhasil agar `needs_review=False` yang baru disimpan tidak tertimpa nilai lama pada rerun berikutnya.
+- **Lokalisasi i18n Tuntas (ID & EN):**
+  - Melengkapi kamus simetris ID & EN di `app/services/longform/ui/i18n.py` (menghilangkan seluruh ~309 string literal hardcoded di `components.py`, `nav.py`, `sidebar.py`, dan `1_🎬_Long_Video.py`, termasuk dialog dinamis, banner pekerjaan, langkah Naskah, Suara, Visual, Render, dan CapCut, serta pemetaan `next_step` & opsi niche di UI).
+- **Pratinjau Suara Aman & Audit Pesan Error:**
+  - Tombol *"Buat Video Pratinjau Bab 1"* kini otomatis dinonaktifkan sebelum seluruh audio grup Bab 1 disintesis, disertai keterangan ramah (`voice_preview_prereq_caption`) tanpa menampilkan error jalur file atau perintah CLI teknis.
+  - Menambahkan helper `_render_friendly_error(friendly_msg, exc)` sehingga seluruh `st.error` menampilkan pesan ramah pengguna sementara detail teknis/stack ditempatkan di dalam expander *"Detail"* / *"Details"*.
+- **Penguatan Otomatis (`test_i18n.py`, `test_stage8a2_ui.py`, `conftest.py`):**
+  - Menambahkan AST scanner `test_no_hardcoded_ui_strings_without_t` yang memastikan 0 string literal ID/EN dipakai langsung di widget `st.*` tanpa `t()`.
+  - Menambahkan `test_all_steps_no_mixed_language_apptest` (Beranda + 5 langkah dalam ID & EN) dengan daftar kata terlarang lintas bahasa.
+  - Menambahkan `test_v7_visual_use_candidate_replaces_asset_and_locks`, `test_v7_visual_lock_toggle_and_upload_wiring`, `test_v7_voice_preview_disabled_before_audio_synth`, dan `test_v7_friendly_error_with_detail_expander`.
+- **Tangkapan Layar Verifikasi ID & EN Semua Langkah:** `docs/branding/screens/8a2v3_*.png`.
 
 
 

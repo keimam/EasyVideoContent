@@ -19,3 +19,11 @@ def mock_capcut_not_running(monkeypatch, request):
 
     monkeypatch.setattr("app.services.longform.capcut.detector.is_capcut_running", lambda: False)
     monkeypatch.setattr("app.services.longform.capcut.service.is_capcut_running", lambda: False)
+
+
+@pytest.fixture(autouse=True)
+def default_ui_language_id(monkeypatch):
+    """Isolate tests from host config.toml language setting by defaulting to 'id' unless overridden."""
+    from app.config import config
+
+    monkeypatch.setitem(config.ui, "language", "id")
