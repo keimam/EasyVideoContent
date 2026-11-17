@@ -735,7 +735,7 @@ def render_brand_header(available_update: Optional[str] = None):
     <div class="efs-main-brand">
         <img class="efs-main-brand__logo" src="{logo_uri}" alt="{APP_NAME} Logo" />
         <span class="efs-main-brand__name">{APP_NAME}</span>
-        <a class="efs-main-brand__badge" href="{UPSTREAM_REPO_URL}" target="_blank" rel="noopener noreferrer" title="Berdasarkan {UPSTREAM_REPO_URL}">{badge_label}</a>
+        <a class="efs-main-brand__badge" href="{UPSTREAM_REPO_URL}" target="_blank" rel="noopener noreferrer" title="Info versi aplikasi">{badge_label}</a>
         {update_link_html}
     </div>
     """

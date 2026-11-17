@@ -440,3 +440,87 @@ def test_r2_sidebar_click_all_items_long_video_page(tmp_path, monkeypatch):
     assert any("MoneyPrinterTurbo" in m.value for m in at4.markdown)
     assert not any("Navigasi Studio" in s.value for s in at4.subheader)
 
+
+def test_c6_no_moneyprinter_or_mpt_in_ui_strings(tmp_path, monkeypatch):
+    """C6 scanner: UI translations, tooltips, page titles, and rendered labels exclude MoneyPrinterTurbo/MPT outside explicit allowlist."""
+    import json
+    import re
+    from streamlit.testing.v1 import AppTest
+    from app.services.longform.ui.i18n import EN_TRANSLATIONS, ID_TRANSLATIONS
+
+    repo_root = Path(__file__).resolve().parents[2]
+    url_re = re.compile(r"https?://\S+")
+    banned_re = re.compile(r"MoneyPrinterTurbo|MoneyPrinter|\bMPT\b", re.IGNORECASE)
+
+    # 1. Scan Long Video i18n dictionaries (allowlist: Tentang/About attribution & MIT footer prefix only)
+    i18n_allowlist = {
+        "built_on_mpt",
+        "nav_about_help",
+        "about_dialog_title",
+        "about_dialog_desc",
+        "about_dialog_license",
+        "about_dialog_original_proj",
+        "about_dialog_license_type",
+        "about_dialog_status",
+        "about_dialog_status_desc",
+        "license_mit_detail",
+    }
+    for lang_name, table in (("id", ID_TRANSLATIONS), ("en", EN_TRANSLATIONS)):
+        for key, val in table.items():
+            if key in i18n_allowlist:
+                continue
+            stripped = url_re.sub("", str(val))
+            assert not banned_re.search(stripped), (
+                f"C6 violation in i18n[{lang_name}]['{key}']: {val!r}"
+            )
+        # Tooltips for sidebar pages must be concise without (Aktif)/(Active)
+        assert "(Aktif)" not in table["nav_long_video_help"]
+        assert "(Active" not in table["nav_long_video_help"]
+        assert "(Aktif)" not in table["nav_short_video_help"]
+        assert "(Active" not in table["nav_short_video_help"]
+        assert "← Video Pendek" in table["nav_back_mpt"] or "← Short Video" in table["nav_back_mpt"]
+
+    # 2. Scan WebUI JSON translations (id.json & en.json) excluding external URLs
+    for json_name in ("id.json", "en.json"):
+        raw = json.loads((repo_root / "webui" / "i18n" / json_name).read_text(encoding="utf-8"))
+        tr_table = raw.get("Translation", raw) if isinstance(raw, dict) else {}
+        for k, v in tr_table.items():
+            stripped = url_re.sub("", str(v))
+            assert not banned_re.search(stripped), (
+                f"C6 violation in webui/i18n/{json_name}['{k}']: {v!r}"
+            )
+
+    # 3. Verify Main.py header/title fallbacks and rendered Long Video page (ID & EN)
+    main_src = (repo_root / "webui" / "Main.py").read_text(encoding="utf-8")
+    assert '_main_page_title = "MoneyPrinterTurbo"' not in main_src
+    assert '<span class="mpt-brand__name">MoneyPrinterTurbo</span>' not in main_src
+
+    lv_file = str(repo_root / "webui" / "pages" / "1_🎬_Long_Video.py")
+    monkeypatch.setattr("app.services.longform.store.get_projects_root", lambda: tmp_path)
+    monkeypatch.setattr("app.services.longform.ui.components.get_projects_root", lambda: tmp_path)
+
+    for lang_code in ("id", "en"):
+        at = AppTest.from_file(lv_file)
+        at.query_params["lang"] = lang_code
+        at.run(timeout=20)
+        assert not at.exception
+        # No back link containing MoneyPrinterTurbo or Video Pendek above title
+        btn_and_link_labels = [str(b.label) for b in at.button] + [str(pl.label) for pl in at.page_link]
+        assert not any("MoneyPrinter" in lbl for lbl in btn_and_link_labels), btn_and_link_labels
+        assert not any(lbl.startswith("← Video Pendek") or lbl.startswith("← Short Video") for lbl in btn_and_link_labels)
+        # Non-MIT markdown/titles/captions/help tooltips must not leak MoneyPrinterTurbo
+        for md in at.markdown:
+            txt = str(md.value)
+            if "MoneyPrinterTurbo (MIT)" in txt or "github.com/harry0703/MoneyPrinterTurbo" in txt:
+                continue
+            assert not banned_re.search(url_re.sub("", txt)), f"Markdown leaked C6: {txt!r}"
+        for elem in list(at.button) + list(at.page_link):
+            help_txt = str(getattr(elem, "help", "") or "")
+            assert "(Aktif)" not in help_txt and "(Active" not in help_txt, help_txt
+            if str(getattr(elem, "key", "") or "").startswith("efs_btn_about_"):
+                continue
+            assert not banned_re.search(url_re.sub("", help_txt)), f"Tooltip leaked C6: {help_txt!r}"
+        # Allowlisted MIT footer box MUST remain present!
+        assert any("MoneyPrinterTurbo (MIT)" in str(m.value) for m in at.markdown)
+
+

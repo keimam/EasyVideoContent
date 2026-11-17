@@ -82,13 +82,11 @@ try:
     _main_page_icon = str(FAVICON_PATH) if FAVICON_PATH.is_file() else "🎬"
     _about_content = f"# {APP_NAME}\n\n{MIT_THANKS}\n\n{UPSTREAM_REPO_URL}"
 except Exception:
-    _main_page_title = "MoneyPrinterTurbo"
-    _main_page_icon = "🤖"
+    _main_page_title = "EasyFaceless Studio — Video Pendek"
+    _main_page_icon = "🎬"
     _about_content = (
-        "# MoneyPrinterTurbo\nSimply provide a topic or keyword for a video, and it will "
-        "automatically generate the video copy, video materials, video subtitles, "
-        "and video background music before synthesizing a high-definition short "
-        "video.\n\nhttps://github.com/harry0703/MoneyPrinterTurbo"
+        "# EasyFaceless Studio\n\nDibangun di atas MoneyPrinterTurbo (MIT).\n\n"
+        "https://github.com/harry0703/MoneyPrinterTurbo"
     )
 
 if not st.session_state.get("_efs_settings_library_only", False):
@@ -1799,13 +1797,13 @@ def _render_brand(available_update: str | None = None):
     st.markdown(
         f"""
         <h1 class="mpt-brand">
-            <span class="mpt-brand__name">MoneyPrinterTurbo</span>
+            <span class="mpt-brand__name">EasyFaceless Studio</span>
             <a class="mpt-brand__version"
                href="https://github.com/harry0703/MoneyPrinterTurbo"
                target="_blank"
                rel="noopener noreferrer"
-               aria-label="Open MoneyPrinterTurbo on GitHub"
-               title="Open project on GitHub">v{html.escape(str(config.project_version))}</a>
+               aria-label="Open EasyFaceless Studio version info"
+               title="Info versi aplikasi">v{html.escape(str(config.project_version))}</a>
             {update_link}
         </h1>
         """,

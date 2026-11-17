@@ -391,7 +391,7 @@ def render_brand_sidebar(current_page: str = "main"):
 
         is_lv = (current_page == "longform")
         lv_label = f"**{t('nav_long_video')}**" if is_lv else t("nav_long_video")
-        lv_help = t("nav_long_video_help") + (f" {t('active_page_indicator')}" if is_lv else "")
+        lv_help = t("nav_long_video_help")
         lv_rendered = False
         for path in ["pages/1_🎬_Long_Video.py", "1_🎬_Long_Video.py", "webui/pages/1_🎬_Long_Video.py"]:
             try:
@@ -403,7 +403,7 @@ def render_brand_sidebar(current_page: str = "main"):
 
         if not lv_rendered:
             if st.button(
-                t("nav_long_video") + (f" {t('active_page_indicator')}" if is_lv else ""),
+                lv_label,
                 key=f"efs_btn_lv_{current_page}",
                 icon=":material/movie:",
                 type="primary" if is_lv else "secondary",
@@ -418,7 +418,7 @@ def render_brand_sidebar(current_page: str = "main"):
 
         is_main = (current_page == "main")
         main_label = f"**{t('nav_short_video')}**" if is_main else t("nav_short_video")
-        main_help = t("nav_short_video_help") + (f" {t('active_page_indicator')}" if is_main else "")
+        main_help = t("nav_short_video_help")
         main_rendered = False
         for path in ["Main.py", "webui/Main.py", "../Main.py"]:
             try:
@@ -430,7 +430,7 @@ def render_brand_sidebar(current_page: str = "main"):
 
         if not main_rendered:
             if st.button(
-                t("nav_short_video") + (f" {t('active_page_indicator')}" if is_main else ""),
+                main_label,
                 key=f"efs_btn_main_{current_page}",
                 icon=":material/bolt:",
                 type="primary" if is_main else "secondary",

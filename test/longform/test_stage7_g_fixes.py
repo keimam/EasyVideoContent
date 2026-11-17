@@ -339,7 +339,7 @@ def test_g5_main_page_renders_long_video_link(monkeypatch):
 
 
 def test_g5_long_video_page_renders_back_to_mpt_link(tmp_path, monkeypatch):
-    """Verify Long Video page renders '← MoneyPrinterTurbo (video pendek)' link/button without exception (G5)."""
+    """Verify Long Video page provides Short Video navigation in sidebar without redundant MoneyPrinterTurbo top link (G5, C6)."""
     monkeypatch.setattr("app.services.longform.store.get_projects_root", lambda: tmp_path)
     monkeypatch.setattr("app.services.longform.ui.components.get_projects_root", lambda: tmp_path)
 
@@ -347,9 +347,11 @@ def test_g5_long_video_page_renders_back_to_mpt_link(tmp_path, monkeypatch):
     at.run(timeout=10)
 
     assert not at.exception, f"Long Video threw exceptions: {[e.value for e in at.exception]}"
-    # Either page_link or button back to MPT
-    all_links = [pl.label for pl in at.page_link]
-    all_buttons = [b.label for b in at.button]
-    has_back_link = any("MoneyPrinterTurbo" in str(lbl) for lbl in all_links + all_buttons)
-    assert has_back_link, f"Back link to MoneyPrinterTurbo not found in links {all_links} or buttons {all_buttons}"
+    all_links = [str(pl.label) for pl in at.page_link]
+    all_buttons = [str(b.label) for b in at.button]
+    assert not any("MoneyPrinterTurbo" in lbl for lbl in all_links + all_buttons), (
+        f"MoneyPrinterTurbo should not appear in links/buttons (C6): {all_links + all_buttons}"
+    )
+    has_short_nav = any("Video Pendek" in lbl or "Short Video" in lbl for lbl in all_links + all_buttons)
+    assert has_short_nav, f"Short Video navigation not found in links {all_links} or buttons {all_buttons}"
 

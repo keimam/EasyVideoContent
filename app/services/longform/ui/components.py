@@ -751,9 +751,9 @@ def _render_trash_management_view(trashed_items: List[Dict[str, Any]]) -> None:
 
 def render_home_page():
     """Render Beranda Long Video matching Mockup 1 (L1, 8A.2)."""
-    # G5: Return navigation link to MoneyPrinterTurbo Main
+    # C6: Studio sidebar navigation (sidebar already provides Short Video menu entry)
     from app.services.longform.ui.nav import render_mpt_entry
-    render_mpt_entry()
+    render_mpt_entry(show_top_return=False)
 
     notice_msg = st.session_state.pop("last_deleted_notice", None)
     if notice_msg:
@@ -1138,7 +1138,7 @@ def render_project_page(project_id: str):
     st_info = compute_project_step_status(p_dir)
     manifest = st_info["manifest"]
 
-    # G5, H3, H5: Sidebar studio navigation and CSS
+    # C6: Studio sidebar navigation without redundant top back link
     from app.services.longform.ui.nav import render_mpt_entry
     render_mpt_entry(show_top_return=False)
 
