@@ -2810,6 +2810,367 @@ def test_f14_thumbnail_detail_single_source_hash_keyed_and_needs_rebuild_badges(
         assert g2 > b2 + 60, f"Expected regenerated green clip thumbnail, got RGB={(r2, g2, b2)}"
 
 
+def test_f15_partial_visual_voice_render_progress_accuracy_and_indeterminate(
+    tmp_path: Path, monkeypatch
+):
+    """F15: Partial runs count only target units starting from 0%, track skipped valid/locked count, and only hit 100% on completion."""
+    from datetime import datetime
+    from unittest.mock import patch
+    from app.services.longform.hashing import compute_chapter_hash
+    from app.services.longform.render.service import RenderService
+    from app.services.longform.schema import Chapter, ItemStatus, Shot, TtsGroup
+    from app.services.longform.store import create_project, save_manifest, update_job_phase
+    from app.services.longform.ui import jobs
+    from app.services.longform.visual.service import VisualService
+    from app.services.longform.voice_service import VoiceService
+
+    # --- 1. Visual partial pipeline (16 valid/locked + 3 stale/changed = 19 total) ---
+    manifest, p_dir = create_project(
+        "f15_vis_proj",
+        "F15 Visual Partial Test",
+        "automotive.muscle_car",
+        projects_root=tmp_path,
+    )
+    shots = [
+        Shot(
+            shot_id=f"ch01_shot{i:03d}",
+            chapter_index=1,
+            shot_index=i,
+            segment_indices=[i],
+            search_query="classic muscle car",
+            search_query_en="classic muscle car",
+            search_query_source="ai",
+            duration_seconds=2.0,
+            target_frames=50,
+            status=ItemStatus.pending,
+        )
+        for i in range(1, 20)
+    ]
+    manifest.chapters = [Chapter(chapter_index=1, chapter_title="Bab 1", shots=shots)]
+    save_manifest(manifest, p_dir)
+
+    vis_svc = VisualService(p_dir)
+    manifest, _ = vis_svc.run_pipeline(manifest, provider_name="fake", allow_fallback=True)
+    # Lock shot #1 and verify all 19 completed
+    manifest.chapters[0].shots[0].locked = True
+    assert all(sh.rendered_clip and (p_dir / sh.rendered_clip).is_file() for sh in manifest.chapters[0].shots)
+    # Invalidate ONLY 3 shots (#17, #18, #19) for fetch + build
+    for idx in (16, 17, 18):
+        sh = manifest.chapters[0].shots[idx]
+        sh.asset_content_hash = None
+        sh.effective_query = "old query"
+        sh.status = ItemStatus.stale
+    save_manifest(manifest, p_dir)
+
+    (p_dir / "job_state.json").write_text(
+        json.dumps(
+            {
+                "project_id": "f15_vis_proj",
+                "step": "visual_pipeline",
+                "status": "running",
+                "started_at": datetime.now().isoformat(),
+                "progress": {
+                    "phase": "Mempersiapkan proses…",
+                    "phase_key": "prog_preparing",
+                    "phase_args": {},
+                    "completed": 0,
+                    "total": 0,
+                    "skipped": 0,
+                    "percentage": 0.0,
+                    "is_indeterminate": True,
+                    "partial": True,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    vis_snapshots = []
+
+    def _spy_vis_update(proj_dir_or_id, phase, **kwargs):
+        update_job_phase(proj_dir_or_id, phase, **kwargs)
+        with patch("app.services.longform.ui.jobs.get_project_dir", return_value=p_dir):
+            vis_snapshots.append(jobs.get_project_progress("f15_vis_proj", "visual_pipeline"))
+
+    monkeypatch.setattr("app.services.longform.visual.service.update_job_phase", _spy_vis_update)
+
+    with patch("app.services.longform.ui.jobs.get_project_dir", return_value=p_dir):
+        init_prog = jobs.get_project_progress("f15_vis_proj", "visual_pipeline")
+        assert init_prog["percentage"] == 0.0
+        assert init_prog["is_indeterminate"] is True
+
+    manifest, _ = vis_svc.run_pipeline(manifest, provider_name="fake", allow_fallback=True)
+
+    assert len(vis_snapshots) >= 8
+    # First snapshot must be 0/3 (0.0%), NOT ~99%, with 16 skipped!
+    assert vis_snapshots[0]["completed"] == 0
+    assert vis_snapshots[0]["total"] == 3
+    assert vis_snapshots[0]["skipped"] == 16
+    assert vis_snapshots[0]["percentage"] == 0.0
+    assert all(s["skipped"] == 16 for s in vis_snapshots)
+    assert all(s["percentage"] < 100.0 for s in vis_snapshots)
+    assert vis_snapshots[-1]["completed"] == 3
+    assert vis_snapshots[-1]["total"] == 3
+    assert vis_snapshots[-1]["percentage"] == 99.0
+
+    # Completion transitions cleanly to 100%
+    st_done = json.loads((p_dir / "job_state.json").read_text(encoding="utf-8"))
+    st_done["status"] = "completed"
+    st_done["exit_code"] = 0
+    (p_dir / "job_state.json").write_text(json.dumps(st_done), encoding="utf-8")
+    with patch("app.services.longform.ui.jobs.get_project_dir", return_value=p_dir):
+        done_prog = jobs.get_project_progress("f15_vis_proj", "visual_pipeline")
+        assert done_prog["percentage"] == 100.0
+        assert done_prog["phase"] == "Selesai"
+
+    # Case B: All assets valid, ONLY 3 shots need build (e.g. shot_hash invalidated / pending rebuild) -> must start at 0% (never jump to 45%!)
+    for idx in (16, 17, 18):
+        manifest.chapters[0].shots[idx].shot_hash = None
+        manifest.chapters[0].shots[idx].status = ItemStatus.pending
+    save_manifest(manifest, p_dir)
+    (p_dir / "job_state.json").write_text(
+        json.dumps(
+            {
+                "project_id": "f15_vis_proj",
+                "step": "visual_pipeline",
+                "status": "running",
+                "started_at": datetime.now().isoformat(),
+                "progress": {"phase": "Mempersiapkan proses…", "completed": 0, "total": 0, "skipped": 0, "percentage": 0.0, "is_indeterminate": True, "partial": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+    vis_snapshots.clear()
+    manifest, _ = vis_svc.run_pipeline(manifest, provider_name="fake", allow_fallback=True)
+    assert vis_snapshots[0]["completed"] == 0
+    assert vis_snapshots[0]["total"] == 3
+    assert vis_snapshots[0]["skipped"] == 16
+    assert vis_snapshots[0]["percentage"] == 0.0
+    assert vis_snapshots[1]["completed"] == 1
+    assert vis_snapshots[1]["percentage"] == 33.0
+    assert vis_snapshots[-1]["completed"] == 3
+    assert vis_snapshots[-1]["percentage"] == 99.0
+
+    # --- 2. Voice partial synthesis (3 valid + 2 stale = 5 groups) ---
+    m_voice, p_voice = create_project("f15_voice_proj", "F15 Voice Test", "automotive.muscle_car", projects_root=tmp_path)
+    m_voice.chapters = [
+        Chapter(
+            chapter_index=1,
+            chapter_title="Bab 1",
+            tts_groups=[
+                TtsGroup(group_index=i, paragraph_text=f"Paragraph number {i} for voice synthesis.")
+                for i in range(1, 6)
+            ],
+        )
+    ]
+    save_manifest(m_voice, p_voice)
+    v_svc = VoiceService(p_voice)
+    m_voice = v_svc.synthesize_all(provider="fake", concurrency=1)
+    # Invalidate 2 groups (#4 and #5)
+    m_voice.chapters[0].tts_groups[3].audio.audio_hash = "stale_hash"
+    m_voice.chapters[0].tts_groups[3].status = ItemStatus.stale
+    m_voice.chapters[0].tts_groups[4].audio.audio_hash = "stale_hash"
+    m_voice.chapters[0].tts_groups[4].status = ItemStatus.stale
+    save_manifest(m_voice, p_voice)
+
+    (p_voice / "job_state.json").write_text(
+        json.dumps(
+            {
+                "project_id": "f15_voice_proj",
+                "step": "audio_synthesize",
+                "status": "running",
+                "started_at": datetime.now().isoformat(),
+                "progress": {"phase": "Mempersiapkan proses…", "completed": 0, "total": 0, "skipped": 0, "percentage": 0.0, "is_indeterminate": True, "partial": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+    voice_snapshots = []
+
+    def _spy_voice_update(proj_dir_or_id, phase, **kwargs):
+        update_job_phase(proj_dir_or_id, phase, **kwargs)
+        with patch("app.services.longform.ui.jobs.get_project_dir", return_value=p_voice):
+            voice_snapshots.append(jobs.get_project_progress("f15_voice_proj", "audio_synthesize"))
+
+    monkeypatch.setattr("app.services.longform.voice_service.update_job_phase", _spy_voice_update)
+    m_voice = v_svc.synthesize_all(provider="fake", concurrency=1)
+
+    assert len(voice_snapshots) >= 4
+    assert voice_snapshots[0]["completed"] == 0
+    assert voice_snapshots[0]["total"] == 2
+    assert voice_snapshots[0]["skipped"] == 3
+    assert voice_snapshots[0]["percentage"] == 0.0
+    assert voice_snapshots[1]["completed"] == 1
+    assert voice_snapshots[1]["percentage"] == 47.5
+    assert voice_snapshots[-1]["is_indeterminate"] is True
+    assert all(s["percentage"] < 100.0 for s in voice_snapshots)
+
+    # --- 3. Render partial run (2 valid skipped + 1 chapter rendered = 3 total chapters) ---
+    m_rnd, p_rnd = create_project("f15_rnd_proj", "F15 Render Test", "automotive.muscle_car", projects_root=tmp_path)
+    chapters_dir = p_rnd / "assets" / "visual" / "chapters"
+    chapters_dir.mkdir(parents=True, exist_ok=True)
+    preset_snap = m_rnd.preset_snapshot or {}
+    rnd_chapters = []
+    for idx in (1, 2, 3):
+        out_rel = f"assets/visual/chapters/chapter_{idx:02d}.mp4"
+        ch_obj = Chapter(
+            chapter_index=idx,
+            chapter_title=f"Bab {idx}",
+            status=ItemStatus.completed if idx in (1, 2) else ItemStatus.pending,
+            output_file=out_rel if idx in (1, 2) else None,
+        )
+        if idx in (1, 2):
+            (p_rnd / out_rel).write_bytes(b"mp4")
+            ch_obj.chapter_hash = compute_chapter_hash(
+                chapter=ch_obj,
+                encoder_settings=m_rnd.encoder_settings,
+                subtitle_style=preset_snap.get("subtitle_style", {}),
+                preset_snapshot=preset_snap,
+                pipeline_version=m_rnd.pipeline_version,
+                sub_niche_focus=m_rnd.sub_niche_focus or "",
+            )
+        rnd_chapters.append(ch_obj)
+    m_rnd.chapters = rnd_chapters
+    save_manifest(m_rnd, p_rnd)
+
+    (p_rnd / "job_state.json").write_text(
+        json.dumps(
+            {
+                "project_id": "f15_rnd_proj",
+                "step": "render_all",
+                "status": "running",
+                "started_at": datetime.now().isoformat(),
+                "progress": {"phase": "Mempersiapkan proses…", "completed": 0, "total": 0, "skipped": 0, "percentage": 0.0, "is_indeterminate": True, "partial": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+    rnd_svc = RenderService(p_rnd)
+    rnd_snapshots = []
+
+    def _spy_rnd_update(proj_dir_or_id, phase, **kwargs):
+        update_job_phase(proj_dir_or_id, phase, **kwargs)
+        with patch("app.services.longform.ui.jobs.get_project_dir", return_value=p_rnd):
+            rnd_snapshots.append(jobs.get_project_progress("f15_rnd_proj", "render_all"))
+
+    monkeypatch.setattr("app.services.longform.render.service.update_job_phase", _spy_rnd_update)
+    monkeypatch.setattr("app.services.longform.render.final_concat.update_job_phase", _spy_rnd_update)
+    monkeypatch.setattr(
+        rnd_svc.chapter_renderer,
+        "render_chapter",
+        lambda manifest_arg, chapter_index, force=False, _progress_slot=None: (
+            p_rnd / f"assets/visual/chapters/chapter_{chapter_index:02d}.mp4",
+            {"chapter_index": chapter_index, "elapsed_seconds": 0.1},
+        ),
+    )
+
+    def _fake_concat(manifest, no_bgm=False):
+        from app.services.longform.render.final_concat import update_job_phase as fc_upd
+
+        fc_upd(p_rnd, phase="Menggabungkan video & audio final…", percentage=93.0, is_indeterminate=True)
+        out_f = p_rnd / "output" / "final_video.mp4"
+        out_f.parent.mkdir(parents=True, exist_ok=True)
+        out_f.write_bytes(b"final")
+        return out_f, {"status": "completed"}
+
+    monkeypatch.setattr(rnd_svc.final_concatenator, "concatenate_final_video", _fake_concat)
+    rnd_svc.render_all(m_rnd)
+
+    assert len(rnd_snapshots) >= 3
+    assert rnd_snapshots[0]["completed"] == 0
+    assert rnd_snapshots[0]["total"] == 1
+    assert rnd_snapshots[0]["skipped"] == 2
+    assert rnd_snapshots[0]["percentage"] == 0.0
+    assert rnd_snapshots[1]["completed"] == 1
+    assert rnd_snapshots[1]["total"] == 1
+    assert rnd_snapshots[1]["percentage"] == 80.0
+    assert rnd_snapshots[-1]["is_indeterminate"] is True
+    assert rnd_snapshots[-1]["percentage"] <= 95.0
+    assert rnd_snapshots[-1]["skipped"] == 2
+
+
+def test_f15_ui_progress_monitor_displays_partial_and_skipped_id_en(tmp_path: Path, monkeypatch):
+    """F15: WebUI job monitor shows scoped target progress and skipped valid/locked count in ID and EN."""
+    from datetime import datetime
+    from streamlit.testing.v1 import AppTest
+    from app.services.longform.schema import Chapter, Shot
+    from app.services.longform.store import create_project, save_manifest
+
+    manifest, p_dir = create_project("f15_ui_prog", "F15 UI Prog", "automotive.muscle_car", projects_root=tmp_path)
+    manifest.chapters = [
+        Chapter(
+            chapter_index=1,
+            chapter_title="Bab 1",
+            shots=[
+                Shot(
+                    shot_id=f"ch01_shot{i:03d}",
+                    chapter_index=1,
+                    shot_index=i,
+                    segment_indices=[i],
+                    search_query="muscle car",
+                    duration_seconds=2.0,
+                    target_frames=50,
+                )
+                for i in range(1, 20)
+            ],
+        )
+    ]
+    save_manifest(manifest, p_dir)
+    (p_dir / "job_state.json").write_text(
+        json.dumps(
+            {
+                "project_id": "f15_ui_prog",
+                "step": "visual_pipeline",
+                "status": "running",
+                "pid": os.getpid(),
+                "started_at": datetime.now().isoformat(),
+                "progress": {
+                    "phase": "Mencari footage (1/3 shot)…",
+                    "phase_key": "prog_visual_fetch",
+                    "phase_args": {"done": 1, "total": 3},
+                    "completed": 1,
+                    "total": 3,
+                    "skipped": 16,
+                    "percentage": 15.0,
+                    "unit_label": "shot",
+                    "is_indeterminate": False,
+                    "partial": True,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr("app.services.longform.store.get_projects_root", lambda: tmp_path)
+    monkeypatch.setattr("app.services.longform.ui.jobs.get_project_dir", lambda pid: p_dir if pid == "f15_ui_prog" else tmp_path / pid)
+    monkeypatch.setattr("app.services.longform.ui.jobs.is_pid_alive", lambda pid: True)
+
+    def _run_monitor_script(lang_code: str):
+        script_path = tmp_path / f"mon_{lang_code}.py"
+        script_path.write_text(
+            "import streamlit as st\n"
+            f"st.session_state['ui_language'] = {lang_code!r}\n"
+            "from app.services.longform.ui.components import render_job_monitor_widget\n"
+            "render_job_monitor_widget('f15_ui_prog')\n",
+            encoding="utf-8",
+        )
+        at = AppTest.from_file(str(script_path))
+        at.run(timeout=20)
+        assert not at.exception
+        return "\n".join(str(getattr(el, "text", "") or getattr(el, "value", "")) for el in at.get("progress"))
+
+    id_prog_text = _run_monitor_script("id")
+    assert "1/3 (15.0%)" in id_prog_text
+    assert "dilewati: 16 (sudah valid/terkunci)" in id_prog_text
+    assert "99.0%" not in id_prog_text
+
+    en_prog_text = _run_monitor_script("en")
+    assert "Fetching footage (1/3 shots)" in en_prog_text
+    assert "1/3 (15.0%)" in en_prog_text
+    assert "skipped: 16 (already valid/locked)" in en_prog_text
+
+
+
 
 
 

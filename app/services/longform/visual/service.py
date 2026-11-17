@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from loguru import logger
 
 from app.services.longform.schema import Chapter, ItemStatus, MotionType, ProjectManifest, Shot
-from app.services.longform.store import is_stop_requested, load_manifest, save_manifest
+from app.services.longform.store import is_stop_requested, load_manifest, save_manifest, update_job_phase
 from app.services.longform.shot import (
     compute_shot_hash,
     form_chapter_shots,
@@ -320,6 +320,8 @@ class VisualService:
         allow_fallback: bool = False,
         check_ai_relevance: bool = False,
         translate_keywords: bool = True,
+        _pct_start: float = 0.0,
+        _pct_end: float = 99.0,
     ) -> ProjectManifest:
         """Search and download/generate visual assets for all pending shots (4.1, V1).
 
@@ -436,6 +438,42 @@ class VisualService:
         proj_anchors = list(getattr(manifest, "visual_anchor_terms", []) or [])
         proj_avoids = list(getattr(manifest, "visual_avoid_terms", []) or [])
 
+        all_shots_flat = [sh for ch in manifest.chapters for sh in ch.shots]
+        target_fetch_ids = {
+            sh.shot_id
+            for sh in all_shots_flat
+            if not sh.locked and not self._is_shot_asset_valid_for_provider(
+                sh,
+                effective_provider_name,
+                req_terms,
+                block_terms,
+                neg_terms,
+                min_rel_score,
+                visual_kws,
+                anchor_terms=proj_anchors,
+                avoid_terms=proj_avoids,
+            )
+        }
+        target_fetch_total = len(target_fetch_ids)
+        skipped_fetch_count = len(all_shots_flat) - target_fetch_total
+        done_fetch_count = 0
+        self._last_fetch_target_count = target_fetch_total
+
+        if target_fetch_total > 0:
+            update_job_phase(
+                self.project_dir,
+                phase=f"Mencari footage (0/{target_fetch_total} shot)…",
+                phase_key="prog_visual_fetch",
+                phase_args={"done": 0, "total": target_fetch_total},
+                percentage=_pct_start,
+                current_unit=0,
+                total_units=target_fetch_total,
+                skipped_units=skipped_fetch_count,
+                unit_label="shot",
+                is_indeterminate=False,
+                partial=True,
+            )
+
         for ch in manifest.chapters:
             if is_stop_requested(self.project_dir):
                 logger.info(f"Stop requested for project '{manifest.project_id}'. Exiting visual matching gracefully.")
@@ -466,6 +504,21 @@ class VisualService:
                     )
                 ]
                 if shots_needing_kw_gen and effective_provider_name != "fake":
+                    if target_fetch_total > 0:
+                        kw_pct = _pct_start + ((done_fetch_count / max(1, target_fetch_total)) * (_pct_end - _pct_start))
+                        update_job_phase(
+                            self.project_dir,
+                            phase="Memperbarui kata kunci AI…",
+                            phase_key="prog_visual_ai_keywords",
+                            phase_args={},
+                            percentage=kw_pct,
+                            current_unit=done_fetch_count,
+                            total_units=target_fetch_total,
+                            skipped_units=skipped_fetch_count,
+                            unit_label="shot",
+                            is_indeterminate=True,
+                            partial=True,
+                        )
                     kw_res = generate_chapter_visual_keywords_ai(
                         shots_needing_kw_gen,
                         ch,
@@ -696,6 +749,22 @@ class VisualService:
                         shot.tags = []
                         shot.candidates = []
                         shot.fallback_reason = "No candidates matched required subject terms or query"
+                        if shot.shot_id in target_fetch_ids and target_fetch_total > 0:
+                            done_fetch_count += 1
+                            pct = _pct_start + ((done_fetch_count / target_fetch_total) * (_pct_end - _pct_start))
+                            update_job_phase(
+                                self.project_dir,
+                                phase=f"Mencari footage ({done_fetch_count}/{target_fetch_total} shot)…",
+                                phase_key="prog_visual_fetch",
+                                phase_args={"done": done_fetch_count, "total": target_fetch_total},
+                                percentage=pct,
+                                current_unit=done_fetch_count,
+                                total_units=target_fetch_total,
+                                skipped_units=skipped_fetch_count,
+                                unit_label="shot",
+                                is_indeterminate=False,
+                                partial=True,
+                            )
                         continue
 
                 # Store candidate options
@@ -744,6 +813,22 @@ class VisualService:
                 else:
                     shot.status = ItemStatus.pending
                 save_manifest(manifest, self.project_dir)
+                if shot.shot_id in target_fetch_ids and target_fetch_total > 0:
+                    done_fetch_count += 1
+                    pct = _pct_start + ((done_fetch_count / target_fetch_total) * (_pct_end - _pct_start))
+                    update_job_phase(
+                        self.project_dir,
+                        phase=f"Mencari footage ({done_fetch_count}/{target_fetch_total} shot)…",
+                        phase_key="prog_visual_fetch",
+                        phase_args={"done": done_fetch_count, "total": target_fetch_total},
+                        percentage=pct,
+                        current_unit=done_fetch_count,
+                        total_units=target_fetch_total,
+                        skipped_units=skipped_fetch_count,
+                        unit_label="shot",
+                        is_indeterminate=False,
+                        partial=True,
+                    )
 
         if translation_warnings:
             logger.warning(f"Keyword translation warnings for '{manifest.project_id}': {translation_warnings[0]}")
@@ -752,6 +837,20 @@ class VisualService:
         if check_ai_relevance and not stop_requested and not is_stop_requested(self.project_dir):
             from app.services.longform.visual.ai_relevance import check_project_relevance
 
+            if target_fetch_total > 0:
+                update_job_phase(
+                    self.project_dir,
+                    phase=f"Mengecek relevansi AI ({done_fetch_count}/{target_fetch_total} shot)…",
+                    phase_key="prog_visual_ai_relevance",
+                    phase_args={"done": done_fetch_count, "total": target_fetch_total},
+                    percentage=_pct_end,
+                    current_unit=done_fetch_count,
+                    total_units=target_fetch_total,
+                    skipped_units=skipped_fetch_count,
+                    unit_label="shot",
+                    is_indeterminate=True,
+                    partial=True,
+                )
             rel_stats = check_project_relevance(manifest, self.project_dir)
             logger.info(
                 f"AI relevance check completed for '{manifest.project_id}': "
@@ -765,6 +864,8 @@ class VisualService:
     def build_all(
         self,
         manifest: ProjectManifest,
+        _pct_start: float = 0.0,
+        _pct_end: float = 99.0,
     ) -> Tuple[ProjectManifest, Dict[str, Any]]:
         """Build rendered video clips for all shots in manifest (4.3, V1).
 
@@ -776,6 +877,50 @@ class VisualService:
         built_count = 0
         skipped_count = 0
         total_time = 0.0
+
+        # F15: Pre-partition target build shots vs already-valid skipped shots
+        expected_hashes_by_id: Dict[str, str] = {}
+        target_build_ids: Set[str] = set()
+        total_project_shots = 0
+        for ch in manifest.chapters:
+            for shot in ch.shots:
+                total_project_shots += 1
+                expected_hash = compute_shot_hash(
+                    shot_id=shot.shot_id,
+                    duration_seconds=shot.duration_seconds,
+                    target_frames=shot.target_frames,
+                    motion=shot.motion.value,
+                    asset_content_hash=shot.asset_content_hash,
+                    fps=fps,
+                    requested_provider=shot.requested_source or "",
+                    actual_provider=shot.actual_source or "",
+                )
+                expected_hashes_by_id[shot.shot_id] = expected_hash
+                clip_path = (self.project_dir / f"assets/visual/shots/{shot.shot_id}.mp4").resolve()
+                is_already_valid = (
+                    shot.shot_hash == expected_hash
+                    and clip_path.is_file()
+                    and shot.status == ItemStatus.completed
+                )
+                if not is_already_valid:
+                    target_build_ids.add(shot.shot_id)
+
+        target_build_total = len(target_build_ids)
+        skipped_build_init = total_project_shots - target_build_total
+        if target_build_total > 0:
+            update_job_phase(
+                self.project_dir,
+                phase=f"Menyusun klip (0/{target_build_total} shot)…",
+                phase_key="prog_visual_build",
+                phase_args={"done": 0, "total": target_build_total},
+                percentage=_pct_start,
+                current_unit=0,
+                total_units=target_build_total,
+                skipped_units=skipped_build_init,
+                unit_label="shot",
+                is_indeterminate=False,
+                partial=True,
+            )
 
         stop_requested = False
         for ch in manifest.chapters:
@@ -795,18 +940,7 @@ class VisualService:
                 if not asset_file.is_file():
                     raise FileNotFoundError(f"Shot asset file missing on disk: {asset_file}")
 
-                # Compute expected shot hash (V1: now includes provider fields)
-                expected_hash = compute_shot_hash(
-                    shot_id=shot.shot_id,
-                    duration_seconds=shot.duration_seconds,
-                    target_frames=shot.target_frames,
-                    motion=shot.motion.value,
-                    asset_content_hash=shot.asset_content_hash,
-                    fps=fps,
-                    requested_provider=shot.requested_source or "",
-                    actual_provider=shot.actual_source or "",
-                )
-
+                expected_hash = expected_hashes_by_id[shot.shot_id]
                 clip_rel = f"assets/visual/shots/{shot.shot_id}.mp4"
                 clip_path = (self.project_dir / clip_rel).resolve()
 
@@ -842,6 +976,22 @@ class VisualService:
                 shot.status = ItemStatus.completed
                 invalidate_shot_thumbnail_cache(self.project_dir, shot.shot_id)
                 save_manifest(manifest, self.project_dir)
+
+                if target_build_total > 0:
+                    pct = _pct_start + ((built_count / target_build_total) * (_pct_end - _pct_start))
+                    update_job_phase(
+                        self.project_dir,
+                        phase=f"Menyusun klip ({built_count}/{target_build_total} shot)…",
+                        phase_key="prog_visual_build",
+                        phase_args={"done": built_count, "total": target_build_total},
+                        percentage=pct,
+                        current_unit=built_count,
+                        total_units=target_build_total,
+                        skipped_units=skipped_build_init,
+                        unit_label="shot",
+                        is_indeterminate=False,
+                        partial=True,
+                    )
 
             # Update chapter duration & frames
             ch.visual_duration_seconds = round(sum(s.duration_seconds for s in ch.shots), 3)
@@ -1412,6 +1562,19 @@ class VisualService:
         # Phase 1: Membagi shot (Shot Allocation) if 0 shots
         total_shots = sum(len(ch.shots) for ch in manifest.chapters)
         if total_shots == 0:
+            update_job_phase(
+                self.project_dir,
+                phase="Membagi shot…",
+                phase_key="prog_visual_allocate",
+                phase_args={},
+                percentage=0.0,
+                current_unit=0,
+                total_units=0,
+                skipped_units=0,
+                unit_label="shot",
+                is_indeterminate=True,
+                partial=True,
+            )
             print(f"\n[Visual Pipeline] Phase 1/3: Membagi shot untuk proyek '{manifest.project_id}'...")
             effective_fps = getattr(getattr(manifest, "encoder_settings", None), "fps", 25) or 25
             manifest = self.prepare_shots(manifest, fps=effective_fps)
@@ -1432,6 +1595,8 @@ class VisualService:
             provider_name=provider_name,
             allow_fallback=allow_fallback,
             check_ai_relevance=check_ai_relevance,
+            _pct_start=0.0,
+            _pct_end=45.0,
         )
         save_manifest(manifest, self.project_dir)
 
@@ -1441,7 +1606,12 @@ class VisualService:
 
         # Phase 3: Menyusun klip (Build Clips)
         print(f"\n[Visual Pipeline] Phase 3/3: Menyusun klip visual untuk proyek '{manifest.project_id}'...")
-        manifest, build_stats = self.build_all(manifest)
+        build_pct_start = 45.0 if getattr(self, "_last_fetch_target_count", 0) > 0 else 0.0
+        manifest, build_stats = self.build_all(
+            manifest,
+            _pct_start=build_pct_start,
+            _pct_end=99.0,
+        )
         save_manifest(manifest, self.project_dir)
         stats.update(build_stats)
 

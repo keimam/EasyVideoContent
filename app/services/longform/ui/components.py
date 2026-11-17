@@ -366,9 +366,11 @@ def _render_job_monitor_content(project_id: str, state: Dict[str, Any], current_
         phase_txt = prog.get("phase") or step_display
         pct_val = min(float(prog.get("percentage", 0.0)), 99.0)
         is_indet = bool(prog.get("is_indeterminate"))
+        skipped_cnt = int(prog.get("skipped", 0) or 0)
+        skipped_suffix = f" • {t('prog_skipped_valid_locked', count=skipped_cnt)}" if skipped_cnt > 0 else ""
 
         if is_indet:
-            display_txt = f"{phase_txt} • {elapsed_str}" if elapsed_str else phase_txt
+            display_txt = f"{phase_txt}{skipped_suffix} • {elapsed_str}" if elapsed_str else f"{phase_txt}{skipped_suffix}"
             # Indeterminate bar capped at max 95% (never 100% while running)
             bar_val = min(max(pct_val / 100.0, 0.1), 0.95)
             st.progress(bar_val, text=display_txt)
@@ -379,6 +381,8 @@ def _render_job_monitor_content(project_id: str, state: Dict[str, Any], current_
                 bar_text = f"{phase_txt} • {comp}/{tot} ({pct_val:.1f}%)"
             else:
                 bar_text = f"{phase_txt} ({pct_val:.1f}%)"
+            if skipped_suffix:
+                bar_text += skipped_suffix
             if elapsed_str:
                 bar_text += f" • {elapsed_str}"
             st.progress(min(pct_val / 100.0, 0.99), text=bar_text)

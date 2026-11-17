@@ -104,6 +104,7 @@ class ChapterRenderer:
         manifest: ProjectManifest,
         chapter_index: int,
         force: bool = False,
+        _progress_slot: Optional[Tuple[int, int, int]] = None,
     ) -> Tuple[Path, Dict[str, Any]]:
         """Render a single chapter MP4 with concat demuxer, audio WAV, and burned ASS (5.1)."""
         ch = next((c for c in manifest.chapters if c.chapter_index == chapter_index), None)
@@ -255,15 +256,33 @@ class ChapterRenderer:
                         if now_t - last_update_t >= 0.5:
                             last_update_t = now_t
                             ch_pct = int(min(99.0, max(0.0, (curr_sec / total_duration) * 100.0))) if total_duration > 0 else 0
-                            overall_pct = round((((chapter_index - 1) + (ch_pct / 100.0)) / total_ch) * 80.0, 1)
-                            update_job_phase(
-                                self.project_dir,
-                                phase=f"Bab {chapter_index} dari {total_ch} ({ch_pct}%)",
-                                percentage=overall_pct,
-                                current_unit=chapter_index - 1,
-                                total_units=total_ch,
-                                unit_label="bab",
-                            )
+                            if _progress_slot is not None:
+                                slot_idx, target_ch, skipped_ch = _progress_slot
+                                eff_target = max(1, target_ch)
+                                overall_pct = round(((slot_idx + (ch_pct / 100.0)) / eff_target) * 80.0, 1)
+                                update_job_phase(
+                                    self.project_dir,
+                                    phase=f"Merender bab {chapter_index} ({slot_idx}/{eff_target} bab, {ch_pct}%)…",
+                                    phase_key="prog_render_chapter_pct",
+                                    phase_args={"chapter": chapter_index, "done": slot_idx, "total": eff_target, "pct": ch_pct},
+                                    percentage=overall_pct,
+                                    current_unit=slot_idx,
+                                    total_units=eff_target,
+                                    skipped_units=skipped_ch,
+                                    unit_label="bab",
+                                    is_indeterminate=False,
+                                    partial=True,
+                                )
+                            else:
+                                overall_pct = round((((chapter_index - 1) + (ch_pct / 100.0)) / max(1, total_ch)) * 80.0, 1)
+                                update_job_phase(
+                                    self.project_dir,
+                                    phase=f"Bab {chapter_index} dari {total_ch} ({ch_pct}%)",
+                                    percentage=overall_pct,
+                                    current_unit=chapter_index - 1,
+                                    total_units=total_ch,
+                                    unit_label="bab",
+                                )
                     except Exception:
                         pass
 

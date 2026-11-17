@@ -776,6 +776,19 @@ ID_TRANSLATIONS: Dict[str, str] = {
     "badge_needs_update": "🔄 Perlu diperbarui",
     "shot_needs_rebuild_notice": "Aset sudah berubah, tetapi klip yang akan dirender belum disusun ulang — **Perlu disusun ulang**.",
     "shot_preview_from_asset_not_built": "Pratinjau dari aset sumber (**belum disusun** menjadi klip final).",
+    # --- F15 Additions ---
+    "prog_preparing": "Mempersiapkan proses…",
+    "prog_completed": "Selesai",
+    "prog_skipped_valid_locked": "dilewati: {count} (sudah valid/terkunci)",
+    "prog_visual_allocate": "Membagi shot…",
+    "prog_visual_ai_keywords": "Memperbarui kata kunci AI…",
+    "prog_visual_fetch": "Mencari footage ({done}/{total} shot)…",
+    "prog_visual_ai_relevance": "Mengecek relevansi AI ({done}/{total} shot)…",
+    "prog_visual_build": "Menyusun klip ({done}/{total} shot)…",
+    "prog_voice_synth": "Menyintesis suara ({done}/{total} segmen)…",
+    "prog_voice_timeline": "Menyusun timeline audio bab…",
+    "prog_render_chapters": "Merender bab ({done}/{total} bab)…",
+    "prog_render_chapter_pct": "Merender bab {chapter} ({done}/{total} bab, {pct}%)…",
 }
 
 
@@ -1544,6 +1557,19 @@ EN_TRANSLATIONS: Dict[str, str] = {
     "badge_needs_update": "🔄 Needs update",
     "shot_needs_rebuild_notice": "Asset has changed, but the clip used for render has not been rebuilt — **Needs rebuild**.",
     "shot_preview_from_asset_not_built": "Previewing source asset (**not built** into final clip yet).",
+    # --- F15 Additions ---
+    "prog_preparing": "Preparing process…",
+    "prog_completed": "Completed",
+    "prog_skipped_valid_locked": "skipped: {count} (already valid/locked)",
+    "prog_visual_allocate": "Allocating shots…",
+    "prog_visual_ai_keywords": "Updating keywords with AI…",
+    "prog_visual_fetch": "Fetching footage ({done}/{total} shots)…",
+    "prog_visual_ai_relevance": "Checking AI relevance ({done}/{total} shots)…",
+    "prog_visual_build": "Building clips ({done}/{total} shots)…",
+    "prog_voice_synth": "Synthesizing audio ({done}/{total} segments)…",
+    "prog_voice_timeline": "Building chapter audio timeline…",
+    "prog_render_chapters": "Rendering chapters ({done}/{total} chapters)…",
+    "prog_render_chapter_pct": "Rendering chapter {chapter} ({done}/{total} chapters, {pct}%)…",
 }
 
 

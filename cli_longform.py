@@ -2218,7 +2218,7 @@ def cmd_capcut_set_text_size(args: argparse.Namespace) -> int:
 
 
 def _update_pipeline_auto_phase(proj_dir: Path, phase_name: str):
-    """Update active phase display in job_state.json for real-time WebUI display (Z2, Z3)."""
+    """Update active phase display in job_state.json for real-time WebUI display (Z2, Z3, F15)."""
     job_state_file = proj_dir / "job_state.json"
     if job_state_file.is_file():
         try:
@@ -2226,9 +2226,16 @@ def _update_pipeline_auto_phase(proj_dir: Path, phase_name: str):
             st_data = json.loads(job_state_file.read_text(encoding="utf-8"))
             if st_data.get("status") == "running":
                 st_data["phase"] = phase_name
-                if "progress" not in st_data:
-                    st_data["progress"] = {}
-                st_data["progress"]["phase"] = phase_name
+                prog = st_data.setdefault("progress", {})
+                prog["phase"] = phase_name
+                prog.pop("phase_key", None)
+                prog.pop("phase_args", None)
+                prog["completed"] = 0
+                prog["total"] = 0
+                prog["skipped"] = 0
+                prog["percentage"] = 0.0
+                prog["is_indeterminate"] = True
+                prog["partial"] = True
                 job_state_file.write_text(json.dumps(st_data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         except Exception:
             pass
@@ -2294,7 +2301,12 @@ def cmd_pipeline_auto(args: argparse.Namespace) -> int:
             1 for ch in manifest.chapters for sh in ch.shots
             if sh.rendered_clip and (proj_dir / sh.rendered_clip).is_file()
         )
-        if built_shots < total_shots or total_shots == 0:
+        has_stale_shots = any(
+            sh.status == ItemStatus.stale
+            for ch in manifest.chapters
+            for sh in ch.shots
+        )
+        if built_shots < total_shots or total_shots == 0 or has_stale_shots:
             _update_pipeline_auto_phase(proj_dir, f"[2/4 Visual] Mencari footage & menyusun klip ({built_shots}/{total_shots})...")
             print(f"\n>>> [2/4 Visual] Building visual assets & clips ({built_shots}/{total_shots} done)...")
             vis_svc = VisualService(proj_dir)
