@@ -769,6 +769,13 @@ ID_TRANSLATIONS: Dict[str, str] = {
     "shot_keywords_alts_caption": "Alternatif query: {alts}",
     # --- F13 Additions ---
     "shot_found_with_query": "**Ditemukan dengan:** `{q}`",
+    # --- F14 Additions ---
+    "filter_needs_update": "Perlu diperbarui · {count}",
+    "badge_needs_rebuild": "🔄 Perlu disusun ulang",
+    "badge_not_built": "🧩 Belum disusun",
+    "badge_needs_update": "🔄 Perlu diperbarui",
+    "shot_needs_rebuild_notice": "Aset sudah berubah, tetapi klip yang akan dirender belum disusun ulang — **Perlu disusun ulang**.",
+    "shot_preview_from_asset_not_built": "Pratinjau dari aset sumber (**belum disusun** menjadi klip final).",
 }
 
 
@@ -1530,6 +1537,13 @@ EN_TRANSLATIONS: Dict[str, str] = {
     "shot_keywords_alts_caption": "Alternative queries: {alts}",
     # --- F13 Additions ---
     "shot_found_with_query": "**Found with:** `{q}`",
+    # --- F14 Additions ---
+    "filter_needs_update": "Needs update · {count}",
+    "badge_needs_rebuild": "🔄 Needs rebuild",
+    "badge_not_built": "🧩 Not built",
+    "badge_needs_update": "🔄 Needs update",
+    "shot_needs_rebuild_notice": "Asset has changed, but the clip used for render has not been rebuilt — **Needs rebuild**.",
+    "shot_preview_from_asset_not_built": "Previewing source asset (**not built** into final clip yet).",
 }
 
 

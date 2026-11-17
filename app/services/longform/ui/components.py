@@ -1939,34 +1939,50 @@ def get_shot_narration(chapter: Chapter, shot: Shot) -> str:
     return shot.effective_query or shot.search_query or shot.visual_prompt or ""
 
 
-def get_shot_thumbnail_path(project_dir: Path, shot: Shot) -> Optional[Path]:
-    """Get fast real thumbnail image path for gallery preview (W2).
+def get_shot_thumbnail_path(project_dir: Path, shot: Shot, fps: int = 25) -> Optional[Path]:
+    """Get hash-keyed thumbnail image path matching the shot's single visual source of truth (W2, F14).
 
-    1. Checks project cache: assets/visual/thumbnails/<shot_id>.jpg
-    2. If missing, extracts a real frame at the middle of duration (width 320 px)
-       from shot.rendered_clip (or shot.asset_path if clip not built yet).
-    3. Cached once and reused across subsequent gallery opens.
+    1. Resolves canonical source via `resolve_shot_visual_source` (`rendered_clip` first, else `asset_path`).
+    2. Keys cache filename by content hash (`assets/visual/thumbnails/<shot_id>_<hash16>.jpg`).
+    3. Removes stale unkeyed or outdated hash thumbnails whenever source changes.
     """
+    from app.services.longform.visual.base import (
+        invalidate_shot_thumbnail_cache,
+        resolve_shot_visual_source,
+    )
+
+    vis_src = resolve_shot_visual_source(project_dir, shot, fps=fps)
+    src_file = vis_src.get("source_path")
+    src_hash = vis_src.get("source_hash")
+    if not src_file or not src_file.is_file():
+        return None
+
     t_dir = project_dir / "assets" / "visual" / "thumbnails"
-    t_file = t_dir / f"{shot.shot_id}.jpg"
+    t_file = t_dir / (f"{shot.shot_id}_{src_hash}.jpg" if src_hash else f"{shot.shot_id}.jpg")
     if t_file.is_file() and t_file.stat().st_size > 0:
         return t_file
 
-    # 1. Primary source: rendered clip
-    src_file = None
-    if shot.rendered_clip:
-        vc = project_dir / shot.rendered_clip
-        if vc.is_file():
-            src_file = vc
+    # If a legacy unkeyed thumbnail exists and is newer/equal to current source (not stale), promote without invoking ffmpeg
+    legacy_file = t_dir / f"{shot.shot_id}.jpg"
+    if (
+        legacy_file.is_file()
+        and legacy_file.stat().st_size > 0
+        and t_file != legacy_file
+        and not vis_src.get("needs_rebuild")
+        and getattr(shot, "status", None) != ItemStatus.stale
+    ):
+        try:
+            if legacy_file.stat().st_mtime >= src_file.stat().st_mtime:
+                import shutil as _shutil
+                t_dir.mkdir(parents=True, exist_ok=True)
+                _shutil.copy2(legacy_file, t_file)
+                legacy_file.unlink(missing_ok=True)
+                return t_file
+        except OSError:
+            pass
 
-    # 2. Secondary source: raw asset
-    if not src_file and shot.asset_path:
-        va = project_dir / shot.asset_path
-        if va.is_file():
-            src_file = va
-
-    if not src_file:
-        return None
+    # Clean older/unkeyed thumbnails for this shot before extracting fresh frame
+    invalidate_shot_thumbnail_cache(project_dir, shot.shot_id)
 
     try:
         t_dir.mkdir(parents=True, exist_ok=True)
@@ -2411,9 +2427,25 @@ def render_visual_step_flow(
         st.write("---")
         col_gallery, col_detail = st.columns([1.6, 1.0])
 
-        # All shots flattened & mapped
+        # All shots flattened & mapped + single visual source-of-truth state (F14)
+        from app.services.longform.visual.base import (
+            invalidate_shot_thumbnail_cache,
+            resolve_shot_visual_source,
+        )
+
         all_shots_list = [s for ch in manifest.chapters for s in ch.shots]
         all_ch_map = {s.shot_id: ch for ch in manifest.chapters for s in ch.shots}
+        proj_fps = getattr(getattr(manifest, "encoder_settings", None), "fps", 25) or 25
+        vis_state_map: Dict[str, Dict[str, Any]] = {}
+        needs_update_count = 0
+        for _s in all_shots_list:
+            _vst = resolve_shot_visual_source(p_dir, _s, fps=proj_fps)
+            if _vst["needs_rebuild"] and getattr(_s, "status", None) != ItemStatus.stale:
+                _s.status = ItemStatus.stale
+                _vst["is_needs_update"] = True
+            vis_state_map[_s.shot_id] = _vst
+            if _vst["is_needs_update"]:
+                needs_update_count += 1
 
         # Resolve selected shot ID or default to first shot
         current_sel_id = st.session_state.get(f"selected_shot_{project_id}")
@@ -2437,14 +2469,15 @@ def render_visual_step_flow(
                 label_visibility="collapsed",
             )
 
-            # Filter Mode Chips with Exact Counts (Mockup 2 V3)
+            # Filter Mode Chips with Exact Counts (Mockup 2 V3 + F14 Perlu diperbarui)
             opt_all_f = f"{t('filter_all')} ({total_shots})"
+            opt_upd_f = t("filter_needs_update", count=needs_update_count)
             opt_rev_f = f"{t('filter_needs_review')} ({needs_review_count})"
             opt_lock_f = f"{t('filter_locked')} ({locked_count})"
             opt_ph_f = f"{t('filter_placeholder')} ({placeholder_count})"
             filter_mode = st.pills(
                 t("label_filter_status"),
-                options=[opt_all_f, opt_rev_f, opt_lock_f, opt_ph_f],
+                options=[opt_all_f, opt_upd_f, opt_rev_f, opt_lock_f, opt_ph_f],
                 default=opt_all_f,
                 key=f"vis_filter_{project_id}",
                 label_visibility="collapsed",
@@ -2457,6 +2490,8 @@ def render_visual_step_flow(
                 if ch_choice != t("all_chapters_option") and ch_choice != ch_label:
                     continue
                 for s in ch.shots:
+                    if filter_mode == opt_upd_f and not vis_state_map.get(s.shot_id, {}).get("is_needs_update"):
+                        continue
                     if filter_mode == opt_rev_f and not getattr(s, "needs_review", False):
                         continue
                     if filter_mode == opt_lock_f and not getattr(s, "locked", False):
@@ -2474,6 +2509,7 @@ def render_visual_step_flow(
                     for c_idx, (ch, shot) in enumerate(visible_shots[r_idx:r_idx+3]):
                         with g_cols[c_idx]:
                             is_active_shot = (shot.shot_id == current_sel_id)
+                            shot_vst = vis_state_map.get(shot.shot_id) or resolve_shot_visual_source(p_dir, shot, fps=proj_fps)
 
                             with st.container(border=True):
                                 thumb_p = get_shot_thumbnail_path(p_dir, shot)
@@ -2481,6 +2517,12 @@ def render_visual_step_flow(
                                 st.markdown(render_project_thumbnail_html(thumb_p, dur_s), unsafe_allow_html=True)
 
                                 badges = []
+                                if shot_vst.get("needs_rebuild"):
+                                    badges.append(t("badge_needs_rebuild"))
+                                elif shot_vst.get("not_built"):
+                                    badges.append(t("badge_not_built"))
+                                elif shot_vst.get("is_needs_update"):
+                                    badges.append(t("badge_needs_update"))
                                 if getattr(shot, "needs_review", False):
                                     badges.append(t("badge_needs_review"))
                                 if getattr(shot, "locked", False):
@@ -2516,6 +2558,7 @@ def render_visual_step_flow(
                 target_chapter = all_ch_map.get(current_sel_id)
 
             if target_shot and target_chapter:
+                det_vst = vis_state_map.get(target_shot.shot_id) or resolve_shot_visual_source(p_dir, target_shot, fps=proj_fps)
                 with st.container(border=True):
                     col_dh, col_lock = st.columns([3.2, 1.8])
                     with col_dh:
@@ -2530,18 +2573,20 @@ def render_visual_step_flow(
                             save_manifest(manifest, p_dir)
                             st.rerun()
 
-                    # Video / Image Large Preview
-                    clip_p = (p_dir / target_shot.rendered_clip) if target_shot.rendered_clip else None
-                    asset_p = (p_dir / target_shot.asset_path) if target_shot.asset_path else None
+                    # Video / Image Large Preview (same canonical source as gallery thumbnail, F14)
+                    prev_p = det_vst.get("source_path")
                     with st.spinner(t("spinner_loading_video_preview")):
-                        if clip_p and clip_p.is_file():
-                            st.video(str(clip_p))
-                        elif asset_p and asset_p.is_file() and asset_p.suffix.lower() in (".mp4", ".mov", ".mkv", ".webm"):
-                            st.video(str(asset_p))
-                        elif asset_p and asset_p.is_file():
-                            st.image(str(asset_p), use_container_width=True)
+                        if prev_p and prev_p.is_file() and prev_p.suffix.lower() in (".mp4", ".mov", ".mkv", ".webm"):
+                            st.video(str(prev_p))
+                        elif prev_p and prev_p.is_file():
+                            st.image(str(prev_p), use_container_width=True)
                         else:
                             st.info(t("shot_clip_not_built"))
+
+                    if det_vst.get("needs_rebuild"):
+                        st.warning(t("shot_needs_rebuild_notice"))
+                    elif det_vst.get("not_built"):
+                        st.info(t("shot_preview_from_asset_not_built"))
 
                     target_narr = get_shot_narration(target_chapter, target_shot)
                     st.markdown(t("shot_narration_label", text=html.escape(target_narr or "-")))
@@ -2746,8 +2791,7 @@ def render_visual_step_flow(
                                                         try:
                                                             vis_svc = VisualService(p_dir)
                                                             vis_svc.replace_shot(manifest, target_shot.shot_id, candidate_index=orig_idx+1, rebuild=True)
-                                                            t_cache = p_dir / "assets" / "visual" / "thumbnails" / f"{target_shot.shot_id}.jpg"
-                                                            t_cache.unlink(missing_ok=True)
+                                                            invalidate_shot_thumbnail_cache(p_dir, target_shot.shot_id)
                                                             save_manifest(manifest, p_dir)
                                                             get_shot_thumbnail_path(p_dir, target_shot)
                                                             st.session_state[f"preview_cand_url_{project_id}"] = None
@@ -2791,8 +2835,7 @@ def render_visual_step_flow(
                                         provider_name=sel_p,
                                         rebuild=True,
                                     )
-                                    t_cache = p_dir / "assets" / "visual" / "thumbnails" / f"{target_shot.shot_id}.jpg"
-                                    t_cache.unlink(missing_ok=True)
+                                    invalidate_shot_thumbnail_cache(p_dir, target_shot.shot_id)
                                     save_manifest(manifest, p_dir)
                                     get_shot_thumbnail_path(p_dir, target_shot)
                                     st.session_state.pop(f"chk_rev_{project_id}_{target_shot.shot_id}", None)
@@ -2821,8 +2864,7 @@ def render_visual_step_flow(
                                             file_path=asset_info["file_path"],
                                             rebuild=True,
                                         )
-                                        t_cache = p_dir / "assets" / "visual" / "thumbnails" / f"{target_shot.shot_id}.jpg"
-                                        t_cache.unlink(missing_ok=True)
+                                        invalidate_shot_thumbnail_cache(p_dir, target_shot.shot_id)
                                         save_manifest(manifest, p_dir)
                                         get_shot_thumbnail_path(p_dir, target_shot)
                                         st.session_state.pop(f"chk_rev_{project_id}_{target_shot.shot_id}", None)

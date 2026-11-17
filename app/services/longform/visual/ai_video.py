@@ -23,7 +23,7 @@ from app.services.longform.config import load_ai_video_pricing
 from app.services.longform.schema import Chapter, ItemStatus, ProjectManifest, Shot
 from app.services.longform.shot import compute_shot_hash
 from app.services.longform.store import is_stop_requested, save_manifest
-from app.services.longform.visual.base import compute_file_content_hash
+from app.services.longform.visual.base import compute_file_content_hash, invalidate_shot_thumbnail_cache
 from app.services.longform.visual.builder import ShotClipBuilder, is_valid_media_file
 from webui.settings_providers import configured_material_providers
 
@@ -519,12 +519,12 @@ def generate_ai_video_for_shot(
             actual_provider=target_shot.actual_source or "",
         )
     else:
-        target_shot.status = ItemStatus.pending
+        has_stale_clip = bool(target_shot.rendered_clip and (p_dir / target_shot.rendered_clip).is_file())
+        target_shot.status = ItemStatus.stale if has_stale_clip else ItemStatus.pending
         target_shot.shot_hash = None
 
-    # Refresh shot thumbnail cleanly
-    thumb_file = p_dir / "assets" / "visual" / "thumbnails" / f"{shot_id}.jpg"
-    thumb_file.unlink(missing_ok=True)
+    # Refresh shot thumbnail cleanly (F14)
+    invalidate_shot_thumbnail_cache(p_dir, shot_id)
     save_manifest(manifest, p_dir)
     return target_shot
 

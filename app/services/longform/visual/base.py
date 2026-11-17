@@ -138,6 +138,97 @@ def compute_file_content_hash(path: Path | str) -> str:
     return h.hexdigest()
 
 
+def invalidate_shot_thumbnail_cache(project_dir: Path, shot_id: str) -> int:
+    """Delete both legacy and hash-keyed cached thumbnails for a shot (F14)."""
+    t_dir = Path(project_dir) / "assets" / "visual" / "thumbnails"
+    if not t_dir.is_dir():
+        return 0
+    removed = 0
+    legacy = t_dir / f"{shot_id}.jpg"
+    if legacy.is_file():
+        legacy.unlink(missing_ok=True)
+        removed += 1
+    for p in t_dir.glob(f"{shot_id}_*.jpg"):
+        p.unlink(missing_ok=True)
+        removed += 1
+    return removed
+
+
+def resolve_shot_visual_source(project_dir: Path, shot: Any, fps: int = 25) -> Dict[str, Any]:
+    """Single source of truth for shot preview/thumbnail & rebuild state (F14).
+
+    Rule:
+    1. Gallery thumbnail AND detail preview BOTH read `shot.rendered_clip` whenever present.
+    2. If `rendered_clip` is missing while `asset_path` exists, BOTH read `asset_path` (`not_built=True`).
+    3. If `asset_path` changed without rebuilding `rendered_clip` (`shot_hash is None`,
+       asset content hash changed vs manifest, or asset mtime > clip mtime),
+       `needs_rebuild=True` and shot status should reflect stale/needs-update.
+    """
+    _ = fps  # kept for caller uniformity
+    p_dir = Path(project_dir)
+    clip_rel = getattr(shot, "rendered_clip", None)
+    asset_rel = getattr(shot, "asset_path", None)
+    clip_p = (p_dir / clip_rel) if clip_rel and (p_dir / clip_rel).is_file() else None
+    asset_p = (p_dir / asset_rel) if asset_rel and (p_dir / asset_rel).is_file() else None
+
+    has_clip = clip_p is not None
+    has_asset = asset_p is not None
+
+    asset_newer_than_clip = False
+    if has_clip and has_asset:
+        if getattr(shot, "shot_hash", None) is None:
+            asset_newer_than_clip = True
+        else:
+            try:
+                if asset_p.stat().st_mtime > clip_p.stat().st_mtime + 0.5:
+                    asset_newer_than_clip = True
+            except OSError:
+                pass
+
+    needs_rebuild = bool(asset_newer_than_clip)
+    not_built = bool(has_asset and not has_clip)
+
+    st_obj = getattr(shot, "status", None)
+    st_val = getattr(st_obj, "value", st_obj)
+    is_stale = (str(st_val or "").lower() == "stale")
+    is_needs_update = bool(needs_rebuild or is_stale)
+
+    if clip_p is not None:
+        source_kind = "clip"
+        source_path: Optional[Path] = clip_p
+    elif asset_p is not None:
+        source_kind = "asset"
+        source_path = asset_p
+    else:
+        source_kind = None
+        source_path = None
+
+    source_hash: Optional[str] = None
+    if source_path is not None:
+        manifest_sig = (
+            getattr(shot, "shot_hash", None)
+            if source_kind == "clip"
+            else getattr(shot, "asset_content_hash", None)
+        ) or ""
+        try:
+            st = source_path.stat()
+            sig_str = f"{source_kind}|{manifest_sig}|{st.st_size}|{st.st_mtime_ns}"
+            source_hash = hashlib.sha256(sig_str.encode("utf-8")).hexdigest()[:16]
+        except Exception:
+            source_hash = hashlib.sha256(f"{source_kind}|{manifest_sig}".encode("utf-8")).hexdigest()[:16]
+
+    return {
+        "source_kind": source_kind,
+        "source_path": source_path,
+        "source_hash": source_hash,
+        "has_clip": has_clip,
+        "has_asset": has_asset,
+        "not_built": not_built,
+        "needs_rebuild": needs_rebuild,
+        "is_needs_update": is_needs_update,
+    }
+
+
 class BaseVisualProvider(ABC):
     """Abstract visual provider contract (4.1)."""
 

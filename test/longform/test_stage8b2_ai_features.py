@@ -2664,6 +2664,153 @@ def test_f13_refetch_on_keyword_change_short_query_escalation_cand_filter_and_lo
     assert "street food night" in md_text
 
 
+# ---------------------------------------------------------------------------
+# ADDENDUM F14 — Single Visual Source of Truth, Hash-Keyed Thumbnails, Rebuild Badge
+# ---------------------------------------------------------------------------
+
+
+def test_f14_thumbnail_detail_single_source_hash_keyed_and_needs_rebuild_badges(tmp_path: Path, monkeypatch):
+    from app.services.longform.schema import Segment
+    from app.services.longform.ui.components import get_shot_thumbnail_path
+    from app.services.longform.visual.base import resolve_shot_visual_source
+
+    proj_root = tmp_path / "projects_f14"
+    proj_root.mkdir()
+    monkeypatch.setattr("app.services.longform.store.get_projects_root", lambda: proj_root)
+    monkeypatch.setattr("app.services.longform.ui.components.get_projects_root", lambda: proj_root)
+    monkeypatch.setitem(config.ui, "language", "id")
+
+    manifest, p_dir = create_project(
+        "f14_thumb_sync",
+        "Sinkron Thumbnail F14",
+        "umum.id",
+        language="id-ID",
+        projects_root=proj_root,
+    )
+
+    blue_asset = _make_sample_mp4(p_dir / "assets/visual/shots/ch01_shot001_asset.mp4", duration=3.0, color="blue")
+    blue_clip = _make_sample_mp4(p_dir / "assets/visual/shots/ch01_shot001.mp4", duration=3.0, color="blue")
+    green_upload = _make_sample_mp4(tmp_path / "green_new.mp4", duration=3.0, color="green")
+    orange_asset = _make_sample_mp4(p_dir / "assets/visual/shots/ch01_shot002_asset.mp4", duration=3.0, color="orange")
+
+    # Seed a stale legacy unkeyed RED thumbnail simulating Shot #2 in kulineran!
+    thumb_dir = p_dir / "assets/visual/thumbnails"
+    thumb_dir.mkdir(parents=True, exist_ok=True)
+    stale_legacy_thumb = _make_sample_jpg(thumb_dir / "ch01_shot001.jpg", color=(220, 20, 20))
+    os.utime(stale_legacy_thumb, (1000.0, 1000.0))
+
+    blue_asset_hash = compute_file_content_hash(blue_asset)
+    sh1 = Shot(
+        shot_id="ch01_shot001",
+        chapter_index=1,
+        shot_index=1,
+        segment_indices=[1],
+        duration_seconds=3.0,
+        target_frames=75,
+        requested_source="pixabay",
+        actual_source="pixabay",
+        search_query="blue night scene",
+        asset_path="assets/visual/shots/ch01_shot001_asset.mp4",
+        asset_content_hash=blue_asset_hash,
+        rendered_clip="assets/visual/shots/ch01_shot001.mp4",
+        shot_hash=compute_shot_hash(
+            shot_id="ch01_shot001",
+            duration_seconds=3.0,
+            target_frames=75,
+            motion="zoom_in",
+            asset_content_hash=blue_asset_hash,
+            fps=25,
+            requested_provider="pixabay",
+            actual_provider="pixabay",
+        ),
+        status=ItemStatus.completed,
+    )
+    sh2_not_built = Shot(
+        shot_id="ch01_shot002",
+        chapter_index=1,
+        shot_index=2,
+        segment_indices=[2],
+        duration_seconds=3.0,
+        target_frames=75,
+        requested_source="pixabay",
+        actual_source="pixabay",
+        search_query="orange food stall",
+        asset_path="assets/visual/shots/ch01_shot002_asset.mp4",
+        asset_content_hash=compute_file_content_hash(orange_asset),
+        rendered_clip=None,
+        status=ItemStatus.pending,
+    )
+    manifest.chapters = [
+        Chapter(
+            chapter_index=1,
+            chapter_title="Visual Sync",
+            tts_groups=[
+                TtsGroup(
+                    group_index=1,
+                    paragraph_text="Adegan pertama biru. Adegan kedua jingga belum disusun.",
+                    segments=[
+                        Segment(segment_index=1, narration_text="Adegan pertama biru."),
+                        Segment(segment_index=2, narration_text="Adegan kedua jingga belum disusun."),
+                    ],
+                )
+            ],
+            shots=[sh1, sh2_not_built],
+        )
+    ]
+    save_manifest(manifest, p_dir)
+
+    # 1. Hash-keyed thumbnail rejects stale unkeyed red file and extracts BLUE frame from rendered_clip
+    t1_blue = get_shot_thumbnail_path(p_dir, sh1)
+    assert t1_blue is not None and t1_blue.is_file()
+    assert not stale_legacy_thumb.exists()
+    assert t1_blue.name.startswith("ch01_shot001_")
+    with Image.open(t1_blue) as im:
+        r, g, b = im.getpixel((im.width // 2, im.height // 2))
+        assert b > r + 80, f"Expected blue clip thumbnail, got RGB={(r, g, b)}"
+
+    # 2. Replace asset WITHOUT rebuild -> status stale, resolve_shot_visual_source flags needs_rebuild=True
+    vis_svc = VisualService(p_dir)
+    vis_svc.replace_shot(manifest, "ch01_shot001", file_path=green_upload, rebuild=False)
+    save_manifest(manifest, p_dir)
+    assert sh1.status == ItemStatus.stale
+
+    v_state_1 = resolve_shot_visual_source(p_dir, sh1)
+    assert v_state_1["source_kind"] == "clip"
+    assert v_state_1["needs_rebuild"] is True
+    assert v_state_1["is_needs_update"] is True
+    v_state_2 = resolve_shot_visual_source(p_dir, sh2_not_built)
+    assert v_state_2["source_kind"] == "asset"
+    assert v_state_2["not_built"] is True
+
+    # 3. UI shows "Perlu diperbarui · 1" chip, "Perlu disusun ulang" badge on card + detail, and "Belum disusun" on shot #2
+    monkeypatch.setattr(
+        "app.services.longform.visual.ai_relevance.get_vision_readiness",
+        lambda *a, **k: {"vision_supported": False, "provider": "openrouter", "model": "openrouter/free", "reason": "text_only_model"},
+    )
+    at = AppTest.from_file(_get_long_video_app_file())
+    at.query_params["project"] = "f14_thumb_sync"
+    at.session_state["active_step_f14_thumb_sync"] = "visual"
+    at.run(timeout=25)
+    assert not at.exception
+    caps = "\n".join(str(c.value) for c in at.caption)
+    warns = "\n".join(str(w.value) for w in at.warning)
+    assert "Perlu disusun ulang" in caps
+    assert "Belum disusun" in caps
+    assert "Perlu disusun ulang" in warns
+
+    # 4. Rebuild Shot #1 -> rendered_clip turns green, hash-keyed thumbnail regenerates with GREEN pixel & cleans old hash!
+    vis_svc.replace_shot(manifest, "ch01_shot001", file_path=green_upload, rebuild=True)
+    save_manifest(manifest, p_dir)
+    t1_green = get_shot_thumbnail_path(p_dir, sh1)
+    assert t1_green is not None and t1_green.is_file()
+    assert t1_green != t1_blue
+    assert not t1_blue.exists()
+    with Image.open(t1_green) as im:
+        r2, g2, b2 = im.getpixel((im.width // 2, im.height // 2))
+        assert g2 > b2 + 60, f"Expected regenerated green clip thumbnail, got RGB={(r2, g2, b2)}"
+
+
+
 
 
 

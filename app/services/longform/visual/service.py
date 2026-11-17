@@ -34,6 +34,7 @@ from app.services.longform.visual.base import (
     VisualConfigurationError,
     VisualError,
     compute_file_content_hash,
+    invalidate_shot_thumbnail_cache,
 )
 # Builder imported eagerly (pure FFmpeg subprocess, no upstream deps)
 from app.services.longform.visual.builder import (
@@ -709,8 +710,7 @@ class VisualService:
 
                 logger.info(f"Fetching asset for {shot.shot_id} via {active_provider.name} (score: {selected_candidate.relevance_score:.2f}, {selected_candidate.rendition_name or 'std'})...")
                 asset = active_provider.fetch_asset(selected_candidate, dest_file)
-                stale_thumb = self.project_dir / "assets" / "visual" / "thumbnails" / f"{shot.shot_id}.jpg"
-                stale_thumb.unlink(missing_ok=True)
+                invalidate_shot_thumbnail_cache(self.project_dir, shot.shot_id)
 
                 # Update shot metadata
                 shot.asset_path = rel_dest
@@ -737,7 +737,12 @@ class VisualService:
                     shot.needs_review = not has_anchor
                 else:
                     shot.needs_review = False
-                shot.status = ItemStatus.pending
+                has_stale_clip = bool(shot.rendered_clip and (self.project_dir / shot.rendered_clip).is_file())
+                if has_stale_clip:
+                    shot.shot_hash = None
+                    shot.status = ItemStatus.stale
+                else:
+                    shot.status = ItemStatus.pending
                 save_manifest(manifest, self.project_dir)
 
         if translation_warnings:
@@ -835,6 +840,7 @@ class VisualService:
                 )
                 shot.rendered_clip = clip_rel
                 shot.status = ItemStatus.completed
+                invalidate_shot_thumbnail_cache(self.project_dir, shot.shot_id)
                 save_manifest(manifest, self.project_dir)
 
             # Update chapter duration & frames
@@ -1188,8 +1194,10 @@ class VisualService:
                     actual_provider=target_shot.actual_source or "",
                 )
             else:
-                target_shot.status = ItemStatus.pending
+                has_stale_clip = bool(target_shot.rendered_clip and (self.project_dir / target_shot.rendered_clip).is_file())
+                target_shot.status = ItemStatus.stale if has_stale_clip else ItemStatus.pending
                 target_shot.shot_hash = None
+            invalidate_shot_thumbnail_cache(self.project_dir, shot_id)
             return target_shot
 
         if candidate_index is not None:
@@ -1234,8 +1242,10 @@ class VisualService:
                     actual_provider=target_shot.actual_source or "",
                 )
             else:
-                target_shot.status = ItemStatus.pending
+                has_stale_clip = bool(target_shot.rendered_clip and (self.project_dir / target_shot.rendered_clip).is_file())
+                target_shot.status = ItemStatus.stale if has_stale_clip else ItemStatus.pending
                 target_shot.shot_hash = None
+            invalidate_shot_thumbnail_cache(self.project_dir, shot_id)
             return target_shot
 
         if provider_name or prompt:
@@ -1292,8 +1302,10 @@ class VisualService:
                     actual_provider=target_shot.actual_source or "",
                 )
             else:
-                target_shot.status = ItemStatus.pending
+                has_stale_clip = bool(target_shot.rendered_clip and (self.project_dir / target_shot.rendered_clip).is_file())
+                target_shot.status = ItemStatus.stale if has_stale_clip else ItemStatus.pending
                 target_shot.shot_hash = None
+            invalidate_shot_thumbnail_cache(self.project_dir, shot_id)
             return target_shot
 
         raise ValueError("Must provide --file, --candidate, or --search/--prompt for replace")
