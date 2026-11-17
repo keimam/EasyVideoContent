@@ -754,6 +754,19 @@ ID_TRANSLATIONS: Dict[str, str] = {
     "shot_keywords_lang_label": "**Kata kunci pencarian ({proj_lang}):** `{kw}`",
     "shot_keywords_source_with_reason": "**Asal:** {src} ({reason})",
     "ai_relevance_vision_hint_below": "Butuh model AI yang bisa membaca gambar (vision). Pilih model vision di Pengaturan.",
+    # --- F12 Additions ---
+    "expander_project_advanced_settings": "Pengaturan Lanjutan Proyek (Jangkar Visual)",
+    "project_anchor_terms_label": "Istilah jangkar visual (pisahkan koma, English)",
+    "project_anchor_terms_help": "Subjek konkret bertema proyek yang dipakai sebagai konteks prompt AI dan filter relevansi stok footage.",
+    "project_avoid_terms_label": "Istilah yang dihindari (pisahkan koma, English)",
+    "project_avoid_terms_help": "Tag kandidat stok yang langsung ditolak oleh filter relevansi (mis. animal, wildlife, cartoon, garbage).",
+    "project_visual_summary_label": "Ringkasan visual proyek",
+    "btn_save_project_anchors": "Simpan Pengaturan",
+    "btn_regen_project_anchors": "Buat ulang dengan AI",
+    "project_anchors_saved": "Pengaturan lanjutan proyek tersimpan.",
+    "project_anchors_regen_ok": "Jangkar visual proyek diperbarui.",
+    "err_project_anchors_friendly": "Gagal memperbarui jangkar visual proyek.",
+    "shot_keywords_alts_caption": "Alternatif query: {alts}",
 }
 
 
@@ -1500,6 +1513,19 @@ EN_TRANSLATIONS: Dict[str, str] = {
     "shot_keywords_lang_label": "**Search keyword ({proj_lang}):** `{kw}`",
     "shot_keywords_source_with_reason": "**Origin:** {src} ({reason})",
     "ai_relevance_vision_hint_below": "Requires an AI model that supports image reading (vision). Choose a vision model in Settings.",
+    # --- F12 Additions ---
+    "expander_project_advanced_settings": "Project Advanced Settings (Visual Anchors)",
+    "project_anchor_terms_label": "Visual anchor terms (comma-separated, English)",
+    "project_anchor_terms_help": "Concrete on-theme subject terms used to ground AI prompts and filter stock footage candidates.",
+    "project_avoid_terms_label": "Terms to avoid (comma-separated, English)",
+    "project_avoid_terms_help": "Stock tags automatically rejected by the relevance filter (e.g. animal, wildlife, cartoon, garbage).",
+    "project_visual_summary_label": "Project visual summary",
+    "btn_save_project_anchors": "Save Settings",
+    "btn_regen_project_anchors": "Regenerate with AI",
+    "project_anchors_saved": "Project advanced settings saved.",
+    "project_anchors_regen_ok": "Project visual anchors updated.",
+    "err_project_anchors_friendly": "Failed to update project visual anchors.",
+    "shot_keywords_alts_caption": "Alternative queries: {alts}",
 }
 
 

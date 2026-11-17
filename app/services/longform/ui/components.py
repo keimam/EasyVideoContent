@@ -1357,6 +1357,91 @@ def render_project_page(project_id: str):
     job_state = jobs.get_job_state(project_id)
     is_job_running = bool(job_state and job_state.get("status") == "running")
 
+    # F12: Project Advanced Settings (Editable anchor_terms, avoid_terms & visual_summary)
+    with st.expander(t("expander_project_advanced_settings"), expanded=False):
+        from app.services.longform.llm_adapter import LLMCreditError, LLMModelNotFoundError
+        from app.services.longform.visual.ai_keywords import (
+            _clean_term_list,
+            ensure_project_visual_anchors,
+        )
+
+        adv_notice = st.session_state.pop(f"proj_anchors_notice_{project_id}", None)
+        if adv_notice:
+            st.success(adv_notice)
+
+        if st.session_state.pop(f"_reset_proj_anchors_{project_id}", False):
+            st.session_state.pop(f"txt_proj_anchors_{project_id}", None)
+            st.session_state.pop(f"txt_proj_avoids_{project_id}", None)
+            st.session_state.pop(f"txt_proj_vis_sum_{project_id}", None)
+
+        cur_anchors_str = ", ".join(getattr(manifest, "visual_anchor_terms", []) or [])
+        cur_avoids_str = ", ".join(getattr(manifest, "visual_avoid_terms", []) or [])
+        cur_vis_summary = getattr(manifest, "visual_summary", None) or ""
+
+        col_anc1, col_anc2 = st.columns(2)
+        with col_anc1:
+            txt_anchors = st.text_input(
+                t("project_anchor_terms_label"),
+                value=cur_anchors_str,
+                help=t("project_anchor_terms_help"),
+                key=f"txt_proj_anchors_{project_id}",
+                disabled=is_job_running,
+            )
+        with col_anc2:
+            txt_avoids = st.text_input(
+                t("project_avoid_terms_label"),
+                value=cur_avoids_str,
+                help=t("project_avoid_terms_help"),
+                key=f"txt_proj_avoids_{project_id}",
+                disabled=is_job_running,
+            )
+
+        txt_vis_sum = st.text_area(
+            t("project_visual_summary_label"),
+            value=cur_vis_summary,
+            height=68,
+            key=f"txt_proj_vis_sum_{project_id}",
+            disabled=is_job_running,
+        )
+
+        col_anc_b1, col_anc_b2 = st.columns([1, 1])
+        with col_anc_b1:
+            if st.button(
+                t("btn_save_project_anchors"),
+                key=f"btn_save_proj_anchors_{project_id}",
+                disabled=is_job_running,
+                use_container_width=True,
+            ):
+                manifest.visual_anchor_terms = _clean_term_list(txt_anchors)
+                manifest.visual_avoid_terms = _clean_term_list(txt_avoids)
+                manifest.visual_summary = (txt_vis_sum or "").strip() or None
+                save_manifest(manifest, p_dir)
+                st.session_state[f"proj_anchors_notice_{project_id}"] = t("project_anchors_saved")
+                st.rerun()
+        with col_anc_b2:
+            if st.button(
+                t("btn_regen_project_anchors"),
+                key=f"btn_regen_proj_anchors_{project_id}",
+                disabled=is_job_running,
+                use_container_width=True,
+            ):
+                try:
+                    ensure_project_visual_anchors(manifest, force=True)
+                    save_manifest(manifest, p_dir)
+                    st.session_state[f"_reset_proj_anchors_{project_id}"] = True
+                    st.session_state[f"proj_anchors_notice_{project_id}"] = t("project_anchors_regen_ok")
+                    st.rerun()
+                except (LLMCreditError, LLMModelNotFoundError) as exc:
+                    llm_adv = check_llm_status()
+                    _render_llm_friendly_error_box(
+                        project_id,
+                        str(exc),
+                        active_model=str(llm_adv.get("model") or ""),
+                        key_suffix="anchors",
+                    )
+                except Exception as exc:
+                    _render_friendly_error(t("err_project_anchors_friendly"), exc)
+
     # Mockup 3: If core steps are completed and on Render or CapCut step, render side-by-side view
     if core_4_completed and active_step in ("render", "capcut"):
         col_side_rend, col_side_cc = st.columns(2)
@@ -2481,6 +2566,13 @@ def render_visual_step_flow(
 
                     if kw_en_val:
                         st.markdown(t("shot_keywords_en_search_label", kw=html.escape(kw_en_val)))
+                        alt_qs = [
+                            str(q).strip()
+                            for q in (getattr(target_shot, "search_queries_en", None) or [])[1:]
+                            if str(q or "").strip() and str(q).strip().lower() != kw_en_val.strip().lower()
+                        ]
+                        if alt_qs:
+                            st.caption(t("shot_keywords_alts_caption", alts=" | ".join(alt_qs)))
                     elif not is_non_english_language(proj_lang_vis):
                         st.markdown(t("shot_keywords_en_search_label", kw=html.escape(short_q or "-")))
                     else:

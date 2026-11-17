@@ -189,6 +189,8 @@ class VisualService:
         negative_terms: Optional[List[str]] = None,
         min_relevance_score: Optional[float] = None,
         visual_keywords: Optional[List[str]] = None,
+        anchor_terms: Optional[List[str]] = None,
+        avoid_terms: Optional[List[str]] = None,
     ) -> bool:
         """Check if the shot's current asset is genuinely valid (V1, S4, S5, T3).
 
@@ -241,8 +243,15 @@ class VisualService:
                 logger.warning(f"Shot {shot.shot_id} asset {asset_file} failed media decode check: {reason}")
                 return False
 
-        # S5, T3: Subject relevance and strict negative terms check on existing asset tags
-        if required_subject_terms or blocked_terms or negative_terms:
+        # S5, T3, F12: Subject relevance, strict negative terms, and anchor/avoid check on existing stock asset tags
+        is_stock_asset = (not shot.is_fake) and str(shot.actual_source or target_provider_name or "").lower() in (
+            "stock",
+            "pixabay",
+            "pexels",
+            "coverr",
+        )
+        has_anchor_check = bool((anchor_terms or avoid_terms) and is_stock_asset)
+        if required_subject_terms or blocked_terms or negative_terms or has_anchor_check:
             if not shot.tags:
                 logger.info(f"Shot {shot.shot_id} has no metadata tags to verify subject terms; marking stale for re-fetch")
                 return False
@@ -254,6 +263,8 @@ class VisualService:
                 required_subject_terms=required_subject_terms,
                 blocked_terms=blocked_terms,
                 negative_terms=negative_terms,
+                anchor_terms=anchor_terms if has_anchor_check else None,
+                avoid_terms=avoid_terms if has_anchor_check else None,
                 min_relevance_score=min_relevance_score,
                 is_low_res=shot.is_low_res,
             )
@@ -368,11 +379,25 @@ class VisualService:
         stop_requested = False
         translation_warnings: List[str] = []
         from app.services.longform.language_guard import resolve_project_language
+        from app.services.longform.visual.ai_keywords import (
+            ensure_project_visual_anchors,
+            generate_chapter_visual_keywords_ai,
+        )
         from app.services.longform.visual.keyword_translator import (
             is_non_english_language,
             translate_chapter_queries_to_english,
         )
         proj_lang = resolve_project_language(manifest)
+
+        # F12: Generate/load cached project anchor & avoid terms once per project for non-fake fetch
+        if effective_provider_name != "fake" and not getattr(manifest, "visual_anchor_terms", None):
+            try:
+                ensure_project_visual_anchors(manifest)
+            except Exception as exc:
+                logger.warning(f"Could not populate project visual anchors: {exc}")
+
+        proj_anchors = list(getattr(manifest, "visual_anchor_terms", []) or [])
+        proj_avoids = list(getattr(manifest, "visual_avoid_terms", []) or [])
 
         for ch in manifest.chapters:
             if is_stop_requested(self.project_dir):
@@ -380,8 +405,7 @@ class VisualService:
                 stop_requested = True
                 break
 
-            # F8 + F2: For newly allocated / stale unlocked shots lacking AI visual keywords,
-            # generate concise English visual search queries per chapter (or fall back cleanly).
+            # F8 + F2 + F12: Generate concrete 2-3 queries per shot when missing
             if translate_keywords:
                 shots_needing_fetch = [
                     sh for sh in ch.shots
@@ -393,6 +417,8 @@ class VisualService:
                         neg_terms,
                         min_rel_score,
                         visual_kws,
+                        anchor_terms=proj_anchors,
+                        avoid_terms=proj_avoids,
                     )
                 ]
                 shots_needing_kw_gen = [
@@ -403,14 +429,16 @@ class VisualService:
                     )
                 ]
                 if shots_needing_kw_gen and effective_provider_name != "fake":
-                    from app.services.longform.visual.ai_keywords import (
-                        generate_chapter_visual_keywords_ai,
-                    )
                     kw_res = generate_chapter_visual_keywords_ai(
                         shots_needing_kw_gen,
                         ch,
                         preset_snapshot=preset_snap,
                         project_lang=proj_lang,
+                        project_topic=manifest.topic or manifest.title,
+                        sub_niche_focus=getattr(manifest, "sub_niche_focus", None),
+                        visual_summary=getattr(manifest, "visual_summary", None),
+                        anchor_terms=proj_anchors,
+                        avoid_terms=proj_avoids,
                     )
                     if kw_res.get("warning"):
                         translation_warnings.append(str(kw_res["warning"]))
@@ -441,7 +469,7 @@ class VisualService:
                     logger.info(f"Skipping locked shot: {shot.shot_id}")
                     continue
 
-                # V1, S4, S5, T3: Check if asset is valid for requested provider AND meets strict subject filter
+                # V1, S4, S5, T3, F12: Check if asset is valid for requested provider AND meets strict subject/anchor filter
                 if self._is_shot_asset_valid_for_provider(
                     shot,
                     effective_provider_name,
@@ -450,6 +478,8 @@ class VisualService:
                     neg_terms,
                     min_rel_score,
                     visual_kws,
+                    anchor_terms=proj_anchors,
+                    avoid_terms=proj_avoids,
                 ):
                     logger.debug(f"Shot {shot.shot_id} asset valid for provider '{effective_provider_name}', skipping fetch")
                     continue
@@ -488,25 +518,42 @@ class VisualService:
                     or shot.visual_prompt
                     or "cinematic scene"
                 )
+                # F12: Build ordered sequential alternative queries (`search_queries_en`), trying concrete primary + alternatives before narrow fallback
+                ordered_base_queries: List[str] = []
+                for q_cand in ([raw_query] + list(getattr(shot, "search_queries_en", []) or [])):
+                    qc = str(q_cand or "").strip()
+                    if qc and qc.lower() not in [x.lower() for x in ordered_base_queries]:
+                        ordered_base_queries.append(qc)
+
                 candidates = []
                 chosen_query = raw_query
 
-                # Tiers of queries:
-                restruct_q = restructure_stock_query(raw_query, req_terms, topic_kws)
-                query_tiers = [
-                    (restruct_q, stock_cat),
-                    (restruct_q, None),
-                    (raw_query, stock_cat),
-                    (raw_query, None),
-                ]
+                query_tiers: List[Tuple[str, Optional[str]]] = []
+                for bq in ordered_base_queries:
+                    if req_terms:
+                        restruct_q = restructure_stock_query(bq, req_terms, topic_kws)
+                        query_tiers.append((restruct_q, stock_cat))
+                        query_tiers.append((restruct_q, None))
+                    query_tiers.append((bq, stock_cat))
+                    query_tiers.append((bq, None))
+
                 narrow_q = extract_narrower_query(raw_query, req_terms)
-                if narrow_q and narrow_q.lower() not in (restruct_q.lower(), raw_query.lower()):
+                if narrow_q and narrow_q.lower() not in [qt[0].lower() for qt in query_tiers]:
                     query_tiers.append((narrow_q, None))
                 for vk in visual_kws[:3]:
                     if vk and vk.lower() not in [qt[0].lower() for qt in query_tiers]:
                         query_tiers.append((vk, stock_cat))
 
-                for q_text, q_cat in query_tiers:
+                # Deduplicate preserving order
+                seen_tiers: set[Tuple[str, Optional[str]]] = set()
+                dedup_tiers: List[Tuple[str, Optional[str]]] = []
+                for qt_pair in query_tiers:
+                    k_pair = (qt_pair[0].lower(), qt_pair[1])
+                    if k_pair not in seen_tiers:
+                        seen_tiers.add(k_pair)
+                        dedup_tiers.append(qt_pair)
+
+                for q_text, q_cat in dedup_tiers:
                     search_kwargs = {
                         "query": q_text,
                         "target_duration": shot.duration_seconds,
@@ -518,6 +565,8 @@ class VisualService:
                             required_subject_terms=req_terms,
                             blocked_terms=block_terms,
                             negative_terms=neg_terms,
+                            anchor_terms=proj_anchors,
+                            avoid_terms=proj_avoids,
                             min_relevance_score=min_rel_score,
                             visual_keywords=visual_kws,
                             category=q_cat,
@@ -945,7 +994,9 @@ class VisualService:
         stock_cat = preset_snap.get("stock_category")
         vis_kws = preset_snap.get("visual_keywords") or []
 
-        q = search_query or target_shot.search_query or target_shot.visual_prompt or "cinematic scene"
+        q = search_query or getattr(target_shot, "search_query_en", None) or target_shot.search_query or target_shot.visual_prompt or "cinematic scene"
+        proj_anchors = list(getattr(manifest, "visual_anchor_terms", []) or [])
+        proj_avoids = list(getattr(manifest, "visual_avoid_terms", []) or [])
 
         candidates = prov.search_candidates(
             query=q,
@@ -954,6 +1005,8 @@ class VisualService:
             required_subject_terms=req_terms,
             blocked_terms=block_terms,
             negative_terms=neg_terms,
+            anchor_terms=proj_anchors,
+            avoid_terms=proj_avoids,
             min_relevance_score=min_rel,
             visual_keywords=vis_kws,
             category=stock_cat,
@@ -967,6 +1020,8 @@ class VisualService:
                 required_subject_terms=req_terms,
                 blocked_terms=block_terms,
                 negative_terms=neg_terms,
+                anchor_terms=proj_anchors,
+                avoid_terms=proj_avoids,
                 min_relevance_score=min_rel,
                 visual_keywords=vis_kws,
                 category=None,
@@ -1180,10 +1235,12 @@ class VisualService:
         return target_shot
 
     def evaluate_needs_review(self, manifest: ProjectManifest) -> int:
-        """Scan manifest shots and flag any shot lacking required_subject_terms as needs_review (X4)."""
+        """Scan manifest shots and flag any shot lacking required_subject_terms or matching avoid_terms / missing anchor_terms (X4, F12)."""
         preset_snap = manifest.preset_snapshot or {}
         req_terms = preset_snap.get("required_subject_terms") or []
-        if not req_terms:
+        proj_anchors = list(getattr(manifest, "visual_anchor_terms", []) or [])
+        proj_avoids = list(getattr(manifest, "visual_avoid_terms", []) or [])
+        if not req_terms and not proj_anchors and not proj_avoids:
             return 0
 
         from app.services.longform.visual.stock import term_matches_tags
@@ -1192,8 +1249,13 @@ class VisualService:
         for ch in manifest.chapters:
             for s in ch.shots:
                 if s.tags:
-                    has_subj = any(term_matches_tags(req, s.tags) for req in req_terms)
-                    if not has_subj and not s.needs_review:
+                    has_subj = (
+                        any(term_matches_tags(req, s.tags) for req in req_terms)
+                        if req_terms
+                        else (any(term_matches_tags(anc, s.tags) for anc in proj_anchors) if proj_anchors else True)
+                    )
+                    has_avoid = any(term_matches_tags(av, s.tags) for av in proj_avoids) if proj_avoids else False
+                    if (not has_subj or has_avoid) and not s.needs_review:
                         s.needs_review = True
                         flagged += 1
                 elif s.asset_path and not s.locked:

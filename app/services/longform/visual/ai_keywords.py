@@ -28,7 +28,6 @@ from app.services.longform.llm_adapter import (
 from app.services.longform.schema import Chapter, ItemStatus, ProjectManifest, Shot
 from app.services.longform.visual.cache import get_global_cache_dir
 from app.services.longform.visual.keyword_translator import (
-    _extract_json_dict,
     _invoke_translation_llm,
     _sanitize_english_query,
     translate_single_query_to_english,
@@ -43,8 +42,14 @@ def _ai_kw_cache_file(cache_dir: Optional[Path] = None) -> Path:
     return path
 
 
-def _load_ai_kw_cache(cache_dir: Optional[Path] = None) -> Dict[str, Any]:
-    path = _ai_kw_cache_file(cache_dir)
+def _ai_anchor_cache_file(cache_dir: Optional[Path] = None) -> Path:
+    root = Path(cache_dir) if cache_dir else get_global_cache_dir()
+    path = root / "ai_visual_anchors.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _load_json_cache(path: Path) -> Dict[str, Any]:
     if not path.is_file():
         return {}
     try:
@@ -54,12 +59,19 @@ def _load_ai_kw_cache(cache_dir: Optional[Path] = None) -> Dict[str, Any]:
         return {}
 
 
-def _save_ai_kw_cache(cache: Dict[str, Any], cache_dir: Optional[Path] = None) -> None:
-    path = _ai_kw_cache_file(cache_dir)
+def _save_json_cache(path: Path, cache: Dict[str, Any], label: str) -> None:
     try:
         path.write_text(json.dumps(cache, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     except Exception as exc:
-        logger.warning(f"Failed to persist AI visual keyword cache: {exc}")
+        logger.warning(f"Failed to persist {label}: {exc}")
+
+
+def _load_ai_kw_cache(cache_dir: Optional[Path] = None) -> Dict[str, Any]:
+    return _load_json_cache(_ai_kw_cache_file(cache_dir))
+
+
+def _save_ai_kw_cache(cache: Dict[str, Any], cache_dir: Optional[Path] = None) -> None:
+    _save_json_cache(_ai_kw_cache_file(cache_dir), cache, "AI visual keyword cache")
 
 
 def _ai_kw_cache_key(
@@ -68,11 +80,344 @@ def _ai_kw_cache_key(
     narration: str,
     part_idx: int,
     part_total: int,
+    anchor_sig: str = "",
 ) -> str:
     norm_lang = normalize_language_code(project_lang)
     norm_narr = normalize_text(narration).lower()
     norm_subj = normalize_text(subject_sig).lower()
-    return hash_string(f"f8_aikw|{norm_lang}|{norm_subj}|{part_idx}/{part_total}|{norm_narr}")
+    norm_anch = normalize_text(anchor_sig).lower()
+    return hash_string(f"f12_aikw|{norm_lang}|{norm_subj}|{norm_anch}|{part_idx}/{part_total}|{norm_narr}")
+
+
+ABSTRACT_NON_VISUAL_WORDS = {
+    "hunger", "unplanned", "unique", "feeling", "feelings", "memory", "memories",
+    "emotion", "emotions", "emotional", "concept", "concepts", "idea", "ideas",
+    "ritual", "rituals", "nostalgia", "nostalgic", "legacy", "soul", "spirit",
+    "truth", "secret", "journey", "meaning", "vibe", "vibes", "satisfaction",
+    "satisfied", "magic", "magical", "wonder", "destiny", "dream", "dreams",
+    "hope", "sadness", "happiness", "joy", "fear", "silence", "thought",
+    "thoughts", "wisdom", "way", "ways", "reason", "story", "stories",
+    "experience", "atmosphere", "moment", "moments", "sense", "craving",
+    "unexpected", "sudden", "always", "actually", "really", "simply",
+    "casual", "simple", "everyday",
+}
+
+_TIME_OR_GENERIC_ONLY = {
+    "night", "day", "morning", "evening", "afternoon", "dark", "light",
+    "city", "urban", "people", "man", "woman", "scene", "view",
+}
+
+
+def _extract_json_any_dict(raw_text: str) -> Dict[str, Any]:
+    """Parse JSON object from LLM text while preserving list/nested values (unlike F2 str-only helper)."""
+    text = str(raw_text or "").strip()
+    if not text:
+        return {}
+    text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s*```$", "", text)
+    for candidate in (text, (re.search(r"\{[\s\S]*\}", text) or [None])[0]):
+        if not candidate:
+            continue
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict):
+                return {str(k): v for k, v in parsed.items() if v is not None}
+        except Exception:
+            continue
+    return {}
+
+
+def _clean_term_list(values: Any) -> List[str]:
+    """Normalize a list or comma-separated string into lowercase unique non-empty terms."""
+    if isinstance(values, str):
+        raw_items = [x.strip() for x in re.split(r"[,;\n]+", values) if x.strip()]
+    elif isinstance(values, (list, tuple, set)):
+        raw_items = [str(x).strip() for x in values if str(x or "").strip()]
+    else:
+        return []
+    out: List[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        norm = normalize_text(item).lower()
+        if norm and norm not in seen:
+            seen.add(norm)
+            out.append(norm)
+    return out
+
+
+def _heuristic_anchors_for_project(manifest: ProjectManifest) -> Tuple[List[str], List[str], str]:
+    """Deterministic concrete anchor/avoid fallback when LLM is unavailable."""
+    snap = manifest.preset_snapshot or {}
+    combined_ctx = " ".join(
+        [
+            str(manifest.topic or ""),
+            str(manifest.title or ""),
+            str(manifest.preset_id or ""),
+            str(manifest.sub_niche_focus or ""),
+            str(snap.get("name") or ""),
+            " ".join(str(x) for x in (snap.get("required_subject_terms") or [])),
+            " ".join(str(x) for x in (snap.get("topic_keywords") or [])),
+        ]
+    ).lower()
+
+    req_clean = _clean_term_list(snap.get("required_subject_terms") or [])
+    topic_clean = _clean_term_list(snap.get("topic_keywords") or [])
+    block_clean = _clean_term_list(snap.get("blocked_terms") or [])
+
+    anchors: List[str] = []
+    avoids: List[str] = list(block_clean)
+
+    is_food = any(
+        k in combined_ctx
+        for k in ("kuliner", "food", "street food", "makan", "masak", "cook", "warung", "noodle", "restoran", "jajan")
+    )
+    is_nature_animal = any(k in combined_ctx for k in ("animal", "wildlife", "hewan", "satwa", "pet", "zoo"))
+
+    if is_food:
+        anchors.extend(["food", "street food", "vendor", "cooking", "stall", "market", "night market", "dish", "kitchen"])
+        if not is_nature_animal:
+            avoids.extend(["animal", "wildlife", "pet", "panda", "dog", "cat", "bird", "cartoon", "garbage", "trash"])
+    elif req_clean or topic_clean:
+        anchors.extend((req_clean + topic_clean)[:8])
+        if not is_nature_animal:
+            avoids.extend(["cartoon", "animation", "illustration", "animal", "wildlife"])
+    else:
+        tokens = [
+            w for w in re.findall(r"[a-z0-9]{3,}", combined_ctx)
+            if w not in {"umum", "id", "en", "documentary", "naratif", "dokumenter", "the", "and"}
+        ]
+        anchors.extend(tokens[:6] or ["city street", "people", "workplace", "outdoor"])
+        if not is_nature_animal:
+            avoids.extend(["animal", "wildlife", "pet", "cartoon", "garbage"])
+
+    anchors = _clean_term_list(req_clean + anchors)[:10]
+    avoids = _clean_term_list(avoids)[:10]
+    subj_label = str(manifest.topic or manifest.title or snap.get("name") or "documentary").strip()
+    summary = f"Concrete real-world visual scenes for {subj_label}: {', '.join(anchors[:5])}."
+    return anchors, avoids, summary
+
+
+def _build_project_anchors_prompt(manifest: ProjectManifest) -> str:
+    snap = manifest.preset_snapshot or {}
+    preset_name = str(snap.get("name") or manifest.preset_id or "").strip()
+    req_terms = ", ".join(str(x) for x in (snap.get("required_subject_terms") or []))
+    topic_kws = ", ".join(str(x) for x in (snap.get("topic_keywords") or []))
+    chapter_titles = "; ".join(ch.chapter_title for ch in (manifest.chapters or [])[:6] if ch.chapter_title)
+    return (
+        "You are a stock-footage supervision assistant preparing visual search guardrails.\n"
+        f"Project title: {manifest.title}\n"
+        f"Project topic: {manifest.topic or manifest.title}\n"
+        f"Niche/preset: {preset_name} ({manifest.preset_id})\n"
+        + (f"Sub-niche focus: {manifest.sub_niche_focus}\n" if manifest.sub_niche_focus else "")
+        + (f"Existing preset subjects: {req_terms}\n" if req_terms else "")
+        + (f"Existing topic keywords: {topic_kws}\n" if topic_kws else "")
+        + (f"Chapter titles: {chapter_titles}\n" if chapter_titles else "")
+        + "\nReturn ONLY strict JSON with these 3 fields:\n"
+        "{\n"
+        '  "anchor_terms": ["6 to 10 concrete lowercase English nouns/phrases that MUST relate to stock footage tags (e.g. street food, vendor, cooking, stall, market, night market, wok, dish)"],\n'
+        '  "avoid_terms": ["5 to 10 concrete lowercase English distractors/false-positive tags to reject (e.g. animal, wildlife, pet, panda, dog, cartoon, animation, garbage, plastic bottle) unless relevant to the topic"],\n'
+        '  "visual_summary": "1 concise English sentence describing concrete camera-visible settings, subjects, and lighting for this project"\n'
+        "}\n"
+        "- No abstract emotion words in anchor_terms; use concrete objects/places searchable on Pixabay/Pexels.\n"
+    )
+
+
+def ensure_project_visual_anchors(
+    manifest: ProjectManifest,
+    *,
+    cache_dir: Optional[Path] = None,
+    llm_adapter: Optional[LLMAdapter] = None,
+    force: bool = False,
+) -> Dict[str, Any]:
+    """Generate/load cached project visual anchor_terms, avoid_terms, and visual_summary once per project (F12)."""
+    if not force and getattr(manifest, "visual_anchor_terms", None):
+        return {
+            "anchor_terms": list(manifest.visual_anchor_terms),
+            "avoid_terms": list(getattr(manifest, "visual_avoid_terms", []) or []),
+            "visual_summary": getattr(manifest, "visual_summary", None) or "",
+            "source": "manifest",
+            "cached": False,
+        }
+
+    snap = manifest.preset_snapshot or {}
+    sig_raw = "|".join([
+        str(manifest.topic or manifest.title or "").lower().strip(),
+        str(manifest.preset_id or "").lower().strip(),
+        str(manifest.sub_niche_focus or "").lower().strip(),
+        ",".join(str(x).lower() for x in (snap.get("required_subject_terms") or [])),
+        ",".join(str(x).lower() for x in (snap.get("topic_keywords") or [])),
+    ])
+    c_key = hash_string(f"f12_anchor|{sig_raw}")
+    cache_path = _ai_anchor_cache_file(cache_dir)
+    cache = _load_json_cache(cache_path)
+
+    if not force and isinstance(cache.get(c_key), dict) and cache[c_key].get("anchor_terms"):
+        entry = cache[c_key]
+        manifest.visual_anchor_terms = _clean_term_list(entry.get("anchor_terms"))
+        manifest.visual_avoid_terms = _clean_term_list(entry.get("avoid_terms"))
+        manifest.visual_summary = str(entry.get("visual_summary") or "").strip() or None
+        return {
+            "anchor_terms": list(manifest.visual_anchor_terms),
+            "avoid_terms": list(manifest.visual_avoid_terms),
+            "visual_summary": manifest.visual_summary or "",
+            "source": str(entry.get("source") or "cache"),
+            "cached": True,
+        }
+
+    readiness = get_llm_readiness()
+    llm_ready = (llm_adapter is not None) or (
+        bool(readiness.get("configured")) and not bool(readiness.get("is_invalid"))
+    )
+
+    h_anchors, h_avoids, h_summary = _heuristic_anchors_for_project(manifest)
+
+    if not llm_ready:
+        manifest.visual_anchor_terms = h_anchors
+        manifest.visual_avoid_terms = h_avoids
+        manifest.visual_summary = h_summary
+        return {
+            "anchor_terms": h_anchors,
+            "avoid_terms": h_avoids,
+            "visual_summary": h_summary,
+            "source": "heuristic",
+            "cached": False,
+        }
+
+    try:
+        prompt = _build_project_anchors_prompt(manifest)
+        content, used_prov, used_model = _invoke_translation_llm(
+            prompt, llm_adapter=llm_adapter, max_tokens=360
+        )
+        data = _extract_json_any_dict(content)
+        anchors = _clean_term_list(data.get("anchor_terms"))
+        avoids = _clean_term_list(data.get("avoid_terms"))
+        summary = str(data.get("visual_summary") or "").strip()
+        if not anchors:
+            anchors = h_anchors
+        if not avoids:
+            avoids = h_avoids
+        if not summary:
+            summary = h_summary
+
+        manifest.visual_anchor_terms = anchors[:12]
+        manifest.visual_avoid_terms = avoids[:12]
+        manifest.visual_summary = summary
+
+        cache[c_key] = {
+            "anchor_terms": manifest.visual_anchor_terms,
+            "avoid_terms": manifest.visual_avoid_terms,
+            "visual_summary": summary,
+            "provider": used_prov,
+            "model": used_model,
+            "source": "ai",
+        }
+        _save_json_cache(cache_path, cache, "AI visual anchors cache")
+        return {
+            "anchor_terms": list(manifest.visual_anchor_terms),
+            "avoid_terms": list(manifest.visual_avoid_terms),
+            "visual_summary": summary,
+            "source": "ai",
+            "cached": False,
+        }
+    except (LLMCreditError, LLMModelNotFoundError):
+        raise
+    except Exception as exc:
+        logger.warning(f"F12 anchor generation fallback: {exc}")
+        manifest.visual_anchor_terms = h_anchors
+        manifest.visual_avoid_terms = h_avoids
+        manifest.visual_summary = h_summary
+        return {
+            "anchor_terms": h_anchors,
+            "avoid_terms": h_avoids,
+            "visual_summary": h_summary,
+            "source": "heuristic_fallback",
+            "cached": False,
+        }
+
+
+def _sanitize_concrete_query(
+    raw_query: Any,
+    *,
+    anchor_terms: Optional[List[str]] = None,
+    visual_keywords: Optional[List[str]] = None,
+    fallback_index: int = 0,
+) -> str:
+    """Enforce 3-6 concrete camera-visible English words, stripping abstract concepts (F12)."""
+    cleaned = _sanitize_english_query(str(raw_query or ""), max_words=6)
+    tokens = [w for w in cleaned.split() if w.lower() not in ABSTRACT_NON_VISUAL_WORDS]
+    meaningful = [w for w in tokens if w.lower() not in _TIME_OR_GENERIC_ONLY]
+
+    anchors = _clean_term_list(anchor_terms or [])
+    vis_kws = _clean_term_list(visual_keywords or [])
+    pool = anchors + vis_kws
+
+    if len(meaningful) >= 2:
+        return _sanitize_english_query(" ".join(tokens[:6]), max_words=6)
+
+    # Abstract-only query (e.g. 'unplanned hunger night' -> only ['night']) -> anchor it to concrete theme!
+    seed_words = [w for w in tokens if w.lower() in _TIME_OR_GENERIC_ONLY][:2]
+    chosen_phrases: List[str] = []
+    if pool:
+        start = fallback_index % len(pool)
+        rotated = pool[start:] + pool[:start]
+        for ph in rotated:
+            if ph not in chosen_phrases:
+                chosen_phrases.append(ph)
+            if len(" ".join(seed_words + chosen_phrases).split()) >= 4:
+                break
+    combined = " ".join(seed_words + chosen_phrases)
+    res = _sanitize_english_query(combined, max_words=6)
+    if res:
+        return res
+    return cleaned or "street market people walking"
+
+
+def _build_concrete_query_alternatives(
+    raw_value: Any,
+    *,
+    anchor_terms: Optional[List[str]] = None,
+    visual_keywords: Optional[List[str]] = None,
+) -> List[str]:
+    """Normalize LLM response (list or str) into 2-3 distinct concrete 3-6 word English queries (F12)."""
+    if isinstance(raw_value, (list, tuple)):
+        raw_candidates = [str(x or "").strip() for x in raw_value if str(x or "").strip()]
+    elif isinstance(raw_value, str) and raw_value.strip():
+        raw_candidates = [raw_value.strip()]
+    else:
+        raw_candidates = []
+
+    out: List[str] = []
+    seen: set[str] = set()
+    for idx, cand in enumerate(raw_candidates):
+        q = _sanitize_concrete_query(
+            cand,
+            anchor_terms=anchor_terms,
+            visual_keywords=visual_keywords,
+            fallback_index=idx,
+        )
+        if q and q.lower() not in seen:
+            seen.add(q.lower())
+            out.append(q)
+        if len(out) >= 3:
+            break
+
+    anchors = _clean_term_list(anchor_terms or [])
+    vis_kws = _clean_term_list(visual_keywords or [])
+    pool = [p for p in (anchors + vis_kws) if p]
+    if out and len(out) < 2 and pool:
+        suffixes = ["wide shot", "closeup cooking", "evening crowd", "stall vendor"]
+        for idx in range(len(pool)):
+            a1 = pool[idx % len(pool)]
+            a2 = pool[(idx + 1) % len(pool)] if len(pool) > 1 else suffixes[idx % len(suffixes)]
+            alt_raw = f"{a1} {a2}" if a1 != a2 else f"{a1} {suffixes[idx % len(suffixes)]}"
+            alt_q = _sanitize_concrete_query(alt_raw, anchor_terms=anchors, visual_keywords=vis_kws, fallback_index=idx + 1)
+            if alt_q and alt_q.lower() not in seen:
+                seen.add(alt_q.lower())
+                out.append(alt_q)
+            if len(out) >= 3:
+                break
+
+    return out[:3]
 
 
 def _find_explicit_search_tag(chapter: Chapter, shot: Shot) -> str:
@@ -189,12 +534,13 @@ def estimate_ai_keyword_calls(
     force: bool = True,
     cache_dir: Optional[Path] = None,
 ) -> Dict[str, int]:
-    """Estimate unlocked shots and LLM batch calls needed for F8 keyword generation."""
+    """Estimate unlocked shots and LLM batch calls needed for F8/F12 keyword generation."""
     from app.services.longform.language_guard import resolve_project_language
 
     proj_lang = resolve_project_language(manifest)
     snap = manifest.preset_snapshot or {}
     subj_sig = "|".join(str(x) for x in (snap.get("required_subject_terms") or snap.get("topic_keywords") or [])[:4])
+    anchor_sig = "|".join(_clean_term_list(getattr(manifest, "visual_anchor_terms", []) or [])[:5])
     cache = _load_ai_kw_cache(cache_dir)
 
     target_chapters = [
@@ -221,7 +567,7 @@ def estimate_ai_keyword_calls(
             narr, part_idx, part_total, _ = get_shot_narration_slice(ch, sh, ch.shots)
             if not narr:
                 continue
-            c_key = _ai_kw_cache_key(proj_lang, subj_sig, narr, part_idx, part_total)
+            c_key = _ai_kw_cache_key(proj_lang, subj_sig, narr, part_idx, part_total, anchor_sig=anchor_sig)
             if not force and isinstance(cache.get(c_key), dict) and cache[c_key].get("en"):
                 continue
             uncached_shots += 1
@@ -242,6 +588,12 @@ def _build_visual_keywords_batch_prompt(
     *,
     source_lang: str,
     preset_snapshot: Optional[Dict[str, Any]] = None,
+    project_topic: Optional[str] = None,
+    chapter_title: Optional[str] = None,
+    sub_niche_focus: Optional[str] = None,
+    visual_summary: Optional[str] = None,
+    anchor_terms: Optional[List[str]] = None,
+    avoid_terms: Optional[List[str]] = None,
 ) -> str:
     snap = preset_snapshot or {}
     preset_name = str(snap.get("name") or snap.get("id") or "").strip()
@@ -249,22 +601,29 @@ def _build_visual_keywords_batch_prompt(
     vis_terms = snap.get("visual_keywords") or []
     subj_hint = ", ".join(str(x) for x in subj_terms[:5]) if subj_terms else ""
     style_hint = ", ".join(str(x) for x in vis_terms[:5]) if vis_terms else ""
+    anchor_hint = ", ".join(_clean_term_list(anchor_terms or [])[:10])
+    avoid_hint = ", ".join(_clean_term_list(avoid_terms or [])[:10])
 
     return (
         "You are a documentary video director creating stock footage search queries (Pixabay/Pexels/Coverr).\n"
         f"Narration language: {source_lang}\n"
-        + (f"Project topic/niche: {preset_name}\n" if preset_name else "")
+        + (f"Project topic: {project_topic}\n" if project_topic else "")
+        + (f"Chapter title: {chapter_title}\n" if chapter_title else "")
+        + (f"Niche: {preset_name}\n" if preset_name else "")
+        + (f"Sub-niche focus: {sub_niche_focus}\n" if sub_niche_focus else "")
+        + (f"Project visual summary: {visual_summary}\n" if visual_summary else "")
+        + (f"Anchor visual subjects (MUST ground queries on-theme): {anchor_hint}\n" if anchor_hint else "")
+        + (f"Forbidden subjects/tags to avoid: {avoid_hint}\n" if avoid_hint else "")
         + (f"Core visual subject: {subj_hint}\n" if subj_hint else "")
         + (f"Visual style hints: {style_hint}\n" if style_hint else "")
         + "\nRules:\n"
-        "- For EACH item, output 1 concise visual search query in ENGLISH (3 to 6 words ONLY).\n"
-        "- Describe WHAT IS VISIBLY SHOWN ON SCREEN (concrete subject, location, lighting/time-of-day, action), "
-        "NEVER a word-for-word fragment from the narration sentence.\n"
-        "- Example: 'Di tengah bisingnya klakson kota dan cahaya lampu neon...' -> "
-        "Part 1/2: 'night city traffic neon lights', Part 2/2: 'street food charcoal grill garlic'.\n"
-        "- CRITICAL: Items sharing the same narration sentence (`part` 1/N, 2/N, ...) MUST receive COMPLETELY DIFFERENT "
-        "queries covering sequential visual moments in `focus_clause`.\n"
-        "- No punctuation, no quotes, no commentary. Return ONLY a strict JSON object `{shot_id: \"3-6 english words\"}`.\n"
+        "- For EACH shot, output 2 to 3 DISTINCT concrete English stock-footage queries (each 3 to 6 words ONLY) as a JSON array in priority order.\n"
+        "- EVERY query MUST describe PHYSICAL OBJECTS, PLACES, PEOPLE, LIGHTING, OR ACTIONS directly visible to a camera (e.g. 'night street food stall crowd', 'vendor cooking noodles wok steam').\n"
+        "- STRICTLY FORBIDDEN: abstract concepts, feelings, emotions, or non-camera adjectives (NEVER use words like hunger, unplanned, unique, feeling, memory, nostalgia, ritual, satisfaction, soul, legacy, story, magic, experience, casual).\n"
+        "- If a narration line is abstract or poetic (e.g. 'malam membangunkan rasa lapar yang tak direncanakan'), translate it into concrete on-theme visual scenes matching the project topic and anchor subjects (e.g. ['night street food stall crowd', 'vendor grilling skewers charcoal smoke', 'hungry diners eating street food']).\n"
+        "- NEVER search bare generic objects that clash with context (e.g. for 'warung tenda bangku plastik', search 'street food stall dining tables' or 'outdoor night food vendor', NOT camping tent or empty plastic bottle).\n"
+        "- CRITICAL: Items sharing the same narration sentence (`part` 1/N, 2/N, ...) MUST receive COMPLETELY DIFFERENT queries covering sequential concrete moments.\n"
+        "- Return ONLY a strict JSON object `{shot_id: [\"primary 3-6 words\", \"alt 3-6 words\", \"alt2 3-6 words\"]}` with no commentary.\n"
         f"Shots:\n{json.dumps(items, ensure_ascii=False)}"
     )
 
@@ -305,6 +664,8 @@ def _differentiate_duplicate_same_sentence_queries(
             sh.search_query_en = alt
             if not sh.search_query:
                 sh.search_query = alt
+            existing_alts = [q for q in (getattr(sh, "search_queries_en", None) or []) if q and q.lower() != alt.lower()]
+            sh.search_queries_en = [alt] + existing_alts[:2]
             seen.add(alt.lower())
 
 
@@ -314,16 +675,24 @@ def generate_chapter_visual_keywords_ai(
     *,
     preset_snapshot: Optional[Dict[str, Any]] = None,
     project_lang: str = "id-ID",
+    project_topic: Optional[str] = None,
+    sub_niche_focus: Optional[str] = None,
+    visual_summary: Optional[str] = None,
+    anchor_terms: Optional[List[str]] = None,
+    avoid_terms: Optional[List[str]] = None,
     cache_dir: Optional[Path] = None,
     llm_adapter: Optional[LLMAdapter] = None,
     force: bool = False,
 ) -> Dict[str, Any]:
-    """Generate concise 3-6 word English visual queries for unlocked chapter shots via 1 batch LLM call."""
+    """Generate 2-3 concise 3-6 word concrete English visual queries per shot via 1 batch LLM call (F8/F12)."""
     norm_lang = normalize_language_code(project_lang)
     snap = preset_snapshot or {}
     subj_terms = snap.get("required_subject_terms") or snap.get("topic_keywords") or []
     vis_terms = snap.get("visual_keywords") or []
+    clean_anchors = _clean_term_list(anchor_terms or subj_terms or [])
+    clean_avoids = _clean_term_list(avoid_terms or [])
     subj_sig = "|".join(str(x) for x in subj_terms[:4])
+    anchor_sig = "|".join(clean_anchors[:5])
     cache = _load_ai_kw_cache(cache_dir)
 
     updated = 0
@@ -361,10 +730,13 @@ def generate_chapter_visual_keywords_ai(
                     llm_adapter=llm_adapter,
                 )
                 shot.search_query_en = en_tag or raw_tag
+                shot.search_queries_en = [shot.search_query_en]
                 if warn_t and not warning:
                     warning = warn_t
             else:
                 shot.search_query_en = shot.search_query_en or raw_tag
+                if shot.search_query_en and not getattr(shot, "search_queries_en", None):
+                    shot.search_queries_en = [shot.search_query_en]
             tag_preserved += 1
             continue
 
@@ -376,23 +748,30 @@ def generate_chapter_visual_keywords_ai(
         if not src_text:
             continue
 
-        c_key = _ai_kw_cache_key(norm_lang, subj_sig, src_text, part_idx, part_total)
+        c_key = _ai_kw_cache_key(norm_lang, subj_sig, src_text, part_idx, part_total, anchor_sig=anchor_sig)
         cached_entry = cache.get(c_key) if not force else None
-        if isinstance(cached_entry, dict) and cached_entry.get("en"):
-            q_clean = _sanitize_english_query(cached_entry["en"], max_words=6)
-            if q_clean:
-                shot.search_query_en = q_clean
+        if isinstance(cached_entry, dict) and (cached_entry.get("alts") or cached_entry.get("en")):
+            raw_cached = cached_entry.get("alts") or cached_entry.get("en")
+            alts = _build_concrete_query_alternatives(
+                raw_cached,
+                anchor_terms=clean_anchors,
+                visual_keywords=vis_terms,
+            )
+            if alts:
+                shot.search_query_en = alts[0]
+                shot.search_queries_en = alts
                 shot.search_query_source = "ai"
                 shot.search_query_reason = None
                 if not shot.search_query:
-                    shot.search_query = q_clean
+                    shot.search_query = alts[0]
                 cached_hits += 1
                 updated += 1
                 examples.append({
                     "shot_id": shot.shot_id,
                     "narration": full_narr or src_text,
                     "focus": focus_clause,
-                    "query": q_clean,
+                    "query": alts[0],
+                    "alternatives": ", ".join(alts[1:]),
                     "source": "ai",
                 })
                 continue
@@ -467,20 +846,32 @@ def generate_chapter_visual_keywords_ai(
         payload_items,
         source_lang=norm_lang,
         preset_snapshot=snap,
+        project_topic=project_topic,
+        chapter_title=getattr(chapter, "chapter_title", None),
+        sub_niche_focus=sub_niche_focus,
+        visual_summary=visual_summary,
+        anchor_terms=clean_anchors,
+        avoid_terms=clean_avoids,
     )
-    batch_max_tokens = min(1800, max(380, 55 * len(pending) + 220))
+    batch_max_tokens = min(2400, max(520, 95 * len(pending) + 260))
 
     try:
         content, used_prov, used_model = _invoke_translation_llm(
             prompt, llm_adapter=llm_adapter, max_tokens=batch_max_tokens
         )
         llm_calls = 1
-        mapping = _extract_json_dict(content)
+        mapping = _extract_json_any_dict(content)
         for shot, src_text, c_key, _part_idx, _part_total, focus_clause in pending:
             raw_q = mapping.get(shot.shot_id)
-            q_clean = _sanitize_english_query(raw_q, max_words=6) if raw_q else ""
-            if q_clean:
+            alts = _build_concrete_query_alternatives(
+                raw_q,
+                anchor_terms=clean_anchors,
+                visual_keywords=vis_terms,
+            )
+            if alts:
+                q_clean = alts[0]
                 shot.search_query_en = q_clean
+                shot.search_queries_en = alts
                 shot.search_query_source = "ai"
                 shot.search_query_reason = None
                 if not shot.search_query:
@@ -488,6 +879,7 @@ def generate_chapter_visual_keywords_ai(
                 cache[c_key] = {
                     "lang": norm_lang,
                     "en": q_clean,
+                    "alts": alts,
                     "provider": used_prov,
                     "model": used_model,
                 }
@@ -497,6 +889,7 @@ def generate_chapter_visual_keywords_ai(
                     "narration": src_text,
                     "focus": focus_clause,
                     "query": q_clean,
+                    "alternatives": ", ".join(alts[1:]),
                     "source": "ai",
                 })
             else:
@@ -513,6 +906,8 @@ def generate_chapter_visual_keywords_ai(
         for shot, _src_text, c_key, _p_i, _p_t, _fc in pending:
             if shot.search_query_source == "ai" and shot.search_query_en and c_key in cache:
                 cache[c_key]["en"] = shot.search_query_en
+                if getattr(shot, "search_queries_en", None):
+                    cache[c_key]["alts"] = list(shot.search_queries_en)
         for ex in examples:
             sh_obj = next((p[0] for p in pending if p[0].shot_id == ex["shot_id"]), None)
             if sh_obj and sh_obj.search_query_en:
@@ -579,11 +974,22 @@ def update_project_visual_keywords_ai(
     proj_lang = resolve_project_language(manifest)
     snap = manifest.preset_snapshot or {}
 
+    # F12: Generate/load cached anchor & avoid terms once per project before updating keywords
+    anchor_res = ensure_project_visual_anchors(
+        manifest,
+        cache_dir=cache_dir,
+        llm_adapter=llm_adapter,
+        force=False,
+    )
+    proj_anchors = list(getattr(manifest, "visual_anchor_terms", []) or anchor_res.get("anchor_terms") or [])
+    proj_avoids = list(getattr(manifest, "visual_avoid_terms", []) or anchor_res.get("avoid_terms") or [])
+    proj_vis_summary = getattr(manifest, "visual_summary", None) or anchor_res.get("visual_summary")
+
     total_updated = 0
     total_locked = 0
     total_tags = 0
     total_cached = 0
-    total_llm_calls = 0
+    total_llm_calls = 0 if anchor_res.get("source") != "ai" or anchor_res.get("cached") else 1
     stale_marked = 0
     fallback_used = False
     warnings: List[str] = []
@@ -599,7 +1005,11 @@ def update_project_visual_keywords_ai(
             continue
 
         before_state = {
-            s.shot_id: (getattr(s, "search_query_en", None), getattr(s, "search_query_source", None))
+            s.shot_id: (
+                getattr(s, "search_query_en", None),
+                list(getattr(s, "search_queries_en", []) or []),
+                getattr(s, "search_query_source", None),
+            )
             for s in unlocked
         }
 
@@ -608,6 +1018,11 @@ def update_project_visual_keywords_ai(
             ch,
             preset_snapshot=snap,
             project_lang=proj_lang,
+            project_topic=manifest.topic or manifest.title,
+            sub_niche_focus=getattr(manifest, "sub_niche_focus", None),
+            visual_summary=proj_vis_summary,
+            anchor_terms=proj_anchors,
+            avoid_terms=proj_avoids,
             cache_dir=cache_dir,
             llm_adapter=llm_adapter,
             force=force,
@@ -623,10 +1038,11 @@ def update_project_visual_keywords_ai(
 
         if mark_stale:
             for s in unlocked:
-                prev_en, prev_src = before_state[s.shot_id]
+                prev_en, prev_alts, prev_src = before_state[s.shot_id]
                 now_en = getattr(s, "search_query_en", None)
+                now_alts = list(getattr(s, "search_queries_en", []) or [])
                 now_src = getattr(s, "search_query_source", None)
-                changed = (now_en != prev_en) or (now_src != prev_src)
+                changed = (now_en != prev_en) or (now_alts != prev_alts) or (now_src != prev_src)
                 has_existing_media = bool(s.asset_path or s.rendered_clip)
                 if changed and has_existing_media:
                     s.status = ItemStatus.stale
@@ -642,4 +1058,7 @@ def update_project_visual_keywords_ai(
         "fallback_used": fallback_used,
         "warnings": warnings,
         "examples": all_examples,
+        "anchor_terms": proj_anchors,
+        "avoid_terms": proj_avoids,
+        "visual_summary": proj_vis_summary,
     }

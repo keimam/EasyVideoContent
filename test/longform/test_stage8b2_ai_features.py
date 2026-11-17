@@ -2104,5 +2104,335 @@ def test_f11_honest_keyword_labels_visible_fallback_and_vision_disabled_hint(tmp
     assert any("LLM belum siap" in str(w.value) for w in at.warning)
 
 
+# ---------------------------------------------------------------------------
+# ADDENDUM F12 — Concrete Visual Keywords, Project Anchors/Avoids, Multi-Query
+# ---------------------------------------------------------------------------
+
+
+def test_f12_concrete_keywords_and_abstract_sentence_anchoring(tmp_path: Path, monkeypatch):
+    from app.services.longform.schema import Segment
+    from app.services.longform.visual.ai_keywords import (
+        ABSTRACT_NON_VISUAL_WORDS,
+        ensure_project_visual_anchors,
+        update_project_visual_keywords_ai,
+    )
+
+    proj_root = tmp_path / "projects_f12"
+    proj_root.mkdir()
+    monkeypatch.setattr("app.services.longform.store.get_projects_root", lambda: proj_root)
+    monkeypatch.setattr("app.services.longform.ui.components.get_projects_root", lambda: proj_root)
+    monkeypatch.setitem(config.ui, "language", "id")
+
+    manifest, p_dir = create_project(
+        "f12_kuliner",
+        "Kulineran Malam",
+        "umum.id",
+        language="id-ID",
+        projects_root=proj_root,
+    )
+    manifest.topic = "Kuliner Kaki Lima Indonesia Malam Hari"
+    sh1 = Shot(
+        shot_id="ch01_shot001",
+        chapter_index=1,
+        shot_index=1,
+        segment_indices=[1],
+        search_query="malam cara unik membangunkan lapar",
+    )
+    sh2 = Shot(
+        shot_id="ch01_shot002",
+        chapter_index=1,
+        shot_index=2,
+        segment_indices=[2],
+        search_query="warung tenda sederhana bangku plastik",
+    )
+    ch1 = Chapter(
+        chapter_index=1,
+        chapter_title="Panggilan Lapar Kaki Lima",
+        tts_groups=[
+            TtsGroup(
+                group_index=1,
+                paragraph_text=(
+                    "Malam selalu punya cara unik untuk membangunkan rasa lapar yang sebenarnya tidak direncanakan. "
+                    "Di warung tenda sederhana dengan bangku plastik seadanya, hidangan hangat tersaji cepat."
+                ),
+                segments=[
+                    Segment(
+                        segment_index=1,
+                        narration_text="Malam selalu punya cara unik untuk membangunkan rasa lapar yang sebenarnya tidak direncanakan.",
+                    ),
+                    Segment(
+                        segment_index=2,
+                        narration_text="Di warung tenda sederhana dengan bangku plastik seadanya, hidangan hangat tersaji cepat.",
+                    ),
+                ],
+            )
+        ],
+        shots=[sh1, sh2],
+    )
+    manifest.chapters = [ch1]
+    save_manifest(manifest, p_dir)
+
+    prompts_seen = []
+
+    class _MockLLM:
+        def generate(self, prompt: str, **_kw):
+            prompts_seen.append(prompt)
+            if '"anchor_terms"' in prompt:
+                return LLMResponse(
+                    content=json.dumps({
+                        "anchor_terms": ["food", "street food", "vendor", "cooking", "stall", "night market"],
+                        "avoid_terms": ["animal", "wildlife", "pet", "panda", "cartoon", "garbage"],
+                        "visual_summary": "Indonesian night street food vendors cooking at glowing roadside stalls.",
+                    }),
+                    provider="fake",
+                    model="fake-vision",
+                    duration_seconds=0.1,
+                )
+            # Simulate weak LLM outputting an abstract query on shot #1 alongside concrete alternatives on shot #2
+            return LLMResponse(
+                content=json.dumps({
+                    "ch01_shot001": ["unplanned hunger night", "night street food stall crowd", "vendor grilling skewers smoke"],
+                    "ch01_shot002": ["street food tent stall diners", "night market food tables crowd", "vendor serving hot soup bowl"],
+                }),
+                provider="fake",
+                model="fake-llm",
+                duration_seconds=0.1,
+            )
+
+    cache_dir = tmp_path / "f12_cache"
+    res = update_project_visual_keywords_ai(
+        manifest,
+        force=True,
+        cache_dir=cache_dir,
+        llm_adapter=_MockLLM(),
+    )
+    save_manifest(manifest, p_dir)
+
+    # 1. Anchor & avoid terms persisted once and reused on cached call
+    assert "street food" in manifest.visual_anchor_terms
+    assert "animal" in manifest.visual_avoid_terms
+    assert manifest.visual_summary
+    calls_before = len(prompts_seen)
+    res_cached_anchor = ensure_project_visual_anchors(manifest, cache_dir=cache_dir, llm_adapter=_MockLLM(), force=False)
+    assert len(prompts_seen) == calls_before
+    assert res_cached_anchor["source"] == "manifest"
+
+    # 2. Batch prompt included project topic, chapter title, visual_summary, and anchors
+    batch_prompt = prompts_seen[-1]
+    assert "Kuliner Kaki Lima Indonesia Malam Hari" in batch_prompt
+    assert "Panggilan Lapar Kaki Lima" in batch_prompt
+    assert "street food" in batch_prompt
+
+    # 3. Abstract query sanitized & replaced with concrete themed query; 2-3 alternatives saved
+    assert len(sh1.search_queries_en) >= 2
+    assert len(sh2.search_queries_en) >= 2
+    for q_text in sh1.search_queries_en + sh2.search_queries_en:
+        words_low = set(q_text.lower().split())
+        assert not (words_low & ABSTRACT_NON_VISUAL_WORDS), f"Abstract word leaked into query: {q_text}"
+    assert "hunger" not in (sh1.search_query_en or "").lower()
+    assert "unplanned" not in (sh1.search_query_en or "").lower()
+    assert res["updated"] == 2
+
+    # 4. UI "Pengaturan Lanjutan Proyek (Jangkar Visual)" edits & persists anchor/avoid terms cleanly
+    at = AppTest.from_file(_get_long_video_app_file())
+    at.query_params["project"] = "f12_kuliner"
+    at.session_state["active_step_f12_kuliner"] = "visual"
+    at.run(timeout=25)
+    assert not at.exception
+    anc_inp = [ti for ti in at.text_input if ti.key == "txt_proj_anchors_f12_kuliner"][0]
+    avd_inp = [ti for ti in at.text_input if ti.key == "txt_proj_avoids_f12_kuliner"][0]
+    anc_inp.input("food, street food, noodles, wok")
+    avd_inp.input("animal, panda, plastic bottle, garbage")
+    save_anc_btn = [b for b in at.button if b.key == "btn_save_proj_anchors_f12_kuliner"][0]
+    save_anc_btn.click().run(timeout=25)
+    assert not at.exception
+    reloaded = load_manifest(p_dir)
+    assert reloaded.visual_anchor_terms == ["food", "street food", "noodles", "wok"]
+    assert reloaded.visual_avoid_terms == ["animal", "panda", "plastic bottle", "garbage"]
+
+
+def test_f12_anchor_avoid_stock_filter_and_alternative_query_fallback(tmp_path: Path, monkeypatch):
+    from app.services.longform.schema import Segment
+    from app.services.longform.visual.base import VisualCandidate
+    from app.services.longform.visual.stock import StockVisualProvider, score_candidate_relevance
+
+    anchors = ["food", "street food", "vendor", "cooking", "stall", "night market"]
+    avoids = ["animal", "wildlife", "pet", "panda", "cartoon", "garbage", "bottle"]
+
+    # 1. Red panda candidate must be rejected immediately by avoid_terms + missing anchors
+    ok_panda, score_panda, reason_panda = score_candidate_relevance(
+        candidate_tags=["red panda", "animal", "mammal", "nature", "eating"],
+        search_query="unplanned hunger night",
+        anchor_terms=anchors,
+        avoid_terms=avoids,
+    )
+    assert ok_panda is False
+    assert score_panda == 0.0
+    assert "avoid" in reason_panda.lower()
+
+    # 2. Plastic bottle candidate with 0 matching anchor_terms rejected with low score
+    ok_bottle, score_bottle, reason_bottle = score_candidate_relevance(
+        candidate_tags=["plastic", "ground", "litter", "urban", "street"],
+        search_query="simple street plastic",
+        anchor_terms=anchors,
+        avoid_terms=avoids,
+    )
+    assert ok_bottle is False
+    assert score_bottle < 0.35
+    assert "anchor" in reason_bottle.lower()
+
+    # 3. Genuine street food candidate passes with high score
+    ok_food, score_food, _reason_food = score_candidate_relevance(
+        candidate_tags=["street food", "vendor", "cooking", "night market", "noodles"],
+        search_query="night street food vendor cooking",
+        anchor_terms=anchors,
+        avoid_terms=avoids,
+    )
+    assert ok_food is True
+    assert score_food >= 0.70
+
+    # 4. End-to-end VisualService.fetch_all tries alternative query #2 when query #1 only returns rejected animals
+    proj_root = tmp_path / "projects_f12_fetch"
+    proj_root.mkdir()
+    monkeypatch.setattr("app.services.longform.store.get_projects_root", lambda: proj_root)
+
+    manifest, p_dir = create_project(
+        "f12_fetch",
+        "Kuliner Malam",
+        "umum.id",
+        language="id-ID",
+        projects_root=proj_root,
+    )
+    manifest.visual_anchor_terms = anchors
+    manifest.visual_avoid_terms = avoids
+    shot = Shot(
+        shot_id="ch01_shot001",
+        chapter_index=1,
+        shot_index=1,
+        segment_indices=[1],
+        duration_seconds=3.0,
+        target_frames=75,
+        requested_source="stock",
+        search_query="malam bangunkan rasa lapar",
+        search_query_en="night city sidewalk lights",
+        search_queries_en=[
+            "night city sidewalk lights",
+            "night street food vendor cooking",
+            "street food stall sizzling wok",
+        ],
+        search_query_source="ai",
+    )
+    ch = Chapter(
+        chapter_index=1,
+        chapter_title="Pembukaan",
+        tts_groups=[
+            TtsGroup(
+                group_index=1,
+                paragraph_text="Malam selalu punya cara membangunkan rasa lapar.",
+                segments=[Segment(segment_index=1, narration_text="Malam selalu punya cara membangunkan rasa lapar.")],
+            )
+        ],
+        shots=[shot],
+    )
+    manifest.chapters = [ch]
+    save_manifest(manifest, p_dir)
+
+    sample_mp4 = _make_sample_mp4(tmp_path / "good_street_food.mp4", duration=4.0, color="orange")
+    bad_mp4 = _make_sample_mp4(tmp_path / "bad_panda.mp4", duration=4.0, color="red")
+
+    class _FakePixabayApiProvider(StockVisualProvider):
+        tried_queries: list[str] = []
+
+        def validate_credentials(self) -> None:
+            return None
+
+        def search_candidates(
+            self,
+            query: str,
+            target_duration: float,
+            limit: int = 3,
+            excluded_ids=None,
+            required_subject_terms=None,
+            blocked_terms=None,
+            visual_keywords=None,
+            negative_terms=None,
+            anchor_terms=None,
+            avoid_terms=None,
+            min_relevance_score=None,
+            category=None,
+            **kwargs,
+        ):
+            self.tried_queries.append(query)
+            if "sidewalk" in query.lower():
+                raw_pool = [
+                    ("pixabay_panda", ["red panda", "animal", "wildlife"], str(bad_mp4)),
+                ]
+            elif "vendor cooking" in query.lower():
+                raw_pool = [
+                    ("pixabay_panda_2", ["red panda", "animal"], str(bad_mp4)),
+                    ("pixabay_food_ok", ["street food", "vendor", "cooking", "night market"], str(sample_mp4)),
+                ]
+            else:
+                raw_pool = []
+
+            kept = []
+            for cid, tags, src in raw_pool:
+                ok, sc, _ = score_candidate_relevance(
+                    candidate_tags=tags,
+                    search_query=query,
+                    visual_keywords=visual_keywords,
+                    required_subject_terms=required_subject_terms,
+                    blocked_terms=blocked_terms,
+                    negative_terms=negative_terms,
+                    anchor_terms=anchor_terms,
+                    avoid_terms=avoid_terms,
+                    min_relevance_score=min_relevance_score,
+                )
+                if ok:
+                    kept.append(
+                        VisualCandidate(
+                            candidate_id=cid,
+                            provider="pixabay",
+                            source_type="stock_video",
+                            url=src,
+                            duration_seconds=4.0,
+                            width=1920,
+                            height=1080,
+                            tags=tags,
+                            relevance_score=sc,
+                        )
+                    )
+            return kept[:limit]
+
+        def fetch_asset(self, candidate: VisualCandidate, dest_path: Path):
+            from app.services.longform.visual.base import VisualAsset, compute_file_content_hash
+
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(candidate.url, dest_path)
+            return VisualAsset(
+                asset_id=candidate.candidate_id,
+                provider=candidate.provider,
+                source_type=candidate.source_type,
+                local_path=dest_path,
+                content_hash=compute_file_content_hash(dest_path),
+                width=1920,
+                height=1080,
+                duration_seconds=4.0,
+            )
+
+    fake_prov = _FakePixabayApiProvider("stock")
+    vis_svc = VisualService(p_dir)
+    monkeypatch.setattr(vis_svc, "get_provider", lambda *_a, **_kw: fake_prov)
+
+    updated_m = vis_svc.fetch_all(manifest, provider_name="stock", allow_fallback=False, translate_keywords=False)
+    updated_sh = updated_m.chapters[0].shots[0]
+    assert "night city sidewalk lights" in fake_prov.tried_queries
+    assert updated_sh.effective_query == "night street food vendor cooking"
+    assert "street food" in updated_sh.tags
+    assert "animal" not in " ".join(updated_sh.tags).lower()
+    assert updated_sh.asset_path and (p_dir / updated_sh.asset_path).is_file()
+
+
+
 
 
