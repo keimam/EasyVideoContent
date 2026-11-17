@@ -743,6 +743,17 @@ ID_TRANSLATIONS: Dict[str, str] = {
     "empty_trash_success": "Tempat Sampah dikosongkan ({count} proyek, {mb} MB dibebaskan).",
     "btn_manage_trash": "Kelola Tempat Sampah ({count})",
     "cache_trash_summary": "Tempat Sampah: {count} proyek ({mb} MB)",
+    # --- F10 & F11 Additions ---
+    "dlg_delete_running_warn": "Ada pekerjaan yang sedang berjalan di proyek ini ({step}). Menghapus akan menghentikan pekerjaan tersebut terlebih dahulu.",
+    "dlg_delete_stopping_status": "Menghentikan pekerjaan & memindahkan proyek ke Tempat Sampah...",
+    "dlg_delete_mismatch_err": "Ketik judul proyek atau ID (`{pid}`) yang persis sama untuk konfirmasi.",
+    "script_leaked_headings_warn": "Terdeteksi {count} baris judul bab yang masuk ke teks narasi/TTS.",
+    "btn_fix_chapter_headings": "Bersihkan Judul Bab dari Narasi",
+    "fix_headings_success": "Judul bab dibersihkan ({groups} grup diperbarui, {shots} shot dirapikan). Grup audio terkait ditandai perlu diperbarui.",
+    "err_fix_headings_friendly": "Gagal membersihkan judul bab.",
+    "shot_keywords_lang_label": "**Kata kunci pencarian ({proj_lang}):** `{kw}`",
+    "shot_keywords_source_with_reason": "**Asal:** {src} ({reason})",
+    "ai_relevance_vision_hint_below": "Butuh model AI yang bisa membaca gambar (vision). Pilih model vision di Pengaturan.",
 }
 
 
@@ -1478,6 +1489,17 @@ EN_TRANSLATIONS: Dict[str, str] = {
     "empty_trash_success": "Trash emptied ({count} project(s), {mb} MB freed).",
     "btn_manage_trash": "Manage Trash ({count})",
     "cache_trash_summary": "Trash: {count} project(s) ({mb} MB)",
+    # --- F10 & F11 Additions ---
+    "dlg_delete_running_warn": "A job is currently running on this project ({step}). Deleting will stop that job first.",
+    "dlg_delete_stopping_status": "Stopping job & moving project to Trash...",
+    "dlg_delete_mismatch_err": "Type the exact project title or ID (`{pid}`) to confirm.",
+    "script_leaked_headings_warn": "Detected {count} chapter heading line(s) leaked into narration/TTS text.",
+    "btn_fix_chapter_headings": "Strip Chapter Headings from Narration",
+    "fix_headings_success": "Chapter headings cleaned ({groups} group(s) updated, {shots} shot(s) cleaned). Affected audio groups marked stale.",
+    "err_fix_headings_friendly": "Failed to strip chapter headings.",
+    "shot_keywords_lang_label": "**Search keyword ({proj_lang}):** `{kw}`",
+    "shot_keywords_source_with_reason": "**Origin:** {src} ({reason})",
+    "ai_relevance_vision_hint_below": "Requires an AI model that supports image reading (vision). Choose a vision model in Settings.",
 }
 
 

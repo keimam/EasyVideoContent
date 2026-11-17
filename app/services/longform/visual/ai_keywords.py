@@ -99,6 +99,22 @@ def infer_keyword_source(chapter: Chapter, shot: Shot) -> str:
     return "extraction"
 
 
+def format_keyword_reason(reason: Optional[str], lang: str = "id") -> str:
+    """Translate structured search_query_reason codes into concise localized phrases."""
+    raw = str(reason or "").strip()
+    if not raw:
+        return ""
+    is_en = str(lang or "id").lower().startswith("en")
+    if raw == "llm_not_ready":
+        return "LLM not ready" if is_en else "LLM belum siap"
+    if raw == "ai_empty_mapping":
+        return "AI returned no query" if is_en else "AI tidak mengembalikan query"
+    if raw.startswith("ai_failed:"):
+        detail = raw[len("ai_failed:") :].strip() or "error"
+        return f"AI failed: {detail}" if is_en else f"AI gagal: {detail}"
+    return raw
+
+
 def _split_clauses_for_parts(sentence: str, part_total: int) -> List[str]:
     """Split a multi-clause narration sentence roughly evenly across N sequential shots."""
     txt = normalize_text(sentence)
@@ -367,6 +383,7 @@ def generate_chapter_visual_keywords_ai(
             if q_clean:
                 shot.search_query_en = q_clean
                 shot.search_query_source = "ai"
+                shot.search_query_reason = None
                 if not shot.search_query:
                     shot.search_query = q_clean
                 cached_hits += 1
@@ -396,7 +413,7 @@ def generate_chapter_visual_keywords_ai(
 
     # 2. Fallback when LLM is NOT ready
     if not llm_ready:
-        warn_msg = "LLM not configured; using local keyword extractor fallback."
+        warn_msg = "LLM belum siap — memakai ekstraksi lokal sebagai cadangan."
         logger.warning(f"F8 AI keywords fallback: {warn_msg}")
         for shot, src_text, _c_key, _p_i, _p_t, focus_clause in pending:
             ext_q = extract_short_search_query(
@@ -406,8 +423,14 @@ def generate_chapter_visual_keywords_ai(
                 required_subject_terms=snap.get("required_subject_terms"),
             )
             shot.search_query = ext_q
-            shot.search_query_en = ext_q
             shot.search_query_source = "extraction"
+            shot.search_query_reason = "llm_not_ready"
+            if norm_lang != "en":
+                # Keep non-English extracted query clearly marked; only set search_query_en if project is English
+                if not getattr(shot, "search_query_en", None):
+                    shot.search_query_en = None
+            else:
+                shot.search_query_en = ext_q
             updated += 1
             examples.append({
                 "shot_id": shot.shot_id,
@@ -459,6 +482,7 @@ def generate_chapter_visual_keywords_ai(
             if q_clean:
                 shot.search_query_en = q_clean
                 shot.search_query_source = "ai"
+                shot.search_query_reason = None
                 if not shot.search_query:
                     shot.search_query = q_clean
                 cache[c_key] = {
@@ -478,8 +502,10 @@ def generate_chapter_visual_keywords_ai(
             else:
                 ext_q = extract_short_search_query(focus_clause or src_text, visual_keywords=vis_terms)
                 shot.search_query = shot.search_query or ext_q
-                shot.search_query_en = shot.search_query_en or ext_q
                 shot.search_query_source = "extraction"
+                shot.search_query_reason = "ai_empty_mapping"
+                if norm_lang == "en" and not shot.search_query_en:
+                    shot.search_query_en = ext_q
                 updated += 1
 
         _differentiate_duplicate_same_sentence_queries(shots, chapter, snap)
@@ -505,7 +531,8 @@ def generate_chapter_visual_keywords_ai(
     except (LLMCreditError, LLMModelNotFoundError):
         raise
     except Exception as exc:
-        warn_msg = f"AI keyword generation fallback to extractor ({type(exc).__name__}): {exc}"
+        short_err = str(exc).strip().splitlines()[0][:120]
+        warn_msg = f"AI gagal ({type(exc).__name__}): {short_err}"
         logger.warning(warn_msg)
         for shot, src_text, _c_key, _p_i, _p_t, focus_clause in pending:
             ext_q = extract_short_search_query(
@@ -515,8 +542,10 @@ def generate_chapter_visual_keywords_ai(
                 required_subject_terms=snap.get("required_subject_terms"),
             )
             shot.search_query = shot.search_query or ext_q
-            shot.search_query_en = shot.search_query_en or ext_q
             shot.search_query_source = "extraction"
+            shot.search_query_reason = f"ai_failed:{type(exc).__name__}: {short_err}"
+            if norm_lang == "en" and not shot.search_query_en:
+                shot.search_query_en = ext_q
             updated += 1
         return {
             "updated": updated,

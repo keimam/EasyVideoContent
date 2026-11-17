@@ -46,7 +46,12 @@ from app.services.longform.presets import (
 )
 from app.services.longform.quality_checker import ScriptQualityChecker
 from app.services.longform.schema import ItemStatus, ProjectManifest, Shot
-from app.services.longform.script_import import estimate_script_duration, parse_markdown_script
+from app.services.longform.script_import import (
+    detect_leaked_chapter_headings,
+    estimate_script_duration,
+    fix_project_headings,
+    parse_markdown_script,
+)
 from app.services.longform.status import (
     compute_project_step_status,
     find_latest_capcut_draft,
@@ -63,6 +68,7 @@ from app.services.longform.store import (
     update_project_script,
 )
 from app.services.longform.trash import (
+    ProjectTrashError,
     empty_trash,
     get_project_delete_preview,
     list_trashed_projects,
@@ -93,7 +99,7 @@ from app.services.longform.tts_adapter import (
     provider_has_word_timings,
 )
 from app.services.longform.ui import jobs
-from app.services.longform.ui.i18n import t
+from app.services.longform.ui.i18n import get_ui_language, t
 from app.services.longform.ui.security import check_llm_status, mask_api_key, safe_windows_path
 from app.services.longform.voice_service import VoiceService, list_available_voices
 
@@ -564,7 +570,7 @@ def render_niche_management_section():
 
 
 def _render_delete_project_dialog(*, on_deleted_redirect_home: bool = False) -> None:
-    """Render shared safe project delete confirmation modal (F7)."""
+    """Render shared safe project delete confirmation modal (F7 / F10)."""
     target_pid = st.session_state.get("confirm_delete_project_id")
     if not target_pid:
         return
@@ -578,66 +584,80 @@ def _render_delete_project_dialog(*, on_deleted_redirect_home: bool = False) -> 
 
     @st.dialog(t("dlg_delete_project_title"))
     def _delete_project_modal():
+        pid = preview["project_id"]
         st.markdown(
             t(
                 "dlg_delete_project_meta",
                 title=preview["title"],
-                pid=preview["project_id"],
+                pid=pid,
                 mb=f"{preview['size_mb']:.2f}",
                 cc_count=preview["capcut_draft_count"],
             )
         )
         st.caption(t("dlg_delete_project_soft_note"))
 
-        if preview["is_locked_or_running"]:
-            st.warning(t("dlg_delete_locked_warn", reason=preview.get("lock_reason") or "running"))
+        is_running_proj = bool(preview["is_locked_or_running"])
+        if is_running_proj:
+            running_step = preview.get("running_step") or preview.get("lock_reason") or "running"
+            st.warning(t("dlg_delete_running_warn", step=running_step))
 
-        typed_val = st.text_input(
-            t("dlg_delete_confirm_label", pid=preview["project_id"]),
-            key=f"txt_del_confirm_{preview['project_id']}",
-        )
-        chk_capcut = st.checkbox(
-            t("chk_delete_with_capcut"),
-            value=False,
-            key=f"chk_del_capcut_{preview['project_id']}",
-        )
-        typed_clean = (typed_val or "").strip()
-        matches_confirm = bool(
-            typed_clean
-            and (typed_clean == preview["project_id"] or typed_clean == preview["title"].strip())
-        )
-        can_delete = matches_confirm and not preview["is_locked_or_running"]
-
-        col_d1, col_d2 = st.columns(2)
-        with col_d1:
-            if st.button(
+        with st.form(key=f"form_del_proj_{pid}", clear_on_submit=False):
+            typed_val = st.text_input(
+                t("dlg_delete_confirm_label", pid=pid),
+                key=f"txt_del_confirm_{pid}",
+            )
+            chk_capcut = st.checkbox(
+                t("chk_delete_with_capcut"),
+                value=False,
+                key=f"chk_del_capcut_{pid}",
+            )
+            submitted = st.form_submit_button(
                 t("btn_confirm_delete_project"),
                 type="primary",
-                disabled=not can_delete,
-                key=f"btn_dlg_conf_del_{preview['project_id']}",
                 use_container_width=True,
-            ):
+            )
+
+        if submitted:
+            typed_clean = (typed_val or "").strip()
+            matches_confirm = bool(
+                typed_clean and (typed_clean == pid or typed_clean == preview["title"].strip())
+            )
+            if not matches_confirm:
+                st.error(t("dlg_delete_mismatch_err", pid=pid))
+            else:
+                prog_ph = st.progress(0, text=t("dlg_delete_stopping_status")) if is_running_proj else None
+
+                def _on_delete_progress(frac: float, msg: str) -> None:
+                    if prog_ph is not None:
+                        pct = max(0, min(100, int(round(frac * 100))))
+                        prog_ph.progress(pct, text=msg or t("dlg_delete_stopping_status"))
+
                 try:
                     soft_delete_project(
-                        preview["project_id"],
+                        pid,
                         delete_capcut_drafts=bool(chk_capcut),
+                        stop_running_job=True,
+                        max_wait_seconds=20.0,
+                        progress_cb=_on_delete_progress,
                     )
                     st.session_state["confirm_delete_project_id"] = None
                     st.session_state["last_deleted_notice"] = t("delete_project_success", title=preview["title"])
                     if on_deleted_redirect_home:
                         st.query_params.clear()
-                        st.session_state.pop(f"active_step_{preview['project_id']}", None)
+                        st.session_state.pop(f"active_step_{pid}", None)
                     st.rerun()
                 except Exception as exc:
+                    if prog_ph is not None:
+                        prog_ph.empty()
                     _render_friendly_error(t("err_delete_project_friendly"), exc)
-        with col_d2:
-            if st.button(
-                t("btn_cancel_dialog"),
-                key=f"btn_dlg_canc_del_{preview['project_id']}",
-                use_container_width=True,
-            ):
-                st.session_state["confirm_delete_project_id"] = None
-                st.rerun()
+
+        if st.button(
+            t("btn_cancel_dialog"),
+            key=f"btn_dlg_canc_del_{pid}",
+            use_container_width=True,
+        ):
+            st.session_state["confirm_delete_project_id"] = None
+            st.rerun()
 
     _delete_project_modal()
 
@@ -1389,8 +1409,31 @@ def render_script_step_flow(
                 st.rerun()
 
     # If script is already finished: show chapter list and continue button
+    fix_h_notice = st.session_state.pop(f"fix_headings_notice_{project_id}", None)
+    if fix_h_notice:
+        st.success(fix_h_notice)
+
     if status == "selesai":
         st.success(t("script_summary_format", chapters=len(manifest.chapters)))
+        leaked_hits = detect_leaked_chapter_headings(manifest)
+        if leaked_hits:
+            st.warning(t("script_leaked_headings_warn", count=len(leaked_hits)))
+            if st.button(
+                t("btn_fix_chapter_headings"),
+                key=f"btn_fix_headings_{project_id}",
+                disabled=is_job_running,
+            ):
+                try:
+                    res_fix = fix_project_headings(p_dir)
+                    st.session_state[f"fix_headings_notice_{project_id}"] = t(
+                        "fix_headings_success",
+                        groups=res_fix["fixed_groups"],
+                        shots=res_fix["fixed_shots"],
+                    )
+                    st.rerun()
+                except Exception as exc:
+                    _render_friendly_error(t("err_fix_headings_friendly"), exc)
+
         for ch in manifest.chapters:
             if getattr(ch, "needs_language_review", False):
                 st.warning(
@@ -1983,6 +2026,7 @@ def render_visual_step_flow(
     )
     from app.services.longform.visual.ai_keywords import (
         estimate_ai_keyword_calls,
+        format_keyword_reason,
         infer_keyword_source,
     )
     from app.services.longform.language_guard import resolve_project_language
@@ -2187,6 +2231,13 @@ def render_visual_step_flow(
     if total_shots > 0:
         from app.services.longform.llm_adapter import LLMCreditError, LLMModelNotFoundError
 
+        ai_kw_notice = st.session_state.pop(f"ai_kw_last_notice_{project_id}", None)
+        if isinstance(ai_kw_notice, dict) and ai_kw_notice.get("text"):
+            if ai_kw_notice.get("level") == "warning":
+                st.warning(ai_kw_notice["text"])
+            else:
+                st.success(ai_kw_notice["text"])
+
         with st.popover(t("btn_update_keywords_ai"), disabled=is_job_running):
             cur_ch_pill = st.session_state.get(f"vis_ch_sel_{project_id}")
             cur_ch_idx = None
@@ -2242,13 +2293,23 @@ def render_visual_step_flow(
                                 force=True,
                                 mark_stale=True,
                             )
-                    st.success(
-                        t(
-                            "ai_kw_updated_success",
-                            updated=kw_res["updated"],
-                            stale=kw_res["stale_marked"],
-                        )
+                    msg_kw_ok = t(
+                        "ai_kw_updated_success",
+                        updated=kw_res["updated"],
+                        stale=kw_res["stale_marked"],
                     )
+                    if kw_res.get("fallback_used") or kw_res.get("warnings"):
+                        warn_txt = " | ".join(str(w) for w in (kw_res.get("warnings") or []) if w)
+                        full_warn = f"{msg_kw_ok} — {warn_txt}" if warn_txt else msg_kw_ok
+                        st.session_state[f"ai_kw_last_notice_{project_id}"] = {
+                            "level": "warning",
+                            "text": full_warn,
+                        }
+                    else:
+                        st.session_state[f"ai_kw_last_notice_{project_id}"] = {
+                            "level": "success",
+                            "text": msg_kw_ok,
+                        }
                     st.rerun()
                 except (LLMCreditError, LLMModelNotFoundError) as exc:
                     _render_llm_friendly_error_box(
@@ -2414,17 +2475,37 @@ def render_visual_step_flow(
                     kw_en_val = getattr(target_shot, "search_query_en", None)
                     kw_source_code = infer_keyword_source(target_chapter, target_shot)
                     kw_source_disp = t(f"kw_source_{kw_source_code}")
+                    kw_reason_raw = getattr(target_shot, "search_query_reason", None)
+                    kw_reason_disp = format_keyword_reason(kw_reason_raw, lang=get_ui_language())
                     proj_lang_vis = resolve_project_language(manifest)
 
                     if kw_en_val:
                         st.markdown(t("shot_keywords_en_search_label", kw=html.escape(kw_en_val)))
-                        st.markdown(t("shot_keywords_source_label", src=html.escape(kw_source_disp)))
-                        if short_q and short_q.strip().lower() != kw_en_val.strip().lower():
-                            if is_non_english_language(proj_lang_vis):
-                                st.markdown(t("shot_keywords_orig_summary", orig=html.escape(short_q)))
-                    else:
+                    elif not is_non_english_language(proj_lang_vis):
                         st.markdown(t("shot_keywords_en_search_label", kw=html.escape(short_q or "-")))
+                    else:
+                        st.markdown(
+                            t(
+                                "shot_keywords_lang_label",
+                                proj_lang=html.escape(str(proj_lang_vis)),
+                                kw=html.escape(short_q or "-"),
+                            )
+                        )
+
+                    if kw_reason_disp:
+                        st.markdown(
+                            t(
+                                "shot_keywords_source_with_reason",
+                                src=html.escape(kw_source_disp),
+                                reason=html.escape(kw_reason_disp),
+                            )
+                        )
+                    else:
                         st.markdown(t("shot_keywords_source_label", src=html.escape(kw_source_disp)))
+
+                    if kw_en_val and short_q and short_q.strip().lower() != kw_en_val.strip().lower():
+                        if is_non_english_language(proj_lang_vis):
+                            st.markdown(t("shot_keywords_orig_summary", orig=html.escape(short_q)))
 
                     # F1: AI Relevance verdict & single-shot re-check button
                     rel_status = getattr(target_shot, "ai_relevance_status", None)
@@ -2438,10 +2519,12 @@ def render_visual_step_flow(
                         else:
                             st.warning(msg_rel)
 
+                    vision_ok = bool(vision_info.get("vision_supported"))
                     if st.button(
                         t("btn_recheck_ai_relevance"),
                         key=f"btn_recheck_ai_{project_id}_{target_shot.shot_id}",
-                        disabled=not bool(vision_info.get("vision_supported")) or is_job_running,
+                        disabled=(not vision_ok) or is_job_running,
+                        help=t("ai_relevance_no_vision_notice") if not vision_ok else None,
                     ):
                         try:
                             vis_svc_rel = VisualService(p_dir)
@@ -2459,6 +2542,14 @@ def render_visual_step_flow(
                             st.rerun()
                         except Exception as exc:
                             _render_friendly_error(t("err_ai_relevance_friendly"), exc)
+
+                    if not vision_ok:
+                        st.caption(t("ai_relevance_vision_hint_below"))
+                        if st.button(
+                            t("btn_open_llm_settings"),
+                            key=f"btn_recheck_cfg_{project_id}_{target_shot.shot_id}",
+                        ):
+                            _open_mpt_settings_dialog("llm")
 
                     # Needs review checkbox
                     is_rev = getattr(target_shot, "needs_review", False)

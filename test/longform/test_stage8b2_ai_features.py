@@ -1663,16 +1663,23 @@ def test_f7_ui_delete_dialog_and_home_trash_filter(tmp_path: Path, monkeypatch):
     del_btn[0].click().run(timeout=25)
     assert not at.exception
 
-    # Confirm checkbox default OFF & typing ID enables Delete button
+    # Confirm checkbox default OFF; form submit validates mismatch safely without disabling button (F10)
     chk_cc = [c for c in at.checkbox if c.key == "chk_del_capcut_f7_ui_demo"]
     assert len(chk_cc) == 1 and chk_cc[0].value is False
-    conf_btn_disabled = [b for b in at.button if b.key == "btn_dlg_conf_del_f7_ui_demo"][0]
-    assert conf_btn_disabled.disabled is True
+    conf_btns = [b for b in at.button if "form_del_proj_f7_ui_demo" in (b.key or "")]
+    assert len(conf_btns) == 1
+    assert conf_btns[0].disabled is False
 
+    # Empty confirm click -> shows validation warning/error and keeps project intact
+    conf_btns[0].click().run(timeout=25)
+    assert not at.exception
+    assert (proj_root / "f7_ui_demo").exists()
+    assert any("f7_ui_demo" in str(e.value) for e in at.error)
+
+    # Typing exact ID + single click -> moves immediately to Trash
     txt_in = [ti for ti in at.text_input if ti.key == "txt_del_confirm_f7_ui_demo"][0]
-    txt_in.input("f7_ui_demo").run(timeout=25)
-    conf_btn = [b for b in at.button if b.key == "btn_dlg_conf_del_f7_ui_demo"][0]
-    assert conf_btn.disabled is False
+    txt_in.input("f7_ui_demo")
+    conf_btn = [b for b in at.button if "form_del_proj_f7_ui_demo" in (b.key or "")][0]
     conf_btn.click().run(timeout=25)
     assert not at.exception
     assert not (proj_root / "f7_ui_demo").exists()
@@ -1687,6 +1694,415 @@ def test_f7_ui_delete_dialog_and_home_trash_filter(tmp_path: Path, monkeypatch):
     rest_btns[0].click().run(timeout=25)
     assert not at.exception
     assert (proj_root / "f7_ui_demo" / "manifest.json").is_file()
+
+
+# ---------------------------------------------------------------------------
+# ADDENDUM F10 — Reliable Delete, Stop Running Job, & Locked File Recovery
+# ---------------------------------------------------------------------------
+
+
+def test_f10_stop_running_job_move_restore_and_locked_file_retry(tmp_path: Path, monkeypatch):
+    import cli_longform
+    from app.services.longform.trash import (
+        ProjectTrashError,
+        get_project_delete_preview,
+        restore_trashed_project,
+        soft_delete_project,
+    )
+
+    proj_root = tmp_path / "projects_f10"
+    proj_root.mkdir()
+    monkeypatch.setattr("app.services.longform.store.get_projects_root", lambda: proj_root)
+    monkeypatch.setattr("app.services.longform.trash.get_projects_root", lambda: proj_root)
+    monkeypatch.setattr("app.services.longform.ui.components.get_projects_root", lambda: proj_root)
+    monkeypatch.setattr("app.services.longform.ui.jobs.get_project_dir", lambda pid: proj_root / pid)
+    monkeypatch.setitem(config.ui, "language", "id")
+
+    # 1. Completed project deletes cleanly
+    _, p_done = create_project("f10_done", "Proyek Selesai F10", "automotive.muscle_car", projects_root=proj_root)
+    (p_done / "exports" / "final.mp4").parent.mkdir(parents=True, exist_ok=True)
+    (p_done / "exports" / "final.mp4").write_bytes(b"\x00" * 2048)
+    del_done = soft_delete_project("f10_done", stop_running_job=True)
+    assert not p_done.exists()
+    assert Path(del_done["trash_path"]).is_dir()
+
+    # 2. Running dummy subprocess project: UI warns (non-blocking), stops job, moves to trash, restore marks stopped
+    _, p_run = create_project("f10_run", "Proyek Berjalan F10", "automotive.muscle_car", projects_root=proj_root)
+    import sys
+
+    dummy_proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        (p_run / ".lock").write_text(f"pid={dummy_proc.pid}\nhost=test", encoding="utf-8")
+        (p_run / "job_state.json").write_text(
+            json.dumps(
+                {
+                    "project_id": "f10_run",
+                    "step": "audio_synth",
+                    "status": "running",
+                    "pid": dummy_proc.pid,
+                    "started_at": "2026-11-17T10:00:00Z",
+                }
+            ),
+            encoding="utf-8",
+        )
+        preview = get_project_delete_preview("f10_run")
+        assert preview["is_locked_or_running"] is True
+        assert preview["running_step"] == "audio_synth"
+
+        # UI delete dialog shows warning AND keeps confirm button enabled
+        at = AppTest.from_file(_get_long_video_app_file())
+        at.session_state["confirm_delete_project_id"] = "f10_run"
+        at.run(timeout=25)
+        assert not at.exception
+        assert any("audio_synth" in str(w.value) for w in at.warning)
+        conf_btns = [b for b in at.button if "form_del_proj_f10_run" in (b.key or "")]
+        assert len(conf_btns) == 1 and conf_btns[0].disabled is False
+
+        progress_steps = []
+        del_run = soft_delete_project(
+            "f10_run",
+            stop_running_job=True,
+            max_wait_seconds=10.0,
+            progress_cb=lambda frac, msg: progress_steps.append((frac, msg)),
+        )
+        assert del_run["job_stopped"] is True
+        assert len(progress_steps) >= 2
+        assert dummy_proc.poll() is not None
+        assert not p_run.exists()
+        trashed_dir = Path(del_run["trash_path"])
+        assert (trashed_dir / "manifest.json").is_file()
+        trashed_js = json.loads((trashed_dir / "job_state.json").read_text(encoding="utf-8"))
+        assert trashed_js["status"] == "stopped"
+
+        # Restore -> active job_state has "stopped" ("terhenti") and no .lock remains
+        res_rest = restore_trashed_project("f10_run")
+        restored_dir = Path(res_rest["restored_path"])
+        assert (restored_dir / "manifest.json").is_file()
+        assert not (restored_dir / ".lock").exists()
+        restored_js = json.loads((restored_dir / "job_state.json").read_text(encoding="utf-8"))
+        assert restored_js["status"] == "stopped"
+    finally:
+        if dummy_proc.poll() is None:
+            dummy_proc.kill()
+            dummy_proc.wait(timeout=5)
+
+    # 3. Simulated locked file: transient PermissionError succeeds on retry; persistent lock raises ProjectTrashError + rollback
+    _, p_lock = create_project("f10_lock", "Proyek Terkunci F10", "automotive.muscle_car", projects_root=proj_root)
+    locked_sample = p_lock / "visuals" / "busy.mp4"
+    locked_sample.parent.mkdir(parents=True, exist_ok=True)
+    locked_sample.write_bytes(b"video-bytes")
+
+    real_move = shutil.move
+    attempts = {"n": 0}
+
+    def _flaky_move(src, dst, *args, **kwargs):
+        attempts["n"] += 1
+        if attempts["n"] <= 2:
+            raise PermissionError("WinError 32 transient lock")
+        return real_move(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr("app.services.longform.trash.shutil.move", _flaky_move)
+    res_retry = soft_delete_project("f10_lock")
+    assert attempts["n"] == 3
+    assert Path(res_retry["trash_path"]).is_dir()
+
+    restore_trashed_project("f10_lock")
+    assert (p_lock / "visuals" / "busy.mp4").is_file()
+
+    def _always_locked_move(src, dst, *args, **kwargs):
+        raise PermissionError(f"WinError 32 locked: {locked_sample}")
+
+    monkeypatch.setattr("app.services.longform.trash.shutil.move", _always_locked_move)
+    real_unlink = Path.unlink
+
+    def _fail_unlink_busy(self, *args, **kwargs):
+        if self.name == "busy.mp4":
+            raise PermissionError(f"WinError 32 cannot unlink {self}")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", _fail_unlink_busy)
+    with pytest.raises(ProjectTrashError) as exc_info:
+        soft_delete_project("f10_lock")
+    assert any(p.replace("\\", "/") == "visuals/busy.mp4" for p in exc_info.value.locked_files)
+    # Rolled back partial trash dir and kept original intact
+    assert (p_lock / "manifest.json").is_file()
+    trash_entries = [x for x in (proj_root / "_trash").iterdir() if x.name.startswith("f10_lock_")]
+    assert trash_entries == []
+
+
+# ---------------------------------------------------------------------------
+# ADDENDUM F11 — Chapter Heading Guard, Repair Utility, Honest Keyword UI
+# ---------------------------------------------------------------------------
+
+
+def test_f11_heading_parser_and_fix_headings(tmp_path: Path, monkeypatch):
+    import sys
+    import cli_longform
+    from app.services.longform.presets import get_preset
+    from app.services.longform.script_generator import ScriptGenerator
+    from app.services.longform.script_import import (
+        detect_leaked_chapter_headings,
+        fix_project_headings,
+        parse_markdown_script,
+    )
+    from app.services.longform.status import compute_project_step_status
+
+    md_tricky = """#Judul Video Rahasia
+#Bab 1: Panggilan Lapar dan Legenda Kaki Lima
+Malam selalu membuka aroma arang dan rempah jalanan.
+
+##Bab 2: Harmoni Rempah Tanpa Batas
+Ketika wajan besi menyentuh bara panas, suara desis langsung menggoda selera.
+
+Chapter 3: Rising Pressure Inside the Kitchen
+Every detail of heat control shapes the broth texture.
+
+Bab 4 - Titik Balik Sang Pedagang
+Dalam sekejap antrean panjang mulai memadati trotoar sempit.
+
+[ch:5]
+Hidangan terakhir disajikan hangat bersama sambal racikan turun temurun.
+
+#Bab 6: Penutup Malam yang HangatAkhirnya lampu gerobak padam perlahan menjelang fajar.
+"""
+    chapters, _doc_title = parse_markdown_script(md_tricky, preset=get_preset("umum.id"))
+    assert len(chapters) == 6
+    assert chapters[0].chapter_title == "Panggilan Lapar dan Legenda Kaki Lima"
+    assert chapters[1].chapter_title == "Harmoni Rempah Tanpa Batas"
+    assert chapters[2].chapter_title == "Rising Pressure Inside the Kitchen"
+    assert chapters[3].chapter_title == "Titik Balik Sang Pedagang"
+    assert chapters[4].chapter_index == 5
+    assert chapters[5].chapter_title == "Penutup Malam yang Hangat"
+    assert "Akhirnya lampu gerobak padam perlahan" in chapters[5].tts_groups[0].paragraph_text
+
+    for ch in chapters:
+        for grp in ch.tts_groups:
+            assert not grp.paragraph_text.lstrip().lower().startswith(("#bab", "bab ", "chapter ", "[ch:"))
+
+    # ScriptGenerator helper strips #Bab / Chapter headings too
+    h_split, b_split = ScriptGenerator._extract_heading_and_body("#Bab 1: Panggilan Lapar\nMalam selalu ramai.")
+    assert h_split == "Panggilan Lapar"
+    assert b_split == "Malam selalu ramai."
+
+    # Build a synthetic copy matching real corrupted projects (kulineran + street food style)
+    proj_root = tmp_path / "projects_f11"
+    proj_root.mkdir()
+    monkeypatch.setattr("app.services.longform.store.get_projects_root", lambda: proj_root)
+    monkeypatch.setattr("app.services.longform.ui.components.get_projects_root", lambda: proj_root)
+    monkeypatch.setitem(config.ui, "language", "id")
+
+    manifest, p_dir = create_project("f11_fix", "Kulineran Uji", "umum.id", projects_root=proj_root)
+    audio_ch1 = p_dir / "audio" / "ch1_grp1.mp3"
+    audio_ch1.parent.mkdir(parents=True, exist_ok=True)
+    audio_ch1.write_bytes(b"fake-mp3")
+
+    from app.services.longform.schema import AudioSpec, Segment
+
+    ch1 = Chapter(
+        chapter_index=1,
+        chapter_title="Panggilan Lapar dan Legenda Kaki Lima",
+        status=ItemStatus.completed,
+        tts_groups=[
+            TtsGroup(
+                group_index=1,
+                paragraph_text="#Bab 1: Panggilan Lapar dan Legenda Kaki Lima Malam selalu membuka aroma arang.",
+                audio=AudioSpec(file_path="audio/ch1_grp1.mp3"),
+                status=ItemStatus.completed,
+                segments=[
+                    Segment(
+                        segment_index=1,
+                        narration_text="#Bab 1: Panggilan Lapar dan Legenda Kaki Lima Malam selalu membuka aroma arang.",
+                    )
+                ],
+            ),
+        ],
+        shots=[
+            Shot(
+                shot_id="s_1_1",
+                chapter_index=1,
+                shot_index=1,
+                segment_indices=[1],
+                search_query="bab panggilan lapar legenda",
+                search_query_source="extraction",
+            )
+        ],
+    )
+    manifest.chapters = [ch1]
+    save_manifest(manifest, p_dir)
+
+    hits = detect_leaked_chapter_headings(manifest)
+    assert len(hits) == 1
+    assert hits[0]["chapter_index"] == 1
+
+    # Verify Naskah UI displays warning banner + repair button and repairs cleanly
+    at = AppTest.from_file(_get_long_video_app_file())
+    at.query_params["project"] = "f11_fix"
+    at.session_state["active_step_f11_fix"] = "script"
+    at.run(timeout=25)
+    assert not at.exception
+    assert any("judul bab" in str(w.value).lower() for w in at.warning)
+    fix_btns = [b for b in at.button if b.key == "btn_fix_headings_f11_fix"]
+    assert len(fix_btns) == 1
+    fix_btns[0].click().run(timeout=25)
+    assert not at.exception
+
+    fixed_manifest = load_manifest(p_dir)
+    assert detect_leaked_chapter_headings(fixed_manifest) == []
+    fixed_grp = fixed_manifest.chapters[0].tts_groups[0]
+    assert fixed_grp.paragraph_text == "Malam selalu membuka aroma arang."
+    assert fixed_grp.segments[0].narration_text == "Malam selalu membuka aroma arang."
+    assert fixed_grp.status == ItemStatus.stale
+    assert "bab" not in (fixed_manifest.chapters[0].shots[0].search_query or "").lower().split()
+
+    steps = compute_project_step_status(p_dir)
+    assert steps["steps"]["voice"]["status"] == "perlu_diperbarui"
+
+    # CLI project fix-headings works cleanly as well
+    ch2 = Chapter(
+        chapter_index=2,
+        chapter_title="The Midnight Queue",
+        tts_groups=[
+            TtsGroup(
+                group_index=1,
+                paragraph_text="Bab 2: The Midnight Queue Lanterns glow over warm broth.",
+                status=ItemStatus.pending,
+                segments=[
+                    Segment(
+                        segment_index=1,
+                        narration_text="Bab 2: The Midnight Queue Lanterns glow over warm broth.",
+                    )
+                ],
+            )
+        ],
+    )
+    fixed_manifest.chapters.append(ch2)
+    save_manifest(fixed_manifest, p_dir)
+    monkeypatch.setattr(cli_longform, "get_project_dir", lambda pid: proj_root / pid)
+    monkeypatch.setattr(sys, "argv", ["cli_longform.py", "project", "fix-headings", "f11_fix"])
+    assert cli_longform.main() == 0
+    cli_fixed = load_manifest(p_dir)
+    assert cli_fixed.chapters[1].tts_groups[0].paragraph_text == "Lanterns glow over warm broth."
+
+
+def test_f11_honest_keyword_labels_visible_fallback_and_vision_disabled_hint(tmp_path: Path, monkeypatch):
+    from app.services.longform.visual.ai_keywords import generate_chapter_visual_keywords_ai
+
+    proj_root = tmp_path / "projects_f11_vis"
+    proj_root.mkdir()
+    monkeypatch.setattr("app.services.longform.store.get_projects_root", lambda: proj_root)
+    monkeypatch.setattr("app.services.longform.ui.components.get_projects_root", lambda: proj_root)
+    monkeypatch.setitem(config.ui, "language", "id")
+
+    manifest, p_dir = create_project(
+        "f11_vis_ui",
+        "Kaki Lima Nusantara",
+        "umum.id",
+        language="id-ID",
+        projects_root=proj_root,
+    )
+    shot = Shot(
+        shot_id="s_1_1",
+        chapter_index=1,
+        shot_index=1,
+        segment_indices=[1],
+        search_query="aroma panggangan arang jalanan",
+        search_query_en=None,
+        search_query_source="extraction",
+        search_query_reason=None,
+    )
+    ch = Chapter(
+        chapter_index=1,
+        chapter_title="Suasana Malam",
+        tts_groups=[
+            TtsGroup(
+                group_index=1,
+                paragraph_text="Aroma panggangan arang dan bawang putih memenuhi pinggir jalan malam.",
+            )
+        ],
+        shots=[shot],
+    )
+    ch.tts_groups[0].segments = [
+        __import__("app.services.longform.schema", fromlist=["Segment"]).Segment(
+            segment_index=1,
+            narration_text="Aroma panggangan arang dan bawang putih memenuhi pinggir jalan malam.",
+        )
+    ]
+    manifest.chapters = [ch]
+    save_manifest(manifest, p_dir)
+
+    # 1. No-LLM fallback records search_query_reason='llm_not_ready' and leaves search_query_en=None
+    monkeypatch.setattr(
+        "app.services.longform.visual.ai_keywords.get_llm_readiness",
+        lambda *a, **k: {"ready": False, "reason": "no_key"},
+    )
+    res_kw = generate_chapter_visual_keywords_ai(
+        [shot],
+        ch,
+        project_lang="id-ID",
+        cache_dir=tmp_path / "kw_cache",
+        force=True,
+    )
+    assert res_kw["fallback_used"] is True
+    assert shot.search_query_en is None
+    assert shot.search_query_source == "extraction"
+    assert shot.search_query_reason == "llm_not_ready"
+    save_manifest(manifest, p_dir)
+
+    # 2. Visual UI with non-vision LLM & non-EN extracted query: honest label + reason + disabled tooltip/hint/settings
+    monkeypatch.setattr(
+        "app.services.longform.ui.components.check_llm_status",
+        lambda: {"configured": True, "provider": "openrouter", "model": "openrouter/free", "masked_key": "****9999", "is_invalid": False},
+    )
+    monkeypatch.setattr(
+        "app.services.longform.visual.ai_relevance.get_vision_readiness",
+        lambda *a, **k: {"vision_supported": False, "provider": "openrouter", "model": "openrouter/free", "reason": "text_only_model"},
+    )
+    monkeypatch.setattr(
+        "app.services.longform.visual.ai_video.list_configured_ai_video_providers",
+        lambda *a, **k: [],
+    )
+    monkeypatch.setattr(
+        "app.services.longform.visual.ai_image.get_ai_image_readiness",
+        lambda *a, **k: {"ready": False, "provider": "", "model": ""},
+    )
+
+    at = AppTest.from_file(_get_long_video_app_file())
+    at.query_params["project"] = "f11_vis_ui"
+    at.session_state["active_step_f11_vis_ui"] = "visual"
+    at.run(timeout=25)
+    assert not at.exception
+
+    md_all = "\n".join(str(m.value) for m in at.markdown)
+    cap_all = "\n".join(str(c.value) for c in at.caption)
+    assert "Kata kunci pencarian (id-ID):" in md_all
+    assert "Kata kunci pencarian (EN):" not in md_all
+    assert "LLM belum siap" in md_all
+    assert "vision" in cap_all.lower()
+
+    recheck_btn = [b for b in at.button if b.key == "btn_recheck_ai_f11_vis_ui_s_1_1"][0]
+    assert recheck_btn.disabled is True
+    assert bool(recheck_btn.help)
+    cfg_btns = [b for b in at.button if b.key == "btn_recheck_cfg_f11_vis_ui_s_1_1"]
+    assert len(cfg_btns) == 1
+
+    # 3. Clicking "Perbarui kata kunci dengan AI" when LLM not ready persists visible warning after rerun
+    monkeypatch.setattr(
+        "app.services.longform.visual.service.VisualService.update_keywords_with_ai",
+        lambda self, **kw: (
+            manifest,
+            {
+                "updated": 1,
+                "stale_marked": 0,
+                "fallback_used": True,
+                "warnings": ["Ch 1: LLM belum siap — memakai ekstraksi lokal"],
+            },
+        ),
+    )
+    run_kw_btn = [b for b in at.button if b.key == "btn_run_ai_kw_f11_vis_ui"][0]
+    run_kw_btn.click().run(timeout=25)
+    assert not at.exception
+    assert any("LLM belum siap" in str(w.value) for w in at.warning)
+
 
 
 

@@ -164,6 +164,7 @@ class Shot(BaseModel):
     effective_query: Optional[str] = None
     search_query_en: Optional[str] = None
     search_query_source: Optional[str] = None  # "ai" | "extraction" | "tag"
+    search_query_reason: Optional[str] = None  # Reason when fallback/extraction used (F11)
     ai_relevance_status: Optional[str] = None
     ai_relevance_reason: Optional[str] = None
     ai_relevance_asset_hash: Optional[str] = None

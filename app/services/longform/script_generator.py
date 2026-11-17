@@ -39,6 +39,7 @@ from app.services.longform.schema import (
     ProjectManifest,
     ScriptOutline,
 )
+from app.services.longform.script_import import strip_glued_chapter_heading
 from app.services.longform.store import (
     ProjectLock,
     ProjectStoreError,
@@ -199,16 +200,34 @@ class ScriptGenerator:
 
     @staticmethod
     def _extract_heading_and_body(chapter_md: str) -> Tuple[Optional[str], str]:
-        """Split optional leading `## Title` heading from spoken narration body."""
+        """Split optional leading chapter heading (`## Title`, `#Bab N:`, `Chapter N:`, etc.) from spoken narration body."""
         lines = (chapter_md or "").splitlines()
         heading: Optional[str] = None
         body_lines: List[str] = []
         for idx, ln in enumerate(lines):
             stripped = ln.strip()
-            if idx == 0 and stripped.startswith("## "):
-                heading = stripped[3:].strip()
-            else:
-                body_lines.append(ln)
+            if idx == 0 and stripped:
+                if stripped.startswith("## "):
+                    heading = stripped[3:].strip()
+                    continue
+                if stripped.startswith("# ") and not re.match(r"^#\s*(?:bab|chapter|ch)\b", stripped, re.IGNORECASE):
+                    heading = stripped[2:].strip()
+                    continue
+                detected_heading, rem_body = strip_glued_chapter_heading(stripped)
+                if detected_heading is not None:
+                    heading = detected_heading
+                    if rem_body:
+                        body_lines.append(rem_body)
+                    continue
+            # Also strip leaked leading heading on subsequent lines just in case
+            if not body_lines and stripped:
+                detected_heading, rem_body = strip_glued_chapter_heading(stripped)
+                if detected_heading is not None:
+                    heading = heading or detected_heading
+                    if rem_body:
+                        body_lines.append(rem_body)
+                    continue
+            body_lines.append(ln)
         return heading, "\n".join(body_lines).strip()
 
     def _validate_outline_language(self, outline: ScriptOutline, target_lang: str) -> Dict[str, Any]:

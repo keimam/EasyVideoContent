@@ -307,6 +307,27 @@ def cmd_project_restore(args: argparse.Namespace) -> int:
         return 1
 
 
+def cmd_project_fix_headings(args: argparse.Namespace) -> int:
+    """Strip leaked chapter headings from spoken narration and mark affected audio stale (Stage 8B.2, F11)."""
+    from app.services.longform.script_import import fix_project_headings
+
+    project_dir = get_project_dir(args.project_id)
+    if not project_dir.is_dir():
+        print(f"Error: Project '{args.project_id}' not found at {project_dir}", file=sys.stderr)
+        return 1
+    try:
+        res = fix_project_headings(project_dir)
+        print(
+            f"SUCCESS: Cleaned leaked headings in '{args.project_id}': "
+            f"fixed_groups={res['fixed_groups']}, fixed_segments={res['fixed_segments']}, "
+            f"fixed_shots={res['fixed_shots']}, removed_empty_groups={res['removed_empty_groups']}"
+        )
+        return 0
+    except Exception as exc:
+        print(f"Error cleaning headings in '{args.project_id}': {exc}", file=sys.stderr)
+        return 1
+
+
 def cmd_trash_list(_args: argparse.Namespace) -> int:
     """List projects currently in _trash/ (Stage 8B.2, F7)."""
     from app.services.longform.trash import list_trashed_projects
@@ -2437,6 +2458,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_res = proj_subs.add_parser("restore", help="Restore a project from trash")
     p_res.add_argument("project_id", help="Project ID or trash folder ID")
 
+    # project fix-headings (8B.2 F11)
+    p_fixh = proj_subs.add_parser("fix-headings", help="Strip leaked chapter headings from narration and mark audio stale")
+    p_fixh.add_argument("project_id", help="Project ID")
+
     # trash (8B.2 F7)
     p_trash = subparsers.add_parser("trash", help="Manage deleted projects in trash")
     trash_subs = p_trash.add_subparsers(dest="trash_command", required=True)
@@ -2736,6 +2761,8 @@ def main() -> int:
                 return cmd_project_delete(args)
             elif args.project_command == "restore":
                 return cmd_project_restore(args)
+            elif args.project_command == "fix-headings":
+                return cmd_project_fix_headings(args)
         elif args.command == "trash":
             if args.trash_command == "list":
                 return cmd_trash_list(args)

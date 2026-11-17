@@ -163,6 +163,227 @@ def estimate_script_duration(
 
 CHAPTER_PREFIX_RE = re.compile(r"^(?:chapter|bab|ch)[.\s]*\d+[\s:.-]*", re.IGNORECASE)
 
+# Matches explicit or missing-space chapter headings at the start of a line or glued before narration (F11):
+# Examples: "## Bab 1: Title", "#Bab 1: Title", "Chapter 2: Title", "Bab 3 - Title", "[ch:1] Title"
+_CHAPTER_LINE_PREFIX_RE = re.compile(
+    r"^(?:"
+    r"#{2,6}\s*(?:(?:chapter|bab|ch)\s*\d*\s*[:.\-]?\s*)?"
+    r"|#\s*(?:chapter|bab|ch)\b\.?\s*\d*\s*[:.\-]?\s*"
+    r"|(?:chapter|bab)\s+\d+\s*[:.\-]+\s*"
+    r"|\[\s*ch(?:apter)?\s*[:=]\s*\d+\s*\]\s*"
+    r")",
+    re.IGNORECASE,
+)
+
+# Common title connector words that may appear lowercase inside Title-Case headings (ID & EN)
+_TITLE_LOWER_CONNECTORS = {
+    "dan", "di", "ke", "dari", "yang", "untuk", "dalam", "pada", "atau", "dengan",
+    "tentang", "oleh", "sebuah", "sang", "para", "antara",
+    "and", "or", "of", "the", "a", "an", "in", "on", "at", "to", "for", "from",
+    "by", "with", "into", "that", "as", "vs",
+}
+
+
+def strip_glued_chapter_heading(text: str) -> Tuple[Optional[str], str]:
+    """Separate a leading chapter heading marker/title from body narration text (F11).
+
+    Returns ``(extracted_chapter_title_or_None, remaining_narration_text)``.
+    If no heading prefix matches, returns ``(None, text)``.
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return None, ""
+
+    m = _CHAPTER_LINE_PREFIX_RE.match(raw)
+    if not m:
+        return None, raw
+
+    after_prefix = raw[m.end():].strip()
+    if not after_prefix:
+        return clean_chapter_title(raw[:m.end()]), ""
+
+    # Case 1: Newline separates heading from body
+    if "\n" in after_prefix:
+        first_line, rest = after_prefix.split("\n", 1)
+        return clean_chapter_title(first_line.strip()), rest.strip()
+
+    # Case 2: Single line with explicit punctuation delimiter like ". " / "! " / "? " / " — "
+    # Only treat sentence break as end-of-title if short prefix before delimiter
+    # Wait: if text is glued WITHOUT punctuation (e.g. "#Bab 1: Panggilan Lapar dan Legenda Kaki Lima Malam selalu..."),
+    # find the first capitalized word followed immediately by a lowercase non-connector word!
+    words = after_prefix.split()
+    split_idx: Optional[int] = None
+    for i in range(len(words)):
+        raw_cur = words[i]
+        w_cur = raw_cur.strip(".,;:!?\"'()")
+        m_glued = re.match(r"^([A-Z][a-z]{1,})([A-Z][a-z]{2,}.*)$", raw_cur)
+        if m_glued and i >= 1:
+            heading_part = " ".join(words[:i] + [m_glued.group(1)]).strip(" :.-")
+            body_part = " ".join([m_glued.group(2)] + words[i + 1 :]).strip()
+            return (clean_chapter_title(heading_part) if heading_part else None), body_part
+
+        if i >= len(words) - 1:
+            continue
+        w_nxt = words[i + 1].strip(".,;:!?\"'()")
+        if not w_cur or not w_nxt:
+            continue
+        cur_is_cap = w_cur[0].isupper()
+        nxt_is_lower = w_nxt[0].islower()
+        nxt_clean_low = w_nxt.lower()
+        # A capitalized word starting the spoken sentence has a lowercase non-connector immediately after it
+        if cur_is_cap and nxt_is_lower and nxt_clean_low not in _TITLE_LOWER_CONNECTORS:
+            # Verify there wasn't ALREADY lowercase non-connector title prose before (only first transition splits!)
+            split_idx = i
+            break
+        # Handle lowercase connector starting sentence (e.g. "di tengah...") after >=2 title words
+        if i >= 2 and w_cur[0].islower() and w_cur.lower() not in _TITLE_LOWER_CONNECTORS:
+            split_idx = max(0, i - 1)
+            break
+
+    if split_idx is not None:
+        heading_part = " ".join(words[:split_idx]).strip(" :.-")
+        body_part = " ".join(words[split_idx:]).strip()
+        return (clean_chapter_title(heading_part) if heading_part else None), body_part
+
+    # Entire string is a standalone heading line (e.g. "Bab 1: The Midnight Queue")
+    return clean_chapter_title(after_prefix), ""
+
+
+def detect_leaked_chapter_headings(manifest: Any) -> List[Dict[str, Any]]:
+    """Scan an existing ProjectManifest for chapter headings inside narration/TTS groups (F11)."""
+    hits: List[Dict[str, Any]] = []
+    for ch in getattr(manifest, "chapters", []) or []:
+        for grp in getattr(ch, "tts_groups", []) or []:
+            para = (grp.paragraph_text or "").strip()
+            h_p, _ = strip_glued_chapter_heading(para)
+            if h_p is not None or _CHAPTER_LINE_PREFIX_RE.match(para):
+                hits.append({
+                    "chapter_index": ch.chapter_index,
+                    "group_index": grp.group_index,
+                    "sample": para[:90],
+                })
+                continue
+            for seg in getattr(grp, "segments", []) or []:
+                stxt = (seg.narration_text or "").strip()
+                h_s, _ = strip_glued_chapter_heading(stxt)
+                if h_s is not None or _CHAPTER_LINE_PREFIX_RE.match(stxt):
+                    hits.append({
+                        "chapter_index": ch.chapter_index,
+                        "group_index": grp.group_index,
+                        "segment_index": seg.segment_index,
+                        "sample": stxt[:90],
+                    })
+                    break
+    return hits
+
+
+def fix_project_headings(project_dir: Any) -> Dict[str, Any]:
+    """Remove leaked chapter headings from narration/TTS groups/shots and mark changed audio stale (F11)."""
+    from pathlib import Path
+    from app.services.longform.store import load_manifest, save_manifest
+    from app.services.longform.visual.query_extractor import extract_short_search_query
+
+    p_dir = Path(project_dir).resolve()
+    manifest = load_manifest(p_dir)
+
+    fixed_groups = 0
+    removed_empty_groups = 0
+    fixed_segments = 0
+    fixed_shots = 0
+
+    for ch in manifest.chapters:
+        new_groups: List[TtsGroup] = []
+        removed_seg_indices: set[int] = set()
+        recovered_title: Optional[str] = None
+
+        for grp in ch.tts_groups:
+            grp_modified = False
+            new_segs: List[Segment] = []
+            for seg in grp.segments:
+                orig_txt = (seg.narration_text or "").strip()
+                h_s, rem_s = strip_glued_chapter_heading(orig_txt)
+                if h_s is not None or _CHAPTER_LINE_PREFIX_RE.match(orig_txt):
+                    grp_modified = True
+                    fixed_segments += 1
+                    if h_s and not recovered_title:
+                        recovered_title = h_s
+                    if rem_s:
+                        seg.narration_text = rem_s
+                        new_segs.append(seg)
+                    else:
+                        removed_seg_indices.add(seg.segment_index)
+                else:
+                    new_segs.append(seg)
+
+            # Also check paragraph_text directly in case paragraph was prefixed while segments differed
+            if not grp_modified:
+                h_p, rem_p = strip_glued_chapter_heading((grp.paragraph_text or "").strip())
+                if h_p is not None:
+                    grp_modified = True
+                    if h_p and not recovered_title:
+                        recovered_title = h_p
+
+            if not new_segs:
+                removed_empty_groups += 1
+                fixed_groups += 1
+                continue
+
+            if grp_modified:
+                grp.segments = new_segs
+                grp.paragraph_text = " ".join(s.narration_text.strip() for s in new_segs if s.narration_text.strip())
+                had_audio = bool(grp.audio and grp.audio.file_path)
+                if grp.audio:
+                    grp.audio.audio_hash = compute_audio_group_hash(
+                        paragraph_text=grp.paragraph_text,
+                        tts_provider=grp.audio.tts_provider,
+                        tts_model=grp.audio.tts_model,
+                        voice_name=grp.audio.voice_name,
+                        voice_rate=grp.audio.voice_rate,
+                        text_norm_version=grp.audio.text_norm_version,
+                    )
+                if had_audio:
+                    grp.status = ItemStatus.stale
+                fixed_groups += 1
+            new_groups.append(grp)
+
+        for idx, g in enumerate(new_groups, start=1):
+            g.group_index = idx
+        ch.tts_groups = new_groups
+
+        if recovered_title and (not ch.chapter_title or re.match(r"^chapter\s+\d+$", ch.chapter_title.strip(), re.IGNORECASE)):
+            ch.chapter_title = recovered_title
+
+        # Clean up visual shots referencing modified/removed narration segments
+        surviving_seg_map = {s.segment_index: s.narration_text for g in ch.tts_groups for s in g.segments}
+        new_shots = []
+        for sh in ch.shots:
+            if sh.segment_indices and all(si in removed_seg_indices for si in sh.segment_indices):
+                # Shot only belonged to a standalone removed heading segment -> drop unlocked heading shot cleanly
+                if not getattr(sh, "locked", False):
+                    fixed_shots += 1
+                    continue
+            if not getattr(sh, "locked", False) and str(getattr(sh, "search_query_source", "") or "extraction") != "ai":
+                # Refresh extracted keyword if it was polluted with heading words
+                clean_src_txt = " ".join(surviving_seg_map.get(si, "") for si in (sh.segment_indices or [])).strip()
+                if clean_src_txt and sh.search_query:
+                    h_q, _ = strip_glued_chapter_heading(f"# {sh.search_query}")
+                    if "bab" in sh.search_query.lower() or "chapter" in sh.search_query.lower():
+                        sh.search_query = extract_short_search_query(clean_src_txt)
+                        fixed_shots += 1
+            new_shots.append(sh)
+        ch.shots = new_shots
+
+    if fixed_groups > 0 or removed_empty_groups > 0 or fixed_shots > 0:
+        save_manifest(manifest, p_dir)
+
+    return {
+        "project_id": manifest.project_id,
+        "fixed_groups": fixed_groups,
+        "removed_empty_groups": removed_empty_groups,
+        "fixed_segments": fixed_segments,
+        "fixed_shots": fixed_shots,
+    }
+
 
 def clean_chapter_title(title: str, fallback_index: Optional[int] = None) -> str:
     """Strip repeated 'Chapter 1:', 'Bab 2 -', 'Ch 3.' prefixes from a chapter heading (E1).
@@ -398,25 +619,39 @@ def parse_markdown_script(
     for line in lines:
         stripped = line.strip()
 
-        # Level 1 Title
-        if stripped.startswith("# ") and not stripped.startswith("## "):
-            _flush_para()
-            if not title:
-                title = stripped[2:].strip()
-            continue
-
-        # Level 2 Chapter
-        if stripped.startswith("## "):
-            _flush_para()
-            _flush_chapter()
-            raw_title = stripped[3:].strip()
-            current_chapter_title = clean_chapter_title(raw_title, fallback_index=len(chapters) + 1)
-            current_paragraphs = []
-            continue
-
         # Blank line = paragraph break
         if not stripped:
             _flush_para()
+            continue
+
+        # Level 1 Title (plain "# Title" or leading "#Title" before any chapter, NOT "#Bab 1: ...")
+        is_h1_title = (
+            stripped.startswith("#")
+            and not stripped.startswith("##")
+            and not re.match(r"^#\s*(?:bab|chapter|ch)\b", stripped, re.IGNORECASE)
+            and (
+                stripped.startswith("# ")
+                or (not title and not chapters and not current_chapter_title and not current_paragraphs)
+            )
+        )
+        if is_h1_title:
+            _flush_para()
+            if not title:
+                title = stripped[1:].strip()
+            continue
+
+        # Chapter Heading detection (including missing-space "#Bab 1:", "Chapter 1:", "Bab 2 -", "[ch:1]")
+        h_detected, h_rem_body = strip_glued_chapter_heading(stripped)
+        if h_detected is not None or stripped.startswith("##"):
+            _flush_para()
+            _flush_chapter()
+            if h_detected is not None:
+                current_chapter_title = clean_chapter_title(h_detected, fallback_index=len(chapters) + 1)
+                current_paragraphs = [h_rem_body] if h_rem_body else []
+            else:
+                raw_title = re.sub(r"^#+\s*", "", stripped).strip()
+                current_chapter_title = clean_chapter_title(raw_title, fallback_index=len(chapters) + 1)
+                current_paragraphs = []
             continue
 
         # Ignore comments or metadata banners before the first chapter
