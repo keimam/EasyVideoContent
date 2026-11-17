@@ -138,10 +138,15 @@ def is_job_step_completed(project_id: str, step: str) -> bool:
                 if g.audio and g.audio.file_path and (p_dir / g.audio.file_path).is_file() and (p_dir / g.audio.file_path).stat().st_size > 44
             )
             return done_g == total_g
-        elif step in ("visual_generate", "visual_pipeline", "visual", "visual_build"):
+        elif step in ("visual_generate", "visual_pipeline", "visual", "visual_build", "visual_ai_video", "visual_ai_video_batch", "visual_ai_relevance"):
             total_s = sum(len(ch.shots) for ch in manifest.chapters)
             if total_s == 0:
                 return False
+            if step in ("visual_ai_video", "visual_ai_video_batch", "visual_ai_relevance"):
+                return any(
+                    sh.rendered_clip and (p_dir / sh.rendered_clip).is_file()
+                    for ch in manifest.chapters for sh in ch.shots
+                )
             done_s = sum(
                 1 for ch in manifest.chapters for sh in ch.shots
                 if sh.rendered_clip and (p_dir / sh.rendered_clip).is_file()
@@ -336,6 +341,17 @@ def start_job(
         "command": cmd_list,
         "error_message": None,
         "dismissed": False,
+        "progress": {
+            "phase": "Mempersiapkan proses…",
+            "phase_key": "prog_preparing",
+            "phase_args": {},
+            "completed": 0,
+            "total": 0,
+            "skipped": 0,
+            "percentage": 0.0,
+            "is_indeterminate": True,
+            "partial": True,
+        },
     }
     _save_job_state_to_disk(project_id, state)
     logger.info(f"Started background job '{step}' for project '{project_id}' (PID {proc.pid}) -> {log_file}")
@@ -433,22 +449,63 @@ def get_job_logs(project_id: str, max_lines: int = 30) -> List[str]:
         return [f"Error reading log file: {exc}"]
 
 
+def _resolve_progress_phase(job_progress: Dict[str, Any], fallback: str) -> str:
+    """Resolve localized phase label from job_progress['phase_key'] or fallback text (F15)."""
+    phase_key = job_progress.get("phase_key")
+    if phase_key:
+        try:
+            from app.services.longform.ui.i18n import t
+
+            phase_args = job_progress.get("phase_args")
+            kwargs = dict(phase_args) if isinstance(phase_args, dict) else {}
+            return str(t(str(phase_key), **kwargs))
+        except Exception:
+            pass
+    return str(job_progress.get("phase") or fallback)
+
+
+def _build_partial_running_progress(
+    job_progress: Dict[str, Any],
+    default_phase: str,
+    default_unit_label: str = "unit",
+) -> Dict[str, Any]:
+    """Return scoped progress metrics computed solely from scheduled target units (F15)."""
+    is_indet = bool(job_progress.get("is_indeterminate"))
+    raw_pct = float(job_progress.get("percentage", 0.0) or 0.0)
+    max_pct = 95.0 if is_indet else 99.0
+    pct = min(max(raw_pct, 0.0), max_pct)
+    phase_label = _resolve_progress_phase(job_progress, default_phase)
+    if phase_label in ("Selesai", "Completed"):
+        phase_label = default_phase
+    return {
+        "completed": int(job_progress.get("completed", 0) or 0),
+        "total": int(job_progress.get("total", 0) or 0),
+        "skipped": int(job_progress.get("skipped", 0) or 0),
+        "percentage": round(pct, 1),
+        "unit_label": str(job_progress.get("unit_label") or default_unit_label),
+        "phase": phase_label,
+        "is_indeterminate": is_indet,
+        "partial": True,
+    }
+
+
 def get_project_progress(project_id: str, step: Optional[str] = None) -> Dict[str, Any]:
-    """Compute progress of project pipeline steps from manifest and live job state (B2, Stage 7B.2 P)."""
+    """Compute progress of project pipeline steps from manifest and live job state (B2, Stage 7B.2 P, F15)."""
     p_dir = get_project_dir(project_id)
     if not p_dir.is_dir():
-        return {"completed": 0, "total": 0, "percentage": 0.0, "unit_label": "unit"}
+        return {"completed": 0, "total": 0, "skipped": 0, "percentage": 0.0, "unit_label": "unit"}
 
     try:
         manifest = load_manifest(p_dir)
     except Exception:
-        return {"completed": 0, "total": 0, "percentage": 0.0, "unit_label": "unit"}
+        return {"completed": 0, "total": 0, "skipped": 0, "percentage": 0.0, "unit_label": "unit"}
 
     state = _read_job_state_from_disk(project_id) or {}
     job_status = state.get("status")
     job_progress = state.get("progress") or {}
     is_running = (job_status == "running")
     is_completed = (job_status == "completed")
+    skipped_cnt = int(job_progress.get("skipped", 0) or 0)
 
     total_chapters = len(manifest.chapters)
 
@@ -464,29 +521,34 @@ def get_project_progress(project_id: str, step: Optional[str] = None) -> Dict[st
             phase = "Selesai"
         elif is_running:
             pct = min((completed_chapters / total_chapters * 100.0) if total_chapters > 0 else 5.0, 99.0)
-            phase = job_progress.get("phase") or "Menulis naskah"
+            phase = _resolve_progress_phase(job_progress, "Menulis naskah")
         else:
             pct = (completed_chapters / total_chapters * 100.0) if total_chapters > 0 else 0.0
             phase = "Selesai" if (total_chapters > 0 and completed_chapters == total_chapters) else "Draft naskah"
         return {
             "completed": completed_chapters,
             "total": total_chapters,
+            "skipped": skipped_cnt,
             "percentage": round(pct, 1),
             "unit_label": "bab",
             "phase": phase,
-            "is_indeterminate": False,
+            "is_indeterminate": bool(is_running and job_progress.get("is_indeterminate")),
         }
 
-    # 2. Visual step (7B.1 v2, 7B.2 P)
+    # 2. Visual step (7B.1 v2, 7B.2 P, F15)
     if step in ("visual", "visual_pipeline", "visual_fetch", "visual_build"):
         total_shots = sum(len(ch.shots) for ch in manifest.chapters)
+        if is_running and job_progress.get("partial"):
+            return _build_partial_running_progress(job_progress, "Memproses visual…", "shot")
+
         if total_shots == 0:
             return {
                 "completed": 0,
                 "total": 0,
-                "percentage": 5.0,
+                "skipped": skipped_cnt,
+                "percentage": 0.0 if is_running else 5.0,
                 "unit_label": "shot",
-                "phase": "Membagi shot",
+                "phase": _resolve_progress_phase(job_progress, "Membagi shot"),
                 "is_indeterminate": True,
             }
 
@@ -500,11 +562,13 @@ def get_project_progress(project_id: str, step: Optional[str] = None) -> Dict[st
         )
 
         if is_completed:
+            final_tot = int(job_progress.get("total") or total_shots) if job_progress.get("partial") else total_shots
             return {
-                "completed": total_shots,
-                "total": total_shots,
+                "completed": final_tot,
+                "total": final_tot,
+                "skipped": skipped_cnt,
                 "percentage": 100.0,
-                "unit_label": f"klip ({total_shots}/{total_shots})",
+                "unit_label": f"klip ({final_tot}/{final_tot})",
                 "phase": "Selesai",
                 "is_indeterminate": False,
             }
@@ -516,9 +580,10 @@ def get_project_progress(project_id: str, step: Optional[str] = None) -> Dict[st
             return {
                 "completed": fetched_shots,
                 "total": total_shots,
+                "skipped": skipped_cnt,
                 "percentage": round(pct, 1),
                 "unit_label": "shot diunduh",
-                "phase": job_progress.get("phase") or "Mencari footage",
+                "phase": _resolve_progress_phase(job_progress, "Mencari footage"),
                 "is_indeterminate": bool(job_progress.get("is_indeterminate")),
             }
         elif step == "visual_build":
@@ -528,25 +593,26 @@ def get_project_progress(project_id: str, step: Optional[str] = None) -> Dict[st
             return {
                 "completed": built_shots,
                 "total": total_shots,
+                "skipped": skipped_cnt,
                 "percentage": round(pct, 1),
                 "unit_label": "klip dibuat",
-                "phase": job_progress.get("phase") or "Menyusun klip",
+                "phase": _resolve_progress_phase(job_progress, "Menyusun klip"),
                 "is_indeterminate": bool(job_progress.get("is_indeterminate")),
             }
         else:  # visual_pipeline / visual
             if fetched_shots < total_shots:
                 pct = 5.0 + (fetched_shots / total_shots * 45.0) if total_shots > 0 else 5.0
-                phase_label = job_progress.get("phase") or "Mencari footage"
+                phase_label = _resolve_progress_phase(job_progress, "Mencari footage")
                 unit_label = f"footage ({fetched_shots}/{total_shots})"
                 completed_count = fetched_shots
             elif built_shots < total_shots:
                 pct = 50.0 + (built_shots / total_shots * 50.0) if total_shots > 0 else 50.0
-                phase_label = job_progress.get("phase") or "Menyusun klip"
+                phase_label = _resolve_progress_phase(job_progress, "Menyusun klip")
                 unit_label = f"klip ({built_shots}/{total_shots})"
                 completed_count = built_shots
             else:
                 pct = 99.0 if is_running else 100.0
-                phase_label = job_progress.get("phase") if is_running else "Selesai"
+                phase_label = _resolve_progress_phase(job_progress, "Menyelesaikan visual") if is_running else "Selesai"
                 unit_label = f"klip ({total_shots}/{total_shots})"
                 completed_count = total_shots
 
@@ -558,13 +624,14 @@ def get_project_progress(project_id: str, step: Optional[str] = None) -> Dict[st
             return {
                 "completed": completed_count,
                 "total": total_shots,
+                "skipped": skipped_cnt,
                 "percentage": round(pct, 1),
                 "unit_label": unit_label,
                 "phase": phase_label,
                 "is_indeterminate": bool(job_progress.get("is_indeterminate")),
             }
 
-    # 3. Render step (Stage 7B.2 R3 & P)
+    # 3. Render step (Stage 7B.2 R3 & P, F15)
     if step in ("render", "render_all", "render_pipeline", "render_final"):
         rendered_chapters = sum(
             1 for ch in manifest.chapters
@@ -572,16 +639,21 @@ def get_project_progress(project_id: str, step: Optional[str] = None) -> Dict[st
         )
 
         if is_completed:
+            final_tot = int(job_progress.get("total") or total_chapters) if job_progress.get("partial") else total_chapters
             return {
-                "completed": total_chapters,
-                "total": total_chapters,
+                "completed": final_tot,
+                "total": final_tot,
+                "skipped": skipped_cnt,
                 "percentage": 100.0,
-                "unit_label": f"bab ({total_chapters}/{total_chapters})",
+                "unit_label": f"bab ({final_tot}/{final_tot})",
                 "phase": "Selesai",
                 "is_indeterminate": False,
             }
 
-        active_phase = job_progress.get("phase")
+        if is_running and job_progress.get("partial"):
+            return _build_partial_running_progress(job_progress, "Merender video…", "bab")
+
+        active_phase = _resolve_progress_phase(job_progress, "") or None
         is_indet = bool(job_progress.get("is_indeterminate"))
 
         if is_running:
@@ -591,6 +663,7 @@ def get_project_progress(project_id: str, step: Optional[str] = None) -> Dict[st
                 return {
                     "completed": total_chapters,
                     "total": total_chapters,
+                    "skipped": skipped_cnt,
                     "percentage": round(pct, 1),
                     "unit_label": "penggabungan",
                     "phase": active_phase or "Menggabungkan video & audio final",
@@ -601,6 +674,7 @@ def get_project_progress(project_id: str, step: Optional[str] = None) -> Dict[st
                 return {
                     "completed": rendered_chapters,
                     "total": total_chapters,
+                    "skipped": skipped_cnt,
                     "percentage": round(min(pct, 99.0), 1),
                     "unit_label": f"bab ({rendered_chapters}/{total_chapters})",
                     "phase": active_phase or f"Bab {rendered_chapters + 1} dari {total_chapters}",
@@ -613,6 +687,7 @@ def get_project_progress(project_id: str, step: Optional[str] = None) -> Dict[st
                 return {
                     "completed": total_chapters,
                     "total": total_chapters,
+                    "skipped": skipped_cnt,
                     "percentage": 100.0,
                     "unit_label": f"bab ({total_chapters}/{total_chapters})",
                     "phase": "Selesai",
@@ -622,23 +697,28 @@ def get_project_progress(project_id: str, step: Optional[str] = None) -> Dict[st
             return {
                 "completed": rendered_chapters,
                 "total": total_chapters,
+                "skipped": skipped_cnt,
                 "percentage": round(min(pct, 95.0), 1),
                 "unit_label": f"bab ({rendered_chapters}/{total_chapters})",
                 "phase": f"Bab {rendered_chapters} dari {total_chapters}" if rendered_chapters > 0 else "Belum dirender",
                 "is_indeterminate": False,
             }
 
-    # 4. Pipeline Auto step (Stage 7B.2 A3 & P)
+    # 4. Pipeline Auto step (Stage 7B.2 A3 & P, F15)
     if step == "pipeline_auto":
         if is_completed:
             return {
                 "completed": 1,
                 "total": 1,
+                "skipped": skipped_cnt,
                 "percentage": 100.0,
                 "unit_label": "selesai",
                 "phase": "Selesai",
                 "is_indeterminate": False,
             }
+
+        if is_running and job_progress.get("partial"):
+            return _build_partial_running_progress(job_progress, "Menjalankan pipeline otomatis…", "unit")
 
         # Check Voice
         total_groups = sum(len(ch.tts_groups) for ch in manifest.chapters)
@@ -651,9 +731,10 @@ def get_project_progress(project_id: str, step: Optional[str] = None) -> Dict[st
             return {
                 "completed": completed_groups,
                 "total": total_groups,
+                "skipped": skipped_cnt,
                 "percentage": min(pct, 25.0),
                 "unit_label": f"audio ({completed_groups}/{total_groups})",
-                "phase": job_progress.get("phase") or "Langkah 2/4 · Suara · Menyintesis narasi",
+                "phase": _resolve_progress_phase(job_progress, "Langkah 2/4 · Suara · Menyintesis narasi"),
                 "is_indeterminate": False,
             }
 
@@ -670,17 +751,18 @@ def get_project_progress(project_id: str, step: Optional[str] = None) -> Dict[st
         if built_shots < total_shots:
             if fetched_shots < total_shots:
                 pct = 25.0 + ((fetched_shots / total_shots) * 20.0) if total_shots > 0 else 25.0
-                phase_label = job_progress.get("phase") or f"Langkah 3/4 · Visual · Mencari footage ({fetched_shots}/{total_shots})"
+                phase_label = _resolve_progress_phase(job_progress, f"Langkah 3/4 · Visual · Mencari footage ({fetched_shots}/{total_shots})")
                 unit_label = f"footage ({fetched_shots}/{total_shots})"
                 completed_count = fetched_shots
             else:
                 pct = 45.0 + ((built_shots / total_shots) * 25.0) if total_shots > 0 else 45.0
-                phase_label = job_progress.get("phase") or f"Langkah 3/4 · Visual · Menyusun klip ({built_shots}/{total_shots})"
+                phase_label = _resolve_progress_phase(job_progress, f"Langkah 3/4 · Visual · Menyusun klip ({built_shots}/{total_shots})")
                 unit_label = f"klip ({built_shots}/{total_shots})"
                 completed_count = built_shots
             return {
                 "completed": completed_count,
                 "total": total_shots,
+                "skipped": skipped_cnt,
                 "percentage": round(min(pct, 70.0), 1),
                 "unit_label": unit_label,
                 "phase": phase_label,
@@ -696,15 +778,16 @@ def get_project_progress(project_id: str, step: Optional[str] = None) -> Dict[st
         if not has_final or is_running:
             if rendered_chapters < total_chapters:
                 pct = 70.0 + ((rendered_chapters / total_chapters) * 20.0) if total_chapters > 0 else 70.0
-                phase_label = job_progress.get("phase") or f"Langkah 4/4 · Render · Bab {rendered_chapters + 1} dari {total_chapters}"
+                phase_label = _resolve_progress_phase(job_progress, f"Langkah 4/4 · Render · Bab {rendered_chapters + 1} dari {total_chapters}")
                 is_indet = False
             else:
                 pct = min(float(job_progress.get("percentage", 92.0)), 95.0)
-                phase_label = job_progress.get("phase") or "Langkah 4/4 · Render · Menggabungkan & Normalisasi"
+                phase_label = _resolve_progress_phase(job_progress, "Langkah 4/4 · Render · Menggabungkan & Normalisasi")
                 is_indet = True
             return {
                 "completed": rendered_chapters,
                 "total": total_chapters,
+                "skipped": skipped_cnt,
                 "percentage": round(pct, 1),
                 "unit_label": f"bab ({rendered_chapters}/{total_chapters})",
                 "phase": phase_label,
@@ -720,15 +803,17 @@ def get_project_progress(project_id: str, step: Optional[str] = None) -> Dict[st
             return {
                 "completed": 0,
                 "total": 1,
+                "skipped": skipped_cnt,
                 "percentage": 98.0,
                 "unit_label": "draft",
-                "phase": job_progress.get("phase") or "Langkah 5/5 · CapCut · Mengekspor draft",
+                "phase": _resolve_progress_phase(job_progress, "Langkah 5/5 · CapCut · Mengekspor draft"),
                 "is_indeterminate": True,
             }
 
         return {
             "completed": 1,
             "total": 1,
+            "skipped": skipped_cnt,
             "percentage": 99.0 if is_running else 100.0,
             "unit_label": "selesai",
             "phase": "Menyelesaikan auto pipeline" if is_running else "Selesai",
@@ -741,23 +826,25 @@ def get_project_progress(project_id: str, step: Optional[str] = None) -> Dict[st
             return {
                 "completed": 1,
                 "total": 1,
+                "skipped": skipped_cnt,
                 "percentage": 100.0,
                 "unit_label": "draft",
                 "phase": "Selesai",
                 "is_indeterminate": False,
             }
-        active_phase = job_progress.get("phase") or "Mengekspor draft CapCut"
+        active_phase = _resolve_progress_phase(job_progress, "Mengekspor draft CapCut")
         pct = float(job_progress.get("percentage", 50.0))
         return {
             "completed": 0,
             "total": 1,
+            "skipped": skipped_cnt,
             "percentage": round(min(pct, 95.0), 1),
             "unit_label": "draft",
             "phase": active_phase,
             "is_indeterminate": True,
         }
 
-    # 6. Voice / Audio synthesize step
+    # 6. Voice / Audio synthesize step (F15)
     total_groups = sum(len(ch.tts_groups) for ch in manifest.chapters)
     completed_groups = 0
     for ch in manifest.chapters:
@@ -768,25 +855,31 @@ def get_project_progress(project_id: str, step: Optional[str] = None) -> Dict[st
                     completed_groups += 1
 
     if is_completed:
+        final_tot = int(job_progress.get("total") or total_groups) if job_progress.get("partial") else total_groups
         return {
-            "completed": total_groups,
-            "total": total_groups,
+            "completed": final_tot,
+            "total": final_tot,
+            "skipped": skipped_cnt,
             "percentage": 100.0,
             "unit_label": "grup audio",
             "phase": "Selesai",
             "is_indeterminate": False,
         }
 
+    if is_running and job_progress.get("partial"):
+        return _build_partial_running_progress(job_progress, "Menyintesis narasi suara", "segmen")
+
     pct = (completed_groups / total_groups * 100.0) if total_groups > 0 else 0.0
     if is_running:
         pct = min(pct, 99.0)
-        phase_label = job_progress.get("phase") or f"Menyintesis narasi suara ({completed_groups}/{total_groups})"
+        phase_label = _resolve_progress_phase(job_progress, f"Menyintesis narasi suara ({completed_groups}/{total_groups})")
     else:
         phase_label = "Selesai" if (total_groups > 0 and completed_groups == total_groups) else "Sintesis suara"
 
     return {
         "completed": completed_groups,
         "total": total_groups,
+        "skipped": skipped_cnt,
         "percentage": round(pct, 1),
         "unit_label": "grup audio",
         "phase": phase_label,

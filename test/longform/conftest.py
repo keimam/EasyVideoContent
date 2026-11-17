@@ -27,3 +27,26 @@ def default_ui_language_id(monkeypatch):
     from app.config import config
 
     monkeypatch.setitem(config.ui, "language", "id")
+
+
+@pytest.fixture(autouse=True)
+def isolate_host_config_toml(monkeypatch):
+    """Prevent any test or AppTest from mutating or saving to the host user's config.toml."""
+    import copy
+    from app.config import config
+
+    orig_app = copy.deepcopy(config.app)
+    orig_ui = copy.deepcopy(config.ui)
+
+    monkeypatch.setattr(config, "save_config", lambda *a, **kw: None)
+    monkeypatch.setattr(config, "try_save_config", lambda *a, **kw: True)
+    monkeypatch.setattr(config, "_schedule_deferred_config_flush", lambda *a, **kw: None)
+    monkeypatch.setattr(config, "_run_deferred_config_flush", lambda *a, **kw: None)
+
+    try:
+        yield
+    finally:
+        config.app.clear()
+        config.app.update(orig_app)
+        config.ui.clear()
+        config.ui.update(orig_ui)

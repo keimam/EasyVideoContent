@@ -734,8 +734,12 @@ def update_job_phase(
     total_units: Optional[int] = None,
     unit_label: Optional[str] = None,
     is_indeterminate: bool = False,
+    skipped_units: Optional[int] = None,
+    phase_key: Optional[str] = None,
+    phase_args: Optional[dict] = None,
+    partial: Optional[bool] = None,
 ) -> None:
-    """Update active phase and fine-grained progress in job_state.json (Stage 7B.2 P)."""
+    """Update active phase and fine-grained progress in job_state.json (Stage 7B.2 P, F15)."""
     p_dir = Path(project_dir_or_id) if isinstance(project_dir_or_id, Path) else get_project_dir(str(project_dir_or_id))
     job_file = p_dir / "job_state.json"
     if not job_file.is_file():
@@ -746,16 +750,28 @@ def update_job_phase(
             return
         prog = data.setdefault("progress", {})
         prog["phase"] = phase
+        if phase_key is not None:
+            prog["phase_key"] = str(phase_key)
+            prog["phase_args"] = dict(phase_args or {})
+        else:
+            prog.pop("phase_key", None)
+            prog.pop("phase_args", None)
         if percentage is not None:
-            prog["percentage"] = min(float(percentage), 99.0)  # Strictly capped at 99.0 while running (P)
+            prog["percentage"] = min(max(float(percentage), 0.0), 99.0)  # Strictly capped at 99.0 while running (P)
         if current_unit is not None:
             prog["completed"] = int(current_unit)
         if total_units is not None:
             prog["total"] = int(total_units)
+        if skipped_units is not None:
+            prog["skipped"] = int(skipped_units)
         if unit_label is not None:
             prog["unit_label"] = str(unit_label)
+        if partial is not None:
+            prog["partial"] = bool(partial)
         prog["is_indeterminate"] = bool(is_indeterminate)
-        job_file.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        tmp_file = p_dir / f"job_state.{os.getpid()}.tmp"
+        tmp_file.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        os.replace(str(tmp_file), str(job_file))
     except Exception as exc:
         logger.debug(f"Failed to update job phase for '{p_dir.name}': {exc}")
 

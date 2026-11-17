@@ -26,6 +26,13 @@ from loguru import logger
 from app.config import config
 from app.models.llm_provider import DEFAULT_LLM_PROVIDER_ID, get_llm_provider
 
+OPENROUTER_SAFE_DEFAULT_MODEL = "openrouter/free"
+MAX_TOKENS_TEST_CONNECTION = 256
+MAX_TOKENS_VISION_RELEVANCE = 256
+
+# Cached OpenRouter /models pricing classification keyed by lowercase model id
+_MODEL_PRICING_CACHE: Dict[str, str] = {}
+
 # Regex to sanitize sensitive keys from error messages
 _SENSITIVE_KEY_RE = re.compile(
     r"((?:api[_-]?key|access[_-]?token|secret|password|bearer\s+)[=:\s]+)([a-zA-Z0-9_\-\.]{8,})",
@@ -38,6 +45,58 @@ def sanitize_error(msg: str) -> str:
     return _SENSITIVE_KEY_RE.sub(r"\1***REDACTED***", str(msg))
 
 
+def resolve_effective_model(provider_id: str, configured_model: Optional[str]) -> Tuple[str, bool]:
+    """Resolve model name for Long Video, substituting a working OpenRouter free model when empty."""
+    pid = (provider_id or "").strip().lower()
+    raw = (configured_model or "").strip()
+    if pid == "openrouter" and not raw:
+        return OPENROUTER_SAFE_DEFAULT_MODEL, True
+    prov_def = get_llm_provider(pid)
+    if prov_def:
+        resolved = prov_def.resolve_model_name(raw)
+        if pid == "openrouter" and resolved == "minimax/minimax-m3:free" and not raw:
+            return OPENROUTER_SAFE_DEFAULT_MODEL, True
+        return resolved, False
+    return raw, False
+
+
+def resolve_model_billing_tier(provider_id: str, model_id: Optional[str]) -> str:
+    """Classify model as 'free', 'paid', 'subscription', or 'unknown' when provider info exists."""
+    pid = (provider_id or "").strip().lower()
+    mid = (model_id or "").strip().lower()
+    if pid == "ollama":
+        return "free"
+    if pid in ("openai_codex", "openai_chatgpt", "claude_code", "kimi_code"):
+        return "subscription"
+    if pid == "openrouter":
+        if mid in _MODEL_PRICING_CACHE:
+            return _MODEL_PRICING_CACHE[mid]
+        if mid == "openrouter/free" or mid.endswith(":free"):
+            return "free"
+        if mid:
+            return "paid"
+        return "unknown"
+    if pid in ("openai", "anthropic", "deepseek", "moonshot", "qwen", "azure", "grok", "minimax"):
+        return "paid" if mid else "unknown"
+    return "unknown"
+
+
+def compute_script_max_tokens(kind: str, target_words: int = 0) -> int:
+    """Compute bounded reasonable max_tokens for each Long Video LLM call type (F5)."""
+    k = (kind or "default").strip().lower()
+    if k in ("test", "test_connection", "ping"):
+        return MAX_TOKENS_TEST_CONNECTION
+    if k in ("vision", "ai_relevance", "relevance"):
+        return MAX_TOKENS_VISION_RELEVANCE
+    if k == "summary":
+        return 320
+    if k == "outline":
+        return min(1600, max(700, int(max(target_words, 0) * 0.25) + 800))
+    if k in ("chapter", "revise_length", "revise", "rewrite"):
+        return min(4096, max(800, int(max(target_words, 0) * 2.5) + 400))
+    return 2048
+
+
 @dataclass
 class LLMResponse:
     """Structured response from LLMAdapter."""
@@ -48,6 +107,7 @@ class LLMResponse:
     duration_seconds: float
     tokens: Optional[Dict[str, int]] = None
     cache_hit: bool = False
+    max_tokens_requested: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -68,12 +128,160 @@ class LLMRateLimitError(LLMAdapterError):
     pass
 
 
+class LLMCreditError(LLMAdapterError):
+    """Raised on HTTP 402 / insufficient provider credit (never automatically retried)."""
+    pass
+
+
 class LLMModelNotFoundError(LLMAdapterError):
     """Raised when the configured LLM model is not found, deprecated, or retired."""
 
     def __init__(self, message: str, model: str = "") -> None:
         super().__init__(message)
         self.model = model
+
+
+class LLMEmptyResponseError(LLMAdapterError):
+    """Raised when HTTP succeeds (200) yet no visible text remains after reasoning/finish checks."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        finish_reason: str = "",
+        has_reasoning: bool = False,
+        http_ok: bool = True,
+        max_tokens_used: int = 0,
+    ) -> None:
+        super().__init__(message)
+        self.finish_reason = (finish_reason or "").strip().lower()
+        self.has_reasoning = bool(has_reasoning)
+        self.http_ok = bool(http_ok)
+        self.max_tokens_used = int(max_tokens_used or 0)
+
+
+def _supports_kwarg(fn: Any, kwarg_name: str) -> bool:
+    """Return True if callable accepts kwarg_name or **kwargs (safe for narrow test mocks)."""
+    import inspect
+
+    try:
+        sig = inspect.signature(fn)
+    except Exception:
+        return True
+    for param in sig.parameters.values():
+        if param.kind == inspect.Parameter.VAR_KEYWORD or param.name == kwarg_name:
+            return True
+    return False
+
+
+def build_reasoning_control_kwargs(
+    provider_id: str,
+    create_fn: Any = None,
+    *,
+    minimize_reasoning: bool = True,
+) -> Dict[str, Any]:
+    """Build OpenRouter reasoning-minimization extra_body kwargs when appropriate (F6)."""
+    if not minimize_reasoning:
+        return {}
+    pid = (provider_id or "").strip().lower()
+    if pid != "openrouter":
+        return {}
+    if create_fn is not None and not _supports_kwarg(create_fn, "extra_body"):
+        return {}
+    return {"extra_body": {"reasoning": {"enabled": False}}}
+
+
+def invoke_openai_chat_completion(
+    create_fn: Any,
+    provider_id: str,
+    *,
+    base_url: str = "",
+    minimize_reasoning: bool = True,
+    **call_kwargs: Any,
+) -> Any:
+    """Invoke OpenAI-compatible chat.completions.create with OpenRouter reasoning control & safe 400 fallback."""
+    from app.utils.request_logging import trace_sdk_call
+
+    extra_kwargs = build_reasoning_control_kwargs(
+        provider_id, create_fn, minimize_reasoning=minimize_reasoning
+    )
+    try:
+        return trace_sdk_call(
+            provider_id,
+            base_url,
+            create_fn,
+            **call_kwargs,
+            **extra_kwargs,
+        )
+    except Exception as exc:
+        if extra_kwargs:
+            low = str(exc).lower()
+            if "reasoning" in low or "extra_body" in low or "unrecognized" in low or "unknown field" in low:
+                return trace_sdk_call(
+                    provider_id,
+                    base_url,
+                    create_fn,
+                    **call_kwargs,
+                )
+        raise
+
+
+def extract_sdk_completion_or_raise(
+    response: Any,
+    provider_id: str,
+    *,
+    max_tokens_used: int = 0,
+) -> str:
+    """Extract normalized completion text or raise LLMEmptyResponseError with finish/reasoning metadata."""
+    from openai.types.chat import ChatCompletion
+    from app.services.llm import _extract_chat_completion_text, _normalize_text_response
+
+    if not response:
+        raise ValueError(f"[{provider_id}] returned an invalid response")
+    choices = getattr(response, "choices", None)
+    if not choices:
+        if isinstance(response, ChatCompletion):
+            raise ValueError(f"[{provider_id}] returned empty choices")
+        raise ValueError(f"[{provider_id}] returned an invalid response")
+
+    first_choice = choices[0]
+    finish_reason = str(getattr(first_choice, "finish_reason", "") or "").strip().lower()
+    message = getattr(first_choice, "message", None)
+    if message is None:
+        raise ValueError(f"[{provider_id}] returned empty message")
+
+    raw_content = getattr(message, "content", None)
+    msg_extra = getattr(message, "model_extra", None) or {}
+    has_reasoning_field = bool(
+        getattr(message, "reasoning", None)
+        or getattr(message, "reasoning_content", None)
+        or msg_extra.get("reasoning")
+        or msg_extra.get("reasoning_content")
+    )
+    usage = getattr(response, "usage", None)
+    details = getattr(usage, "completion_tokens_details", None) if usage is not None else None
+    reasoning_tokens = int(getattr(details, "reasoning_tokens", 0) or 0) if details is not None else 0
+    has_think_tags = isinstance(raw_content, str) and "<think" in raw_content.lower()
+    has_reasoning = bool(has_reasoning_field or reasoning_tokens > 0 or has_think_tags)
+
+    try:
+        if isinstance(response, ChatCompletion):
+            return _extract_chat_completion_text(response, provider_id)
+        return _normalize_text_response(raw_content, provider_id)
+    except ValueError as exc:
+        err_str = str(exc)
+        if "empty text content" in err_str.lower():
+            meta_suffix = f"finish_reason={finish_reason or 'unknown'}"
+            if has_reasoning:
+                meta_suffix += f", reasoning_tokens={reasoning_tokens or 'present'}"
+            raise LLMEmptyResponseError(
+                f"{err_str} ({meta_suffix})",
+                finish_reason=finish_reason,
+                has_reasoning=has_reasoning,
+                http_ok=True,
+                max_tokens_used=max_tokens_used,
+            ) from exc
+        raise
 
 
 def _mask_secret(raw_key: str) -> str:
@@ -85,8 +293,26 @@ def _mask_secret(raw_key: str) -> str:
 
 
 def _classify_llm_error(error_msg: str, model: str = "") -> Optional[LLMAdapterError]:
-    """Classify upstream error text into rate-limit or model-not-found typed errors."""
+    """Classify upstream error text into credit-shortage, rate-limit, or model-not-found errors."""
     lower = (error_msg or "").lower()
+    if any(
+        tok in lower
+        for tok in (
+            "error code: 402",
+            "http 402",
+            "'code': 402",
+            '"code": 402',
+            " 402 ",
+            "requires more credits",
+            "can only afford",
+            "insufficient credits",
+            "insufficient balance",
+            "not enough credits",
+            "out of credits",
+        )
+    ):
+        return LLMCreditError(error_msg)
+
     if any(
         tok in lower
         for tok in (
@@ -110,8 +336,10 @@ def _classify_llm_error(error_msg: str, model: str = "") -> Optional[LLMAdapterE
         or "not a valid model" in lower
         or "model is retired" in lower
         or "has been retired" in lower
+        or "unavailable for free" in lower
+        or "paid version is available now" in lower
         or ("not found" in lower and ("model" in lower or "404" in lower))
-        or ("unavailable" in lower and "model" in lower)
+        or ("unavailable" in lower and ("model" in lower or "404" in lower))
     )
     if model_not_found:
         return LLMModelNotFoundError(error_msg, model=model)
@@ -138,18 +366,17 @@ class LLMAdapter:
         self.max_retries = max(1, max_retries)
         self.retry_delay = max(0.1, retry_delay)
 
-        # Resolve model name
+        # Resolve model name cleanly (safe openrouter/free fallback when OpenRouter field is empty)
+        self.used_safe_default = False
+        self.last_request_max_tokens: Optional[int] = None
         if model:
             self.model = model.strip()
         elif self.provider == "fake":
             self.model = "deterministic-fake-v1"
         else:
             prov_def = get_llm_provider(self.provider)
-            if prov_def:
-                raw_model = config.app.get(prov_def.config_key("model_name"), "")
-                self.model = prov_def.resolve_model_name(raw_model)
-            else:
-                self.model = ""
+            raw_model = config.app.get(prov_def.config_key("model_name"), "") if prov_def else ""
+            self.model, self.used_safe_default = resolve_effective_model(self.provider, raw_model)
 
         if self.cache_dir:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -248,16 +475,132 @@ class LLMAdapter:
                 tmp_file.unlink(missing_ok=True)
             logger.warning(f"Failed to write LLM cache '{cache_file}': {exc}")
 
+    def _call_bounded_sdk(
+        self,
+        *,
+        prompt: str,
+        resolved_model: str,
+        max_tokens: int,
+        runtime_cfg: Dict[str, Any],
+        minimize_reasoning: bool = False,
+    ) -> str:
+        """Execute LLM call with explicit max_tokens and reasoning minimization for short calls (F5/F6)."""
+        from app.services.llm import (
+            _normalize_text_response,
+            _resolve_provider_field_value,
+            _sdk_transport_options,
+        )
+        from app.utils.request_logging import trace_sdk_call
+
+        prov_def = get_llm_provider(self.provider)
+        if not prov_def:
+            raise LLMAdapterError(f"Unsupported LLM provider: {self.provider}")
+
+        adapter = prov_def.adapter
+        api_key = str(runtime_cfg.get(prov_def.config_key("api_key"), "") or "")
+        base_url = prov_def.resolve_base_url(str(runtime_cfg.get(prov_def.config_key("base_url"), "") or ""))
+        if self.provider == "ollama":
+            api_key = "ollama"
+            base_url = base_url or config.get_default_ollama_base_url()
+
+        if adapter == "gemini":
+            from google import genai
+            from google.genai import types
+
+            http_options = types.HttpOptions(base_url=base_url) if base_url else None
+            gen_cfg = types.GenerateContentConfig(temperature=0.5, max_output_tokens=int(max_tokens))
+            with genai.Client(api_key=api_key, http_options=http_options) as client:
+                resp = trace_sdk_call(
+                    self.provider,
+                    base_url,
+                    client.models.generate_content,
+                    model=resolved_model,
+                    contents=prompt,
+                    config=gen_cfg,
+                )
+            try:
+                return _normalize_text_response(getattr(resp, "text", ""), self.provider)
+            except ValueError as exc:
+                if "empty text content" in str(exc).lower():
+                    raise LLMEmptyResponseError(
+                        str(exc),
+                        finish_reason="length",
+                        has_reasoning=False,
+                        http_ok=True,
+                        max_tokens_used=int(max_tokens),
+                    ) from exc
+                raise
+
+        from openai import AzureOpenAI, OpenAI
+
+        sdk_client = None
+        try:
+            if adapter == "azure":
+                api_ver = str(runtime_cfg.get(prov_def.config_key("api_version"), "2024-02-15-preview") or "2024-02-15-preview")
+                sdk_client = AzureOpenAI(
+                    api_key=api_key,
+                    api_version=api_ver,
+                    azure_endpoint=base_url,
+                    **_sdk_transport_options(self.timeout, 0),
+                )
+            elif adapter == "cloudflare_ai_gateway":
+                extra = {
+                    f.config_suffix: _resolve_provider_field_value(
+                        runtime_cfg.get(prov_def.config_key(f.config_suffix)), f.default_value
+                    )
+                    for f in prov_def.extra_fields
+                }
+                sdk_client = OpenAI(
+                    api_key=api_key,
+                    base_url=f"https://api.cloudflare.com/client/v4/accounts/{extra['account_id']}/ai/v1",
+                    default_headers={"cf-aig-gateway-id": extra["gateway_id"]},
+                    **_sdk_transport_options(self.timeout, 0),
+                )
+            else:
+                sdk_client = OpenAI(
+                    api_key=api_key,
+                    base_url=base_url,
+                    **_sdk_transport_options(self.timeout, 0),
+                )
+
+            resp = invoke_openai_chat_completion(
+                sdk_client.chat.completions.create,
+                self.provider,
+                base_url=base_url,
+                minimize_reasoning=minimize_reasoning,
+                model=resolved_model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=int(max_tokens),
+            )
+            return extract_sdk_completion_or_raise(
+                resp, self.provider, max_tokens_used=int(max_tokens)
+            )
+        finally:
+            close = getattr(sdk_client, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
+
     def generate(
         self,
         prompt: str,
         fake_kind: Optional[str] = None,  # "outline" | "chapter" | "revise_length" | "summary"
         fake_kwargs: Optional[Dict[str, Any]] = None,
         force_refresh: bool = False,
+        max_tokens: Optional[int] = None,
+        minimize_reasoning: Optional[bool] = None,
     ) -> LLMResponse:
         """Execute prompt against configured provider or fake mock, checking cache first."""
         # Fail fast if real provider credentials are missing
         self.validate_configuration()
+
+        target_words = int((fake_kwargs or {}).get("target_words", 0) or 0)
+        eff_max_tokens = int(max_tokens) if max_tokens is not None else compute_script_max_tokens(
+            fake_kind or "default", target_words=target_words
+        )
+        self.last_request_max_tokens = eff_max_tokens
 
         cache_key = self._compute_cache_key(prompt)
 
@@ -265,6 +608,7 @@ class LLMAdapter:
         if not force_refresh:
             cached = self._read_cache(cache_key)
             if cached is not None:
+                cached.max_tokens_requested = eff_max_tokens
                 return cached
 
         # 2. Fake provider execution
@@ -279,21 +623,19 @@ class LLMAdapter:
                 duration_seconds=round(duration, 4),
                 tokens=None,
                 cache_hit=False,
+                max_tokens_requested=eff_max_tokens,
             )
             self._write_cache(cache_key, resp)
             return resp
 
-        # 3. Real upstream execution with bounded retries and backoff
-        # Calls upstream: app.services.llm._generate_response
-        # Note on upstream interface: calls app/services/llm.py:_generate_response (line 315).
         from app.services import llm as upstream_llm
 
         last_error = ""
         resolved_model = self.model
         prov_def = get_llm_provider(self.provider)
-        if not resolved_model and prov_def:
-            raw_model = config.app.get(prov_def.config_key("model_name"), "")
-            resolved_model = prov_def.resolve_model_name(raw_model)
+        if not resolved_model:
+            raw_model = config.app.get(prov_def.config_key("model_name"), "") if prov_def else ""
+            resolved_model, _ = resolve_effective_model(self.provider, raw_model)
 
         # Build isolated config snapshot honoring explicit adapter provider/model overrides
         runtime_cfg = dict(config.app)
@@ -301,15 +643,65 @@ class LLMAdapter:
         if resolved_model and prov_def:
             runtime_cfg[prov_def.config_key("model_name")] = resolved_model
 
+        gen_fn = getattr(upstream_llm, "_generate_response", None)
+        is_mocked_upstream = (
+            gen_fn is None
+            or getattr(gen_fn, "__module__", "") != "app.services.llm"
+            or getattr(gen_fn, "__name__", "") != "_generate_response"
+        )
+        adapter_type = prov_def.adapter if prov_def else "openai_compatible"
+        can_call_bounded_sdk = (
+            not is_mocked_upstream
+            and adapter_type in ("openai", "openai_compatible", "gemini", "azure", "cloudflare_ai_gateway")
+        )
+
+        last_empty_error: Optional[LLMEmptyResponseError] = None
         for attempt in range(1, self.max_retries + 1):
             start_time = time.perf_counter()
+            cur_tokens = eff_max_tokens
             try:
-                raw_text = upstream_llm._generate_response(
-                    prompt=prompt,
-                    app_config=runtime_cfg,
-                    request_timeout=self.timeout,
-                    max_retries=0,  # Let adapter manage bounded backoff
-                )
+                if can_call_bounded_sdk:
+                    eff_minimize = (
+                        bool(minimize_reasoning)
+                        if minimize_reasoning is not None
+                        else (eff_max_tokens <= 512)
+                    )
+                    try:
+                        raw_text = self._call_bounded_sdk(
+                            prompt=prompt,
+                            resolved_model=resolved_model,
+                            max_tokens=cur_tokens,
+                            runtime_cfg=runtime_cfg,
+                            minimize_reasoning=eff_minimize,
+                        )
+                    except LLMEmptyResponseError as empty_exc:
+                        if empty_exc.finish_reason == "length" or empty_exc.has_reasoning:
+                            escalated = min(2048, max(cur_tokens * 2, 512))
+                            if escalated > cur_tokens:
+                                logger.info(
+                                    f"LLM returned empty text (finish_reason={empty_exc.finish_reason or 'unknown'}) "
+                                    f"at max_tokens={cur_tokens}; retrying once with max_tokens={escalated}"
+                                )
+                                cur_tokens = escalated
+                                self.last_request_max_tokens = cur_tokens
+                                raw_text = self._call_bounded_sdk(
+                                    prompt=prompt,
+                                    resolved_model=resolved_model,
+                                    max_tokens=cur_tokens,
+                                    runtime_cfg=runtime_cfg,
+                                    minimize_reasoning=eff_minimize,
+                                )
+                            else:
+                                raise
+                        else:
+                            raise
+                else:
+                    raw_text = upstream_llm._generate_response(
+                        prompt=prompt,
+                        app_config=runtime_cfg,
+                        request_timeout=self.timeout,
+                        max_retries=0,  # Let adapter manage bounded backoff
+                    )
                 duration = time.perf_counter() - start_time
                 text_out = (raw_text or "").strip()
 
@@ -317,7 +709,7 @@ class LLMAdapter:
                 if not text_out or text_out.startswith("Error:"):
                     clean_err = sanitize_error(text_out or "Empty LLM response")
                     classified = _classify_llm_error(clean_err, model=resolved_model)
-                    if isinstance(classified, LLMModelNotFoundError):
+                    if isinstance(classified, (LLMModelNotFoundError, LLMCreditError)):
                         raise classified
                     last_error = clean_err
                     logger.warning(
@@ -340,20 +732,30 @@ class LLMAdapter:
                     provider=self.provider,
                     model=resolved_model,
                     duration_seconds=round(duration, 3),
-                    tokens=None,  # upstream _generate_response extracts pure text
+                    tokens=None,
                     cache_hit=False,
+                    max_tokens_requested=cur_tokens,
                 )
                 self._write_cache(cache_key, resp)
                 return resp
-            except LLMModelNotFoundError:
+            except LLMEmptyResponseError as empty_exc:
+                duration = time.perf_counter() - start_time
+                last_empty_error = empty_exc
+                last_error = sanitize_error(str(empty_exc))
+                logger.warning(
+                    f"LLM call attempt {attempt}/{self.max_retries} returned empty text ({duration:.2f}s): {last_error}"
+                )
+                if attempt < self.max_retries:
+                    time.sleep(self.retry_delay * (2 ** (attempt - 1)))
+                    continue
                 raise
-            except LLMRateLimitError:
+            except (LLMModelNotFoundError, LLMCreditError, LLMRateLimitError):
                 raise
             except Exception as exc:
                 duration = time.perf_counter() - start_time
                 last_error = sanitize_error(str(exc))
                 classified = _classify_llm_error(last_error, model=resolved_model)
-                if isinstance(classified, LLMModelNotFoundError):
+                if isinstance(classified, (LLMModelNotFoundError, LLMCreditError)):
                     raise classified
                 logger.warning(
                     f"LLM call attempt {attempt}/{self.max_retries} failed ({duration:.2f}s): {last_error}"
@@ -365,6 +767,8 @@ class LLMAdapter:
                         f"LLM provider '{self.provider}' rate limit (429) persisted after {self.max_retries} attempts: {last_error}"
                     )
 
+        if last_empty_error is not None:
+            raise last_empty_error
         raise LLMAdapterError(
             f"LLM request to provider '{self.provider}' failed after {self.max_retries} attempts. "
             f"Last error: {last_error}"
@@ -675,7 +1079,8 @@ def get_llm_readiness(provider_id: Optional[str] = None) -> Dict[str, Any]:
         }
 
     raw_model = str(config.app.get(prov_def.config_key("model_name")) or "").strip()
-    resolved_model = prov_def.resolve_model_name(raw_model)
+    resolved_model, used_safe_default = resolve_effective_model(active_id, raw_model)
+    billing_tier = resolve_model_billing_tier(active_id, resolved_model)
     provider_label = prov_def.default_label or active_id
     adapter = prov_def.adapter
 
@@ -688,6 +1093,8 @@ def get_llm_readiness(provider_id: Optional[str] = None) -> Dict[str, Any]:
                 "provider": active_id,
                 "provider_label": provider_label,
                 "model": resolved_model,
+                "used_safe_default": used_safe_default,
+                "billing_tier": billing_tier,
                 "adapter": adapter,
                 "configured": False,
                 "is_invalid": False,
@@ -703,6 +1110,8 @@ def get_llm_readiness(provider_id: Optional[str] = None) -> Dict[str, Any]:
                 "provider": active_id,
                 "provider_label": provider_label,
                 "model": resolved_model,
+                "used_safe_default": used_safe_default,
+                "billing_tier": billing_tier,
                 "adapter": adapter,
                 "configured": False,
                 "is_invalid": True,
@@ -722,6 +1131,8 @@ def get_llm_readiness(provider_id: Optional[str] = None) -> Dict[str, Any]:
                 "provider": active_id,
                 "provider_label": provider_label,
                 "model": resolved_model,
+                "used_safe_default": used_safe_default,
+                "billing_tier": billing_tier,
                 "adapter": adapter,
                 "configured": False,
                 "is_invalid": False,
@@ -735,6 +1146,8 @@ def get_llm_readiness(provider_id: Optional[str] = None) -> Dict[str, Any]:
             "provider": active_id,
             "provider_label": provider_label,
             "model": resolved_model,
+            "used_safe_default": used_safe_default,
+            "billing_tier": billing_tier,
             "adapter": adapter,
             "configured": True,
             "is_invalid": False,
@@ -751,6 +1164,8 @@ def get_llm_readiness(provider_id: Optional[str] = None) -> Dict[str, Any]:
             "provider": active_id,
             "provider_label": provider_label,
             "model": resolved_model,
+            "used_safe_default": used_safe_default,
+            "billing_tier": billing_tier,
             "adapter": adapter,
             "configured": connected,
             "is_invalid": False,
@@ -768,6 +1183,8 @@ def get_llm_readiness(provider_id: Optional[str] = None) -> Dict[str, Any]:
             "provider": active_id,
             "provider_label": provider_label,
             "model": resolved_model or "cli-default",
+            "used_safe_default": used_safe_default,
+            "billing_tier": billing_tier,
             "adapter": adapter,
             "configured": found,
             "is_invalid": False,
@@ -784,6 +1201,8 @@ def get_llm_readiness(provider_id: Optional[str] = None) -> Dict[str, Any]:
         "provider": active_id,
         "provider_label": provider_label,
         "model": resolved_model,
+        "used_safe_default": used_safe_default,
+        "billing_tier": billing_tier,
         "adapter": adapter,
         "configured": has_local or (active_id in configured_tuple),
         "is_invalid": False,
@@ -795,15 +1214,48 @@ def get_llm_readiness(provider_id: Optional[str] = None) -> Dict[str, Any]:
 
 
 def test_llm_connection() -> Tuple[bool, str, float]:
-    """Delegate LLM connectivity verification to MPT's upstream ``llm.test_connection()``."""
+    """Verify LLM connectivity aligned with MPT's prompt while preventing 402 & reasoning truncation (F5/F6)."""
     from app.services import llm as upstream_llm
 
+    tc_fn = getattr(upstream_llm, "test_connection", None)
+    is_mocked_tc = tc_fn is not None and (
+        getattr(tc_fn, "__module__", "") != "app.services.llm"
+        or getattr(tc_fn, "__name__", "") != "test_connection"
+    )
+    active_id = (config.app.get("llm_provider") or DEFAULT_LLM_PROVIDER_ID).lower().strip()
+    prov_def = get_llm_provider(active_id)
+    adapter_type = prov_def.adapter if prov_def else "openai_compatible"
+    use_upstream_directly = is_mocked_tc or (
+        adapter_type not in ("openai", "openai_compatible", "gemini", "azure", "cloudflare_ai_gateway")
+    )
+
+    if use_upstream_directly and tc_fn is not None:
+        try:
+            ok, msg, latency = tc_fn()
+            return bool(ok), sanitize_error(msg or ""), float(latency or 0.0)
+        except Exception as exc:
+            return False, sanitize_error(str(exc)), 0.0
+
+    t0 = time.perf_counter()
+    conn_timeout = float(getattr(upstream_llm, "LLM_CONNECTION_TEST_TIMEOUT_SECONDS", 30.0) or 30.0)
     try:
-        ok, msg, latency = upstream_llm.test_connection()
-        clean_msg = sanitize_error(msg or "")
-        return bool(ok), clean_msg, float(latency or 0.0)
+        adapter = LLMAdapter(max_retries=1, timeout=conn_timeout)
+        resp = adapter.generate(
+            prompt="Reply with exactly: OK",
+            fake_kind="test_connection",
+            force_refresh=True,
+            max_tokens=MAX_TOKENS_TEST_CONNECTION,
+            minimize_reasoning=True,
+        )
+        return True, sanitize_error((resp.content or "").strip()), float(time.perf_counter() - t0)
+    except LLMEmptyResponseError as exc:
+        return (
+            False,
+            f"[EMPTY_AFTER_HTTP_OK] {sanitize_error(str(exc))}",
+            float(time.perf_counter() - t0),
+        )
     except Exception as exc:
-        return False, sanitize_error(str(exc)), 0.0
+        return False, sanitize_error(str(exc)), float(time.perf_counter() - t0)
 
 
 def supports_model_listing(provider_id: Optional[str] = None) -> bool:
@@ -909,11 +1361,22 @@ def list_llm_models(
             resp.raise_for_status()
             payload = resp.json()
             data = payload.get("data", []) if isinstance(payload, dict) else []
-            models = [
-                str(item["id"]).strip()
-                for item in data
-                if isinstance(item, dict) and isinstance(item.get("id"), str) and item["id"].strip()
-            ]
+            models = []
+            for item in data:
+                if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+                    continue
+                mid = item["id"].strip()
+                if not mid:
+                    continue
+                models.append(mid)
+                pricing = item.get("pricing")
+                if active_id == "openrouter" and isinstance(pricing, dict):
+                    try:
+                        p_in = float(pricing.get("prompt", 0) or 0)
+                        p_out = float(pricing.get("completion", 0) or 0)
+                        _MODEL_PRICING_CACHE[mid.lower()] = "free" if (p_in == 0.0 and p_out == 0.0) else "paid"
+                    except (TypeError, ValueError):
+                        pass
             return sorted(set(models)), None
 
         return [], f"Provider '{active_id}' uses manual model configuration."

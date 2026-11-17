@@ -36,6 +36,7 @@ from app.services.longform.store import (
     is_stop_requested,
     load_manifest,
     save_manifest,
+    update_job_phase,
 )
 from app.services.longform.tts_adapter import (
     TTSAdapter,
@@ -88,28 +89,17 @@ class VoiceService:
 
             adapter.validate_configuration()
 
-            plan = compute_plan(manifest, self.project_dir)
-            audio_units = [u for u in plan.units if u.unit_type == "tts_group_audio" and u.status != ItemStatus.completed]
-
-            logger.info(
-                f"Starting audio synthesis for project '{manifest.project_id}'. "
-                f"Total audio groups to process: {len(audio_units)} (Provider: {adapter.provider}, Voice: {preset_voice})"
-            )
-
-            stop_requested = False
+            # F15: Pre-partition all chapters' audio groups into target work vs valid skipped units
+            chapter_work_plan: List[Tuple[Any, str, List[Tuple[TtsGroup, str, str]]]] = []
+            skipped_groups_total = 0
+            target_groups_total = 0
             for ch in manifest.chapters:
-                if is_stop_requested(self.project_dir):
-                    logger.info(f"Stop requested for project '{manifest.project_id}'. Exiting audio synthesis gracefully.")
-                    stop_requested = True
-                    break
                 ch_idx = ch.chapter_index
                 effective_voice = ch.voice_override or preset_voice
-
                 groups_to_synth: List[Tuple[TtsGroup, str, str]] = []
                 for group in ch.tts_groups:
                     g_idx = group.group_index
                     unit_id = f"ch{ch_idx}_g{g_idx}_audio"
-
                     expected_hash = compute_audio_group_hash(
                         paragraph_text=group.get_effective_paragraph_text(),
                         tts_provider=adapter.provider,
@@ -119,25 +109,101 @@ class VoiceService:
                         text_norm_version=group.audio.text_norm_version,
                         audio_format="wav_48k_pcm",
                     )
-
                     target_wav = self.project_dir / (group.audio.file_path or f"assets/audio/groups/ch{ch_idx}_g{g_idx}.wav")
-
                     is_valid_on_disk = (
                         target_wav.is_file()
                         and target_wav.stat().st_size > 44
                         and group.status == ItemStatus.completed
                         and group.audio.audio_hash == expected_hash
                     )
-
                     if is_valid_on_disk:
                         logger.debug(f"Audio group {unit_id} already up-to-date. Skipping.")
-                        continue
+                        skipped_groups_total += 1
+                    else:
+                        groups_to_synth.append((group, unit_id, expected_hash))
+                target_groups_total += len(groups_to_synth)
+                chapter_work_plan.append((ch, effective_voice, groups_to_synth))
 
-                    groups_to_synth.append((group, unit_id, expected_hash))
+            logger.info(
+                f"Starting audio synthesis for project '{manifest.project_id}'. "
+                f"Total audio groups to process: {target_groups_total}, skipped: {skipped_groups_total} "
+                f"(Provider: {adapter.provider}, Voice: {preset_voice})"
+            )
+
+            done_groups_count = 0
+            if target_groups_total > 0:
+                update_job_phase(
+                    self.project_dir,
+                    phase=f"Menyintesis suara (0/{target_groups_total} segmen)…",
+                    phase_key="prog_voice_synth",
+                    phase_args={"done": 0, "total": target_groups_total},
+                    percentage=0.0,
+                    current_unit=0,
+                    total_units=target_groups_total,
+                    skipped_units=skipped_groups_total,
+                    unit_label="segmen",
+                    is_indeterminate=False,
+                    partial=True,
+                )
+
+            def _record_group_done(ch_idx_val: int, grp: TtsGroup, exp_hash: str, res: Any, eff_voice: str) -> None:
+                nonlocal done_groups_count
+                grp.audio.file_path = f"assets/audio/groups/ch{ch_idx_val}_g{grp.group_index}.wav"
+                grp.audio.audio_hash = exp_hash
+                grp.audio.duration_seconds = res.duration_seconds
+                grp.audio.alignment_method = res.alignment_method
+                grp.audio.tts_provider = adapter.provider
+                grp.audio.voice_name = eff_voice
+                grp.audio.sample_rate = res.sample_rate
+                grp.audio.channels = 1
+                grp.audio.audio_format = "wav_48k_pcm"
+                grp.audio.word_match_ratio = res.word_match_ratio
+                grp.audio.fallback_reason = res.fallback_reason
+                grp.audio.word_timings_file = res.word_timings_file
+                grp.status = ItemStatus.completed
+                grp.segments = res.updated_segments
+                save_manifest(manifest, self.project_dir)
+                if target_groups_total > 0:
+                    done_groups_count += 1
+                    pct = round((done_groups_count / target_groups_total) * 95.0, 1)
+                    update_job_phase(
+                        self.project_dir,
+                        phase=f"Menyintesis suara ({done_groups_count}/{target_groups_total} segmen)…",
+                        phase_key="prog_voice_synth",
+                        phase_args={"done": done_groups_count, "total": target_groups_total},
+                        percentage=pct,
+                        current_unit=done_groups_count,
+                        total_units=target_groups_total,
+                        skipped_units=skipped_groups_total,
+                        unit_label="segmen",
+                        is_indeterminate=False,
+                        partial=True,
+                    )
+
+            stop_requested = False
+            for ch, effective_voice, groups_to_synth in chapter_work_plan:
+                if is_stop_requested(self.project_dir):
+                    logger.info(f"Stop requested for project '{manifest.project_id}'. Exiting audio synthesis gracefully.")
+                    stop_requested = True
+                    break
+                ch_idx = ch.chapter_index
 
                 if not groups_to_synth:
                     ch_wav = self.project_dir / f"assets/audio/chapters/chapter_{ch_idx:02d}.wav"
                     if not ch_wav.is_file() and all(g.status == ItemStatus.completed for g in ch.tts_groups):
+                        update_job_phase(
+                            self.project_dir,
+                            phase="Menyusun timeline audio bab…",
+                            phase_key="prog_voice_timeline",
+                            phase_args={},
+                            percentage=round((done_groups_count / max(1, target_groups_total)) * 95.0, 1) if target_groups_total > 0 else 0.0,
+                            current_unit=done_groups_count,
+                            total_units=target_groups_total,
+                            skipped_units=skipped_groups_total,
+                            unit_label="segmen",
+                            is_indeterminate=True,
+                            partial=True,
+                        )
                         build_chapter_audio_and_timeline(
                             project_dir=self.project_dir,
                             chapter=ch,
@@ -150,15 +216,15 @@ class VoiceService:
                         save_manifest(manifest, self.project_dir)
                     continue
 
-                def _synth_worker(item: Tuple[TtsGroup, str, str]):
+                def _synth_worker(item: Tuple[TtsGroup, str, str], _ch_idx: int = ch_idx, _voice_ov: Optional[str] = ch.voice_override):
                     grp, u_id, exp_hash = item
                     if fail_at_group and fail_at_group == u_id:
                         raise RuntimeError(f"Simulated failure at audio unit {u_id}")
                     logger.info(f"Synthesizing audio for {u_id}...")
                     res = adapter.synthesize_group(
                         group=grp,
-                        chapter_index=ch_idx,
-                        voice_override=ch.voice_override,
+                        chapter_index=_ch_idx,
+                        voice_override=_voice_ov,
                         force_refresh=True,
                     )
                     return grp, u_id, exp_hash, res
@@ -169,21 +235,7 @@ class VoiceService:
                         future_to_item = {executor.submit(_synth_worker, item): item for item in groups_to_synth}
                         for future in concurrent.futures.as_completed(future_to_item):
                             grp, u_id, exp_hash, res = future.result()
-                            grp.audio.file_path = f"assets/audio/groups/ch{ch_idx}_g{grp.group_index}.wav"
-                            grp.audio.audio_hash = exp_hash
-                            grp.audio.duration_seconds = res.duration_seconds
-                            grp.audio.alignment_method = res.alignment_method
-                            grp.audio.tts_provider = adapter.provider
-                            grp.audio.voice_name = effective_voice
-                            grp.audio.sample_rate = res.sample_rate
-                            grp.audio.channels = 1
-                            grp.audio.audio_format = "wav_48k_pcm"
-                            grp.audio.word_match_ratio = res.word_match_ratio
-                            grp.audio.fallback_reason = res.fallback_reason
-                            grp.audio.word_timings_file = res.word_timings_file
-                            grp.status = ItemStatus.completed
-                            grp.segments = res.updated_segments
-                            save_manifest(manifest, self.project_dir)
+                            _record_group_done(ch_idx, grp, exp_hash, res, effective_voice)
                 else:
                     for item in groups_to_synth:
                         if is_stop_requested(self.project_dir):
@@ -191,27 +243,26 @@ class VoiceService:
                             stop_requested = True
                             break
                         grp, u_id, exp_hash, res = _synth_worker(item)
-                        grp.audio.file_path = f"assets/audio/groups/ch{ch_idx}_g{grp.group_index}.wav"
-                        grp.audio.audio_hash = exp_hash
-                        grp.audio.duration_seconds = res.duration_seconds
-                        grp.audio.alignment_method = res.alignment_method
-                        grp.audio.tts_provider = adapter.provider
-                        grp.audio.voice_name = effective_voice
-                        grp.audio.sample_rate = res.sample_rate
-                        grp.audio.channels = 1
-                        grp.audio.audio_format = "wav_48k_pcm"
-                        grp.audio.word_match_ratio = res.word_match_ratio
-                        grp.audio.fallback_reason = res.fallback_reason
-                        grp.audio.word_timings_file = res.word_timings_file
-                        grp.status = ItemStatus.completed
-                        grp.segments = res.updated_segments
-                        save_manifest(manifest, self.project_dir)
+                        _record_group_done(ch_idx, grp, exp_hash, res, effective_voice)
 
                 if stop_requested:
                     break
 
                 all_groups_done = all(g.status == ItemStatus.completed for g in ch.tts_groups)
                 if all_groups_done:
+                    update_job_phase(
+                        self.project_dir,
+                        phase="Menyusun timeline audio bab…",
+                        phase_key="prog_voice_timeline",
+                        phase_args={},
+                        percentage=round((done_groups_count / max(1, target_groups_total)) * 95.0, 1) if target_groups_total > 0 else 0.0,
+                        current_unit=done_groups_count,
+                        total_units=target_groups_total,
+                        skipped_units=skipped_groups_total,
+                        unit_label="segmen",
+                        is_indeterminate=True,
+                        partial=True,
+                    )
                     build_chapter_audio_and_timeline(
                         project_dir=self.project_dir,
                         chapter=ch,

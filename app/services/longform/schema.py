@@ -162,6 +162,15 @@ class Shot(BaseModel):
     chosen_rendition: Optional[str] = None
     is_low_res: bool = False
     effective_query: Optional[str] = None
+    search_query_en: Optional[str] = None
+    search_queries_en: List[str] = Field(default_factory=list)  # Ordered concrete alternatives (F12)
+    search_query_source: Optional[str] = None  # "ai" | "extraction" | "tag"
+    search_query_reason: Optional[str] = None  # Reason when fallback/extraction used (F11)
+    ai_relevance_status: Optional[str] = None
+    ai_relevance_reason: Optional[str] = None
+    ai_relevance_asset_hash: Optional[str] = None
+    ai_video_provider: Optional[str] = None
+    ai_video_model: Optional[str] = None
     status: ItemStatus = ItemStatus.pending
 
     model_config = {"extra": "forbid"}
@@ -326,6 +335,9 @@ class ProjectManifest(BaseModel):
     preset_inheritance_chain: List[str] = Field(default_factory=list)
     preset_snapshot: dict[str, Any]
     sub_niche_focus: Optional[str] = None
+    visual_anchor_terms: List[str] = Field(default_factory=list)
+    visual_avoid_terms: List[str] = Field(default_factory=list)
+    visual_summary: Optional[str] = None
     encoder_settings: EncoderSettings = Field(default_factory=EncoderSettings)
     chapters: List[Chapter] = Field(default_factory=list)
     status: ItemStatus = ItemStatus.pending

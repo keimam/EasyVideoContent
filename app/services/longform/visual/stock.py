@@ -189,18 +189,18 @@ def restructure_stock_query(
             chosen_subject = st
             break
 
-    if not chosen_subject:
+    if not chosen_subject and req:
         for common in ["car", "vehicle", "automobile", "truck", "motorcycle"]:
             if re.search(r"\b" + common + r"\b", clean_q):
                 chosen_subject = common
                 break
 
     if not chosen_subject:
-        chosen_subject = req[0] if req else "car"
+        chosen_subject = req[0] if req else ""
 
     # 2. Extract remaining concrete nouns/keywords
     words = re.findall(r"[a-z0-9]+", clean_q)
-    subj_tokens = set(chosen_subject.split())
+    subj_tokens = set(chosen_subject.split()) if chosen_subject else set()
     p_nouns = []
     others = []
     for w in words:
@@ -212,8 +212,36 @@ def restructure_stock_query(
             others.append(w)
 
     combined = p_nouns + others
-    final_parts = [chosen_subject] + combined[:2]
+    if chosen_subject:
+        final_parts = [chosen_subject] + combined[:2]
+    else:
+        final_parts = combined[:3] or words[:3]
     return " ".join(final_parts)
+
+
+def _extract_fallback_tags(query: str, source_info: Optional[Dict[str, Any]] = None) -> List[str]:
+    """Build candidate tags from API metadata, source URL slug, and query keywords."""
+    s_info = source_info or {}
+    tags: List[str] = []
+    raw_tags = s_info.get("tags")
+    if isinstance(raw_tags, list):
+        tags.extend(str(t).strip().lower() for t in raw_tags if str(t or "").strip())
+    elif isinstance(raw_tags, str) and raw_tags.strip():
+        tags.extend(t.strip().lower() for t in raw_tags.split(",") if t.strip())
+
+    # Extract meaningful slug tokens from Pexels/Pixabay/Coverr page URL when tags weren't preserved
+    src_page = str(s_info.get("source_page") or s_info.get("source_url") or "")
+    if src_page:
+        slug_part = urllib.parse.urlparse(src_page).path.strip("/").split("/")[-1]
+        for tok in re.findall(r"[A-Za-z]+", slug_part):
+            low = tok.lower()
+            if len(low) > 2 and low not in STOP_WORDS and low not in ("video", "photo", "watch", "videos") and low not in tags:
+                tags.append(low)
+
+    for qk in extract_query_keywords(query):
+        if qk not in tags:
+            tags.append(qk)
+    return tags
 
 
 def score_candidate_relevance(
@@ -223,37 +251,27 @@ def score_candidate_relevance(
     required_subject_terms: Optional[List[str]] = None,
     blocked_terms: Optional[List[str]] = None,
     negative_terms: Optional[List[str]] = None,
+    anchor_terms: Optional[List[str]] = None,
+    avoid_terms: Optional[List[str]] = None,
     min_relevance_score: Optional[float] = None,
     is_low_res: bool = False,
 ) -> Tuple[bool, float, str]:
-    """Score candidate relevance against search query and preset rules with strict filters (S1, S5, S6, T3).
-
-    Strict filters (T3):
-    1. Blocked terms (whole-word boundary): if matched, REJECT immediately.
-    2. Required subject terms: candidate MUST have:
-       - Subject in the first 5 tags (Pixabay orders by relevance), OR
-       - At least 2 distinct required subject terms across all tags.
-       If neither condition is met, REJECT immediately.
-    3. Negative terms penalty & ambiguous query words:
-       - Matched negative terms incur heavy penalty (-0.15 per term, up to -0.45).
-       - Ambiguous query words matching negative terms (e.g. 'bay' from 'engine bay')
-         are excluded from query overlap credit if negative terms are present in candidate tags.
-    4. Minimum score threshold (default 0.35):
-       - If score after all penalties is below min_relevance_score, return False.
-
-    Returns:
-        (is_valid, relevance_score, reason)
-    """
-    req_terms = [t.lower().strip() for t in (required_subject_terms or []) if t.strip()]
-    block_terms = [t.lower().strip() for t in (blocked_terms or []) if t.strip()]
-    neg_terms = [t.lower().strip() for t in (negative_terms or []) if t.strip()]
-    cand_tags = [t.lower().strip() for t in (candidate_tags or []) if t.strip()]
+    """Score candidate relevance against search query, preset rules, and project anchor/avoid terms (S1, S5, T3, F12)."""
+    req_terms = [t.lower().strip() for t in (required_subject_terms or []) if str(t or "").strip()]
+    block_terms = [t.lower().strip() for t in (blocked_terms or []) if str(t or "").strip()]
+    neg_terms = [t.lower().strip() for t in (negative_terms or []) if str(t or "").strip()]
+    anchor_list = [t.lower().strip() for t in (anchor_terms or []) if str(t or "").strip()]
+    avoid_list = [t.lower().strip() for t in (avoid_terms or []) if str(t or "").strip()]
+    cand_tags = [t.lower().strip() for t in (candidate_tags or []) if str(t or "").strip()]
     min_thresh = min_relevance_score if min_relevance_score is not None else 0.35
 
-    # 1. Blocked terms hard check (whole-word boundary, S5)
+    # 1. Blocked terms & project avoid_terms hard check (whole-word boundary, S5 / F12)
     for bt in block_terms:
         if term_matches_tags(bt, cand_tags):
             return False, 0.0, f"Blocked term matched: {bt}"
+    for av in avoid_list:
+        if term_matches_tags(av, cand_tags):
+            return False, 0.0, f"Avoid term matched: {av}"
 
     # 2. Required subject terms strict check (T3)
     if req_terms:
@@ -269,8 +287,15 @@ def score_candidate_relevance(
                 f"Candidate lacks required subject terms: subject not in first 5 tags and fewer than 2 distinct subject terms ({len(matched_distinct_subjects)} found)",
             )
 
+    # 2b. Project anchor_terms check (F12 / F13): reject candidates lacking anchor in first 8 tags & < 2 overall
+    anchor_matched = True
+    if anchor_list:
+        top_anchor_hit = any(term_matches_tags(anc, cand_tags[:8]) for anc in anchor_list)
+        distinct_anchor_hits = sum(1 for anc in anchor_list if term_matches_tags(anc, cand_tags))
+        anchor_matched = top_anchor_hit or (distinct_anchor_hits >= 2)
+
     # 3. Subject score (if passed, 1.0 if req_terms present else 0.5)
-    subject_score = 1.0 if req_terms else 0.5
+    subject_score = 1.0 if (req_terms or (anchor_list and anchor_matched)) else 0.5
 
     # 4. Check negative terms present in candidate tags (T3)
     matched_neg_terms = [nt for nt in neg_terms if term_matches_tags(nt, cand_tags)]
@@ -316,6 +341,11 @@ def score_candidate_relevance(
 
     score = round(score, 3)
 
+    # F12: Anchor penalty & rejection when zero anchor terms match candidate tags
+    if anchor_list and not anchor_matched:
+        score = round(min(score * 0.35, max(0.0, min_thresh - 0.10)), 3)
+        return False, score, "No anchor_terms matched candidate tags"
+
     # T3: Minimum threshold enforcement
     if score < min_thresh:
         return False, score, f"Score {score:.3f} below minimum threshold {min_thresh:.2f}"
@@ -329,6 +359,84 @@ def extract_narrower_query(
 ) -> str:
     """Extract a narrower query (subject term + 1-2 key nouns) for retry escalation (S1, S5)."""
     return restructure_stock_query(search_query, required_subject_terms)
+
+
+def build_short_core_queries(
+    search_query: str,
+    anchor_terms: Optional[List[str]] = None,
+) -> List[str]:
+    """Shorten a 4-6 word query into 2-3 core visual words anchored to project topic (F13).
+
+    Example:
+    - 'night street food stall crowd' -> ['street food night', 'food stall crowd', 'street food']
+    - 'tent food stall plastic table' -> ['food stall table', 'food stall']
+    """
+    clean_q = re.sub(r"[^a-z0-9\s]+", " ", (search_query or "").lower()).strip()
+    anchors = [a.lower().strip() for a in (anchor_terms or []) if str(a or "").strip()]
+    words = [w for w in clean_q.split() if len(w) > 2 and w not in STOP_WORDS]
+    anchor_tokens = {tok for anc in anchors for tok in anc.split()}
+
+    anchor_words = [w for w in words if w in anchor_tokens]
+    other_words = [w for w in words if w not in anchor_tokens and w not in GENERIC_WORDS]
+    generic_tail = [w for w in words if w in GENERIC_WORDS and w not in anchor_tokens]
+
+    ordered = anchor_words + other_words + generic_tail
+    out: List[str] = []
+    seen: set[str] = set()
+
+    def _add(parts: List[str]) -> None:
+        q_str = " ".join(parts).strip()
+        if q_str and q_str not in seen:
+            seen.add(q_str)
+            out.append(q_str)
+
+    # 3-word core combination preserving matching multi-word anchor phrase if present
+    matched_phrase = next((anc for anc in anchors if " " in anc and anc in clean_q), None)
+    if matched_phrase:
+        rest = [w for w in ordered if w not in matched_phrase.split()]
+        if rest:
+            _add([matched_phrase, rest[0]])
+        _add([matched_phrase])
+
+    if len(ordered) >= 3:
+        _add(ordered[:3])
+    if len(ordered) >= 2:
+        _add(ordered[:2])
+    # Fallback combining top anchor + primary non-anchor word
+    if anchors and other_words:
+        _add([anchors[0], other_words[0]])
+
+    return [q for q in out if q.lower() != clean_q]
+
+
+def filter_candidates_by_anchors_and_avoids(
+    candidates: List[Dict[str, Any]],
+    *,
+    anchor_terms: Optional[List[str]] = None,
+    avoid_terms: Optional[List[str]] = None,
+    blocked_terms: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    """Filter candidate dicts (e.g. tab Kandidat) rejecting any avoid_terms or 0-anchor-match entries (F13)."""
+    avoids = [str(x).lower().strip() for x in (avoid_terms or []) if str(x or "").strip()]
+    blocks = [str(x).lower().strip() for x in (blocked_terms or []) if str(x or "").strip()]
+    anchors = [str(x).lower().strip() for x in (anchor_terms or []) if str(x or "").strip()]
+    if not avoids and not blocks and not anchors:
+        return list(candidates)
+
+    kept: List[Dict[str, Any]] = []
+    for cand in candidates:
+        c_tags = [str(x).lower().strip() for x in (cand.get("tags") or []) if str(x or "").strip()]
+        if any(term_matches_tags(bt, c_tags) for bt in blocks):
+            continue
+        if any(term_matches_tags(av, c_tags) for av in avoids):
+            continue
+        if anchors and c_tags:
+            top_hit = any(term_matches_tags(anc, c_tags[:8]) for anc in anchors)
+            multi_hit = sum(1 for anc in anchors if term_matches_tags(anc, c_tags)) >= 2
+            if not (top_hit or multi_hit):
+                continue
+        kept.append(cand)
+    return kept
 
 
 def _has_non_empty_key(cfg_key: str) -> bool:
@@ -501,6 +609,8 @@ class StockVisualProvider(BaseVisualProvider):
         blocked_terms: Optional[List[str]] = None,
         visual_keywords: Optional[List[str]] = None,
         negative_terms: Optional[List[str]] = None,
+        anchor_terms: Optional[List[str]] = None,
+        avoid_terms: Optional[List[str]] = None,
         min_relevance_score: Optional[float] = None,
         category: Optional[str] = None,
         **kwargs: Any,
@@ -544,6 +654,8 @@ class StockVisualProvider(BaseVisualProvider):
                             required_subject_terms=required_subject_terms,
                             blocked_terms=blocked_terms,
                             negative_terms=negative_terms,
+                            anchor_terms=anchor_terms,
+                            avoid_terms=avoid_terms,
                             min_relevance_score=min_relevance_score,
                             is_low_res=raw.get("is_low_res", False),
                         )
@@ -592,8 +704,8 @@ class StockVisualProvider(BaseVisualProvider):
                         rend_w = int(rendition.get("width") or 1920)
                         rend_h = int(rendition.get("height") or 1080)
 
-                        # Extract tags from query words if upstream didn't preserve
-                        tags = extract_query_keywords(query)
+                        # Extract tags from source metadata / query words if upstream didn't preserve
+                        tags = _extract_fallback_tags(query, s_info)
                         is_valid, score, _ = score_candidate_relevance(
                             candidate_tags=tags,
                             search_query=query,
@@ -601,6 +713,8 @@ class StockVisualProvider(BaseVisualProvider):
                             required_subject_terms=required_subject_terms,
                             blocked_terms=blocked_terms,
                             negative_terms=negative_terms,
+                            anchor_terms=anchor_terms,
+                            avoid_terms=avoid_terms,
                             min_relevance_score=min_relevance_score,
                         )
                         if not is_valid:
@@ -651,7 +765,7 @@ class StockVisualProvider(BaseVisualProvider):
                     rend_w = int(rendition.get("width") or 1920)
                     rend_h = int(rendition.get("height") or 1080)
 
-                    tags = extract_query_keywords(query)
+                    tags = _extract_fallback_tags(query, s_info)
                     is_valid, score, _ = score_candidate_relevance(
                         candidate_tags=tags,
                         search_query=query,
@@ -659,6 +773,8 @@ class StockVisualProvider(BaseVisualProvider):
                         required_subject_terms=required_subject_terms,
                         blocked_terms=blocked_terms,
                         negative_terms=negative_terms,
+                        anchor_terms=anchor_terms,
+                        avoid_terms=avoid_terms,
                         min_relevance_score=min_relevance_score,
                     )
                     if not is_valid:
@@ -709,7 +825,7 @@ class StockVisualProvider(BaseVisualProvider):
                     rend_w = int(rendition.get("width") or 1920)
                     rend_h = int(rendition.get("height") or 1080)
 
-                    tags = extract_query_keywords(query)
+                    tags = _extract_fallback_tags(query, s_info)
                     is_valid, score, _ = score_candidate_relevance(
                         candidate_tags=tags,
                         search_query=query,
@@ -717,6 +833,8 @@ class StockVisualProvider(BaseVisualProvider):
                         required_subject_terms=required_subject_terms,
                         blocked_terms=blocked_terms,
                         negative_terms=negative_terms,
+                        anchor_terms=anchor_terms,
+                        avoid_terms=avoid_terms,
                         min_relevance_score=min_relevance_score,
                     )
                     if not is_valid:

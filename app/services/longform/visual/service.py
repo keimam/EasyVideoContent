@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from loguru import logger
 
 from app.services.longform.schema import Chapter, ItemStatus, MotionType, ProjectManifest, Shot
-from app.services.longform.store import is_stop_requested, load_manifest, save_manifest
+from app.services.longform.store import is_stop_requested, load_manifest, save_manifest, update_job_phase
 from app.services.longform.shot import (
     compute_shot_hash,
     form_chapter_shots,
@@ -34,6 +34,7 @@ from app.services.longform.visual.base import (
     VisualConfigurationError,
     VisualError,
     compute_file_content_hash,
+    invalidate_shot_thumbnail_cache,
 )
 # Builder imported eagerly (pure FFmpeg subprocess, no upstream deps)
 from app.services.longform.visual.builder import (
@@ -189,6 +190,8 @@ class VisualService:
         negative_terms: Optional[List[str]] = None,
         min_relevance_score: Optional[float] = None,
         visual_keywords: Optional[List[str]] = None,
+        anchor_terms: Optional[List[str]] = None,
+        avoid_terms: Optional[List[str]] = None,
     ) -> bool:
         """Check if the shot's current asset is genuinely valid (V1, S4, S5, T3).
 
@@ -204,6 +207,9 @@ class VisualService:
         """
         if shot.locked:
             return True
+
+        if getattr(shot, "status", None) == ItemStatus.stale:
+            return False
 
         if not shot.asset_path or not shot.asset_content_hash:
             return False
@@ -238,8 +244,50 @@ class VisualService:
                 logger.warning(f"Shot {shot.shot_id} asset {asset_file} failed media decode check: {reason}")
                 return False
 
-        # S5, T3: Subject relevance and strict negative terms check on existing asset tags
-        if required_subject_terms or blocked_terms or negative_terms:
+        # F13: If keyword changed (effective_query does not match current query set/short/anchor), invalidate stale asset
+        eff_q = str(getattr(shot, "effective_query", None) or "").strip().lower()
+        cur_en_q = str(getattr(shot, "search_query_en", None) or "").strip()
+        if not shot.locked and cur_en_q and eff_q:
+            from app.services.longform.visual.stock import (
+                build_short_core_queries,
+                extract_narrower_query,
+                restructure_stock_query,
+            )
+
+            allowed_eff: Set[str] = set()
+            base_qs = [
+                str(q or "").strip()
+                for q in ([cur_en_q] + list(getattr(shot, "search_queries_en", []) or []) + [shot.search_query])
+                if str(q or "").strip()
+            ]
+            for bq in base_qs:
+                allowed_eff.add(bq.lower())
+                for sq in build_short_core_queries(bq, anchor_terms):
+                    allowed_eff.add(sq.lower())
+                if required_subject_terms:
+                    allowed_eff.add(restructure_stock_query(bq, required_subject_terms).lower())
+                narrow = extract_narrower_query(bq, required_subject_terms)
+                if narrow:
+                    allowed_eff.add(narrow.lower())
+            for extra in list(anchor_terms or []) + list(visual_keywords or []):
+                ex_s = str(extra or "").strip().lower()
+                if ex_s:
+                    allowed_eff.add(ex_s)
+            if eff_q not in allowed_eff:
+                logger.info(
+                    f"Shot {shot.shot_id} effective_query '{eff_q}' outdated vs current keyword '{cur_en_q}'; marking stale for re-fetch"
+                )
+                return False
+
+        # S5, T3, F12: Subject relevance, strict negative terms, and anchor/avoid check on existing stock asset tags
+        is_stock_asset = (not shot.is_fake) and str(shot.actual_source or target_provider_name or "").lower() in (
+            "stock",
+            "pixabay",
+            "pexels",
+            "coverr",
+        )
+        has_anchor_check = bool((anchor_terms or avoid_terms) and is_stock_asset)
+        if required_subject_terms or blocked_terms or negative_terms or has_anchor_check:
             if not shot.tags:
                 logger.info(f"Shot {shot.shot_id} has no metadata tags to verify subject terms; marking stale for re-fetch")
                 return False
@@ -251,6 +299,8 @@ class VisualService:
                 required_subject_terms=required_subject_terms,
                 blocked_terms=blocked_terms,
                 negative_terms=negative_terms,
+                anchor_terms=anchor_terms if has_anchor_check else None,
+                avoid_terms=avoid_terms if has_anchor_check else None,
                 min_relevance_score=min_relevance_score,
                 is_low_res=shot.is_low_res,
             )
@@ -268,6 +318,10 @@ class VisualService:
         manifest: ProjectManifest,
         provider_name: Optional[str] = None,
         allow_fallback: bool = False,
+        check_ai_relevance: bool = False,
+        translate_keywords: bool = True,
+        _pct_start: float = 0.0,
+        _pct_end: float = 99.0,
     ) -> ProjectManifest:
         """Search and download/generate visual assets for all pending shots (4.1, V1).
 
@@ -317,14 +371,15 @@ class VisualService:
                 logger.warning(global_fallback_reason)
                 effective_provider_name = "fake"
 
-        # Track used candidate IDs across project for deduplication
+        # Track used candidate IDs across project for deduplication (skip invalidated/stale shots so re-fetch isn't blocked)
         used_candidate_ids: Set[str] = set()
         for ch in manifest.chapters:
             for s in ch.shots:
-                if s.candidates:
-                    for c in s.candidates:
-                        if c.get("candidate_id"):
-                            used_candidate_ids.add(c["candidate_id"])
+                if s.locked or getattr(s, "status", None) != ItemStatus.stale:
+                    if s.candidates:
+                        for c in s.candidates:
+                            if c.get("candidate_id"):
+                                used_candidate_ids.add(c["candidate_id"])
 
         # S5, T3: Load preset filtering and scoring rules from snapshot or PresetStore
         preset_snap = manifest.preset_snapshot or {}
@@ -361,11 +416,139 @@ class VisualService:
                 logger.warning(f"Could not backfill preset snapshot for preset '{manifest.preset_id}': {e}")
 
         stop_requested = False
+        translation_warnings: List[str] = []
+        from app.services.longform.language_guard import resolve_project_language
+        from app.services.longform.visual.ai_keywords import (
+            ensure_project_visual_anchors,
+            generate_chapter_visual_keywords_ai,
+        )
+        from app.services.longform.visual.keyword_translator import (
+            is_non_english_language,
+            translate_chapter_queries_to_english,
+        )
+        proj_lang = resolve_project_language(manifest)
+
+        # F12: Generate/load cached project anchor & avoid terms once per project for non-fake fetch
+        if effective_provider_name != "fake" and not getattr(manifest, "visual_anchor_terms", None):
+            try:
+                ensure_project_visual_anchors(manifest)
+            except Exception as exc:
+                logger.warning(f"Could not populate project visual anchors: {exc}")
+
+        proj_anchors = list(getattr(manifest, "visual_anchor_terms", []) or [])
+        proj_avoids = list(getattr(manifest, "visual_avoid_terms", []) or [])
+
+        all_shots_flat = [sh for ch in manifest.chapters for sh in ch.shots]
+        target_fetch_ids = {
+            sh.shot_id
+            for sh in all_shots_flat
+            if not sh.locked and not self._is_shot_asset_valid_for_provider(
+                sh,
+                effective_provider_name,
+                req_terms,
+                block_terms,
+                neg_terms,
+                min_rel_score,
+                visual_kws,
+                anchor_terms=proj_anchors,
+                avoid_terms=proj_avoids,
+            )
+        }
+        target_fetch_total = len(target_fetch_ids)
+        skipped_fetch_count = len(all_shots_flat) - target_fetch_total
+        done_fetch_count = 0
+        self._last_fetch_target_count = target_fetch_total
+
+        if target_fetch_total > 0:
+            update_job_phase(
+                self.project_dir,
+                phase=f"Mencari footage (0/{target_fetch_total} shot)…",
+                phase_key="prog_visual_fetch",
+                phase_args={"done": 0, "total": target_fetch_total},
+                percentage=_pct_start,
+                current_unit=0,
+                total_units=target_fetch_total,
+                skipped_units=skipped_fetch_count,
+                unit_label="shot",
+                is_indeterminate=False,
+                partial=True,
+            )
+
         for ch in manifest.chapters:
             if is_stop_requested(self.project_dir):
                 logger.info(f"Stop requested for project '{manifest.project_id}'. Exiting visual matching gracefully.")
                 stop_requested = True
                 break
+
+            # F8 + F2 + F12: Generate concrete 2-3 queries per shot when missing
+            if translate_keywords:
+                shots_needing_fetch = [
+                    sh for sh in ch.shots
+                    if not sh.locked and not self._is_shot_asset_valid_for_provider(
+                        sh,
+                        effective_provider_name,
+                        req_terms,
+                        block_terms,
+                        neg_terms,
+                        min_rel_score,
+                        visual_kws,
+                        anchor_terms=proj_anchors,
+                        avoid_terms=proj_avoids,
+                    )
+                ]
+                shots_needing_kw_gen = [
+                    sh for sh in shots_needing_fetch
+                    if (
+                        getattr(sh, "search_query_source", None) != "ai"
+                        or not getattr(sh, "search_query_en", None)
+                    )
+                ]
+                if shots_needing_kw_gen and effective_provider_name != "fake":
+                    if target_fetch_total > 0:
+                        kw_pct = _pct_start + ((done_fetch_count / max(1, target_fetch_total)) * (_pct_end - _pct_start))
+                        update_job_phase(
+                            self.project_dir,
+                            phase="Memperbarui kata kunci AI…",
+                            phase_key="prog_visual_ai_keywords",
+                            phase_args={},
+                            percentage=kw_pct,
+                            current_unit=done_fetch_count,
+                            total_units=target_fetch_total,
+                            skipped_units=skipped_fetch_count,
+                            unit_label="shot",
+                            is_indeterminate=True,
+                            partial=True,
+                        )
+                    kw_res = generate_chapter_visual_keywords_ai(
+                        shots_needing_kw_gen,
+                        ch,
+                        preset_snapshot=preset_snap,
+                        project_lang=proj_lang,
+                        project_topic=manifest.topic or manifest.title,
+                        sub_niche_focus=getattr(manifest, "sub_niche_focus", None),
+                        visual_summary=getattr(manifest, "visual_summary", None),
+                        anchor_terms=proj_anchors,
+                        avoid_terms=proj_avoids,
+                    )
+                    if kw_res.get("warning"):
+                        translation_warnings.append(str(kw_res["warning"]))
+                    if kw_res.get("fallback_used") and is_non_english_language(proj_lang):
+                        tr_res = translate_chapter_queries_to_english(
+                            shots_needing_kw_gen,
+                            preset_snapshot=preset_snap,
+                            project_lang=proj_lang,
+                        )
+                        if tr_res.get("warning"):
+                            translation_warnings.append(str(tr_res["warning"]))
+                elif shots_needing_kw_gen and is_non_english_language(proj_lang):
+                    tr_res = translate_chapter_queries_to_english(
+                        shots_needing_kw_gen,
+                        preset_snapshot=preset_snap,
+                        project_lang=proj_lang,
+                    )
+                    if tr_res.get("warning"):
+                        translation_warnings.append(str(tr_res["warning"]))
+
             for shot in ch.shots:
                 if is_stop_requested(self.project_dir):
                     logger.info(f"Stop requested for project '{manifest.project_id}'. Exiting visual matching gracefully.")
@@ -376,7 +559,7 @@ class VisualService:
                     logger.info(f"Skipping locked shot: {shot.shot_id}")
                     continue
 
-                # V1, S4, S5, T3: Check if asset is valid for requested provider AND meets strict subject filter
+                # V1, S4, S5, T3, F12: Check if asset is valid for requested provider AND meets strict subject/anchor filter
                 if self._is_shot_asset_valid_for_provider(
                     shot,
                     effective_provider_name,
@@ -385,6 +568,8 @@ class VisualService:
                     neg_terms,
                     min_rel_score,
                     visual_kws,
+                    anchor_terms=proj_anchors,
+                    avoid_terms=proj_avoids,
                 ):
                     logger.debug(f"Shot {shot.shot_id} asset valid for provider '{effective_provider_name}', skipping fetch")
                     continue
@@ -411,32 +596,75 @@ class VisualService:
                     logger.warning(f"Shot {shot.shot_id}: {fallback_reason}")
                     active_provider = FakeVisualProvider(mode=target_provider_name)
 
-                # S5 Multi-tier escalation search
+                # F13: Clear stale candidate list/tags on unlocked shots being re-fetched
+                shot.candidates = []
+                shot.tags = []
+
+                # S5 / F12 / F13 Multi-tier escalation search
                 from app.services.longform.visual.stock import (
+                    build_short_core_queries,
                     extract_narrower_query,
                     restructure_stock_query,
                 )
 
-                raw_query = shot.search_query or shot.visual_prompt or "cinematic scene"
-                candidates = []
+                raw_query = (
+                    getattr(shot, "search_query_en", None)
+                    or shot.search_query
+                    or shot.visual_prompt
+                    or "cinematic scene"
+                )
+                # Build ordered base queries (`search_query_en` + `search_queries_en` alternatives)
+                ordered_base_queries: List[str] = []
+                for q_cand in ([raw_query] + list(getattr(shot, "search_queries_en", []) or [])):
+                    qc = str(q_cand or "").strip()
+                    if qc and qc.lower() not in [x.lower() for x in ordered_base_queries]:
+                        ordered_base_queries.append(qc)
+
+                candidates: List[VisualCandidate] = []
+                best_candidates: List[VisualCandidate] = []
+                cand_origin_query: Dict[str, str] = {}
+                seen_best_ids: Set[str] = set()
                 chosen_query = raw_query
 
-                # Tiers of queries:
-                restruct_q = restructure_stock_query(raw_query, req_terms, topic_kws)
-                query_tiers = [
-                    (restruct_q, stock_cat),
-                    (restruct_q, None),
-                    (raw_query, stock_cat),
-                    (raw_query, None),
-                ]
+                query_tiers: List[Tuple[str, Optional[str]]] = []
+                # Tier 1 & 2: Primary query + alternative concrete queries
+                for bq in ordered_base_queries:
+                    if req_terms:
+                        restruct_q = restructure_stock_query(bq, req_terms, topic_kws)
+                        query_tiers.append((restruct_q, stock_cat))
+                        query_tiers.append((restruct_q, None))
+                    query_tiers.append((bq, stock_cat))
+                    query_tiers.append((bq, None))
+
+                # Tier 3: Shortened 2-3 core word queries (helps Pixabay when 5-word queries yield < 3 hits)
+                for bq in ordered_base_queries:
+                    for short_q in build_short_core_queries(bq, proj_anchors):
+                        query_tiers.append((short_q, None))
                 narrow_q = extract_narrower_query(raw_query, req_terms)
-                if narrow_q and narrow_q.lower() not in (restruct_q.lower(), raw_query.lower()):
+                if narrow_q:
                     query_tiers.append((narrow_q, None))
+
+                # Tier 4: Project anchor_terms & preset visual_keywords fallbacks
+                if proj_anchors:
+                    if len(proj_anchors) >= 2 and " " not in proj_anchors[0] and " " not in proj_anchors[1]:
+                        query_tiers.append((f"{proj_anchors[0]} {proj_anchors[1]}", None))
+                    for anc_term in proj_anchors[:5]:
+                        if anc_term:
+                            query_tiers.append((anc_term, None))
                 for vk in visual_kws[:3]:
-                    if vk and vk.lower() not in [qt[0].lower() for qt in query_tiers]:
+                    if vk:
                         query_tiers.append((vk, stock_cat))
 
-                for q_text, q_cat in query_tiers:
+                # Deduplicate preserving strict tier priority order
+                seen_tiers: set[Tuple[str, Optional[str]]] = set()
+                dedup_tiers: List[Tuple[str, Optional[str]]] = []
+                for qt_pair in query_tiers:
+                    k_pair = (qt_pair[0].lower(), qt_pair[1])
+                    if k_pair not in seen_tiers:
+                        seen_tiers.add(k_pair)
+                        dedup_tiers.append(qt_pair)
+
+                for q_text, q_cat in dedup_tiers:
                     search_kwargs = {
                         "query": q_text,
                         "target_duration": shot.duration_seconds,
@@ -444,10 +672,12 @@ class VisualService:
                         "excluded_ids": used_candidate_ids,
                     }
                     try:
-                        candidates = active_provider.search_candidates(
+                        tier_cands = active_provider.search_candidates(
                             required_subject_terms=req_terms,
                             blocked_terms=block_terms,
                             negative_terms=neg_terms,
+                            anchor_terms=proj_anchors,
+                            avoid_terms=proj_avoids,
                             min_relevance_score=min_rel_score,
                             visual_keywords=visual_kws,
                             category=q_cat,
@@ -455,19 +685,39 @@ class VisualService:
                         )
                     except TypeError:
                         try:
-                            candidates = active_provider.search_candidates(
+                            tier_cands = active_provider.search_candidates(
                                 required_subject_terms=req_terms,
                                 blocked_terms=block_terms,
                                 visual_keywords=visual_kws,
                                 **search_kwargs,
                             )
                         except TypeError:
-                            candidates = active_provider.search_candidates(**search_kwargs)
+                            tier_cands = active_provider.search_candidates(**search_kwargs)
 
-                    if candidates:
-                        chosen_query = q_text
-                        logger.info(f"Shot {shot.shot_id}: found {len(candidates)} candidates using query '{q_text}' (cat={q_cat})")
+                    added_cnt = 0
+                    for tc in tier_cands or []:
+                        if tc.candidate_id not in seen_best_ids:
+                            seen_best_ids.add(tc.candidate_id)
+                            best_candidates.append(tc)
+                            cand_origin_query[tc.candidate_id] = q_text
+                            added_cnt += 1
+
+                    logger.info(
+                        f"Shot {shot.shot_id}: stock query '{q_text}' (cat={q_cat}) -> "
+                        f"{len(tier_cands or [])} valid hit(s), added={added_cnt}, accumulated={len(best_candidates)}"
+                    )
+                    if len(best_candidates) >= 3:
                         break
+
+                if best_candidates:
+                    best_candidates.sort(key=lambda c: c.relevance_score, reverse=True)
+                    candidates = best_candidates[:3]
+                    chosen_query = cand_origin_query.get(candidates[0].candidate_id, chosen_query)
+                    logger.info(
+                        f"Shot {shot.shot_id}: selected top candidate '{candidates[0].candidate_id}' "
+                        f"(score={candidates[0].relevance_score:.3f}) via query '{chosen_query}' "
+                        f"from {len(candidates)} candidate(s)"
+                    )
 
                 # Step 4: Fallback to next provider or mark needs_review
                 if not candidates:
@@ -499,6 +749,22 @@ class VisualService:
                         shot.tags = []
                         shot.candidates = []
                         shot.fallback_reason = "No candidates matched required subject terms or query"
+                        if shot.shot_id in target_fetch_ids and target_fetch_total > 0:
+                            done_fetch_count += 1
+                            pct = _pct_start + ((done_fetch_count / target_fetch_total) * (_pct_end - _pct_start))
+                            update_job_phase(
+                                self.project_dir,
+                                phase=f"Mencari footage ({done_fetch_count}/{target_fetch_total} shot)…",
+                                phase_key="prog_visual_fetch",
+                                phase_args={"done": done_fetch_count, "total": target_fetch_total},
+                                percentage=pct,
+                                current_unit=done_fetch_count,
+                                total_units=target_fetch_total,
+                                skipped_units=skipped_fetch_count,
+                                unit_label="shot",
+                                is_indeterminate=False,
+                                partial=True,
+                            )
                         continue
 
                 # Store candidate options
@@ -513,6 +779,7 @@ class VisualService:
 
                 logger.info(f"Fetching asset for {shot.shot_id} via {active_provider.name} (score: {selected_candidate.relevance_score:.2f}, {selected_candidate.rendition_name or 'std'})...")
                 asset = active_provider.fetch_asset(selected_candidate, dest_file)
+                invalidate_shot_thumbnail_cache(self.project_dir, shot.shot_id)
 
                 # Update shot metadata
                 shot.asset_path = rel_dest
@@ -526,20 +793,79 @@ class VisualService:
                 shot.chosen_rendition = selected_candidate.rendition_name
                 shot.is_low_res = getattr(selected_candidate, "is_low_res", False)
                 shot.effective_query = chosen_query
+                shot.ai_relevance_status = None
+                shot.ai_relevance_reason = None
+                shot.ai_relevance_asset_hash = None
                 if req_terms:
                     from app.services.longform.visual.stock import term_matches_tags
                     has_subj = any(term_matches_tags(req, shot.tags or []) for req in req_terms)
                     shot.needs_review = not has_subj
+                elif proj_anchors and not shot.is_fake and shot.tags:
+                    from app.services.longform.visual.stock import term_matches_tags
+                    has_anchor = any(term_matches_tags(anc, shot.tags or []) for anc in proj_anchors)
+                    shot.needs_review = not has_anchor
                 else:
                     shot.needs_review = False
-                shot.status = ItemStatus.pending
+                has_stale_clip = bool(shot.rendered_clip and (self.project_dir / shot.rendered_clip).is_file())
+                if has_stale_clip:
+                    shot.shot_hash = None
+                    shot.status = ItemStatus.stale
+                else:
+                    shot.status = ItemStatus.pending
                 save_manifest(manifest, self.project_dir)
+                if shot.shot_id in target_fetch_ids and target_fetch_total > 0:
+                    done_fetch_count += 1
+                    pct = _pct_start + ((done_fetch_count / target_fetch_total) * (_pct_end - _pct_start))
+                    update_job_phase(
+                        self.project_dir,
+                        phase=f"Mencari footage ({done_fetch_count}/{target_fetch_total} shot)…",
+                        phase_key="prog_visual_fetch",
+                        phase_args={"done": done_fetch_count, "total": target_fetch_total},
+                        percentage=pct,
+                        current_unit=done_fetch_count,
+                        total_units=target_fetch_total,
+                        skipped_units=skipped_fetch_count,
+                        unit_label="shot",
+                        is_indeterminate=False,
+                        partial=True,
+                    )
+
+        if translation_warnings:
+            logger.warning(f"Keyword translation warnings for '{manifest.project_id}': {translation_warnings[0]}")
+
+        # F1: Optional AI Vision relevance verification (default off, strictly after fetch)
+        if check_ai_relevance and not stop_requested and not is_stop_requested(self.project_dir):
+            from app.services.longform.visual.ai_relevance import check_project_relevance
+
+            if target_fetch_total > 0:
+                update_job_phase(
+                    self.project_dir,
+                    phase=f"Mengecek relevansi AI ({done_fetch_count}/{target_fetch_total} shot)…",
+                    phase_key="prog_visual_ai_relevance",
+                    phase_args={"done": done_fetch_count, "total": target_fetch_total},
+                    percentage=_pct_end,
+                    current_unit=done_fetch_count,
+                    total_units=target_fetch_total,
+                    skipped_units=skipped_fetch_count,
+                    unit_label="shot",
+                    is_indeterminate=True,
+                    partial=True,
+                )
+            rel_stats = check_project_relevance(manifest, self.project_dir)
+            logger.info(
+                f"AI relevance check completed for '{manifest.project_id}': "
+                f"checked={rel_stats.get('checked')}, cached={rel_stats.get('cached')}, "
+                f"ya={rel_stats.get('ya')}, tidak={rel_stats.get('tidak')}, ragu={rel_stats.get('ragu')}"
+            )
+            save_manifest(manifest, self.project_dir)
 
         return manifest
 
     def build_all(
         self,
         manifest: ProjectManifest,
+        _pct_start: float = 0.0,
+        _pct_end: float = 99.0,
     ) -> Tuple[ProjectManifest, Dict[str, Any]]:
         """Build rendered video clips for all shots in manifest (4.3, V1).
 
@@ -551,6 +877,50 @@ class VisualService:
         built_count = 0
         skipped_count = 0
         total_time = 0.0
+
+        # F15: Pre-partition target build shots vs already-valid skipped shots
+        expected_hashes_by_id: Dict[str, str] = {}
+        target_build_ids: Set[str] = set()
+        total_project_shots = 0
+        for ch in manifest.chapters:
+            for shot in ch.shots:
+                total_project_shots += 1
+                expected_hash = compute_shot_hash(
+                    shot_id=shot.shot_id,
+                    duration_seconds=shot.duration_seconds,
+                    target_frames=shot.target_frames,
+                    motion=shot.motion.value,
+                    asset_content_hash=shot.asset_content_hash,
+                    fps=fps,
+                    requested_provider=shot.requested_source or "",
+                    actual_provider=shot.actual_source or "",
+                )
+                expected_hashes_by_id[shot.shot_id] = expected_hash
+                clip_path = (self.project_dir / f"assets/visual/shots/{shot.shot_id}.mp4").resolve()
+                is_already_valid = (
+                    shot.shot_hash == expected_hash
+                    and clip_path.is_file()
+                    and shot.status == ItemStatus.completed
+                )
+                if not is_already_valid:
+                    target_build_ids.add(shot.shot_id)
+
+        target_build_total = len(target_build_ids)
+        skipped_build_init = total_project_shots - target_build_total
+        if target_build_total > 0:
+            update_job_phase(
+                self.project_dir,
+                phase=f"Menyusun klip (0/{target_build_total} shot)…",
+                phase_key="prog_visual_build",
+                phase_args={"done": 0, "total": target_build_total},
+                percentage=_pct_start,
+                current_unit=0,
+                total_units=target_build_total,
+                skipped_units=skipped_build_init,
+                unit_label="shot",
+                is_indeterminate=False,
+                partial=True,
+            )
 
         stop_requested = False
         for ch in manifest.chapters:
@@ -570,18 +940,7 @@ class VisualService:
                 if not asset_file.is_file():
                     raise FileNotFoundError(f"Shot asset file missing on disk: {asset_file}")
 
-                # Compute expected shot hash (V1: now includes provider fields)
-                expected_hash = compute_shot_hash(
-                    shot_id=shot.shot_id,
-                    duration_seconds=shot.duration_seconds,
-                    target_frames=shot.target_frames,
-                    motion=shot.motion.value,
-                    asset_content_hash=shot.asset_content_hash,
-                    fps=fps,
-                    requested_provider=shot.requested_source or "",
-                    actual_provider=shot.actual_source or "",
-                )
-
+                expected_hash = expected_hashes_by_id[shot.shot_id]
                 clip_rel = f"assets/visual/shots/{shot.shot_id}.mp4"
                 clip_path = (self.project_dir / clip_rel).resolve()
 
@@ -615,7 +974,24 @@ class VisualService:
                 )
                 shot.rendered_clip = clip_rel
                 shot.status = ItemStatus.completed
+                invalidate_shot_thumbnail_cache(self.project_dir, shot.shot_id)
                 save_manifest(manifest, self.project_dir)
+
+                if target_build_total > 0:
+                    pct = _pct_start + ((built_count / target_build_total) * (_pct_end - _pct_start))
+                    update_job_phase(
+                        self.project_dir,
+                        phase=f"Menyusun klip ({built_count}/{target_build_total} shot)…",
+                        phase_key="prog_visual_build",
+                        phase_args={"done": built_count, "total": target_build_total},
+                        percentage=pct,
+                        current_unit=built_count,
+                        total_units=target_build_total,
+                        skipped_units=skipped_build_init,
+                        unit_label="shot",
+                        is_indeterminate=False,
+                        partial=True,
+                    )
 
             # Update chapter duration & frames
             ch.visual_duration_seconds = round(sum(s.duration_seconds for s in ch.shots), 3)
@@ -860,7 +1236,9 @@ class VisualService:
         stock_cat = preset_snap.get("stock_category")
         vis_kws = preset_snap.get("visual_keywords") or []
 
-        q = search_query or target_shot.search_query or target_shot.visual_prompt or "cinematic scene"
+        q = search_query or getattr(target_shot, "search_query_en", None) or target_shot.search_query or target_shot.visual_prompt or "cinematic scene"
+        proj_anchors = list(getattr(manifest, "visual_anchor_terms", []) or [])
+        proj_avoids = list(getattr(manifest, "visual_avoid_terms", []) or [])
 
         candidates = prov.search_candidates(
             query=q,
@@ -869,6 +1247,8 @@ class VisualService:
             required_subject_terms=req_terms,
             blocked_terms=block_terms,
             negative_terms=neg_terms,
+            anchor_terms=proj_anchors,
+            avoid_terms=proj_avoids,
             min_relevance_score=min_rel,
             visual_keywords=vis_kws,
             category=stock_cat,
@@ -882,6 +1262,8 @@ class VisualService:
                 required_subject_terms=req_terms,
                 blocked_terms=block_terms,
                 negative_terms=neg_terms,
+                anchor_terms=proj_anchors,
+                avoid_terms=proj_avoids,
                 min_relevance_score=min_rel,
                 visual_keywords=vis_kws,
                 category=None,
@@ -962,8 +1344,10 @@ class VisualService:
                     actual_provider=target_shot.actual_source or "",
                 )
             else:
-                target_shot.status = ItemStatus.pending
+                has_stale_clip = bool(target_shot.rendered_clip and (self.project_dir / target_shot.rendered_clip).is_file())
+                target_shot.status = ItemStatus.stale if has_stale_clip else ItemStatus.pending
                 target_shot.shot_hash = None
+            invalidate_shot_thumbnail_cache(self.project_dir, shot_id)
             return target_shot
 
         if candidate_index is not None:
@@ -1008,8 +1392,10 @@ class VisualService:
                     actual_provider=target_shot.actual_source or "",
                 )
             else:
-                target_shot.status = ItemStatus.pending
+                has_stale_clip = bool(target_shot.rendered_clip and (self.project_dir / target_shot.rendered_clip).is_file())
+                target_shot.status = ItemStatus.stale if has_stale_clip else ItemStatus.pending
                 target_shot.shot_hash = None
+            invalidate_shot_thumbnail_cache(self.project_dir, shot_id)
             return target_shot
 
         if provider_name or prompt:
@@ -1066,8 +1452,10 @@ class VisualService:
                     actual_provider=target_shot.actual_source or "",
                 )
             else:
-                target_shot.status = ItemStatus.pending
+                has_stale_clip = bool(target_shot.rendered_clip and (self.project_dir / target_shot.rendered_clip).is_file())
+                target_shot.status = ItemStatus.stale if has_stale_clip else ItemStatus.pending
                 target_shot.shot_hash = None
+            invalidate_shot_thumbnail_cache(self.project_dir, shot_id)
             return target_shot
 
         raise ValueError("Must provide --file, --candidate, or --search/--prompt for replace")
@@ -1095,10 +1483,12 @@ class VisualService:
         return target_shot
 
     def evaluate_needs_review(self, manifest: ProjectManifest) -> int:
-        """Scan manifest shots and flag any shot lacking required_subject_terms as needs_review (X4)."""
+        """Scan manifest shots and flag any shot lacking required_subject_terms or matching avoid_terms / missing anchor_terms (X4, F12)."""
         preset_snap = manifest.preset_snapshot or {}
         req_terms = preset_snap.get("required_subject_terms") or []
-        if not req_terms:
+        proj_anchors = list(getattr(manifest, "visual_anchor_terms", []) or [])
+        proj_avoids = list(getattr(manifest, "visual_avoid_terms", []) or [])
+        if not req_terms and not proj_anchors and not proj_avoids:
             return 0
 
         from app.services.longform.visual.stock import term_matches_tags
@@ -1107,8 +1497,13 @@ class VisualService:
         for ch in manifest.chapters:
             for s in ch.shots:
                 if s.tags:
-                    has_subj = any(term_matches_tags(req, s.tags) for req in req_terms)
-                    if not has_subj and not s.needs_review:
+                    has_subj = (
+                        any(term_matches_tags(req, s.tags) for req in req_terms)
+                        if req_terms
+                        else (any(term_matches_tags(anc, s.tags) for anc in proj_anchors) if proj_anchors else True)
+                    )
+                    has_avoid = any(term_matches_tags(av, s.tags) for av in proj_avoids) if proj_avoids else False
+                    if (not has_subj or has_avoid) and not s.needs_review:
                         s.needs_review = True
                         flagged += 1
                 elif s.asset_path and not s.locked:
@@ -1117,11 +1512,37 @@ class VisualService:
                         flagged += 1
         return flagged
 
+    def update_keywords_with_ai(
+        self,
+        manifest: Optional[ProjectManifest] = None,
+        *,
+        chapter_index: Optional[int] = None,
+        force: bool = True,
+        mark_stale: bool = True,
+        llm_adapter: Any = None,
+    ) -> Tuple[ProjectManifest, Dict[str, Any]]:
+        """Regenerate visual search keywords with AI for unlocked shots and mark changed shots stale (F8)."""
+        from app.services.longform.visual.ai_keywords import update_project_visual_keywords_ai
+
+        if manifest is None:
+            manifest = load_manifest(self.project_dir)
+
+        stats = update_project_visual_keywords_ai(
+            manifest,
+            chapter_index=chapter_index,
+            force=force,
+            mark_stale=mark_stale,
+            llm_adapter=llm_adapter,
+        )
+        save_manifest(manifest, self.project_dir)
+        return manifest, stats
+
     def run_pipeline(
         self,
         manifest: Optional[ProjectManifest] = None,
         provider_name: Optional[str] = None,
         allow_fallback: bool = True,
+        check_ai_relevance: bool = False,
     ) -> Tuple[ProjectManifest, Dict[str, Any]]:
         """Execute the full 3-phase visual pipeline sequentially (Allocation -> Fetch -> Build).
 
@@ -1141,6 +1562,19 @@ class VisualService:
         # Phase 1: Membagi shot (Shot Allocation) if 0 shots
         total_shots = sum(len(ch.shots) for ch in manifest.chapters)
         if total_shots == 0:
+            update_job_phase(
+                self.project_dir,
+                phase="Membagi shot…",
+                phase_key="prog_visual_allocate",
+                phase_args={},
+                percentage=0.0,
+                current_unit=0,
+                total_units=0,
+                skipped_units=0,
+                unit_label="shot",
+                is_indeterminate=True,
+                partial=True,
+            )
             print(f"\n[Visual Pipeline] Phase 1/3: Membagi shot untuk proyek '{manifest.project_id}'...")
             effective_fps = getattr(getattr(manifest, "encoder_settings", None), "fps", 25) or 25
             manifest = self.prepare_shots(manifest, fps=effective_fps)
@@ -1160,6 +1594,9 @@ class VisualService:
             manifest=manifest,
             provider_name=provider_name,
             allow_fallback=allow_fallback,
+            check_ai_relevance=check_ai_relevance,
+            _pct_start=0.0,
+            _pct_end=45.0,
         )
         save_manifest(manifest, self.project_dir)
 
@@ -1169,7 +1606,12 @@ class VisualService:
 
         # Phase 3: Menyusun klip (Build Clips)
         print(f"\n[Visual Pipeline] Phase 3/3: Menyusun klip visual untuk proyek '{manifest.project_id}'...")
-        manifest, build_stats = self.build_all(manifest)
+        build_pct_start = 45.0 if getattr(self, "_last_fetch_target_count", 0) > 0 else 0.0
+        manifest, build_stats = self.build_all(
+            manifest,
+            _pct_start=build_pct_start,
+            _pct_end=99.0,
+        )
         save_manifest(manifest, self.project_dir)
         stats.update(build_stats)
 

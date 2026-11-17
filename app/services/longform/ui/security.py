@@ -51,6 +51,8 @@ def check_llm_status() -> Dict[str, Any]:
         "is_invalid": bool(readiness.get("is_invalid", False)),
         "message": readiness.get("message", ""),
         "configured_providers": readiness.get("configured_providers", ()),
+        "billing_tier": readiness.get("billing_tier", "unknown"),
+        "used_safe_default": bool(readiness.get("used_safe_default", False)),
     }
 
 

@@ -46,13 +46,19 @@ from app.services.longform.presets import (
 )
 from app.services.longform.quality_checker import ScriptQualityChecker
 from app.services.longform.schema import ItemStatus, ProjectManifest, Shot
-from app.services.longform.script_import import estimate_script_duration, parse_markdown_script
+from app.services.longform.script_import import (
+    detect_leaked_chapter_headings,
+    estimate_script_duration,
+    fix_project_headings,
+    parse_markdown_script,
+)
 from app.services.longform.status import (
     compute_project_step_status,
     find_latest_capcut_draft,
     get_impactful_preset_diffs,
 )
 from app.services.longform.store import (
+    ProjectLock,
     create_project,
     get_project_dir,
     get_projects_root,
@@ -60,6 +66,15 @@ from app.services.longform.store import (
     refresh_project_preset,
     save_manifest,
     update_project_script,
+)
+from app.services.longform.trash import (
+    ProjectTrashError,
+    empty_trash,
+    get_project_delete_preview,
+    list_trashed_projects,
+    permanently_delete_trashed_project,
+    restore_trashed_project,
+    soft_delete_project,
 )
 from app.services.branding.theme import (
     render_5_segment_progress_bar_html,
@@ -84,7 +99,7 @@ from app.services.longform.tts_adapter import (
     provider_has_word_timings,
 )
 from app.services.longform.ui import jobs
-from app.services.longform.ui.i18n import t
+from app.services.longform.ui.i18n import get_ui_language, t
 from app.services.longform.ui.security import check_llm_status, mask_api_key, safe_windows_path
 from app.services.longform.voice_service import VoiceService, list_available_voices
 
@@ -94,6 +109,72 @@ def _open_mpt_settings_dialog(target_tab: str = "llm") -> None:
     st.session_state["settings_dialog_open"] = True
     st.session_state["settings_dialog_target_tab"] = target_tab
     st.rerun()
+
+
+def _format_model_with_tier(model_name: str, billing_tier: Optional[str]) -> str:
+    """Format active model string with localized Free/Paid indicator when known (F5)."""
+    base = str(model_name or "-").strip() or "-"
+    tier = (billing_tier or "unknown").strip().lower()
+    if tier in ("free", "paid", "subscription"):
+        return f"{base} ({t(f'tier_badge_{tier}')})"
+    return base
+
+
+def _classify_ui_llm_error_kind(raw_err: str) -> str:
+    low = (raw_err or "").lower()
+    if (
+        "[credit_error]" in low
+        or "402" in low
+        or "requires more credits" in low
+        or "can only afford" in low
+        or "insufficient credits" in low
+        or "insufficient balance" in low
+    ):
+        return "credit"
+    if "unavailable for free" in low or "paid version is available now" in low:
+        return "unavailable_free"
+    if "[model_not_found]" in low or "model_not_found" in low or "does not exist" in low or ("404" in low and "model" in low):
+        return "model_not_found"
+    if "[empty_after_http_ok]" in low:
+        return "empty_http_ok"
+    if "[rate_limit]" in low or "429" in low or "rate limit" in low:
+        return "rate_limit"
+    return "generic"
+
+
+def _render_llm_friendly_error_box(
+    project_id: str,
+    raw_err: str,
+    *,
+    active_model: str = "",
+    key_suffix: str = "llm",
+) -> None:
+    """Render user-friendly guidance + Settings button + Detail expander for LLM errors (F5/F6)."""
+    kind = _classify_ui_llm_error_kind(raw_err)
+    if kind == "credit":
+        st.error(t("llm_err_credit_insufficient"))
+        if st.button(t("btn_open_llm_settings"), key=f"btn_llm_set_{key_suffix}_{project_id}"):
+            _open_mpt_settings_dialog("llm")
+    elif kind == "unavailable_free":
+        st.error(t("llm_err_model_unavailable_free", model=active_model or "minimax/minimax-m3:free"))
+        if st.button(t("btn_open_llm_settings"), key=f"btn_llm_set_{key_suffix}_{project_id}"):
+            _open_mpt_settings_dialog("llm")
+    elif kind == "model_not_found":
+        st.error(t("llm_err_model_not_found", model=active_model or "selected"))
+        if st.button(t("btn_change_llm_provider"), key=f"btn_llm_chg_{key_suffix}_{project_id}"):
+            _open_mpt_settings_dialog("llm")
+    elif kind == "empty_http_ok":
+        st.warning(t("llm_connection_empty_after_http_ok"))
+        if st.button(t("btn_open_llm_settings"), key=f"btn_llm_set_{key_suffix}_{project_id}"):
+            _open_mpt_settings_dialog("llm")
+    elif kind == "rate_limit":
+        st.warning(t("llm_err_rate_limit"))
+    else:
+        st.error(t("llm_connection_failed", msg=raw_err))
+
+    if raw_err:
+        with st.expander(t("error_details_expander"), expanded=False):
+            st.code(raw_err, language="text")
 
 
 def _get_step_subtitle(step_key: str, status: str, is_job_running: bool = False) -> str:
@@ -203,6 +284,8 @@ def get_project_summaries() -> List[Dict[str, Any]]:
         return projects
 
     for p in root.iterdir():
+        if p.name.startswith("_"):
+            continue
         if p.is_dir() and (p / "manifest.json").is_file():
             try:
                 st_info = compute_project_step_status(p)
@@ -253,6 +336,10 @@ def _render_job_monitor_content(project_id: str, state: Dict[str, Any], current_
         "visual_pipeline": t("job_step_visual_pipeline"),
         "visual_fetch": t("job_step_visual_fetch"),
         "visual_build": t("job_step_visual_build"),
+        "visual_ai_video": t("job_step_visual_ai_video"),
+        "visual_ai_video_batch": t("job_step_visual_ai_video_batch"),
+        "visual_ai_relevance": t("job_step_visual_ai_relevance"),
+        "visual_ai_keywords": t("job_step_visual_ai_keywords"),
         "render_final": t("job_step_render_final"),
         "capcut_export": t("job_step_capcut_export"),
         "pipeline_auto": t("job_step_pipeline_auto"),
@@ -279,9 +366,11 @@ def _render_job_monitor_content(project_id: str, state: Dict[str, Any], current_
         phase_txt = prog.get("phase") or step_display
         pct_val = min(float(prog.get("percentage", 0.0)), 99.0)
         is_indet = bool(prog.get("is_indeterminate"))
+        skipped_cnt = int(prog.get("skipped", 0) or 0)
+        skipped_suffix = f" • {t('prog_skipped_valid_locked', count=skipped_cnt)}" if skipped_cnt > 0 else ""
 
         if is_indet:
-            display_txt = f"{phase_txt} • {elapsed_str}" if elapsed_str else phase_txt
+            display_txt = f"{phase_txt}{skipped_suffix} • {elapsed_str}" if elapsed_str else f"{phase_txt}{skipped_suffix}"
             # Indeterminate bar capped at max 95% (never 100% while running)
             bar_val = min(max(pct_val / 100.0, 0.1), 0.95)
             st.progress(bar_val, text=display_txt)
@@ -292,6 +381,8 @@ def _render_job_monitor_content(project_id: str, state: Dict[str, Any], current_
                 bar_text = f"{phase_txt} • {comp}/{tot} ({pct_val:.1f}%)"
             else:
                 bar_text = f"{phase_txt} ({pct_val:.1f}%)"
+            if skipped_suffix:
+                bar_text += skipped_suffix
             if elapsed_str:
                 bar_text += f" • {elapsed_str}"
             st.progress(min(pct_val / 100.0, 0.99), text=bar_text)
@@ -364,14 +455,23 @@ def _render_job_monitor_content(project_id: str, state: Dict[str, Any], current_
             logs_tail = jobs.get_job_logs(project_id, max_lines=20)
             combined_err = "\n".join([err_detail] + list(logs_tail or []))
 
-            # Detect structured LLM failure reasons (Model not found / Rate limit)
+            # Detect structured LLM failure reasons (Credit / Unavailable free / Model not found / Rate limit)
             model_match = re.search(r"\[MODEL_NOT_FOUND\]\s*Model=([^\s|]+)", combined_err)
-            if model_match or "model_not_found" in combined_err.lower() or "does not exist" in combined_err.lower():
-                bad_model = model_match.group(1) if model_match else (get_llm_readiness().get("model") or "selected")
+            bad_model = model_match.group(1) if model_match else (get_llm_readiness().get("model") or "selected")
+            err_kind = _classify_ui_llm_error_kind(combined_err)
+            if err_kind == "credit":
+                st.error(t("llm_err_credit_insufficient"))
+                if st.button(t("btn_open_llm_settings"), key=f"btn_err_chg_prov_{project_id}"):
+                    _open_mpt_settings_dialog("llm")
+            elif err_kind == "unavailable_free":
+                st.error(t("llm_err_model_unavailable_free", model=bad_model))
+                if st.button(t("btn_open_llm_settings"), key=f"btn_err_chg_prov_{project_id}"):
+                    _open_mpt_settings_dialog("llm")
+            elif err_kind == "model_not_found":
                 st.error(t("llm_err_model_not_found", model=bad_model))
                 if st.button(t("btn_change_llm_provider"), key=f"btn_err_chg_prov_{project_id}"):
                     _open_mpt_settings_dialog("llm")
-            elif "[RATE_LIMIT]" in combined_err or "429" in combined_err or "rate limit" in combined_err.lower():
+            elif err_kind == "rate_limit":
                 st.warning(t("llm_err_rate_limit"))
 
             if failed_step_name in ("script_outline", "script_generate", "script"):
@@ -473,11 +573,191 @@ def render_niche_management_section():
                                     _render_friendly_error(t("err_niche_delete_friendly"), exc)
 
 
+def _render_delete_project_dialog(*, on_deleted_redirect_home: bool = False) -> None:
+    """Render shared safe project delete confirmation modal (F7 / F10)."""
+    target_pid = st.session_state.get("confirm_delete_project_id")
+    if not target_pid:
+        return
+
+    try:
+        preview = get_project_delete_preview(target_pid)
+    except Exception as exc:
+        st.session_state["confirm_delete_project_id"] = None
+        _render_friendly_error(t("err_delete_project_friendly"), exc)
+        return
+
+    @st.dialog(t("dlg_delete_project_title"))
+    def _delete_project_modal():
+        pid = preview["project_id"]
+        st.markdown(
+            t(
+                "dlg_delete_project_meta",
+                title=preview["title"],
+                pid=pid,
+                mb=f"{preview['size_mb']:.2f}",
+                cc_count=preview["capcut_draft_count"],
+            )
+        )
+        st.caption(t("dlg_delete_project_soft_note"))
+
+        is_running_proj = bool(preview["is_locked_or_running"])
+        if is_running_proj:
+            running_step = preview.get("running_step") or preview.get("lock_reason") or "running"
+            st.warning(t("dlg_delete_running_warn", step=running_step))
+
+        with st.form(key=f"form_del_proj_{pid}", clear_on_submit=False):
+            typed_val = st.text_input(
+                t("dlg_delete_confirm_label", pid=pid),
+                key=f"txt_del_confirm_{pid}",
+            )
+            chk_capcut = st.checkbox(
+                t("chk_delete_with_capcut"),
+                value=False,
+                key=f"chk_del_capcut_{pid}",
+            )
+            submitted = st.form_submit_button(
+                t("btn_confirm_delete_project"),
+                type="primary",
+                use_container_width=True,
+            )
+
+        if submitted:
+            typed_clean = (typed_val or "").strip()
+            matches_confirm = bool(
+                typed_clean and (typed_clean == pid or typed_clean == preview["title"].strip())
+            )
+            if not matches_confirm:
+                st.error(t("dlg_delete_mismatch_err", pid=pid))
+            else:
+                prog_ph = st.progress(0, text=t("dlg_delete_stopping_status")) if is_running_proj else None
+
+                def _on_delete_progress(frac: float, msg: str) -> None:
+                    if prog_ph is not None:
+                        pct = max(0, min(100, int(round(frac * 100))))
+                        prog_ph.progress(pct, text=msg or t("dlg_delete_stopping_status"))
+
+                try:
+                    soft_delete_project(
+                        pid,
+                        delete_capcut_drafts=bool(chk_capcut),
+                        stop_running_job=True,
+                        max_wait_seconds=20.0,
+                        progress_cb=_on_delete_progress,
+                    )
+                    st.session_state["confirm_delete_project_id"] = None
+                    st.session_state["last_deleted_notice"] = t("delete_project_success", title=preview["title"])
+                    if on_deleted_redirect_home:
+                        st.query_params.clear()
+                        st.session_state.pop(f"active_step_{pid}", None)
+                    st.rerun()
+                except Exception as exc:
+                    if prog_ph is not None:
+                        prog_ph.empty()
+                    _render_friendly_error(t("err_delete_project_friendly"), exc)
+
+        if st.button(
+            t("btn_cancel_dialog"),
+            key=f"btn_dlg_canc_del_{pid}",
+            use_container_width=True,
+        ):
+            st.session_state["confirm_delete_project_id"] = None
+            st.rerun()
+
+    _delete_project_modal()
+
+
+def _render_trash_management_view(trashed_items: List[Dict[str, Any]]) -> None:
+    """Render Trash management list with Restore, Permanent Delete, and Empty Trash (F7)."""
+    st.markdown(t("trash_heading"))
+    if not trashed_items:
+        st.info(t("trash_empty_state"))
+        return
+
+    total_mb = round(sum(float(x.get("size_mb", 0.0)) for x in trashed_items), 2)
+    col_tl, col_tr = st.columns([3, 1.5])
+    with col_tr:
+        if st.button(
+            t("btn_empty_trash"),
+            key="btn_open_empty_trash_dlg",
+            type="secondary",
+            use_container_width=True,
+        ):
+            st.session_state["confirm_empty_trash_open"] = True
+
+    for item in trashed_items:
+        t_id = item["trash_id"]
+        with st.container(border=True):
+            c_info, c_rest, c_perm = st.columns([3.5, 1.1, 1.3])
+            with c_info:
+                st.markdown(f"**{html.escape(item['title'])}**")
+                del_dt = str(item.get("deleted_at") or "")[:19].replace("T", " ")
+                st.caption(
+                    t(
+                        "trash_item_meta",
+                        pid=item["project_id"],
+                        date=del_dt,
+                        mb=f"{float(item.get('size_mb', 0.0)):.2f}",
+                    )
+                )
+            with c_rest:
+                if st.button(t("btn_restore_project"), key=f"btn_restore_{t_id}", use_container_width=True):
+                    try:
+                        res = restore_trashed_project(t_id)
+                        st.success(t("restore_project_success", title=res["title"]))
+                        time.sleep(0.3)
+                        st.rerun()
+                    except Exception as exc:
+                        _render_friendly_error(t("err_restore_project_friendly"), exc)
+            with c_perm:
+                if st.button(t("btn_perm_delete_project"), key=f"btn_perm_del_{t_id}", use_container_width=True):
+                    try:
+                        res = permanently_delete_trashed_project(t_id)
+                        st.success(t("perm_delete_success", title=res["title"], mb=f"{res['mb_freed']:.2f}"))
+                        time.sleep(0.3)
+                        st.rerun()
+                    except Exception as exc:
+                        _render_friendly_error(t("err_delete_project_friendly"), exc)
+
+    if st.session_state.get("confirm_empty_trash_open"):
+        @st.dialog(t("dlg_empty_trash_title"))
+        def _empty_trash_modal():
+            st.warning(t("dlg_empty_trash_warn", count=len(trashed_items), mb=f"{total_mb:.2f}"))
+            col_e1, col_e2 = st.columns(2)
+            with col_e1:
+                if st.button(
+                    t("btn_confirm_empty_trash"),
+                    type="primary",
+                    key="btn_conf_empty_trash",
+                    use_container_width=True,
+                ):
+                    try:
+                        res = empty_trash()
+                        st.session_state["confirm_empty_trash_open"] = False
+                        st.session_state["last_deleted_notice"] = t(
+                            "empty_trash_success",
+                            count=res["deleted_count"],
+                            mb=f"{res['mb_freed']:.2f}",
+                        )
+                        st.rerun()
+                    except Exception as exc:
+                        _render_friendly_error(t("err_delete_project_friendly"), exc)
+            with col_e2:
+                if st.button(t("btn_cancel_dialog"), key="btn_canc_empty_trash", use_container_width=True):
+                    st.session_state["confirm_empty_trash_open"] = False
+                    st.rerun()
+
+        _empty_trash_modal()
+
+
 def render_home_page():
     """Render Beranda Long Video matching Mockup 1 (L1, 8A.2)."""
     # G5: Return navigation link to MoneyPrinterTurbo Main
     from app.services.longform.ui.nav import render_mpt_entry
     render_mpt_entry()
+
+    notice_msg = st.session_state.pop("last_deleted_notice", None)
+    if notice_msg:
+        st.success(notice_msg)
 
     # 1. Header with title, subtitle, and search box on the right (Mockup 1)
     col_h, col_actions = st.columns([3.5, 2.0])
@@ -720,6 +1000,7 @@ def render_home_page():
     # 3. Project Filter Chips and Grid (Mockup 1)
     projects = get_project_summaries()
 
+    trashed_items = list_trashed_projects()
     total_cnt = len(projects)
     comp_cnt = sum(
         1 for p in projects
@@ -730,14 +1011,23 @@ def render_home_page():
     opt_all = f"{t('filter_all')} · {total_cnt}"
     opt_prog = f"{t('filter_in_progress')} · {in_prog_cnt}"
     opt_done = f"{t('filter_completed')} · {comp_cnt}"
+    opt_trash = f"{t('filter_trash')} · {len(trashed_items)}"
+
+    if st.session_state.pop("home_open_trash_requested", False):
+        st.session_state["home_filter_pills"] = opt_trash
 
     filter_choice = st.pills(
         t("home_filter_label"),
-        options=[opt_all, opt_prog, opt_done],
+        options=[opt_all, opt_prog, opt_done, opt_trash],
         default=opt_all,
         key="home_filter_pills",
         label_visibility="collapsed",
     )
+
+    if filter_choice == opt_trash:
+        _render_trash_management_view(trashed_items)
+        _render_delete_project_dialog(on_deleted_redirect_home=False)
+        return
 
     filtered_projects = projects
     if filter_choice == opt_prog:
@@ -815,9 +1105,22 @@ def render_home_page():
                     unsafe_allow_html=True,
                 )
 
-                if st.button(t("btn_open_project"), key=f"btn_open_{p['project_id']}", use_container_width=True):
-                    st.query_params["project"] = p["project_id"]
-                    st.rerun()
+                col_card_open, col_card_more = st.columns([4, 1])
+                with col_card_open:
+                    if st.button(t("btn_open_project"), key=f"btn_open_{p['project_id']}", use_container_width=True):
+                        st.query_params["project"] = p["project_id"]
+                        st.rerun()
+                with col_card_more:
+                    with st.popover("⋯", help=t("popover_more_help"), use_container_width=True):
+                        if st.button(
+                            t("btn_delete_project"),
+                            key=f"btn_del_card_{p['project_id']}",
+                            use_container_width=True,
+                        ):
+                            st.session_state["confirm_delete_project_id"] = p["project_id"]
+                            st.rerun()
+
+    _render_delete_project_dialog(on_deleted_redirect_home=False)
 
 
 # --- Halaman Proyek (Project Detail Page) Components (C4.3, C4.4, C4.5) ---
@@ -936,6 +1239,16 @@ def render_project_page(project_id: str):
                         st.rerun()
                     else:
                         st.info(t("relink_no_change"))
+                st.divider()
+                if st.button(
+                    t("btn_delete_project"),
+                    key=f"btn_del_proj_{project_id}",
+                    use_container_width=True,
+                ):
+                    st.session_state["confirm_delete_project_id"] = project_id
+                    st.rerun()
+
+    _render_delete_project_dialog(on_deleted_redirect_home=True)
 
     # Stepper 5 Langkah (C4.3)
     step_keys = ["script", "voice", "visual", "render", "capcut"]
@@ -1048,6 +1361,91 @@ def render_project_page(project_id: str):
     job_state = jobs.get_job_state(project_id)
     is_job_running = bool(job_state and job_state.get("status") == "running")
 
+    # F12: Project Advanced Settings (Editable anchor_terms, avoid_terms & visual_summary)
+    with st.expander(t("expander_project_advanced_settings"), expanded=False):
+        from app.services.longform.llm_adapter import LLMCreditError, LLMModelNotFoundError
+        from app.services.longform.visual.ai_keywords import (
+            _clean_term_list,
+            ensure_project_visual_anchors,
+        )
+
+        adv_notice = st.session_state.pop(f"proj_anchors_notice_{project_id}", None)
+        if adv_notice:
+            st.success(adv_notice)
+
+        if st.session_state.pop(f"_reset_proj_anchors_{project_id}", False):
+            st.session_state.pop(f"txt_proj_anchors_{project_id}", None)
+            st.session_state.pop(f"txt_proj_avoids_{project_id}", None)
+            st.session_state.pop(f"txt_proj_vis_sum_{project_id}", None)
+
+        cur_anchors_str = ", ".join(getattr(manifest, "visual_anchor_terms", []) or [])
+        cur_avoids_str = ", ".join(getattr(manifest, "visual_avoid_terms", []) or [])
+        cur_vis_summary = getattr(manifest, "visual_summary", None) or ""
+
+        col_anc1, col_anc2 = st.columns(2)
+        with col_anc1:
+            txt_anchors = st.text_input(
+                t("project_anchor_terms_label"),
+                value=cur_anchors_str,
+                help=t("project_anchor_terms_help"),
+                key=f"txt_proj_anchors_{project_id}",
+                disabled=is_job_running,
+            )
+        with col_anc2:
+            txt_avoids = st.text_input(
+                t("project_avoid_terms_label"),
+                value=cur_avoids_str,
+                help=t("project_avoid_terms_help"),
+                key=f"txt_proj_avoids_{project_id}",
+                disabled=is_job_running,
+            )
+
+        txt_vis_sum = st.text_area(
+            t("project_visual_summary_label"),
+            value=cur_vis_summary,
+            height=68,
+            key=f"txt_proj_vis_sum_{project_id}",
+            disabled=is_job_running,
+        )
+
+        col_anc_b1, col_anc_b2 = st.columns([1, 1])
+        with col_anc_b1:
+            if st.button(
+                t("btn_save_project_anchors"),
+                key=f"btn_save_proj_anchors_{project_id}",
+                disabled=is_job_running,
+                use_container_width=True,
+            ):
+                manifest.visual_anchor_terms = _clean_term_list(txt_anchors)
+                manifest.visual_avoid_terms = _clean_term_list(txt_avoids)
+                manifest.visual_summary = (txt_vis_sum or "").strip() or None
+                save_manifest(manifest, p_dir)
+                st.session_state[f"proj_anchors_notice_{project_id}"] = t("project_anchors_saved")
+                st.rerun()
+        with col_anc_b2:
+            if st.button(
+                t("btn_regen_project_anchors"),
+                key=f"btn_regen_proj_anchors_{project_id}",
+                disabled=is_job_running,
+                use_container_width=True,
+            ):
+                try:
+                    ensure_project_visual_anchors(manifest, force=True)
+                    save_manifest(manifest, p_dir)
+                    st.session_state[f"_reset_proj_anchors_{project_id}"] = True
+                    st.session_state[f"proj_anchors_notice_{project_id}"] = t("project_anchors_regen_ok")
+                    st.rerun()
+                except (LLMCreditError, LLMModelNotFoundError) as exc:
+                    llm_adv = check_llm_status()
+                    _render_llm_friendly_error_box(
+                        project_id,
+                        str(exc),
+                        active_model=str(llm_adv.get("model") or ""),
+                        key_suffix="anchors",
+                    )
+                except Exception as exc:
+                    _render_friendly_error(t("err_project_anchors_friendly"), exc)
+
     # Mockup 3: If core steps are completed and on Render or CapCut step, render side-by-side view
     if core_4_completed and active_step in ("render", "capcut"):
         col_side_rend, col_side_cc = st.columns(2)
@@ -1100,8 +1498,31 @@ def render_script_step_flow(
                 st.rerun()
 
     # If script is already finished: show chapter list and continue button
+    fix_h_notice = st.session_state.pop(f"fix_headings_notice_{project_id}", None)
+    if fix_h_notice:
+        st.success(fix_h_notice)
+
     if status == "selesai":
         st.success(t("script_summary_format", chapters=len(manifest.chapters)))
+        leaked_hits = detect_leaked_chapter_headings(manifest)
+        if leaked_hits:
+            st.warning(t("script_leaked_headings_warn", count=len(leaked_hits)))
+            if st.button(
+                t("btn_fix_chapter_headings"),
+                key=f"btn_fix_headings_{project_id}",
+                disabled=is_job_running,
+            ):
+                try:
+                    res_fix = fix_project_headings(p_dir)
+                    st.session_state[f"fix_headings_notice_{project_id}"] = t(
+                        "fix_headings_success",
+                        groups=res_fix["fixed_groups"],
+                        shots=res_fix["fixed_shots"],
+                    )
+                    st.rerun()
+                except Exception as exc:
+                    _render_friendly_error(t("err_fix_headings_friendly"), exc)
+
         for ch in manifest.chapters:
             if getattr(ch, "needs_language_review", False):
                 st.warning(
@@ -1171,9 +1592,12 @@ def render_script_step_flow(
             active_prov_id = str(llm_status.get("provider") or "")
             active_prov_label = str(llm_status.get("provider_label") or active_prov_id)
             active_model = str(llm_status.get("model") or "-")
+            active_model_disp = _format_model_with_tier(active_model, llm_status.get("billing_tier"))
             use_fake = st.session_state.get(f"fake_toggle_{project_id}", False)
 
-            st.markdown(t("ai_active_provider_model", provider=active_prov_label, model=active_model))
+            st.markdown(t("ai_active_provider_model", provider=active_prov_label, model=active_model_disp))
+            if llm_status.get("used_safe_default"):
+                st.caption(t("ai_model_safe_default_note", model=active_model))
             if llm_ok:
                 st.caption(t("ai_provider_ready_badge", masked=llm_status.get("masked_key") or "OK"))
             elif llm_status.get("is_invalid"):
@@ -1200,13 +1624,12 @@ def render_script_step_flow(
                     else:
                         st.success(t("llm_connection_ok_plain", latency=conn_lat))
                 else:
-                    lower_c = conn_msg.lower()
-                    if "does not exist" in lower_c or "model_not_found" in lower_c or ("not found" in lower_c and "model" in lower_c):
-                        st.error(t("llm_err_model_not_found", model=active_model))
-                    elif "429" in lower_c or "rate limit" in lower_c:
-                        st.warning(t("llm_err_rate_limit"))
-                    else:
-                        st.error(t("llm_connection_failed", msg=conn_msg))
+                    _render_llm_friendly_error_box(
+                        project_id,
+                        conn_msg,
+                        active_model=active_model,
+                        key_suffix="conn",
+                    )
 
             with st.expander(t("expander_ai_options"), expanded=False):
                 custom_topic = st.text_input(t("field_ai_topic"), value=getattr(manifest, "topic", None) or manifest.sub_niche_focus or "", key=f"ai_topic_{project_id}")
@@ -1520,34 +1943,50 @@ def get_shot_narration(chapter: Chapter, shot: Shot) -> str:
     return shot.effective_query or shot.search_query or shot.visual_prompt or ""
 
 
-def get_shot_thumbnail_path(project_dir: Path, shot: Shot) -> Optional[Path]:
-    """Get fast real thumbnail image path for gallery preview (W2).
+def get_shot_thumbnail_path(project_dir: Path, shot: Shot, fps: int = 25) -> Optional[Path]:
+    """Get hash-keyed thumbnail image path matching the shot's single visual source of truth (W2, F14).
 
-    1. Checks project cache: assets/visual/thumbnails/<shot_id>.jpg
-    2. If missing, extracts a real frame at the middle of duration (width 320 px)
-       from shot.rendered_clip (or shot.asset_path if clip not built yet).
-    3. Cached once and reused across subsequent gallery opens.
+    1. Resolves canonical source via `resolve_shot_visual_source` (`rendered_clip` first, else `asset_path`).
+    2. Keys cache filename by content hash (`assets/visual/thumbnails/<shot_id>_<hash16>.jpg`).
+    3. Removes stale unkeyed or outdated hash thumbnails whenever source changes.
     """
+    from app.services.longform.visual.base import (
+        invalidate_shot_thumbnail_cache,
+        resolve_shot_visual_source,
+    )
+
+    vis_src = resolve_shot_visual_source(project_dir, shot, fps=fps)
+    src_file = vis_src.get("source_path")
+    src_hash = vis_src.get("source_hash")
+    if not src_file or not src_file.is_file():
+        return None
+
     t_dir = project_dir / "assets" / "visual" / "thumbnails"
-    t_file = t_dir / f"{shot.shot_id}.jpg"
+    t_file = t_dir / (f"{shot.shot_id}_{src_hash}.jpg" if src_hash else f"{shot.shot_id}.jpg")
     if t_file.is_file() and t_file.stat().st_size > 0:
         return t_file
 
-    # 1. Primary source: rendered clip
-    src_file = None
-    if shot.rendered_clip:
-        vc = project_dir / shot.rendered_clip
-        if vc.is_file():
-            src_file = vc
+    # If a legacy unkeyed thumbnail exists and is newer/equal to current source (not stale), promote without invoking ffmpeg
+    legacy_file = t_dir / f"{shot.shot_id}.jpg"
+    if (
+        legacy_file.is_file()
+        and legacy_file.stat().st_size > 0
+        and t_file != legacy_file
+        and not vis_src.get("needs_rebuild")
+        and getattr(shot, "status", None) != ItemStatus.stale
+    ):
+        try:
+            if legacy_file.stat().st_mtime >= src_file.stat().st_mtime:
+                import shutil as _shutil
+                t_dir.mkdir(parents=True, exist_ok=True)
+                _shutil.copy2(legacy_file, t_file)
+                legacy_file.unlink(missing_ok=True)
+                return t_file
+        except OSError:
+            pass
 
-    # 2. Secondary source: raw asset
-    if not src_file and shot.asset_path:
-        va = project_dir / shot.asset_path
-        if va.is_file():
-            src_file = va
-
-    if not src_file:
-        return None
+    # Clean older/unkeyed thumbnails for this shot before extracting fresh frame
+    invalidate_shot_thumbnail_cache(project_dir, shot.shot_id)
 
     try:
         t_dir.mkdir(parents=True, exist_ok=True)
@@ -1674,14 +2113,43 @@ def render_visual_step_flow(
     mask_coverr = mask_api_key(raw_ck) if has_coverr else ""
 
     from app.services.longform.visual.ai_image import estimate_ai_image_usage, get_ai_image_readiness
+    from app.services.longform.visual.ai_relevance import (
+        check_shot_relevance,
+        estimate_relevance_check_calls,
+        get_vision_readiness,
+    )
+    from app.services.longform.visual.ai_video import (
+        AI_VIDEO_PROVIDER_ORDER,
+        build_ai_video_prompt,
+        estimate_ai_video_cost,
+        get_ai_video_provider_meta,
+        get_model_supported_durations,
+        list_configured_ai_video_providers,
+        list_supported_ai_video_providers,
+        plan_needs_review_ai_video_batch,
+        round_up_supported_duration,
+    )
+    from app.services.longform.visual.ai_keywords import (
+        estimate_ai_keyword_calls,
+        format_keyword_reason,
+        infer_keyword_source,
+    )
+    from app.services.longform.language_guard import resolve_project_language
+    from app.services.longform.visual.keyword_translator import (
+        is_non_english_language,
+        translate_single_query_to_english,
+    )
 
     ai_readiness = get_ai_image_readiness()
     has_ai_image = bool(ai_readiness.get("ready", False))
+    vision_info = get_vision_readiness()
+    ai_vid_providers = list_configured_ai_video_providers()
 
     _cb_pix = st.session_state.get(f"cb_prov_pixabay_{project_id}", has_pixabay) if has_pixabay else False
     _cb_cov = st.session_state.get(f"cb_prov_coverr_{project_id}", has_coverr) if has_coverr else False
     _cb_ai = st.session_state.get(f"cb_prov_ai_{project_id}", False) if has_ai_image else False
     _cb_loc = st.session_state.get(f"cb_prov_local_{project_id}", True)
+    _cb_ai_rel = bool(st.session_state.get(f"cb_ai_rel_{project_id}", False)) if vision_info.get("vision_supported") else False
     target_prov = "ai_image" if _cb_ai and not (_cb_pix or _cb_cov) else (
         "pixabay" if _cb_pix else ("coverr" if _cb_cov else ("ai_image" if _cb_ai else ("local" if _cb_loc else None)))
     )
@@ -1706,12 +2174,16 @@ def render_visual_step_flow(
                     vis_args = ["visual", "pipeline", project_id, "--allow-fallback"]
                     if target_prov:
                         vis_args.extend(["--provider", target_prov])
+                    if _cb_ai_rel:
+                        vis_args.append("--check-ai-relevance")
                     _start_job_safe(project_id, "visual_pipeline", jobs.build_longform_cli_command(*vis_args))
             elif st_val == "perlu_diperbarui":
                 if st.button(t("visual_btn_rebuild_stale"), type="primary", key=f"btn_update_vis_{project_id}", use_container_width=True):
                     vis_args = ["visual", "pipeline", project_id, "--allow-fallback"]
                     if target_prov:
                         vis_args.extend(["--provider", target_prov])
+                    if _cb_ai_rel:
+                        vis_args.append("--check-ai-relevance")
                     _start_job_safe(project_id, "visual_pipeline", jobs.build_longform_cli_command(*vis_args))
             else:  # belum
                 st_all = compute_project_step_status(p_dir)
@@ -1733,6 +2205,8 @@ def render_visual_step_flow(
                     vis_args = ["visual", "pipeline", project_id, "--allow-fallback"]
                     if target_prov:
                         vis_args.extend(["--provider", target_prov])
+                    if _cb_ai_rel:
+                        vis_args.append("--check-ai-relevance")
                     _start_job_safe(project_id, "visual_pipeline", jobs.build_longform_cli_command(*vis_args))
 
     # --- V1: Summary Metric Tiles (Mockup 2 V3) ---
@@ -1764,7 +2238,7 @@ def render_visual_step_flow(
                     used_sources_set.add(t("source_placeholder"))
                 else:
                     src = s.actual_source or s.requested_source or "stock"
-                    used_sources_set.add(src.capitalize())
+                    used_sources_set.add(src if str(src).startswith("AI Video") else str(src).capitalize())
     sources_str = ", ".join(sorted(used_sources_set)) if used_sources_set else t("source_none_yet")
 
     col_m1, col_m2, col_m3, col_m4 = st.columns(4)
@@ -1808,6 +2282,7 @@ def render_visual_step_flow(
             t("prov_ai_ready", provider=ai_readiness["backend_label"]) if has_ai_image else t("prov_ai_no_mpt_key"),
             value=bool(st.session_state.get(f"cb_prov_ai_{project_id}", False)) if has_ai_image else False,
             disabled=not has_ai_image,
+            help=None if has_ai_image else t("prov_ai_no_mpt_key_help"),
             key=f"cb_prov_ai_{project_id}",
         )
         if has_ai_image and cb_ai:
@@ -1823,14 +2298,158 @@ def render_visual_step_flow(
             if col_s5.button(t("btn_open_image_settings"), key=f"btn_ai_img_cfg_{project_id}"):
                 _open_mpt_settings_dialog("image")
 
+        st.divider()
+        vision_ok = bool(vision_info.get("vision_supported", False))
+        vision_model_raw = str(vision_info.get("model") or vision_info.get("provider") or "-")
+        vision_model_disp = _format_model_with_tier(vision_model_raw, vision_info.get("billing_tier"))
+        cb_ai_rel = st.checkbox(
+            t("chk_ai_relevance_vision"),
+            value=bool(st.session_state.get(f"cb_ai_rel_{project_id}", False)) if vision_ok else False,
+            disabled=not vision_ok,
+            key=f"cb_ai_rel_{project_id}",
+        )
+        st.caption(t("ai_relevance_active_model_caption", model=vision_model_disp))
+        if not vision_ok:
+            st.caption(t("ai_relevance_no_vision_notice"))
+        elif cb_ai_rel:
+            est_rel = estimate_relevance_check_calls(manifest)
+            st.info(
+                t(
+                    "ai_relevance_estimate_notice",
+                    model=vision_model_disp,
+                    calls=est_rel["estimated_calls"],
+                    cached=est_rel["cached"],
+                )
+            )
+
+    if needs_review_count > 0 and ai_vid_providers:
+        if st.button(
+            t("btn_bulk_ai_video_review", count=needs_review_count),
+            key=f"btn_bulk_ai_video_{project_id}",
+            disabled=is_job_running,
+        ):
+            st.session_state[f"ai_video_confirm_single_{project_id}"] = None
+            st.session_state[f"ai_video_confirm_batch_{project_id}"] = True
+            st.rerun()
+
+    # --- F8: Update Visual Keywords with AI (per chapter / all chapters) ---
+    if total_shots > 0:
+        from app.services.longform.llm_adapter import LLMCreditError, LLMModelNotFoundError
+
+        ai_kw_notice = st.session_state.pop(f"ai_kw_last_notice_{project_id}", None)
+        if isinstance(ai_kw_notice, dict) and ai_kw_notice.get("text"):
+            if ai_kw_notice.get("level") == "warning":
+                st.warning(ai_kw_notice["text"])
+            else:
+                st.success(ai_kw_notice["text"])
+
+        with st.popover(t("btn_update_keywords_ai"), disabled=is_job_running):
+            cur_ch_pill = st.session_state.get(f"vis_ch_sel_{project_id}")
+            cur_ch_idx = None
+            for _ch in manifest.chapters:
+                if cur_ch_pill == t("chapter_pill_format", idx=_ch.chapter_index):
+                    cur_ch_idx = _ch.chapter_index
+                    break
+
+            scope_opts = ["all"] + ([f"ch:{cur_ch_idx}"] if cur_ch_idx is not None else [])
+            if len(scope_opts) == 1 and manifest.chapters:
+                first_ch = manifest.chapters[0].chapter_index
+                scope_opts.append(f"ch:{first_ch}")
+
+            def _fmt_kw_scope(val: str) -> str:
+                if val == "all":
+                    return t("ai_kw_scope_all")
+                ch_n = val.split(":", 1)[1]
+                return t("ai_kw_scope_chapter", ch=ch_n)
+
+            kw_scope = st.radio(
+                t("ai_kw_scope_label"),
+                options=scope_opts,
+                format_func=_fmt_kw_scope,
+                key=f"radio_ai_kw_scope_{project_id}",
+            )
+            sel_ch_filter = int(kw_scope.split(":", 1)[1]) if kw_scope.startswith("ch:") else None
+            kw_est = estimate_ai_keyword_calls(manifest, chapter_index=sel_ch_filter, force=True)
+            st.info(
+                t(
+                    "ai_kw_estimate_notice",
+                    calls=kw_est["estimated_llm_calls"],
+                    shots=kw_est["unlocked_shots"],
+                    tags=kw_est["tag_shots"],
+                )
+            )
+            llm_kw_status = check_llm_status()
+            if not llm_kw_status.get("configured") or llm_kw_status.get("is_invalid"):
+                st.warning(t("ai_kw_no_llm_fallback_notice"))
+
+            if st.button(
+                t("btn_confirm_update_ai_kw"),
+                type="primary",
+                key=f"btn_run_ai_kw_{project_id}",
+                disabled=is_job_running or kw_est["unlocked_shots"] == 0,
+                use_container_width=True,
+            ):
+                try:
+                    with st.spinner(t("job_step_visual_ai_keywords")):
+                        with ProjectLock(p_dir):
+                            vis_kw_svc = VisualService(p_dir)
+                            _m_kw, kw_res = vis_kw_svc.update_keywords_with_ai(
+                                chapter_index=sel_ch_filter,
+                                force=True,
+                                mark_stale=True,
+                            )
+                    msg_kw_ok = t(
+                        "ai_kw_updated_success",
+                        updated=kw_res["updated"],
+                        stale=kw_res["stale_marked"],
+                    )
+                    if kw_res.get("fallback_used") or kw_res.get("warnings"):
+                        warn_txt = " | ".join(str(w) for w in (kw_res.get("warnings") or []) if w)
+                        full_warn = f"{msg_kw_ok} — {warn_txt}" if warn_txt else msg_kw_ok
+                        st.session_state[f"ai_kw_last_notice_{project_id}"] = {
+                            "level": "warning",
+                            "text": full_warn,
+                        }
+                    else:
+                        st.session_state[f"ai_kw_last_notice_{project_id}"] = {
+                            "level": "success",
+                            "text": msg_kw_ok,
+                        }
+                    st.rerun()
+                except (LLMCreditError, LLMModelNotFoundError) as exc:
+                    _render_llm_friendly_error_box(
+                        project_id,
+                        str(exc),
+                        active_model=str(llm_kw_status.get("model") or ""),
+                        key_suffix="aikw",
+                    )
+                except Exception as exc:
+                    _render_friendly_error(t("err_ai_kw_friendly"), exc)
+
     # --- V2: Interactive 2-Column Side-by-Side Gallery & Detail Layout (Mockup 2 V3) ---
     if total_shots > 0:
         st.write("---")
         col_gallery, col_detail = st.columns([1.6, 1.0])
 
-        # All shots flattened & mapped
+        # All shots flattened & mapped + single visual source-of-truth state (F14)
+        from app.services.longform.visual.base import (
+            invalidate_shot_thumbnail_cache,
+            resolve_shot_visual_source,
+        )
+
         all_shots_list = [s for ch in manifest.chapters for s in ch.shots]
         all_ch_map = {s.shot_id: ch for ch in manifest.chapters for s in ch.shots}
+        proj_fps = getattr(getattr(manifest, "encoder_settings", None), "fps", 25) or 25
+        vis_state_map: Dict[str, Dict[str, Any]] = {}
+        needs_update_count = 0
+        for _s in all_shots_list:
+            _vst = resolve_shot_visual_source(p_dir, _s, fps=proj_fps)
+            if _vst["needs_rebuild"] and getattr(_s, "status", None) != ItemStatus.stale:
+                _s.status = ItemStatus.stale
+                _vst["is_needs_update"] = True
+            vis_state_map[_s.shot_id] = _vst
+            if _vst["is_needs_update"]:
+                needs_update_count += 1
 
         # Resolve selected shot ID or default to first shot
         current_sel_id = st.session_state.get(f"selected_shot_{project_id}")
@@ -1854,14 +2473,15 @@ def render_visual_step_flow(
                 label_visibility="collapsed",
             )
 
-            # Filter Mode Chips with Exact Counts (Mockup 2 V3)
+            # Filter Mode Chips with Exact Counts (Mockup 2 V3 + F14 Perlu diperbarui)
             opt_all_f = f"{t('filter_all')} ({total_shots})"
+            opt_upd_f = t("filter_needs_update", count=needs_update_count)
             opt_rev_f = f"{t('filter_needs_review')} ({needs_review_count})"
             opt_lock_f = f"{t('filter_locked')} ({locked_count})"
             opt_ph_f = f"{t('filter_placeholder')} ({placeholder_count})"
             filter_mode = st.pills(
                 t("label_filter_status"),
-                options=[opt_all_f, opt_rev_f, opt_lock_f, opt_ph_f],
+                options=[opt_all_f, opt_upd_f, opt_rev_f, opt_lock_f, opt_ph_f],
                 default=opt_all_f,
                 key=f"vis_filter_{project_id}",
                 label_visibility="collapsed",
@@ -1874,6 +2494,8 @@ def render_visual_step_flow(
                 if ch_choice != t("all_chapters_option") and ch_choice != ch_label:
                     continue
                 for s in ch.shots:
+                    if filter_mode == opt_upd_f and not vis_state_map.get(s.shot_id, {}).get("is_needs_update"):
+                        continue
                     if filter_mode == opt_rev_f and not getattr(s, "needs_review", False):
                         continue
                     if filter_mode == opt_lock_f and not getattr(s, "locked", False):
@@ -1891,6 +2513,7 @@ def render_visual_step_flow(
                     for c_idx, (ch, shot) in enumerate(visible_shots[r_idx:r_idx+3]):
                         with g_cols[c_idx]:
                             is_active_shot = (shot.shot_id == current_sel_id)
+                            shot_vst = vis_state_map.get(shot.shot_id) or resolve_shot_visual_source(p_dir, shot, fps=proj_fps)
 
                             with st.container(border=True):
                                 thumb_p = get_shot_thumbnail_path(p_dir, shot)
@@ -1898,6 +2521,12 @@ def render_visual_step_flow(
                                 st.markdown(render_project_thumbnail_html(thumb_p, dur_s), unsafe_allow_html=True)
 
                                 badges = []
+                                if shot_vst.get("needs_rebuild"):
+                                    badges.append(t("badge_needs_rebuild"))
+                                elif shot_vst.get("not_built"):
+                                    badges.append(t("badge_not_built"))
+                                elif shot_vst.get("is_needs_update"):
+                                    badges.append(t("badge_needs_update"))
                                 if getattr(shot, "needs_review", False):
                                     badges.append(t("badge_needs_review"))
                                 if getattr(shot, "locked", False):
@@ -1933,6 +2562,7 @@ def render_visual_step_flow(
                 target_chapter = all_ch_map.get(current_sel_id)
 
             if target_shot and target_chapter:
+                det_vst = vis_state_map.get(target_shot.shot_id) or resolve_shot_visual_source(p_dir, target_shot, fps=proj_fps)
                 with st.container(border=True):
                     col_dh, col_lock = st.columns([3.2, 1.8])
                     with col_dh:
@@ -1947,18 +2577,20 @@ def render_visual_step_flow(
                             save_manifest(manifest, p_dir)
                             st.rerun()
 
-                    # Video / Image Large Preview
-                    clip_p = (p_dir / target_shot.rendered_clip) if target_shot.rendered_clip else None
-                    asset_p = (p_dir / target_shot.asset_path) if target_shot.asset_path else None
+                    # Video / Image Large Preview (same canonical source as gallery thumbnail, F14)
+                    prev_p = det_vst.get("source_path")
                     with st.spinner(t("spinner_loading_video_preview")):
-                        if clip_p and clip_p.is_file():
-                            st.video(str(clip_p))
-                        elif asset_p and asset_p.is_file() and asset_p.suffix.lower() in (".mp4", ".mov", ".mkv", ".webm"):
-                            st.video(str(asset_p))
-                        elif asset_p and asset_p.is_file():
-                            st.image(str(asset_p), use_container_width=True)
+                        if prev_p and prev_p.is_file() and prev_p.suffix.lower() in (".mp4", ".mov", ".mkv", ".webm"):
+                            st.video(str(prev_p))
+                        elif prev_p and prev_p.is_file():
+                            st.image(str(prev_p), use_container_width=True)
                         else:
                             st.info(t("shot_clip_not_built"))
+
+                    if det_vst.get("needs_rebuild"):
+                        st.warning(t("shot_needs_rebuild_notice"))
+                    elif det_vst.get("not_built"):
+                        st.info(t("shot_preview_from_asset_not_built"))
 
                     target_narr = get_shot_narration(target_chapter, target_shot)
                     st.markdown(t("shot_narration_label", text=html.escape(target_narr or "-")))
@@ -1974,7 +2606,95 @@ def render_visual_step_flow(
                             required_subject_terms=preset_snap.get("required_subject_terms"),
                         )
 
-                    st.markdown(t("shot_keywords_label", kw=html.escape(short_q or "-")))
+                    kw_en_val = getattr(target_shot, "search_query_en", None)
+                    kw_source_code = infer_keyword_source(target_chapter, target_shot)
+                    kw_source_disp = t(f"kw_source_{kw_source_code}")
+                    kw_reason_raw = getattr(target_shot, "search_query_reason", None)
+                    kw_reason_disp = format_keyword_reason(kw_reason_raw, lang=get_ui_language())
+                    proj_lang_vis = resolve_project_language(manifest)
+
+                    if kw_en_val:
+                        st.markdown(t("shot_keywords_en_search_label", kw=html.escape(kw_en_val)))
+                        alt_qs = [
+                            str(q).strip()
+                            for q in (getattr(target_shot, "search_queries_en", None) or [])[1:]
+                            if str(q or "").strip() and str(q).strip().lower() != kw_en_val.strip().lower()
+                        ]
+                        if alt_qs:
+                            st.caption(t("shot_keywords_alts_caption", alts=" | ".join(alt_qs)))
+                    elif not is_non_english_language(proj_lang_vis):
+                        st.markdown(t("shot_keywords_en_search_label", kw=html.escape(short_q or "-")))
+                    else:
+                        st.markdown(
+                            t(
+                                "shot_keywords_lang_label",
+                                proj_lang=html.escape(str(proj_lang_vis)),
+                                kw=html.escape(short_q or "-"),
+                            )
+                        )
+
+                    if kw_reason_disp:
+                        st.markdown(
+                            t(
+                                "shot_keywords_source_with_reason",
+                                src=html.escape(kw_source_disp),
+                                reason=html.escape(kw_reason_disp),
+                            )
+                        )
+                    else:
+                        st.markdown(t("shot_keywords_source_label", src=html.escape(kw_source_disp)))
+
+                    if kw_en_val and short_q and short_q.strip().lower() != kw_en_val.strip().lower():
+                        if is_non_english_language(proj_lang_vis):
+                            st.markdown(t("shot_keywords_orig_summary", orig=html.escape(short_q)))
+
+                    eff_q_disp = getattr(target_shot, "effective_query", None)
+                    if eff_q_disp:
+                        st.markdown(t("shot_found_with_query", q=html.escape(eff_q_disp)))
+
+                    # F1: AI Relevance verdict & single-shot re-check button
+                    rel_status = getattr(target_shot, "ai_relevance_status", None)
+                    rel_reason = getattr(target_shot, "ai_relevance_reason", None) or "-"
+                    if rel_status in ("ya", "tidak", "ragu"):
+                        msg_rel = t(f"ai_relevance_result_{rel_status}", reason=rel_reason)
+                        if rel_status == "ya":
+                            st.success(msg_rel)
+                        elif rel_status == "tidak":
+                            st.error(msg_rel)
+                        else:
+                            st.warning(msg_rel)
+
+                    vision_ok = bool(vision_info.get("vision_supported"))
+                    if st.button(
+                        t("btn_recheck_ai_relevance"),
+                        key=f"btn_recheck_ai_{project_id}_{target_shot.shot_id}",
+                        disabled=(not vision_ok) or is_job_running,
+                        help=t("ai_relevance_no_vision_notice") if not vision_ok else None,
+                    ):
+                        try:
+                            vis_svc_rel = VisualService(p_dir)
+                            _ = vis_svc_rel
+                            check_shot_relevance(
+                                target_shot,
+                                target_chapter,
+                                p_dir,
+                                manifest,
+                                force_refresh=True,
+                                clear_on_yes=True,
+                            )
+                            save_manifest(manifest, p_dir)
+                            st.session_state.pop(f"chk_rev_{project_id}_{target_shot.shot_id}", None)
+                            st.rerun()
+                        except Exception as exc:
+                            _render_friendly_error(t("err_ai_relevance_friendly"), exc)
+
+                    if not vision_ok:
+                        st.caption(t("ai_relevance_vision_hint_below"))
+                        if st.button(
+                            t("btn_open_llm_settings"),
+                            key=f"btn_recheck_cfg_{project_id}_{target_shot.shot_id}",
+                        ):
+                            _open_mpt_settings_dialog("llm")
 
                     # Needs review checkbox
                     is_rev = getattr(target_shot, "needs_review", False)
@@ -1986,10 +2706,23 @@ def render_visual_step_flow(
 
                     st.markdown("---")
                     st.markdown(t("visual_replace_heading"))
-                    tab_cands, tab_srch, tab_up = st.tabs([t("tab_cand"), t("tab_search"), t("tab_upload")])
+                    tab_cands, tab_srch, tab_up, tab_ai_vid = st.tabs([
+                        t("tab_cand"),
+                        t("tab_search"),
+                        t("tab_upload"),
+                        t("tab_ai_video"),
+                    ])
 
                     with tab_cands:
-                        raw_cands = target_shot.candidates or []
+                        from app.services.longform.visual.stock import filter_candidates_by_anchors_and_avoids
+
+                        raw_cands_all = target_shot.candidates or []
+                        raw_cands = filter_candidates_by_anchors_and_avoids(
+                            raw_cands_all,
+                            anchor_terms=list(getattr(manifest, "visual_anchor_terms", []) or []),
+                            avoid_terms=list(getattr(manifest, "visual_avoid_terms", []) or []),
+                            blocked_terms=list((preset_snap or {}).get("blocked_terms") or []),
+                        )
                         cur_asset_file = Path(target_shot.asset_path).name if target_shot.asset_path else ""
 
                         active_base_id = ""
@@ -2062,8 +2795,7 @@ def render_visual_step_flow(
                                                         try:
                                                             vis_svc = VisualService(p_dir)
                                                             vis_svc.replace_shot(manifest, target_shot.shot_id, candidate_index=orig_idx+1, rebuild=True)
-                                                            t_cache = p_dir / "assets" / "visual" / "thumbnails" / f"{target_shot.shot_id}.jpg"
-                                                            t_cache.unlink(missing_ok=True)
+                                                            invalidate_shot_thumbnail_cache(p_dir, target_shot.shot_id)
                                                             save_manifest(manifest, p_dir)
                                                             get_shot_thumbnail_path(p_dir, target_shot)
                                                             st.session_state[f"preview_cand_url_{project_id}"] = None
@@ -2075,9 +2807,10 @@ def render_visual_step_flow(
                                                             _render_friendly_error(t("err_replace_cand_friendly"), exc)
 
                     with tab_srch:
+                        search_prefill = kw_en_val or short_q
                         q_input = st.text_input(
                             t("field_new_search_query"),
-                            value=short_q,
+                            value=search_prefill,
                             key=f"txt_srch_{project_id}_{target_shot.shot_id}",
                         )
                         p_opts = ["pixabay", "coverr"] if has_coverr else ["pixabay"]
@@ -2085,16 +2818,28 @@ def render_visual_step_flow(
                         if st.button(t("btn_search_apply_footage"), key=f"btn_srch_apply_{project_id}_{target_shot.shot_id}", use_container_width=True):
                             with st.spinner(t("spinner_searching_footage")):
                                 try:
+                                    eff_prompt = q_input
+                                    proj_lang = resolve_project_language(manifest)
+                                    if is_non_english_language(proj_lang) and (not kw_en_val or q_input.strip() != kw_en_val.strip()):
+                                        translated_q, tr_warn = translate_single_query_to_english(
+                                            q_input,
+                                            preset_snapshot=preset_snap,
+                                            project_lang=proj_lang,
+                                        )
+                                        if translated_q:
+                                            eff_prompt = translated_q
+                                            target_shot.search_query_en = translated_q
+                                        if tr_warn:
+                                            st.warning(t("f2_translation_warning_prefix", msg=tr_warn))
                                     vis_svc = VisualService(p_dir)
                                     vis_svc.replace_shot(
                                         manifest=manifest,
                                         shot_id=target_shot.shot_id,
-                                        prompt=q_input,
+                                        prompt=eff_prompt,
                                         provider_name=sel_p,
                                         rebuild=True,
                                     )
-                                    t_cache = p_dir / "assets" / "visual" / "thumbnails" / f"{target_shot.shot_id}.jpg"
-                                    t_cache.unlink(missing_ok=True)
+                                    invalidate_shot_thumbnail_cache(p_dir, target_shot.shot_id)
                                     save_manifest(manifest, p_dir)
                                     get_shot_thumbnail_path(p_dir, target_shot)
                                     st.session_state.pop(f"chk_rev_{project_id}_{target_shot.shot_id}", None)
@@ -2123,8 +2868,7 @@ def render_visual_step_flow(
                                             file_path=asset_info["file_path"],
                                             rebuild=True,
                                         )
-                                        t_cache = p_dir / "assets" / "visual" / "thumbnails" / f"{target_shot.shot_id}.jpg"
-                                        t_cache.unlink(missing_ok=True)
+                                        invalidate_shot_thumbnail_cache(p_dir, target_shot.shot_id)
                                         save_manifest(manifest, p_dir)
                                         get_shot_thumbnail_path(p_dir, target_shot)
                                         st.session_state.pop(f"chk_rev_{project_id}_{target_shot.shot_id}", None)
@@ -2133,6 +2877,286 @@ def render_visual_step_flow(
                                         st.rerun()
                                     except Exception as exc:
                                         _render_friendly_error(t("err_upload_footage_friendly"), exc)
+
+                    with tab_ai_vid:
+                        if not ai_vid_providers:
+                            st.info(t("ai_video_not_configured"))
+                            st.markdown(t("ai_video_supported_list_title"))
+                            for sup_p in list_supported_ai_video_providers():
+                                st.markdown(f"- **{sup_p['label']}** (`{sup_p['default_model']}`)")
+                            if st.button(t("btn_open_video_ai_settings"), key=f"btn_cfg_aiv_{project_id}_{target_shot.shot_id}"):
+                                _open_mpt_settings_dialog("video")
+                        else:
+                            prov_ids = [p["provider_id"] for p in ai_vid_providers]
+                            prov_lbls = {p["provider_id"]: p["label"] for p in ai_vid_providers}
+                            sel_aiv_prov = st.selectbox(
+                                t("field_ai_video_provider"),
+                                options=prov_ids,
+                                format_func=lambda x: prov_lbls.get(x, x),
+                                key=f"sel_aiv_prov_{project_id}_{target_shot.shot_id}",
+                            )
+                            aiv_meta = get_ai_video_provider_meta(sel_aiv_prov)
+                            sel_aiv_model = st.selectbox(
+                                t("field_ai_video_model"),
+                                options=aiv_meta["models"],
+                                key=f"sel_aiv_model_{project_id}_{target_shot.shot_id}_{sel_aiv_prov}",
+                            )
+                            sup_durs = get_model_supported_durations(sel_aiv_prov, sel_aiv_model)
+                            def_dur = round_up_supported_duration(target_shot.duration_seconds, sup_durs)
+                            col_vr1, col_vr2 = st.columns(2)
+                            with col_vr1:
+                                sel_aiv_res = st.selectbox(
+                                    t("field_ai_video_resolution"),
+                                    options=aiv_meta["resolutions"],
+                                    index=min(1, len(aiv_meta["resolutions"]) - 1),
+                                    key=f"sel_aiv_res_{project_id}_{target_shot.shot_id}_{sel_aiv_prov}",
+                                )
+                            with col_vr2:
+                                sel_aiv_dur = st.selectbox(
+                                    t("field_ai_video_duration"),
+                                    options=sup_durs,
+                                    index=sup_durs.index(def_dur) if def_dur in sup_durs else 0,
+                                    key=f"sel_aiv_dur_{project_id}_{target_shot.shot_id}_{sel_aiv_prov}",
+                                )
+                            st.caption(
+                                t(
+                                    "ai_video_duration_trim_note",
+                                    shot_dur=f"{target_shot.duration_seconds:.1f}",
+                                    gen_dur=sel_aiv_dur,
+                                )
+                            )
+                            default_aiv_prompt = build_ai_video_prompt(
+                                narration=target_narr,
+                                keywords=kw_en_val or short_q,
+                                preset_snapshot=preset_snap,
+                            )
+                            aiv_prompt = st.text_area(
+                                t("field_ai_video_prompt"),
+                                value=default_aiv_prompt,
+                                height=90,
+                                key=f"txt_aiv_prompt_{project_id}_{target_shot.shot_id}",
+                            )
+                            cost_est = estimate_ai_video_cost(sel_aiv_model, sel_aiv_dur, sel_aiv_res)
+                            if cost_est.get("known") and cost_est.get("estimated_usd") is not None:
+                                st.info(
+                                    t(
+                                        "ai_video_cost_known",
+                                        usd=f"{cost_est['estimated_usd']:.2f}",
+                                        date=cost_est["updated_at"],
+                                    )
+                                )
+                                if cost_est.get("url"):
+                                    st.caption(
+                                        t(
+                                            "ai_video_cost_source",
+                                            url=cost_est["url"],
+                                            date=cost_est.get("updated_at", ""),
+                                        )
+                                    )
+                            else:
+                                st.info(t("ai_video_cost_unknown"))
+
+                            if st.button(
+                                t("btn_generate_ai_video_shot"),
+                                type="primary",
+                                disabled=is_job_running or not aiv_prompt.strip(),
+                                key=f"btn_gen_aiv_{project_id}_{target_shot.shot_id}",
+                                use_container_width=True,
+                            ):
+                                st.session_state[f"ai_video_confirm_batch_{project_id}"] = False
+                                st.session_state[f"ai_video_confirm_single_{project_id}"] = {
+                                    "shot_id": target_shot.shot_id,
+                                    "shot_duration": target_shot.duration_seconds,
+                                    "provider_id": sel_aiv_prov,
+                                    "provider_label": prov_lbls.get(sel_aiv_prov, sel_aiv_prov),
+                                    "model_id": sel_aiv_model,
+                                    "resolution": sel_aiv_res,
+                                    "duration_seconds": int(sel_aiv_dur),
+                                    "prompt": aiv_prompt.strip(),
+                                    "cost_known": bool(cost_est.get("known")),
+                                    "estimated_usd": cost_est.get("estimated_usd"),
+                                    "updated_at": cost_est.get("updated_at"),
+                                    "url": cost_est.get("url", ""),
+                                }
+                                st.rerun()
+
+    # --- F3: Mandatory Cost Confirmation Dialogs (Single Shot & Bulk Needs-Review) ---
+    if not st.session_state.get("settings_dialog_open", False):
+        single_req = st.session_state.get(f"ai_video_confirm_single_{project_id}")
+        batch_open = bool(st.session_state.get(f"ai_video_confirm_batch_{project_id}", False))
+
+        if isinstance(single_req, dict):
+            @st.dialog(t("dlg_confirm_ai_video_title"))
+            def _confirm_single_ai_video_dialog():
+                st.warning(t("dlg_confirm_ai_video_warn"))
+                st.markdown(
+                    t(
+                        "dlg_confirm_ai_video_detail",
+                        shot=single_req["shot_id"],
+                        provider=single_req["provider_label"],
+                        model=single_req["model_id"],
+                        res=single_req["resolution"],
+                        dur=single_req["duration_seconds"],
+                        shot_dur=f"{single_req['shot_duration']:.1f}",
+                    )
+                )
+                st.code(single_req["prompt"], language="text")
+                if single_req.get("cost_known") and single_req.get("estimated_usd") is not None:
+                    st.info(
+                        t(
+                            "ai_video_cost_known",
+                            usd=f"{single_req['estimated_usd']:.2f}",
+                            date=single_req.get("updated_at", ""),
+                        )
+                    )
+                    if single_req.get("url"):
+                        st.caption(
+                            t(
+                                "ai_video_cost_source",
+                                url=single_req["url"],
+                                date=single_req.get("updated_at", ""),
+                            )
+                        )
+                else:
+                    st.info(t("ai_video_cost_unknown"))
+                col_c1, col_c2 = st.columns(2)
+                with col_c1:
+                    if st.button(
+                        t("btn_confirm_generate"),
+                        type="primary",
+                        key=f"btn_dlg_conf_aiv_{project_id}",
+                        use_container_width=True,
+                    ):
+                        req_copy = dict(single_req)
+                        st.session_state[f"ai_video_confirm_single_{project_id}"] = None
+                        cmd = jobs.build_longform_cli_command(
+                            "visual",
+                            "ai-video",
+                            project_id,
+                            "--shot",
+                            req_copy["shot_id"],
+                            "--provider",
+                            req_copy["provider_id"],
+                            "--model",
+                            req_copy["model_id"],
+                            "--resolution",
+                            req_copy["resolution"],
+                            "--duration",
+                            str(req_copy["duration_seconds"]),
+                            "--prompt",
+                            req_copy["prompt"],
+                        )
+                        _start_job_safe(project_id, "visual_ai_video", cmd)
+                with col_c2:
+                    if st.button(
+                        t("btn_cancel_dialog"),
+                        key=f"btn_dlg_canc_aiv_{project_id}",
+                        use_container_width=True,
+                    ):
+                        st.session_state[f"ai_video_confirm_single_{project_id}"] = None
+                        st.rerun()
+
+            _confirm_single_ai_video_dialog()
+
+        elif batch_open and ai_vid_providers:
+            @st.dialog(t("dlg_confirm_ai_video_batch_title"))
+            def _confirm_batch_ai_video_dialog():
+                st.warning(t("dlg_confirm_ai_video_warn"))
+                b_prov_ids = [p["provider_id"] for p in ai_vid_providers]
+                b_prov_lbls = {p["provider_id"]: p["label"] for p in ai_vid_providers}
+                sel_bp = st.selectbox(
+                    t("field_ai_video_provider"),
+                    options=b_prov_ids,
+                    format_func=lambda x: b_prov_lbls.get(x, x),
+                    key=f"sel_batch_aiv_prov_{project_id}",
+                )
+                b_meta = get_ai_video_provider_meta(sel_bp)
+                sel_bm = st.selectbox(
+                    t("field_ai_video_model"),
+                    options=b_meta["models"],
+                    key=f"sel_batch_aiv_model_{project_id}_{sel_bp}",
+                )
+                sel_br = st.selectbox(
+                    t("field_ai_video_resolution"),
+                    options=b_meta["resolutions"],
+                    index=min(1, len(b_meta["resolutions"]) - 1),
+                    key=f"sel_batch_aiv_res_{project_id}_{sel_bp}",
+                )
+                b_plan = plan_needs_review_ai_video_batch(manifest, sel_bp, sel_bm, sel_br)
+                st.markdown(t("dlg_confirm_batch_summary", count=b_plan["count"]))
+                budget_cap = st.number_input(
+                    t("field_ai_video_budget_cap"),
+                    min_value=0.10,
+                    max_value=500.0,
+                    value=5.0,
+                    step=0.50,
+                    key=f"num_batch_aiv_budget_{project_id}",
+                )
+                tot_est = b_plan.get("total_estimated_usd")
+                exceeds = False
+                if tot_est is not None:
+                    ref_cost = estimate_ai_video_cost(sel_bm, 4, sel_br)
+                    st.info(
+                        t(
+                            "ai_video_cost_known",
+                            usd=f"{tot_est:.2f}",
+                            date=ref_cost.get("updated_at", ""),
+                        )
+                    )
+                    if ref_cost.get("url"):
+                        st.caption(
+                            t(
+                                "ai_video_cost_source",
+                                url=ref_cost["url"],
+                                date=ref_cost.get("updated_at", ""),
+                            )
+                        )
+                    if tot_est > float(budget_cap):
+                        exceeds = True
+                        st.error(
+                            t(
+                                "dlg_budget_exceeded_warn",
+                                est=f"{tot_est:.2f}",
+                                cap=f"{float(budget_cap):.2f}",
+                            )
+                        )
+                else:
+                    st.info(t("ai_video_cost_unknown"))
+
+                col_bc1, col_bc2 = st.columns(2)
+                with col_bc1:
+                    if st.button(
+                        t("btn_confirm_generate"),
+                        type="primary",
+                        disabled=exceeds or b_plan["count"] == 0,
+                        key=f"btn_dlg_conf_batch_aiv_{project_id}",
+                        use_container_width=True,
+                    ):
+                        st.session_state[f"ai_video_confirm_batch_{project_id}"] = False
+                        cmd = jobs.build_longform_cli_command(
+                            "visual",
+                            "ai-video-batch",
+                            project_id,
+                            "--provider",
+                            sel_bp,
+                            "--model",
+                            sel_bm,
+                            "--resolution",
+                            sel_br,
+                            "--max-budget",
+                            f"{float(budget_cap):.2f}",
+                        )
+                        _start_job_safe(project_id, "visual_ai_video_batch", cmd)
+                with col_bc2:
+                    if st.button(
+                        t("btn_cancel_dialog"),
+                        key=f"btn_dlg_canc_batch_aiv_{project_id}",
+                        use_container_width=True,
+                    ):
+                        st.session_state[f"ai_video_confirm_batch_{project_id}"] = False
+                        st.rerun()
+
+            _confirm_batch_ai_video_dialog()
 
     # --- V4: Cache & Pemeliharaan ---
     with st.expander(t("expander_cache_maintenance"), expanded=False):
@@ -2157,6 +3181,15 @@ def render_visual_step_flow(
                     st.rerun()
                 except Exception as exc:
                     _render_friendly_error(t("err_prune_cache_friendly"), exc)
+
+        st.divider()
+        trash_cache_items = list_trashed_projects()
+        trash_cache_mb = round(sum(float(x.get("size_mb", 0.0)) for x in trash_cache_items), 2)
+        st.caption(t("cache_trash_summary", count=len(trash_cache_items), mb=f"{trash_cache_mb:.2f}"))
+        if st.button(t("btn_manage_trash", count=len(trash_cache_items)), key=f"btn_cache_open_trash_{project_id}"):
+            st.query_params.clear()
+            st.session_state["home_open_trash_requested"] = True
+            st.rerun()
 
 
 def _safe_open_path(path: Path | str, is_folder: bool = False):

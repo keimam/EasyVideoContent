@@ -100,11 +100,15 @@ def form_chapter_shots(
         start = seg.chapter_start_seconds or 0.0
         end = seg.chapter_end_seconds or (start + dur)
 
-        # Extract short query if search_keywords not explicitly set (X3)
-        short_q = seg.visual.search_keywords if (seg.visual and seg.visual.search_keywords) else ""
-        if not short_q:
+        # Extract short query if search_keywords not explicitly set (X3 / F8)
+        explicit_kw = seg.visual.search_keywords if (seg.visual and seg.visual.search_keywords) else ""
+        if explicit_kw:
+            short_q = explicit_kw
+            q_source = "tag"
+        else:
             from app.services.longform.visual.query_extractor import extract_short_search_query
             short_q = extract_short_search_query(seg.narration_text)
+            q_source = "extraction"
 
         curr_group = {
             "segment_indices": [seg.segment_index],
@@ -113,6 +117,7 @@ def form_chapter_shots(
             "duration_seconds": dur,
             "visual_prompt": seg.visual.prompt if (seg.visual and seg.visual.prompt) else "",
             "search_query": short_q,
+            "search_query_source": q_source,
             "motion": seg.visual.motion if seg.visual else MotionType.zoom_in,
             "requested_source": (seg.visual.requested_source if seg.visual and seg.visual.requested_source else default_source),
         }
@@ -158,6 +163,7 @@ def form_chapter_shots(
                     "duration_seconds": s_end - t,
                     "visual_prompt": g["visual_prompt"],
                     "search_query": g["search_query"],
+                    "search_query_source": g.get("search_query_source", "extraction"),
                     "motion": g["motion"],
                     "requested_source": g["requested_source"],
                 })
@@ -197,6 +203,7 @@ def form_chapter_shots(
             actual_source=grp["requested_source"],
             visual_prompt=grp["visual_prompt"],
             search_query=grp["search_query"],
+            search_query_source=grp.get("search_query_source", "extraction"),
             motion=motion,
             asset_path=f"assets/visual/shots/{shot_id}_asset.mp4" if "stock" in grp["requested_source"] else f"assets/visual/shots/{shot_id}_asset.jpg",
             rendered_clip=f"assets/visual/shots/{shot_id}.mp4",
