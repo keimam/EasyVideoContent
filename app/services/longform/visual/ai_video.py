@@ -144,6 +144,22 @@ def list_configured_ai_video_providers() -> List[Dict[str, Any]]:
     return results
 
 
+def list_supported_ai_video_providers() -> List[Dict[str, Any]]:
+    """Return all MoneyPrinterTurbo-supported AI Video providers with metadata (F9)."""
+    items: List[Dict[str, Any]] = []
+    for pid in AI_VIDEO_PROVIDER_ORDER:
+        meta = get_ai_video_provider_meta(pid)
+        items.append({
+            "provider_id": pid,
+            "label": meta["label"],
+            "default_model": meta["active_model"],
+            "models": meta["models"],
+            "resolutions": meta["resolutions"],
+            "durations": meta["durations"],
+        })
+    return items
+
+
 def get_ai_video_provider_meta(provider_id: str) -> Dict[str, Any]:
     """Return metadata, models, resolutions, and supported durations for a provider."""
     pid = (provider_id or "wavespeed").strip().lower()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import time
@@ -657,7 +658,7 @@ def test_f5_max_tokens_per_call_type_never_unbounded(tmp_path: Path, monkeypatch
     assert ok_conn is True
     assert recorded_sdk_calls[-1]["max_tokens"] == MAX_TOKENS_TEST_CONNECTION
     assert recorded_sdk_calls[-1]["max_tokens"] == 256
-    assert recorded_sdk_calls[-1]["extra_body"] == {"reasoning": {"effort": "minimal", "exclude": True}}
+    assert recorded_sdk_calls[-1]["extra_body"] == {"reasoning": {"enabled": False}}
 
     # 3. Verify LLMAdapter.generate passes explicit max_tokens to SDK and records it
     adapter = LLMAdapter(provider="openrouter", model="openrouter/free")
@@ -1030,7 +1031,7 @@ def test_f6_connection_test_retries_length_reasoning_with_larger_max_tokens(monk
     assert len(calls) == 2
     assert calls[0]["max_tokens"] == 256
     assert calls[1]["max_tokens"] == 512
-    assert calls[0]["extra_body"] == {"reasoning": {"effort": "minimal", "exclude": True}}
+    assert calls[0]["extra_body"] == {"reasoning": {"enabled": False}}
     assert calls[0]["messages"][0]["content"] == "Reply with exactly: OK"
 
 
@@ -1132,7 +1133,7 @@ def test_f6_ai_relevance_and_keyword_translator_escalate_on_length_reasoning(tmp
     )
     assert rel["verdict"]["relevan"] == "ya"
     assert [c["max_tokens"] for c in vis_calls] == [256, 512]
-    assert vis_calls[0]["extra_body"] == {"reasoning": {"effort": "minimal", "exclude": True}}
+    assert vis_calls[0]["extra_body"] == {"reasoning": {"enabled": False}}
 
     # 2. Keyword translation: empty+length at 320 -> retries 1x at 640 and succeeds
     kw_calls: list[dict] = []
@@ -1159,5 +1160,533 @@ def test_f6_ai_relevance_and_keyword_translator_escalate_on_length_reasoning(tmp
     assert kw_out["translated"] == 1
     assert shots[0].search_query_en == "sports car"
     assert [c["max_tokens"] for c in kw_calls] == [320, 640]
+
+
+# ---------------------------------------------------------------------------
+# F8: AI Visual Keywords per Chapter (3-6 English words, Distinct Split Shots,
+#     Origin Tagging, Refresh Stale Only Unlocked, Fallback without LLM)
+# ---------------------------------------------------------------------------
+
+
+def _seed_street_food_same_sentence_project(tmp_path: Path, pid: str = "f8_sf"):
+    from app.services.longform.schema import AudioSpec, Segment, TtsGroup, VisualSpec
+
+    _, p_dir = create_project(
+        project_id=pid,
+        title="Kuliner Jalanan Malam Indonesia",
+        preset_id="umum.id",
+        language="id-ID",
+        projects_root=tmp_path,
+    )
+    m = load_manifest(p_dir)
+    same_sentence = (
+        "Di tengah bisingnya klakson kota dan cahaya lampu neon yang mulai menyala, "
+        "aroma panggangan arang dan tumisan bawang putih di pinggir jalan seolah jadi magnet yang mustahil ditolak."
+    )
+    seg1 = Segment(
+        segment_index=1,
+        narration_text="Suasana malam mulai terasa hidup di sudut pasar lama.",
+        visual=VisualSpec(search_keywords="night market crowd", prompt="night market"),
+    )
+    seg2 = Segment(segment_index=2, narration_text=same_sentence)
+    seg3 = Segment(segment_index=3, narration_text="Asap sate ayam mengepul di atas bara api merah menyala.")
+    seg4 = Segment(segment_index=4, narration_text="Pembeli antre di depan gerobak nasi goreng pinggir jalan.")
+
+    ch = Chapter(
+        chapter_index=1,
+        chapter_title="Denyut Kuliner Malam",
+        tts_groups=[
+            TtsGroup(
+                group_index=1,
+                paragraph_text=" ".join(s.narration_text for s in (seg1, seg2, seg3, seg4)),
+                audio=AudioSpec(file_path="assets/audio/groups/ch1_g1.wav", duration_seconds=20.0),
+                segments=[seg1, seg2, seg3, seg4],
+            )
+        ],
+        shots=[
+            Shot(
+                shot_id="ch01_shot001",
+                chapter_index=1,
+                shot_index=1,
+                segment_indices=[1],
+                duration_seconds=4.0,
+                target_frames=100,
+                search_query="night market crowd",
+                search_query_source="tag",
+                status=ItemStatus.completed,
+            ),
+            Shot(
+                shot_id="ch01_shot002",
+                chapter_index=1,
+                shot_index=2,
+                segment_indices=[2],
+                duration_seconds=4.5,
+                target_frames=112,
+                search_query="tengah bisingnya klakson kota",
+                search_query_source="extraction",
+                status=ItemStatus.completed,
+            ),
+            Shot(
+                shot_id="ch01_shot003",
+                chapter_index=1,
+                shot_index=3,
+                segment_indices=[2],  # Same narration sentence as Shot #2!
+                duration_seconds=4.5,
+                target_frames=113,
+                search_query="tengah bisingnya klakson kota",
+                search_query_source="extraction",
+                status=ItemStatus.completed,
+            ),
+            Shot(
+                shot_id="ch01_shot004",
+                chapter_index=1,
+                shot_index=4,
+                segment_indices=[3],
+                duration_seconds=3.5,
+                target_frames=87,
+                search_query="satay grill smoke",
+                search_query_en="satay grill smoke",
+                search_query_source="extraction",
+                locked=True,  # Locked shot MUST NOT change!
+                status=ItemStatus.completed,
+            ),
+            Shot(
+                shot_id="ch01_shot005",
+                chapter_index=1,
+                shot_index=5,
+                segment_indices=[4],
+                duration_seconds=3.5,
+                target_frames=88,
+                search_query="pembeli antre gerobak",
+                search_query_source="extraction",
+                status=ItemStatus.completed,
+            ),
+        ],
+    )
+    for idx, sh in enumerate(ch.shots, start=1):
+        rel = f"assets/visual/shots/{sh.shot_id}_asset.jpg"
+        _make_sample_jpg(p_dir / rel, color=(40 * idx, 80, 140))
+        ahash = compute_file_content_hash(p_dir / rel)
+        sh.asset_path = rel
+        sh.asset_content_hash = ahash
+        sh.requested_source = "pixabay"
+        sh.actual_source = "pixabay"
+        sh.rendered_clip = f"assets/visual/shots/{sh.shot_id}.mp4"
+        sh.shot_hash = compute_shot_hash(
+            shot_id=sh.shot_id,
+            duration_seconds=sh.duration_seconds,
+            target_frames=sh.target_frames,
+            motion="zoom_in",
+            asset_content_hash=ahash,
+            fps=25,
+            requested_provider="pixabay",
+            actual_provider="pixabay",
+        )
+    m.chapters = [ch]
+    save_manifest(m, p_dir)
+    return p_dir, m
+
+
+def test_f8_ai_keywords_different_for_same_sentence_preserves_tag_and_locked(tmp_path: Path, monkeypatch):
+    from app.services.longform.visual.ai_keywords import generate_chapter_visual_keywords_ai
+
+    monkeypatch.setattr("app.config.config.app", dict(config.app))
+    monkeypatch.setitem(config.app, "llm_provider", "openrouter")
+    monkeypatch.setitem(config.app, "openrouter_api_key", "sk-or-test-key")
+    monkeypatch.setitem(config.app, "openrouter_model_name", "openrouter/free")
+
+    p_dir, m = _seed_street_food_same_sentence_project(tmp_path / "p1", "f8_same")
+    ch = m.chapters[0]
+
+    # Mock LLM: even if LLM tries returning identical query for shot 2 and shot 3, guard still differentiates,
+    # and verify normal distinct JSON batch works cleanly too.
+    llm_calls = 0
+
+    class _MockAdapter:
+        def generate(self, prompt: str, **_kw):
+            nonlocal llm_calls
+            llm_calls += 1
+            return LLMResponse(
+                content=json.dumps({
+                    "ch01_shot002": "night city traffic neon lights",
+                    "ch01_shot003": "street food charcoal grill garlic",
+                    "ch01_shot005": "fried rice street cart night",
+                }),
+                provider="openrouter",
+                model="openrouter/free",
+                duration_seconds=0.1,
+            )
+
+    res = generate_chapter_visual_keywords_ai(
+        ch.shots,
+        ch,
+        preset_snapshot=m.preset_snapshot,
+        project_lang="id-ID",
+        cache_dir=tmp_path / "cache_f8",
+        llm_adapter=_MockAdapter(),
+        force=True,
+    )
+    assert res["llm_calls"] == 1
+    assert res["skipped_locked"] == 1
+    assert res["tag_preserved"] == 1
+    assert ch.shots[0].search_query_source == "tag"
+    assert ch.shots[0].search_query == "night market crowd"
+    assert ch.shots[1].search_query_en == "night city traffic neon lights"
+    assert ch.shots[2].search_query_en == "street food charcoal grill garlic"
+    assert ch.shots[1].search_query_en != ch.shots[2].search_query_en
+    assert ch.shots[1].search_query_source == "ai"
+    assert ch.shots[2].search_query_source == "ai"
+    assert ch.shots[3].search_query_en == "satay grill smoke"
+    assert ch.shots[3].search_query_source == "extraction"
+    assert 3 <= len(ch.shots[1].search_query_en.split()) <= 6
+    assert 3 <= len(ch.shots[2].search_query_en.split()) <= 6
+
+    # Also test collision-guard when LLM returns identical query for both split shots of same sentence
+    class _DupAdapter:
+        def generate(self, prompt: str, **_kw):
+            return LLMResponse(
+                content=json.dumps({
+                    "ch01_shot002": "night city neon street",
+                    "ch01_shot003": "night city neon street",
+                    "ch01_shot005": "street food cart night",
+                }),
+                provider="openrouter",
+                model="openrouter/free",
+                duration_seconds=0.1,
+            )
+
+    generate_chapter_visual_keywords_ai(
+        ch.shots,
+        ch,
+        preset_snapshot=m.preset_snapshot,
+        project_lang="id-ID",
+        cache_dir=tmp_path / "cache_dup",
+        llm_adapter=_DupAdapter(),
+        force=True,
+    )
+    assert ch.shots[1].search_query_en != ch.shots[2].search_query_en
+
+
+def test_f8_fallback_without_llm_and_mark_stale_refetches_only_unlocked(tmp_path: Path, monkeypatch):
+    from app.services.longform.status import compute_project_step_status
+
+    p_dir, m = _seed_street_food_same_sentence_project(tmp_path / "p2", "f8_fb")
+    locked_hash_before = m.chapters[0].shots[3].shot_hash
+
+    # 1. Fallback when LLM not configured -> extractor used with mild warning
+    monkeypatch.setattr(
+        "app.services.longform.visual.ai_keywords.get_llm_readiness",
+        lambda *_a, **_kw: {"configured": False, "is_invalid": True},
+    )
+    svc = VisualService(p_dir)
+    _, fb_stats = svc.update_keywords_with_ai(force=True, mark_stale=True)
+    assert fb_stats["fallback_used"] is True
+    assert fb_stats["warnings"]
+    assert fb_stats["llm_calls"] == 0
+
+    # 2. Now run with mocked LLM -> updates unlocked shots, marks stale ('perlu_diperbarui'), leaves locked untouched!
+    monkeypatch.setattr(
+        "app.services.longform.visual.ai_keywords.get_llm_readiness",
+        lambda *_a, **_kw: {"configured": True, "is_invalid": False},
+    )
+
+    class _UpdateAdapter:
+        def generate(self, prompt: str, **_kw):
+            return LLMResponse(
+                content=json.dumps({
+                    "ch01_shot002": "neon city traffic night",
+                    "ch01_shot003": "charcoal street food grill",
+                    "ch01_shot005": "indonesian fried rice stall",
+                }),
+                provider="openrouter",
+                model="openrouter/free",
+                duration_seconds=0.1,
+            )
+
+    m_upd, upd_stats = svc.update_keywords_with_ai(force=True, mark_stale=True, llm_adapter=_UpdateAdapter())
+    assert upd_stats["stale_marked"] >= 3
+    assert m_upd.chapters[0].shots[1].status == ItemStatus.stale
+    assert m_upd.chapters[0].shots[2].status == ItemStatus.stale
+    assert m_upd.chapters[0].shots[3].locked is True
+    assert m_upd.chapters[0].shots[3].shot_hash == locked_hash_before
+    assert m_upd.chapters[0].shots[3].status == ItemStatus.completed
+
+    st_info = compute_project_step_status(p_dir)
+    assert st_info["steps"]["visual"]["status"] == "perlu_diperbarui"
+
+    # 3. fetch_all(provider='fake') re-fetches ONLY stale unlocked shots and skips locked shot!
+    svc.fetch_all(m_upd, provider_name="fake", allow_fallback=True, translate_keywords=False)
+    m_after = load_manifest(p_dir)
+    assert m_after.chapters[0].shots[3].shot_hash == locked_hash_before
+    assert m_after.chapters[0].shots[3].actual_source == "pixabay"  # Locked shot untouched!
+    assert m_after.chapters[0].shots[1].status == ItemStatus.pending  # Stale shot was re-fetched!
+
+
+@pytest.mark.parametrize("ui_lang", ["id", "en"])
+def test_f8_ui_shows_en_keyword_source_origin_and_update_button(tmp_path: Path, monkeypatch, ui_lang: str):
+    monkeypatch.setattr("app.services.longform.store.get_projects_root", lambda: tmp_path)
+    monkeypatch.setattr("app.services.longform.ui.components.get_projects_root", lambda: tmp_path)
+    monkeypatch.setitem(config.ui, "language", ui_lang)
+
+    p_dir, m = _seed_street_food_same_sentence_project(tmp_path, f"f8_ui_{ui_lang}")
+    m.chapters[0].shots[0].search_query_en = "night market street food"
+    m.chapters[0].shots[0].search_query_source = "ai"
+    save_manifest(m, p_dir)
+
+    at = AppTest.from_file(_get_long_video_app_file())
+    at.query_params["project"] = f"f8_ui_{ui_lang}"
+    at.session_state[f"active_step_f8_ui_{ui_lang}"] = "visual"
+    at.run(timeout=25)
+    assert not at.exception
+
+    md_all = "\n".join(x.value for x in at.markdown)
+    assert "night market street food" in md_all
+    if ui_lang == "id":
+        assert "Kata kunci pencarian (EN):" in md_all
+        assert "Asal:" in md_all and "AI" in md_all
+    else:
+        assert "Search keyword (EN):" in md_all
+        assert "Origin:" in md_all and "AI" in md_all
+    assert any(b.key == f"btn_run_ai_kw_f8_ui_{ui_lang}" for b in at.button)
+
+
+# ---------------------------------------------------------------------------
+# F9: AI Video Provider Selection Dropdown + Supported Providers Fallback
+# ---------------------------------------------------------------------------
+
+
+def test_f9_ai_video_provider_dropdown_and_unsupported_list(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("app.config.config.app", dict(config.app))
+    monkeypatch.setattr("app.services.longform.store.get_projects_root", lambda: tmp_path)
+    monkeypatch.setattr("app.services.longform.ui.components.get_projects_root", lambda: tmp_path)
+    monkeypatch.setitem(config.ui, "language", "id")
+
+    pid = "f9_vid_prov"
+    _seed_project_with_shots(tmp_path, pid, needs_review=True)
+
+    # 1. Zero providers configured -> lists all 8 MPT-supported providers + button Pengaturan Video AI
+    for key_clear in (
+        "wavespeed_api_keys", "ofox_api_key", "volcengine_seedance_api_key",
+        "metaso_minimax_api_key", "infistar_api_key", "jalapeno_api_key",
+        "muapi_api_key", "loomloom_api_key",
+    ):
+        monkeypatch.setitem(config.app, key_clear, "")
+
+    at0 = AppTest.from_file(_get_long_video_app_file())
+    at0.query_params["project"] = pid
+    at0.session_state[f"active_step_{pid}"] = "visual"
+    at0.run(timeout=25)
+    assert not at0.exception
+    md0 = "\n".join(x.value for x in at0.markdown)
+    assert "WaveSpeed" in md0 and "OFox AI Video" in md0 and "Volcano Engine Seedance" in md0
+    cfg_btns = [b for b in at0.button if b.key == f"btn_cfg_aiv_{pid}_ch01_shot001"]
+    assert len(cfg_btns) == 1
+    cfg_btns[0].click().run(timeout=25)
+    assert at0.session_state.get("settings_material_group") == "ai_video"
+
+    # 2. Multiple configured providers -> WaveSpeed first, OFox & Volcano selectable, switching updates models!
+    monkeypatch.setitem(config.app, "ofox_api_key", "ofox-test-key")
+    monkeypatch.setitem(config.app, "wavespeed_api_keys", ["ws-test-key"])
+    monkeypatch.setitem(config.app, "volcengine_seedance_api_key", "volc-test-key")
+
+    at1 = AppTest.from_file(_get_long_video_app_file())
+    at1.query_params["project"] = pid
+    at1.session_state[f"active_step_{pid}"] = "visual"
+    at1.run(timeout=25)
+    assert not at1.exception
+
+    prov_sb = [s for s in at1.selectbox if s.key == f"sel_aiv_prov_{pid}_ch01_shot001"]
+    assert len(prov_sb) == 1
+    assert prov_sb[0].options[0] == "WaveSpeed"
+    assert "OFox AI Video" in prov_sb[0].options
+    assert "Volcano Engine Seedance" in prov_sb[0].options
+
+    # Switch to OFox -> model dropdown updates to OFox models!
+    prov_sb[0].select("OFox AI Video").run(timeout=25)
+    ofox_model_sb = [s for s in at1.selectbox if s.key == f"sel_aiv_model_{pid}_ch01_shot001_ofox"]
+    assert len(ofox_model_sb) == 1
+    assert "bytedance/seedance-2.0-fast" in ofox_model_sb[0].options
+
+
+# ---------------------------------------------------------------------------
+# F7: Safe Project Delete (_trash/), Restore, Permanent Delete, Empty Trash, CLI & UI
+# ---------------------------------------------------------------------------
+
+
+def test_f7_soft_delete_restore_perm_delete_capcut_and_niche_guard(tmp_path: Path, monkeypatch):
+    from app.services.longform.presets import (
+        create_custom_niche_hierarchy,
+        delete_custom_preset,
+        get_preset_directories,
+    )
+    from app.services.longform.store import ProjectLock, ProjectLockedError
+    from app.services.longform.trash import (
+        empty_trash,
+        list_trashed_projects,
+        permanently_delete_trashed_project,
+        restore_trashed_project,
+        soft_delete_project,
+    )
+    from app.services.longform.ui.components import get_project_summaries
+
+    real_presets_res, _ = get_preset_directories()
+    projects_root = tmp_path / "projects"
+    presets_sto = tmp_path / "sto_presets"
+    capcut_root = tmp_path / "capcut_drafts"
+    global_cache = tmp_path / "global_cache"
+    for d in (projects_root, presets_sto, capcut_root, global_cache):
+        d.mkdir(parents=True, exist_ok=True)
+    # Seed a file in global cache to confirm cache is untouched
+    cache_probe = global_cache / "pixabay_keep.mp4"
+    cache_probe.write_bytes(b"keep-me")
+
+    monkeypatch.setattr("app.services.longform.store.get_projects_root", lambda: projects_root)
+    monkeypatch.setattr("app.services.longform.trash.get_projects_root", lambda: projects_root)
+    monkeypatch.setattr("app.services.longform.ui.components.get_projects_root", lambda: projects_root)
+    monkeypatch.setattr("app.services.longform.presets.get_preset_directories", lambda: (real_presets_res, presets_sto))
+    monkeypatch.setattr("app.services.longform.trash.detect_draft_folder", lambda: capcut_root)
+
+    # Create custom preset & 2 projects + CapCut drafts
+    preset_id, _ = create_custom_niche_hierarchy(niche_name="F7 Test Cuisine", language="id-ID")
+    _, p1_dir = create_project("f7_p1", "Kuliner Nusantara", preset_id, projects_root=projects_root)
+    _, p2_dir = create_project("f7_p2", "Kuliner Kedua", preset_id, projects_root=projects_root)
+    d1 = capcut_root / "EFS_f7_p1_20261117"
+    d1.mkdir(parents=True)
+    (d1 / "draft_content.json").write_text("{}", encoding="utf-8")
+    d2 = capcut_root / "MPT_f7_p2_20261117"
+    d2.mkdir(parents=True)
+
+    # 1. Reject deletion while ProjectLock active!
+    with ProjectLock(p1_dir):
+        with pytest.raises(ProjectLockedError):
+            soft_delete_project("f7_p1")
+
+    # 2. Reject deletion while running job active!
+    monkeypatch.setattr(
+        "app.services.longform.ui.jobs.get_job_state",
+        lambda pid: {"status": "running", "step": "render", "pid": os.getpid()} if pid == "f7_p1" else None,
+    )
+    with pytest.raises(ProjectLockedError):
+        soft_delete_project("f7_p1")
+    monkeypatch.setattr("app.services.longform.ui.jobs.get_job_state", lambda _pid: None)
+
+    # 3. Soft delete WITHOUT CapCut -> moved to _trash, hidden from summaries, EFS_f7_p1_* preserved!
+    del_res = soft_delete_project("f7_p1", delete_capcut_drafts=False)
+    assert not p1_dir.exists()
+    assert Path(del_res["trash_path"]).is_dir()
+    assert d1.is_dir()  # Preserved!
+    assert cache_probe.is_file()
+    assert [p["project_id"] for p in get_project_summaries()] == ["f7_p2"]
+    assert len(list_trashed_projects()) == 1
+
+    # Restore brings p1 back cleanly
+    rest = restore_trashed_project("f7_p1")
+    assert Path(rest["restored_path"]).is_dir()
+    assert set(p["project_id"] for p in get_project_summaries()) == {"f7_p1", "f7_p2"}
+    assert len(list_trashed_projects()) == 0
+
+    # 4. Soft delete BOTH projects -> trashed projects DO NOT block deleting custom niche!
+    soft_delete_project("f7_p1", delete_capcut_drafts=True)
+    assert not d1.exists()  # Checked: deleted ONLY p1's CapCut draft!
+    assert d2.is_dir()      # p2's draft untouched!
+    soft_delete_project("f7_p2", delete_capcut_drafts=False)
+    delete_custom_preset(preset_id)  # Must succeed even though p1 & p2 in _trash reference it!
+
+    # 5. Permanent delete single vs empty_trash
+    permanently_delete_trashed_project("f7_p1")
+    assert [t["project_id"] for t in list_trashed_projects()] == ["f7_p2"]
+    empty_res = empty_trash()
+    assert empty_res["deleted_count"] == 1
+    assert list_trashed_projects() == []
+
+
+def test_f7_cli_project_delete_restore_and_trash(tmp_path: Path, monkeypatch):
+    import sys
+    import cli_longform
+
+    projects_root = tmp_path / "cli_proj"
+    projects_root.mkdir(parents=True)
+    capcut_root = tmp_path / "cli_cc"
+    capcut_root.mkdir(parents=True)
+    monkeypatch.setattr("app.services.longform.store.get_projects_root", lambda: projects_root)
+    monkeypatch.setattr("app.services.longform.trash.get_projects_root", lambda: projects_root)
+    monkeypatch.setattr("cli_longform.get_project_dir", lambda pid: projects_root / pid)
+    monkeypatch.setattr("app.services.longform.trash.detect_draft_folder", lambda: capcut_root)
+
+    create_project("cli_del_1", "CLI Delete Demo", "automotive.muscle_car", projects_root=projects_root)
+    draft_dir = capcut_root / "EFS_cli_del_1_demo"
+    draft_dir.mkdir(parents=True)
+
+    monkeypatch.setattr(sys, "argv", ["cli_longform.py", "project", "delete", "cli_del_1"])
+    assert cli_longform.main() == 0
+    assert draft_dir.is_dir()  # Default without --with-capcut preserves draft!
+
+    monkeypatch.setattr(sys, "argv", ["cli_longform.py", "trash", "list"])
+    assert cli_longform.main() == 0
+
+    monkeypatch.setattr(sys, "argv", ["cli_longform.py", "project", "restore", "cli_del_1"])
+    assert cli_longform.main() == 0
+    assert (projects_root / "cli_del_1" / "manifest.json").is_file()
+
+    monkeypatch.setattr(sys, "argv", ["cli_longform.py", "project", "delete", "cli_del_1", "--with-capcut"])
+    assert cli_longform.main() == 0
+    assert not draft_dir.exists()
+
+    monkeypatch.setattr(sys, "argv", ["cli_longform.py", "trash", "empty"])
+    assert cli_longform.main() == 0
+
+
+def test_f7_ui_delete_dialog_and_home_trash_filter(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("app.services.longform.store.get_projects_root", lambda: tmp_path)
+    monkeypatch.setattr("app.services.longform.trash.get_projects_root", lambda: tmp_path)
+    monkeypatch.setattr("app.services.longform.ui.components.get_projects_root", lambda: tmp_path)
+    monkeypatch.setitem(config.ui, "language", "id")
+
+    capcut_root = tmp_path / "cc_ui"
+    capcut_root.mkdir(parents=True)
+    monkeypatch.setattr("app.services.longform.trash.detect_draft_folder", lambda: capcut_root)
+    (capcut_root / "EFS_f7_ui_demo_1").mkdir()
+
+    proj_root = tmp_path / "projects_ui"
+    proj_root.mkdir()
+    monkeypatch.setattr("app.services.longform.store.get_projects_root", lambda: proj_root)
+    monkeypatch.setattr("app.services.longform.trash.get_projects_root", lambda: proj_root)
+    monkeypatch.setattr("app.services.longform.ui.components.get_projects_root", lambda: proj_root)
+    create_project("f7_ui_demo", "Proyek Hapus UI", "automotive.muscle_car", projects_root=proj_root)
+
+    # 1. Open Home -> click "Hapus proyek" on card popover -> modal opens
+    at = AppTest.from_file(_get_long_video_app_file())
+    at.run(timeout=25)
+    assert not at.exception
+    del_btn = [b for b in at.button if b.key == "btn_del_card_f7_ui_demo"]
+    assert len(del_btn) == 1
+    del_btn[0].click().run(timeout=25)
+    assert not at.exception
+
+    # Confirm checkbox default OFF & typing ID enables Delete button
+    chk_cc = [c for c in at.checkbox if c.key == "chk_del_capcut_f7_ui_demo"]
+    assert len(chk_cc) == 1 and chk_cc[0].value is False
+    conf_btn_disabled = [b for b in at.button if b.key == "btn_dlg_conf_del_f7_ui_demo"][0]
+    assert conf_btn_disabled.disabled is True
+
+    txt_in = [ti for ti in at.text_input if ti.key == "txt_del_confirm_f7_ui_demo"][0]
+    txt_in.input("f7_ui_demo").run(timeout=25)
+    conf_btn = [b for b in at.button if b.key == "btn_dlg_conf_del_f7_ui_demo"][0]
+    assert conf_btn.disabled is False
+    conf_btn.click().run(timeout=25)
+    assert not at.exception
+    assert not (proj_root / "f7_ui_demo").exists()
+    assert (capcut_root / "EFS_f7_ui_demo_1").is_dir()
+
+    # 2. Jump to Trash filter pill -> restore button visible -> click Restore -> back in Home!
+    at.session_state["home_open_trash_requested"] = True
+    at.run(timeout=25)
+    assert not at.exception
+    rest_btns = [b for b in at.button if (b.key or "").startswith("btn_restore_f7_ui_demo_")]
+    assert len(rest_btns) == 1
+    rest_btns[0].click().run(timeout=25)
+    assert not at.exception
+    assert (proj_root / "f7_ui_demo" / "manifest.json").is_file()
+
 
 

@@ -53,6 +53,7 @@ from app.services.longform.status import (
     get_impactful_preset_diffs,
 )
 from app.services.longform.store import (
+    ProjectLock,
     create_project,
     get_project_dir,
     get_projects_root,
@@ -60,6 +61,14 @@ from app.services.longform.store import (
     refresh_project_preset,
     save_manifest,
     update_project_script,
+)
+from app.services.longform.trash import (
+    empty_trash,
+    get_project_delete_preview,
+    list_trashed_projects,
+    permanently_delete_trashed_project,
+    restore_trashed_project,
+    soft_delete_project,
 )
 from app.services.branding.theme import (
     render_5_segment_progress_bar_html,
@@ -269,6 +278,8 @@ def get_project_summaries() -> List[Dict[str, Any]]:
         return projects
 
     for p in root.iterdir():
+        if p.name.startswith("_"):
+            continue
         if p.is_dir() and (p / "manifest.json").is_file():
             try:
                 st_info = compute_project_step_status(p)
@@ -322,6 +333,7 @@ def _render_job_monitor_content(project_id: str, state: Dict[str, Any], current_
         "visual_ai_video": t("job_step_visual_ai_video"),
         "visual_ai_video_batch": t("job_step_visual_ai_video_batch"),
         "visual_ai_relevance": t("job_step_visual_ai_relevance"),
+        "visual_ai_keywords": t("job_step_visual_ai_keywords"),
         "render_final": t("job_step_render_final"),
         "capcut_export": t("job_step_capcut_export"),
         "pipeline_auto": t("job_step_pipeline_auto"),
@@ -551,11 +563,177 @@ def render_niche_management_section():
                                     _render_friendly_error(t("err_niche_delete_friendly"), exc)
 
 
+def _render_delete_project_dialog(*, on_deleted_redirect_home: bool = False) -> None:
+    """Render shared safe project delete confirmation modal (F7)."""
+    target_pid = st.session_state.get("confirm_delete_project_id")
+    if not target_pid:
+        return
+
+    try:
+        preview = get_project_delete_preview(target_pid)
+    except Exception as exc:
+        st.session_state["confirm_delete_project_id"] = None
+        _render_friendly_error(t("err_delete_project_friendly"), exc)
+        return
+
+    @st.dialog(t("dlg_delete_project_title"))
+    def _delete_project_modal():
+        st.markdown(
+            t(
+                "dlg_delete_project_meta",
+                title=preview["title"],
+                pid=preview["project_id"],
+                mb=f"{preview['size_mb']:.2f}",
+                cc_count=preview["capcut_draft_count"],
+            )
+        )
+        st.caption(t("dlg_delete_project_soft_note"))
+
+        if preview["is_locked_or_running"]:
+            st.warning(t("dlg_delete_locked_warn", reason=preview.get("lock_reason") or "running"))
+
+        typed_val = st.text_input(
+            t("dlg_delete_confirm_label", pid=preview["project_id"]),
+            key=f"txt_del_confirm_{preview['project_id']}",
+        )
+        chk_capcut = st.checkbox(
+            t("chk_delete_with_capcut"),
+            value=False,
+            key=f"chk_del_capcut_{preview['project_id']}",
+        )
+        typed_clean = (typed_val or "").strip()
+        matches_confirm = bool(
+            typed_clean
+            and (typed_clean == preview["project_id"] or typed_clean == preview["title"].strip())
+        )
+        can_delete = matches_confirm and not preview["is_locked_or_running"]
+
+        col_d1, col_d2 = st.columns(2)
+        with col_d1:
+            if st.button(
+                t("btn_confirm_delete_project"),
+                type="primary",
+                disabled=not can_delete,
+                key=f"btn_dlg_conf_del_{preview['project_id']}",
+                use_container_width=True,
+            ):
+                try:
+                    soft_delete_project(
+                        preview["project_id"],
+                        delete_capcut_drafts=bool(chk_capcut),
+                    )
+                    st.session_state["confirm_delete_project_id"] = None
+                    st.session_state["last_deleted_notice"] = t("delete_project_success", title=preview["title"])
+                    if on_deleted_redirect_home:
+                        st.query_params.clear()
+                        st.session_state.pop(f"active_step_{preview['project_id']}", None)
+                    st.rerun()
+                except Exception as exc:
+                    _render_friendly_error(t("err_delete_project_friendly"), exc)
+        with col_d2:
+            if st.button(
+                t("btn_cancel_dialog"),
+                key=f"btn_dlg_canc_del_{preview['project_id']}",
+                use_container_width=True,
+            ):
+                st.session_state["confirm_delete_project_id"] = None
+                st.rerun()
+
+    _delete_project_modal()
+
+
+def _render_trash_management_view(trashed_items: List[Dict[str, Any]]) -> None:
+    """Render Trash management list with Restore, Permanent Delete, and Empty Trash (F7)."""
+    st.markdown(t("trash_heading"))
+    if not trashed_items:
+        st.info(t("trash_empty_state"))
+        return
+
+    total_mb = round(sum(float(x.get("size_mb", 0.0)) for x in trashed_items), 2)
+    col_tl, col_tr = st.columns([3, 1.5])
+    with col_tr:
+        if st.button(
+            t("btn_empty_trash"),
+            key="btn_open_empty_trash_dlg",
+            type="secondary",
+            use_container_width=True,
+        ):
+            st.session_state["confirm_empty_trash_open"] = True
+
+    for item in trashed_items:
+        t_id = item["trash_id"]
+        with st.container(border=True):
+            c_info, c_rest, c_perm = st.columns([3.5, 1.1, 1.3])
+            with c_info:
+                st.markdown(f"**{html.escape(item['title'])}**")
+                del_dt = str(item.get("deleted_at") or "")[:19].replace("T", " ")
+                st.caption(
+                    t(
+                        "trash_item_meta",
+                        pid=item["project_id"],
+                        date=del_dt,
+                        mb=f"{float(item.get('size_mb', 0.0)):.2f}",
+                    )
+                )
+            with c_rest:
+                if st.button(t("btn_restore_project"), key=f"btn_restore_{t_id}", use_container_width=True):
+                    try:
+                        res = restore_trashed_project(t_id)
+                        st.success(t("restore_project_success", title=res["title"]))
+                        time.sleep(0.3)
+                        st.rerun()
+                    except Exception as exc:
+                        _render_friendly_error(t("err_restore_project_friendly"), exc)
+            with c_perm:
+                if st.button(t("btn_perm_delete_project"), key=f"btn_perm_del_{t_id}", use_container_width=True):
+                    try:
+                        res = permanently_delete_trashed_project(t_id)
+                        st.success(t("perm_delete_success", title=res["title"], mb=f"{res['mb_freed']:.2f}"))
+                        time.sleep(0.3)
+                        st.rerun()
+                    except Exception as exc:
+                        _render_friendly_error(t("err_delete_project_friendly"), exc)
+
+    if st.session_state.get("confirm_empty_trash_open"):
+        @st.dialog(t("dlg_empty_trash_title"))
+        def _empty_trash_modal():
+            st.warning(t("dlg_empty_trash_warn", count=len(trashed_items), mb=f"{total_mb:.2f}"))
+            col_e1, col_e2 = st.columns(2)
+            with col_e1:
+                if st.button(
+                    t("btn_confirm_empty_trash"),
+                    type="primary",
+                    key="btn_conf_empty_trash",
+                    use_container_width=True,
+                ):
+                    try:
+                        res = empty_trash()
+                        st.session_state["confirm_empty_trash_open"] = False
+                        st.session_state["last_deleted_notice"] = t(
+                            "empty_trash_success",
+                            count=res["deleted_count"],
+                            mb=f"{res['mb_freed']:.2f}",
+                        )
+                        st.rerun()
+                    except Exception as exc:
+                        _render_friendly_error(t("err_delete_project_friendly"), exc)
+            with col_e2:
+                if st.button(t("btn_cancel_dialog"), key="btn_canc_empty_trash", use_container_width=True):
+                    st.session_state["confirm_empty_trash_open"] = False
+                    st.rerun()
+
+        _empty_trash_modal()
+
+
 def render_home_page():
     """Render Beranda Long Video matching Mockup 1 (L1, 8A.2)."""
     # G5: Return navigation link to MoneyPrinterTurbo Main
     from app.services.longform.ui.nav import render_mpt_entry
     render_mpt_entry()
+
+    notice_msg = st.session_state.pop("last_deleted_notice", None)
+    if notice_msg:
+        st.success(notice_msg)
 
     # 1. Header with title, subtitle, and search box on the right (Mockup 1)
     col_h, col_actions = st.columns([3.5, 2.0])
@@ -798,6 +976,7 @@ def render_home_page():
     # 3. Project Filter Chips and Grid (Mockup 1)
     projects = get_project_summaries()
 
+    trashed_items = list_trashed_projects()
     total_cnt = len(projects)
     comp_cnt = sum(
         1 for p in projects
@@ -808,14 +987,23 @@ def render_home_page():
     opt_all = f"{t('filter_all')} · {total_cnt}"
     opt_prog = f"{t('filter_in_progress')} · {in_prog_cnt}"
     opt_done = f"{t('filter_completed')} · {comp_cnt}"
+    opt_trash = f"{t('filter_trash')} · {len(trashed_items)}"
+
+    if st.session_state.pop("home_open_trash_requested", False):
+        st.session_state["home_filter_pills"] = opt_trash
 
     filter_choice = st.pills(
         t("home_filter_label"),
-        options=[opt_all, opt_prog, opt_done],
+        options=[opt_all, opt_prog, opt_done, opt_trash],
         default=opt_all,
         key="home_filter_pills",
         label_visibility="collapsed",
     )
+
+    if filter_choice == opt_trash:
+        _render_trash_management_view(trashed_items)
+        _render_delete_project_dialog(on_deleted_redirect_home=False)
+        return
 
     filtered_projects = projects
     if filter_choice == opt_prog:
@@ -893,9 +1081,22 @@ def render_home_page():
                     unsafe_allow_html=True,
                 )
 
-                if st.button(t("btn_open_project"), key=f"btn_open_{p['project_id']}", use_container_width=True):
-                    st.query_params["project"] = p["project_id"]
-                    st.rerun()
+                col_card_open, col_card_more = st.columns([4, 1])
+                with col_card_open:
+                    if st.button(t("btn_open_project"), key=f"btn_open_{p['project_id']}", use_container_width=True):
+                        st.query_params["project"] = p["project_id"]
+                        st.rerun()
+                with col_card_more:
+                    with st.popover("⋯", help=t("popover_more_help"), use_container_width=True):
+                        if st.button(
+                            t("btn_delete_project"),
+                            key=f"btn_del_card_{p['project_id']}",
+                            use_container_width=True,
+                        ):
+                            st.session_state["confirm_delete_project_id"] = p["project_id"]
+                            st.rerun()
+
+    _render_delete_project_dialog(on_deleted_redirect_home=False)
 
 
 # --- Halaman Proyek (Project Detail Page) Components (C4.3, C4.4, C4.5) ---
@@ -1014,6 +1215,16 @@ def render_project_page(project_id: str):
                         st.rerun()
                     else:
                         st.info(t("relink_no_change"))
+                st.divider()
+                if st.button(
+                    t("btn_delete_project"),
+                    key=f"btn_del_proj_{project_id}",
+                    use_container_width=True,
+                ):
+                    st.session_state["confirm_delete_project_id"] = project_id
+                    st.rerun()
+
+    _render_delete_project_dialog(on_deleted_redirect_home=True)
 
     # Stepper 5 Langkah (C4.3)
     step_keys = ["script", "voice", "visual", "render", "capcut"]
@@ -1766,14 +1977,19 @@ def render_visual_step_flow(
         get_ai_video_provider_meta,
         get_model_supported_durations,
         list_configured_ai_video_providers,
+        list_supported_ai_video_providers,
         plan_needs_review_ai_video_batch,
         round_up_supported_duration,
     )
+    from app.services.longform.visual.ai_keywords import (
+        estimate_ai_keyword_calls,
+        infer_keyword_source,
+    )
+    from app.services.longform.language_guard import resolve_project_language
     from app.services.longform.visual.keyword_translator import (
         is_non_english_language,
         translate_single_query_to_english,
     )
-    from app.services.longform.language_guard import resolve_project_language
 
     ai_readiness = get_ai_image_readiness()
     has_ai_image = bool(ai_readiness.get("ready", False))
@@ -1967,6 +2183,83 @@ def render_visual_step_flow(
             st.session_state[f"ai_video_confirm_batch_{project_id}"] = True
             st.rerun()
 
+    # --- F8: Update Visual Keywords with AI (per chapter / all chapters) ---
+    if total_shots > 0:
+        from app.services.longform.llm_adapter import LLMCreditError, LLMModelNotFoundError
+
+        with st.popover(t("btn_update_keywords_ai"), disabled=is_job_running):
+            cur_ch_pill = st.session_state.get(f"vis_ch_sel_{project_id}")
+            cur_ch_idx = None
+            for _ch in manifest.chapters:
+                if cur_ch_pill == t("chapter_pill_format", idx=_ch.chapter_index):
+                    cur_ch_idx = _ch.chapter_index
+                    break
+
+            scope_opts = ["all"] + ([f"ch:{cur_ch_idx}"] if cur_ch_idx is not None else [])
+            if len(scope_opts) == 1 and manifest.chapters:
+                first_ch = manifest.chapters[0].chapter_index
+                scope_opts.append(f"ch:{first_ch}")
+
+            def _fmt_kw_scope(val: str) -> str:
+                if val == "all":
+                    return t("ai_kw_scope_all")
+                ch_n = val.split(":", 1)[1]
+                return t("ai_kw_scope_chapter", ch=ch_n)
+
+            kw_scope = st.radio(
+                t("ai_kw_scope_label"),
+                options=scope_opts,
+                format_func=_fmt_kw_scope,
+                key=f"radio_ai_kw_scope_{project_id}",
+            )
+            sel_ch_filter = int(kw_scope.split(":", 1)[1]) if kw_scope.startswith("ch:") else None
+            kw_est = estimate_ai_keyword_calls(manifest, chapter_index=sel_ch_filter, force=True)
+            st.info(
+                t(
+                    "ai_kw_estimate_notice",
+                    calls=kw_est["estimated_llm_calls"],
+                    shots=kw_est["unlocked_shots"],
+                    tags=kw_est["tag_shots"],
+                )
+            )
+            llm_kw_status = check_llm_status()
+            if not llm_kw_status.get("configured") or llm_kw_status.get("is_invalid"):
+                st.warning(t("ai_kw_no_llm_fallback_notice"))
+
+            if st.button(
+                t("btn_confirm_update_ai_kw"),
+                type="primary",
+                key=f"btn_run_ai_kw_{project_id}",
+                disabled=is_job_running or kw_est["unlocked_shots"] == 0,
+                use_container_width=True,
+            ):
+                try:
+                    with st.spinner(t("job_step_visual_ai_keywords")):
+                        with ProjectLock(p_dir):
+                            vis_kw_svc = VisualService(p_dir)
+                            _m_kw, kw_res = vis_kw_svc.update_keywords_with_ai(
+                                chapter_index=sel_ch_filter,
+                                force=True,
+                                mark_stale=True,
+                            )
+                    st.success(
+                        t(
+                            "ai_kw_updated_success",
+                            updated=kw_res["updated"],
+                            stale=kw_res["stale_marked"],
+                        )
+                    )
+                    st.rerun()
+                except (LLMCreditError, LLMModelNotFoundError) as exc:
+                    _render_llm_friendly_error_box(
+                        project_id,
+                        str(exc),
+                        active_model=str(llm_kw_status.get("model") or ""),
+                        key_suffix="aikw",
+                    )
+                except Exception as exc:
+                    _render_friendly_error(t("err_ai_kw_friendly"), exc)
+
     # --- V2: Interactive 2-Column Side-by-Side Gallery & Detail Layout (Mockup 2 V3) ---
     if total_shots > 0:
         st.write("---")
@@ -2118,10 +2411,20 @@ def render_visual_step_flow(
                             required_subject_terms=preset_snap.get("required_subject_terms"),
                         )
 
-                    st.markdown(t("shot_keywords_label", kw=html.escape(short_q or "-")))
                     kw_en_val = getattr(target_shot, "search_query_en", None)
+                    kw_source_code = infer_keyword_source(target_chapter, target_shot)
+                    kw_source_disp = t(f"kw_source_{kw_source_code}")
+                    proj_lang_vis = resolve_project_language(manifest)
+
                     if kw_en_val:
-                        st.markdown(t("shot_keywords_en_label", kw_en=html.escape(kw_en_val)))
+                        st.markdown(t("shot_keywords_en_search_label", kw=html.escape(kw_en_val)))
+                        st.markdown(t("shot_keywords_source_label", src=html.escape(kw_source_disp)))
+                        if short_q and short_q.strip().lower() != kw_en_val.strip().lower():
+                            if is_non_english_language(proj_lang_vis):
+                                st.markdown(t("shot_keywords_orig_summary", orig=html.escape(short_q)))
+                    else:
+                        st.markdown(t("shot_keywords_en_search_label", kw=html.escape(short_q or "-")))
+                        st.markdown(t("shot_keywords_source_label", src=html.escape(kw_source_disp)))
 
                     # F1: AI Relevance verdict & single-shot re-check button
                     rel_status = getattr(target_shot, "ai_relevance_status", None)
@@ -2337,6 +2640,9 @@ def render_visual_step_flow(
                     with tab_ai_vid:
                         if not ai_vid_providers:
                             st.info(t("ai_video_not_configured"))
+                            st.markdown(t("ai_video_supported_list_title"))
+                            for sup_p in list_supported_ai_video_providers():
+                                st.markdown(f"- **{sup_p['label']}** (`{sup_p['default_model']}`)")
                             if st.button(t("btn_open_video_ai_settings"), key=f"btn_cfg_aiv_{project_id}_{target_shot.shot_id}"):
                                 _open_mpt_settings_dialog("video")
                         else:
@@ -2634,6 +2940,15 @@ def render_visual_step_flow(
                     st.rerun()
                 except Exception as exc:
                     _render_friendly_error(t("err_prune_cache_friendly"), exc)
+
+        st.divider()
+        trash_cache_items = list_trashed_projects()
+        trash_cache_mb = round(sum(float(x.get("size_mb", 0.0)) for x in trash_cache_items), 2)
+        st.caption(t("cache_trash_summary", count=len(trash_cache_items), mb=f"{trash_cache_mb:.2f}"))
+        if st.button(t("btn_manage_trash", count=len(trash_cache_items)), key=f"btn_cache_open_trash_{project_id}"):
+            st.query_params.clear()
+            st.session_state["home_open_trash_requested"] = True
+            st.rerun()
 
 
 def _safe_open_path(path: Path | str, is_folder: bool = False):

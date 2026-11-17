@@ -188,7 +188,7 @@ def build_reasoning_control_kwargs(
         return {}
     if create_fn is not None and not _supports_kwarg(create_fn, "extra_body"):
         return {}
-    return {"extra_body": {"reasoning": {"effort": "minimal", "exclude": True}}}
+    return {"extra_body": {"reasoning": {"enabled": False}}}
 
 
 def invoke_openai_chat_completion(

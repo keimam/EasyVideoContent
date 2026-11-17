@@ -163,6 +163,7 @@ class Shot(BaseModel):
     is_low_res: bool = False
     effective_query: Optional[str] = None
     search_query_en: Optional[str] = None
+    search_query_source: Optional[str] = None  # "ai" | "extraction" | "tag"
     ai_relevance_status: Optional[str] = None
     ai_relevance_reason: Optional[str] = None
     ai_relevance_asset_hash: Optional[str] = None

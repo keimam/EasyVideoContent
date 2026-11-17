@@ -224,7 +224,7 @@ def _invoke_translation_llm(
         except LLMEmptyResponseError as exc:
             if (exc.finish_reason == "length" or exc.has_reasoning) and not escalated_once:
                 escalated_once = True
-                cur_max_tokens = min(2048, max(512, cur_max_tokens * 2))
+                cur_max_tokens = min(3072, max(512, cur_max_tokens * 2))
                 logger.info(
                     f"Keyword translation empty ({exc.finish_reason}); retrying once with max_tokens={cur_max_tokens}"
                 )

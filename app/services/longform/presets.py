@@ -502,6 +502,8 @@ def delete_custom_preset(preset_id: str) -> None:
     in_use_projects: List[str] = []
     if root.is_dir():
         for p_dir in root.iterdir():
+            if p_dir.name.startswith("_"):
+                continue
             if p_dir.is_dir() and (p_dir / "manifest.json").is_file():
                 try:
                     manifest = load_manifest(p_dir)

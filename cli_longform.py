@@ -277,6 +277,59 @@ def cmd_project_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_project_delete(args: argparse.Namespace) -> int:
+    """Safely move a project folder into _trash/ (Stage 8B.2, F7)."""
+    from app.services.longform.trash import soft_delete_project
+
+    try:
+        res = soft_delete_project(
+            args.project_id,
+            delete_capcut_drafts=bool(getattr(args, "with_capcut", False)),
+        )
+        print(f"SUCCESS: Project '{res['project_id']}' moved to trash: {res['trash_path']}")
+        print(f"  Size: {res['size_mb']} MB | CapCut drafts deleted: {len(res['capcut_drafts_deleted'])}")
+        return 0
+    except Exception as exc:
+        print(f"Error deleting project '{args.project_id}': {exc}", file=sys.stderr)
+        return 1
+
+
+def cmd_project_restore(args: argparse.Namespace) -> int:
+    """Restore a project from _trash/ back into active storage (Stage 8B.2, F7)."""
+    from app.services.longform.trash import restore_trashed_project
+
+    try:
+        res = restore_trashed_project(args.project_id)
+        print(f"SUCCESS: Restored project '{res['project_id']}' -> {res['restored_path']}")
+        return 0
+    except Exception as exc:
+        print(f"Error restoring project '{args.project_id}': {exc}", file=sys.stderr)
+        return 1
+
+
+def cmd_trash_list(_args: argparse.Namespace) -> int:
+    """List projects currently in _trash/ (Stage 8B.2, F7)."""
+    from app.services.longform.trash import list_trashed_projects
+
+    items = list_trashed_projects()
+    if not items:
+        print("Trash is empty.")
+        return 0
+    print(f"\nTrashed Projects ({len(items)}):")
+    for it in items:
+        print(f"  - {it['project_id']} | '{it['title']}' | deleted={it['deleted_at']} | {it['size_mb']} MB | folder={it['trash_id']}")
+    return 0
+
+
+def cmd_trash_empty(_args: argparse.Namespace) -> int:
+    """Permanently delete all items inside _trash/ (Stage 8B.2, F7)."""
+    from app.services.longform.trash import empty_trash
+
+    res = empty_trash()
+    print(f"SUCCESS: Emptied trash ({res['deleted_count']} project(s), {res['mb_freed']} MB freed).")
+    return 0
+
+
 def cmd_project_plan(args: argparse.Namespace) -> int:
     """Compute and display execution plan for a project."""
     project_dir = get_project_dir(args.project_id)
@@ -1697,6 +1750,50 @@ def cmd_visual_ai_video_batch(args: argparse.Namespace) -> int:
         return 1
 
 
+def cmd_visual_ai_keywords(args: argparse.Namespace) -> int:
+    """Update visual search keywords with AI for unlocked shots (Stage 8B.2, F8)."""
+    from app.services.longform.llm_adapter import LLMCreditError, LLMModelNotFoundError
+    from app.services.longform.visual.service import VisualService
+
+    proj_dir = get_project_dir(args.project_id)
+    if not proj_dir.is_dir():
+        print(f"Error: Project '{args.project_id}' not found at {proj_dir}", file=sys.stderr)
+        return 1
+
+    try:
+        with ProjectLock(proj_dir):
+            svc = VisualService(proj_dir)
+            ch_idx = getattr(args, "chapter", None)
+            _m, stats = svc.update_keywords_with_ai(
+                chapter_index=int(ch_idx) if ch_idx is not None else None,
+                force=True,
+                mark_stale=True,
+            )
+            print(
+                f"AI keyword update complete: updated={stats['updated']}, "
+                f"stale_marked={stats['stale_marked']}, skipped_locked={stats['skipped_locked']}, "
+                f"llm_calls={stats['llm_calls']}"
+            )
+            if stats.get("warnings"):
+                print(f"Warnings: {stats['warnings'][0]}")
+            return 0
+    except ProjectLockedError:
+        err_msg = f"Project '{args.project_id}' is locked by another process."
+        print(f"Error: {err_msg}", file=sys.stderr)
+        _record_job_failure(proj_dir, "visual_ai_keywords", err_msg, 1)
+        return 1
+    except (LLMCreditError, LLMModelNotFoundError) as exc:
+        err_msg = str(exc)
+        print(f"[LLM_ERROR] {err_msg}", file=sys.stderr)
+        _record_job_failure(proj_dir, "visual_ai_keywords", err_msg, 1)
+        return 1
+    except Exception as exc:
+        err_msg = str(exc)
+        print(f"Error updating AI visual keywords: {err_msg}", file=sys.stderr)
+        _record_job_failure(proj_dir, "visual_ai_keywords", err_msg, 1)
+        return 1
+
+
 def cmd_render_chapter(args: argparse.Namespace) -> int:
     """Render a single chapter MP4 with burned subtitles (5.1, 5.5)."""
     from app.services.longform.render.service import RenderService
@@ -2331,6 +2428,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_sim.add_argument("--delay", type=float, default=0.0, help="Artificial delay per unit (seconds)")
     p_sim.add_argument("--fail-at", help="Simulate failure at specific unit_id")
 
+    # project delete (8B.2 F7)
+    p_del = proj_subs.add_parser("delete", help="Move a project to trash")
+    p_del.add_argument("project_id", help="Project ID")
+    p_del.add_argument("--with-capcut", action="store_true", help="Also remove installed CapCut drafts for this project")
+
+    # project restore (8B.2 F7)
+    p_res = proj_subs.add_parser("restore", help="Restore a project from trash")
+    p_res.add_argument("project_id", help="Project ID or trash folder ID")
+
+    # trash (8B.2 F7)
+    p_trash = subparsers.add_parser("trash", help="Manage deleted projects in trash")
+    trash_subs = p_trash.add_subparsers(dest="trash_command", required=True)
+    trash_subs.add_parser("list", help="List projects currently in trash")
+    trash_subs.add_parser("empty", help="Permanently delete all projects in trash")
+
     # 3. script (Stage 2)
     p_script = subparsers.add_parser("script", help="Manage AI longform script generation")
     script_subs = p_script.add_subparsers(dest="script_command", required=True)
@@ -2497,6 +2609,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_v_aivid_b.add_argument("--resolution", default="720p", help="Output resolution")
     p_v_aivid_b.add_argument("--max-budget", type=float, default=5.0, help="Maximum budget cap in USD")
 
+    # visual ai-keywords (8B.2 F8)
+    p_v_aikw = visual_subs.add_parser("ai-keywords", help="Generate/update English visual search keywords with AI")
+    p_v_aikw.add_argument("project_id", help="Project ID")
+    p_v_aikw.add_argument("--chapter", type=int, default=None, help="Optional single chapter index")
+
     # 7. cache (Stage 4.2, S2)
     p_cache = subparsers.add_parser("cache", help="Manage global media cache and LRU pruning")
     cache_subs = p_cache.add_subparsers(dest="cache_command", required=True)
@@ -2615,6 +2732,15 @@ def main() -> int:
                 return cmd_project_dev_simulate(args)
             elif args.project_command == "set-voice":
                 return cmd_project_set_voice(args)
+            elif args.project_command == "delete":
+                return cmd_project_delete(args)
+            elif args.project_command == "restore":
+                return cmd_project_restore(args)
+        elif args.command == "trash":
+            if args.trash_command == "list":
+                return cmd_trash_list(args)
+            elif args.trash_command == "empty":
+                return cmd_trash_empty(args)
         elif args.command == "script":
             if args.script_command == "outline":
                 return cmd_script_outline(args)
@@ -2668,6 +2794,8 @@ def main() -> int:
                 return cmd_visual_ai_video(args)
             elif args.visual_command == "ai-video-batch":
                 return cmd_visual_ai_video_batch(args)
+            elif args.visual_command == "ai-keywords":
+                return cmd_visual_ai_keywords(args)
         elif args.command == "cache":
             if args.cache_command == "status":
                 return cmd_cache_status(args)

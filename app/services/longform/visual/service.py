@@ -205,6 +205,9 @@ class VisualService:
         if shot.locked:
             return True
 
+        if getattr(shot, "status", None) == ItemStatus.stale:
+            return False
+
         if not shot.asset_path or not shot.asset_content_hash:
             return False
 
@@ -377,9 +380,9 @@ class VisualService:
                 stop_requested = True
                 break
 
-            # F2: Batch translate short search queries to English per chapter for non-English projects
-            # ONLY for newly allocated / needing-fetch unlocked shots; locked/valid shots remain untouched.
-            if translate_keywords and is_non_english_language(proj_lang):
+            # F8 + F2: For newly allocated / stale unlocked shots lacking AI visual keywords,
+            # generate concise English visual search queries per chapter (or fall back cleanly).
+            if translate_keywords:
                 shots_needing_fetch = [
                     sh for sh in ch.shots
                     if not sh.locked and not self._is_shot_asset_valid_for_provider(
@@ -392,9 +395,36 @@ class VisualService:
                         visual_kws,
                     )
                 ]
-                if shots_needing_fetch:
+                shots_needing_kw_gen = [
+                    sh for sh in shots_needing_fetch
+                    if (
+                        getattr(sh, "search_query_source", None) != "ai"
+                        or not getattr(sh, "search_query_en", None)
+                    )
+                ]
+                if shots_needing_kw_gen and effective_provider_name != "fake":
+                    from app.services.longform.visual.ai_keywords import (
+                        generate_chapter_visual_keywords_ai,
+                    )
+                    kw_res = generate_chapter_visual_keywords_ai(
+                        shots_needing_kw_gen,
+                        ch,
+                        preset_snapshot=preset_snap,
+                        project_lang=proj_lang,
+                    )
+                    if kw_res.get("warning"):
+                        translation_warnings.append(str(kw_res["warning"]))
+                    if kw_res.get("fallback_used") and is_non_english_language(proj_lang):
+                        tr_res = translate_chapter_queries_to_english(
+                            shots_needing_kw_gen,
+                            preset_snapshot=preset_snap,
+                            project_lang=proj_lang,
+                        )
+                        if tr_res.get("warning"):
+                            translation_warnings.append(str(tr_res["warning"]))
+                elif shots_needing_kw_gen and is_non_english_language(proj_lang):
                     tr_res = translate_chapter_queries_to_english(
-                        shots_needing_fetch,
+                        shots_needing_kw_gen,
                         preset_snapshot=preset_snap,
                         project_lang=proj_lang,
                     )
@@ -1171,6 +1201,31 @@ class VisualService:
                         s.needs_review = True
                         flagged += 1
         return flagged
+
+    def update_keywords_with_ai(
+        self,
+        manifest: Optional[ProjectManifest] = None,
+        *,
+        chapter_index: Optional[int] = None,
+        force: bool = True,
+        mark_stale: bool = True,
+        llm_adapter: Any = None,
+    ) -> Tuple[ProjectManifest, Dict[str, Any]]:
+        """Regenerate visual search keywords with AI for unlocked shots and mark changed shots stale (F8)."""
+        from app.services.longform.visual.ai_keywords import update_project_visual_keywords_ai
+
+        if manifest is None:
+            manifest = load_manifest(self.project_dir)
+
+        stats = update_project_visual_keywords_ai(
+            manifest,
+            chapter_index=chapter_index,
+            force=force,
+            mark_stale=mark_stale,
+            llm_adapter=llm_adapter,
+        )
+        save_manifest(manifest, self.project_dir)
+        return manifest, stats
 
     def run_pipeline(
         self,
