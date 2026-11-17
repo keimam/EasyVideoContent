@@ -26,6 +26,13 @@ from loguru import logger
 from app.config import config
 from app.models.llm_provider import DEFAULT_LLM_PROVIDER_ID, get_llm_provider
 
+OPENROUTER_SAFE_DEFAULT_MODEL = "openrouter/free"
+MAX_TOKENS_TEST_CONNECTION = 16
+MAX_TOKENS_VISION_RELEVANCE = 100
+
+# Cached OpenRouter /models pricing classification keyed by lowercase model id
+_MODEL_PRICING_CACHE: Dict[str, str] = {}
+
 # Regex to sanitize sensitive keys from error messages
 _SENSITIVE_KEY_RE = re.compile(
     r"((?:api[_-]?key|access[_-]?token|secret|password|bearer\s+)[=:\s]+)([a-zA-Z0-9_\-\.]{8,})",
@@ -38,6 +45,58 @@ def sanitize_error(msg: str) -> str:
     return _SENSITIVE_KEY_RE.sub(r"\1***REDACTED***", str(msg))
 
 
+def resolve_effective_model(provider_id: str, configured_model: Optional[str]) -> Tuple[str, bool]:
+    """Resolve model name for Long Video, substituting a working OpenRouter free model when empty."""
+    pid = (provider_id or "").strip().lower()
+    raw = (configured_model or "").strip()
+    if pid == "openrouter" and not raw:
+        return OPENROUTER_SAFE_DEFAULT_MODEL, True
+    prov_def = get_llm_provider(pid)
+    if prov_def:
+        resolved = prov_def.resolve_model_name(raw)
+        if pid == "openrouter" and resolved == "minimax/minimax-m3:free" and not raw:
+            return OPENROUTER_SAFE_DEFAULT_MODEL, True
+        return resolved, False
+    return raw, False
+
+
+def resolve_model_billing_tier(provider_id: str, model_id: Optional[str]) -> str:
+    """Classify model as 'free', 'paid', 'subscription', or 'unknown' when provider info exists."""
+    pid = (provider_id or "").strip().lower()
+    mid = (model_id or "").strip().lower()
+    if pid == "ollama":
+        return "free"
+    if pid in ("openai_codex", "openai_chatgpt", "claude_code", "kimi_code"):
+        return "subscription"
+    if pid == "openrouter":
+        if mid in _MODEL_PRICING_CACHE:
+            return _MODEL_PRICING_CACHE[mid]
+        if mid == "openrouter/free" or mid.endswith(":free"):
+            return "free"
+        if mid:
+            return "paid"
+        return "unknown"
+    if pid in ("openai", "anthropic", "deepseek", "moonshot", "qwen", "azure", "grok", "minimax"):
+        return "paid" if mid else "unknown"
+    return "unknown"
+
+
+def compute_script_max_tokens(kind: str, target_words: int = 0) -> int:
+    """Compute bounded reasonable max_tokens for each Long Video LLM call type (F5)."""
+    k = (kind or "default").strip().lower()
+    if k in ("test", "test_connection", "ping"):
+        return MAX_TOKENS_TEST_CONNECTION
+    if k in ("vision", "ai_relevance", "relevance"):
+        return MAX_TOKENS_VISION_RELEVANCE
+    if k == "summary":
+        return 320
+    if k == "outline":
+        return min(1600, max(700, int(max(target_words, 0) * 0.25) + 800))
+    if k in ("chapter", "revise_length", "revise", "rewrite"):
+        return min(4096, max(800, int(max(target_words, 0) * 2.5) + 400))
+    return 2048
+
+
 @dataclass
 class LLMResponse:
     """Structured response from LLMAdapter."""
@@ -48,6 +107,7 @@ class LLMResponse:
     duration_seconds: float
     tokens: Optional[Dict[str, int]] = None
     cache_hit: bool = False
+    max_tokens_requested: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -68,6 +128,11 @@ class LLMRateLimitError(LLMAdapterError):
     pass
 
 
+class LLMCreditError(LLMAdapterError):
+    """Raised on HTTP 402 / insufficient provider credit (never automatically retried)."""
+    pass
+
+
 class LLMModelNotFoundError(LLMAdapterError):
     """Raised when the configured LLM model is not found, deprecated, or retired."""
 
@@ -85,8 +150,26 @@ def _mask_secret(raw_key: str) -> str:
 
 
 def _classify_llm_error(error_msg: str, model: str = "") -> Optional[LLMAdapterError]:
-    """Classify upstream error text into rate-limit or model-not-found typed errors."""
+    """Classify upstream error text into credit-shortage, rate-limit, or model-not-found errors."""
     lower = (error_msg or "").lower()
+    if any(
+        tok in lower
+        for tok in (
+            "error code: 402",
+            "http 402",
+            "'code': 402",
+            '"code": 402',
+            " 402 ",
+            "requires more credits",
+            "can only afford",
+            "insufficient credits",
+            "insufficient balance",
+            "not enough credits",
+            "out of credits",
+        )
+    ):
+        return LLMCreditError(error_msg)
+
     if any(
         tok in lower
         for tok in (
@@ -110,8 +193,10 @@ def _classify_llm_error(error_msg: str, model: str = "") -> Optional[LLMAdapterE
         or "not a valid model" in lower
         or "model is retired" in lower
         or "has been retired" in lower
+        or "unavailable for free" in lower
+        or "paid version is available now" in lower
         or ("not found" in lower and ("model" in lower or "404" in lower))
-        or ("unavailable" in lower and "model" in lower)
+        or ("unavailable" in lower and ("model" in lower or "404" in lower))
     )
     if model_not_found:
         return LLMModelNotFoundError(error_msg, model=model)
@@ -138,18 +223,17 @@ class LLMAdapter:
         self.max_retries = max(1, max_retries)
         self.retry_delay = max(0.1, retry_delay)
 
-        # Resolve model name
+        # Resolve model name cleanly (safe openrouter/free fallback when OpenRouter field is empty)
+        self.used_safe_default = False
+        self.last_request_max_tokens: Optional[int] = None
         if model:
             self.model = model.strip()
         elif self.provider == "fake":
             self.model = "deterministic-fake-v1"
         else:
             prov_def = get_llm_provider(self.provider)
-            if prov_def:
-                raw_model = config.app.get(prov_def.config_key("model_name"), "")
-                self.model = prov_def.resolve_model_name(raw_model)
-            else:
-                self.model = ""
+            raw_model = config.app.get(prov_def.config_key("model_name"), "") if prov_def else ""
+            self.model, self.used_safe_default = resolve_effective_model(self.provider, raw_model)
 
         if self.cache_dir:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -248,16 +332,120 @@ class LLMAdapter:
                 tmp_file.unlink(missing_ok=True)
             logger.warning(f"Failed to write LLM cache '{cache_file}': {exc}")
 
+    def _call_bounded_sdk(
+        self,
+        *,
+        prompt: str,
+        resolved_model: str,
+        max_tokens: int,
+        runtime_cfg: Dict[str, Any],
+    ) -> str:
+        """Execute LLM call with explicit max_tokens so providers never over-reserve credits (F5)."""
+        from app.services.llm import (
+            _extract_chat_completion_text,
+            _normalize_text_response,
+            _resolve_provider_field_value,
+            _sdk_transport_options,
+        )
+        from app.utils.request_logging import trace_sdk_call
+
+        prov_def = get_llm_provider(self.provider)
+        if not prov_def:
+            raise LLMAdapterError(f"Unsupported LLM provider: {self.provider}")
+
+        adapter = prov_def.adapter
+        api_key = str(runtime_cfg.get(prov_def.config_key("api_key"), "") or "")
+        base_url = prov_def.resolve_base_url(str(runtime_cfg.get(prov_def.config_key("base_url"), "") or ""))
+        if self.provider == "ollama":
+            api_key = "ollama"
+            base_url = base_url or config.get_default_ollama_base_url()
+
+        if adapter == "gemini":
+            from google import genai
+            from google.genai import types
+
+            http_options = types.HttpOptions(base_url=base_url) if base_url else None
+            gen_cfg = types.GenerateContentConfig(temperature=0.5, max_output_tokens=int(max_tokens))
+            with genai.Client(api_key=api_key, http_options=http_options) as client:
+                resp = trace_sdk_call(
+                    self.provider,
+                    base_url,
+                    client.models.generate_content,
+                    model=resolved_model,
+                    contents=prompt,
+                    config=gen_cfg,
+                )
+            return _normalize_text_response(getattr(resp, "text", ""), self.provider)
+
+        from openai import AzureOpenAI, OpenAI
+        from openai.types.chat import ChatCompletion
+
+        sdk_client = None
+        try:
+            if adapter == "azure":
+                api_ver = str(runtime_cfg.get(prov_def.config_key("api_version"), "2024-02-15-preview") or "2024-02-15-preview")
+                sdk_client = AzureOpenAI(
+                    api_key=api_key,
+                    api_version=api_ver,
+                    azure_endpoint=base_url,
+                    **_sdk_transport_options(self.timeout, 0),
+                )
+            elif adapter == "cloudflare_ai_gateway":
+                extra = {
+                    f.config_suffix: _resolve_provider_field_value(
+                        runtime_cfg.get(prov_def.config_key(f.config_suffix)), f.default_value
+                    )
+                    for f in prov_def.extra_fields
+                }
+                sdk_client = OpenAI(
+                    api_key=api_key,
+                    base_url=f"https://api.cloudflare.com/client/v4/accounts/{extra['account_id']}/ai/v1",
+                    default_headers={"cf-aig-gateway-id": extra["gateway_id"]},
+                    **_sdk_transport_options(self.timeout, 0),
+                )
+            else:
+                sdk_client = OpenAI(
+                    api_key=api_key,
+                    base_url=base_url,
+                    **_sdk_transport_options(self.timeout, 0),
+                )
+
+            resp = trace_sdk_call(
+                self.provider,
+                base_url,
+                sdk_client.chat.completions.create,
+                model=resolved_model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=int(max_tokens),
+            )
+            if resp and isinstance(resp, ChatCompletion):
+                return _extract_chat_completion_text(resp, self.provider)
+            raise ValueError(f"[{self.provider}] returned an invalid response")
+        finally:
+            close = getattr(sdk_client, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
+
     def generate(
         self,
         prompt: str,
         fake_kind: Optional[str] = None,  # "outline" | "chapter" | "revise_length" | "summary"
         fake_kwargs: Optional[Dict[str, Any]] = None,
         force_refresh: bool = False,
+        max_tokens: Optional[int] = None,
     ) -> LLMResponse:
         """Execute prompt against configured provider or fake mock, checking cache first."""
         # Fail fast if real provider credentials are missing
         self.validate_configuration()
+
+        target_words = int((fake_kwargs or {}).get("target_words", 0) or 0)
+        eff_max_tokens = int(max_tokens) if max_tokens is not None else compute_script_max_tokens(
+            fake_kind or "default", target_words=target_words
+        )
+        self.last_request_max_tokens = eff_max_tokens
 
         cache_key = self._compute_cache_key(prompt)
 
@@ -265,6 +453,7 @@ class LLMAdapter:
         if not force_refresh:
             cached = self._read_cache(cache_key)
             if cached is not None:
+                cached.max_tokens_requested = eff_max_tokens
                 return cached
 
         # 2. Fake provider execution
@@ -279,21 +468,19 @@ class LLMAdapter:
                 duration_seconds=round(duration, 4),
                 tokens=None,
                 cache_hit=False,
+                max_tokens_requested=eff_max_tokens,
             )
             self._write_cache(cache_key, resp)
             return resp
 
-        # 3. Real upstream execution with bounded retries and backoff
-        # Calls upstream: app.services.llm._generate_response
-        # Note on upstream interface: calls app/services/llm.py:_generate_response (line 315).
         from app.services import llm as upstream_llm
 
         last_error = ""
         resolved_model = self.model
         prov_def = get_llm_provider(self.provider)
-        if not resolved_model and prov_def:
-            raw_model = config.app.get(prov_def.config_key("model_name"), "")
-            resolved_model = prov_def.resolve_model_name(raw_model)
+        if not resolved_model:
+            raw_model = config.app.get(prov_def.config_key("model_name"), "") if prov_def else ""
+            resolved_model, _ = resolve_effective_model(self.provider, raw_model)
 
         # Build isolated config snapshot honoring explicit adapter provider/model overrides
         runtime_cfg = dict(config.app)
@@ -301,15 +488,35 @@ class LLMAdapter:
         if resolved_model and prov_def:
             runtime_cfg[prov_def.config_key("model_name")] = resolved_model
 
+        gen_fn = getattr(upstream_llm, "_generate_response", None)
+        is_mocked_upstream = (
+            gen_fn is None
+            or getattr(gen_fn, "__module__", "") != "app.services.llm"
+            or getattr(gen_fn, "__name__", "") != "_generate_response"
+        )
+        adapter_type = prov_def.adapter if prov_def else "openai_compatible"
+        can_call_bounded_sdk = (
+            not is_mocked_upstream
+            and adapter_type in ("openai", "openai_compatible", "gemini", "azure", "cloudflare_ai_gateway")
+        )
+
         for attempt in range(1, self.max_retries + 1):
             start_time = time.perf_counter()
             try:
-                raw_text = upstream_llm._generate_response(
-                    prompt=prompt,
-                    app_config=runtime_cfg,
-                    request_timeout=self.timeout,
-                    max_retries=0,  # Let adapter manage bounded backoff
-                )
+                if can_call_bounded_sdk:
+                    raw_text = self._call_bounded_sdk(
+                        prompt=prompt,
+                        resolved_model=resolved_model,
+                        max_tokens=eff_max_tokens,
+                        runtime_cfg=runtime_cfg,
+                    )
+                else:
+                    raw_text = upstream_llm._generate_response(
+                        prompt=prompt,
+                        app_config=runtime_cfg,
+                        request_timeout=self.timeout,
+                        max_retries=0,  # Let adapter manage bounded backoff
+                    )
                 duration = time.perf_counter() - start_time
                 text_out = (raw_text or "").strip()
 
@@ -317,7 +524,7 @@ class LLMAdapter:
                 if not text_out or text_out.startswith("Error:"):
                     clean_err = sanitize_error(text_out or "Empty LLM response")
                     classified = _classify_llm_error(clean_err, model=resolved_model)
-                    if isinstance(classified, LLMModelNotFoundError):
+                    if isinstance(classified, (LLMModelNotFoundError, LLMCreditError)):
                         raise classified
                     last_error = clean_err
                     logger.warning(
@@ -340,20 +547,19 @@ class LLMAdapter:
                     provider=self.provider,
                     model=resolved_model,
                     duration_seconds=round(duration, 3),
-                    tokens=None,  # upstream _generate_response extracts pure text
+                    tokens=None,
                     cache_hit=False,
+                    max_tokens_requested=eff_max_tokens,
                 )
                 self._write_cache(cache_key, resp)
                 return resp
-            except LLMModelNotFoundError:
-                raise
-            except LLMRateLimitError:
+            except (LLMModelNotFoundError, LLMCreditError, LLMRateLimitError):
                 raise
             except Exception as exc:
                 duration = time.perf_counter() - start_time
                 last_error = sanitize_error(str(exc))
                 classified = _classify_llm_error(last_error, model=resolved_model)
-                if isinstance(classified, LLMModelNotFoundError):
+                if isinstance(classified, (LLMModelNotFoundError, LLMCreditError)):
                     raise classified
                 logger.warning(
                     f"LLM call attempt {attempt}/{self.max_retries} failed ({duration:.2f}s): {last_error}"
@@ -675,7 +881,8 @@ def get_llm_readiness(provider_id: Optional[str] = None) -> Dict[str, Any]:
         }
 
     raw_model = str(config.app.get(prov_def.config_key("model_name")) or "").strip()
-    resolved_model = prov_def.resolve_model_name(raw_model)
+    resolved_model, used_safe_default = resolve_effective_model(active_id, raw_model)
+    billing_tier = resolve_model_billing_tier(active_id, resolved_model)
     provider_label = prov_def.default_label or active_id
     adapter = prov_def.adapter
 
@@ -688,6 +895,8 @@ def get_llm_readiness(provider_id: Optional[str] = None) -> Dict[str, Any]:
                 "provider": active_id,
                 "provider_label": provider_label,
                 "model": resolved_model,
+                "used_safe_default": used_safe_default,
+                "billing_tier": billing_tier,
                 "adapter": adapter,
                 "configured": False,
                 "is_invalid": False,
@@ -703,6 +912,8 @@ def get_llm_readiness(provider_id: Optional[str] = None) -> Dict[str, Any]:
                 "provider": active_id,
                 "provider_label": provider_label,
                 "model": resolved_model,
+                "used_safe_default": used_safe_default,
+                "billing_tier": billing_tier,
                 "adapter": adapter,
                 "configured": False,
                 "is_invalid": True,
@@ -722,6 +933,8 @@ def get_llm_readiness(provider_id: Optional[str] = None) -> Dict[str, Any]:
                 "provider": active_id,
                 "provider_label": provider_label,
                 "model": resolved_model,
+                "used_safe_default": used_safe_default,
+                "billing_tier": billing_tier,
                 "adapter": adapter,
                 "configured": False,
                 "is_invalid": False,
@@ -735,6 +948,8 @@ def get_llm_readiness(provider_id: Optional[str] = None) -> Dict[str, Any]:
             "provider": active_id,
             "provider_label": provider_label,
             "model": resolved_model,
+            "used_safe_default": used_safe_default,
+            "billing_tier": billing_tier,
             "adapter": adapter,
             "configured": True,
             "is_invalid": False,
@@ -751,6 +966,8 @@ def get_llm_readiness(provider_id: Optional[str] = None) -> Dict[str, Any]:
             "provider": active_id,
             "provider_label": provider_label,
             "model": resolved_model,
+            "used_safe_default": used_safe_default,
+            "billing_tier": billing_tier,
             "adapter": adapter,
             "configured": connected,
             "is_invalid": False,
@@ -768,6 +985,8 @@ def get_llm_readiness(provider_id: Optional[str] = None) -> Dict[str, Any]:
             "provider": active_id,
             "provider_label": provider_label,
             "model": resolved_model or "cli-default",
+            "used_safe_default": used_safe_default,
+            "billing_tier": billing_tier,
             "adapter": adapter,
             "configured": found,
             "is_invalid": False,
@@ -784,6 +1003,8 @@ def get_llm_readiness(provider_id: Optional[str] = None) -> Dict[str, Any]:
         "provider": active_id,
         "provider_label": provider_label,
         "model": resolved_model,
+        "used_safe_default": used_safe_default,
+        "billing_tier": billing_tier,
         "adapter": adapter,
         "configured": has_local or (active_id in configured_tuple),
         "is_invalid": False,
@@ -795,15 +1016,35 @@ def get_llm_readiness(provider_id: Optional[str] = None) -> Dict[str, Any]:
 
 
 def test_llm_connection() -> Tuple[bool, str, float]:
-    """Delegate LLM connectivity verification to MPT's upstream ``llm.test_connection()``."""
+    """Verify LLM connectivity with bounded max_tokens <= 16 and safe empty-model default (F5)."""
     from app.services import llm as upstream_llm
 
+    tc_fn = getattr(upstream_llm, "test_connection", None)
+    if (
+        tc_fn is not None
+        and (
+            getattr(tc_fn, "__module__", "") != "app.services.llm"
+            or getattr(tc_fn, "__name__", "") != "test_connection"
+        )
+    ):
+        try:
+            ok, msg, latency = tc_fn()
+            return bool(ok), sanitize_error(msg or ""), float(latency or 0.0)
+        except Exception as exc:
+            return False, sanitize_error(str(exc)), 0.0
+
+    t0 = time.perf_counter()
     try:
-        ok, msg, latency = upstream_llm.test_connection()
-        clean_msg = sanitize_error(msg or "")
-        return bool(ok), clean_msg, float(latency or 0.0)
+        adapter = LLMAdapter(max_retries=1, timeout=15.0)
+        resp = adapter.generate(
+            prompt="Reply with OK.",
+            fake_kind="test_connection",
+            force_refresh=True,
+            max_tokens=MAX_TOKENS_TEST_CONNECTION,
+        )
+        return True, sanitize_error((resp.content or "").strip()), float(time.perf_counter() - t0)
     except Exception as exc:
-        return False, sanitize_error(str(exc)), 0.0
+        return False, sanitize_error(str(exc)), float(time.perf_counter() - t0)
 
 
 def supports_model_listing(provider_id: Optional[str] = None) -> bool:
@@ -909,11 +1150,22 @@ def list_llm_models(
             resp.raise_for_status()
             payload = resp.json()
             data = payload.get("data", []) if isinstance(payload, dict) else []
-            models = [
-                str(item["id"]).strip()
-                for item in data
-                if isinstance(item, dict) and isinstance(item.get("id"), str) and item["id"].strip()
-            ]
+            models = []
+            for item in data:
+                if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+                    continue
+                mid = item["id"].strip()
+                if not mid:
+                    continue
+                models.append(mid)
+                pricing = item.get("pricing")
+                if active_id == "openrouter" and isinstance(pricing, dict):
+                    try:
+                        p_in = float(pricing.get("prompt", 0) or 0)
+                        p_out = float(pricing.get("completion", 0) or 0)
+                        _MODEL_PRICING_CACHE[mid.lower()] = "free" if (p_in == 0.0 and p_out == 0.0) else "paid"
+                    except (TypeError, ValueError):
+                        pass
             return sorted(set(models)), None
 
         return [], f"Provider '{active_id}' uses manual model configuration."

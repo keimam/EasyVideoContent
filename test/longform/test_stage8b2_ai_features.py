@@ -410,10 +410,23 @@ def test_f3_provider_priority_duration_rounding_and_cost_table(tmp_path: Path, m
     assert round_up_supported_duration(6.8, [5, 10]) == 10
     assert round_up_supported_duration(20.0, [4, 5, 8, 12]) == 12
 
-    # Editable config/longform.toml pricing lookup + unknown fallback
+    # Editable config/longform.toml pricing lookup + source URL/date + unknown fallback
+    default_pricing = load_ai_video_pricing()
+    assert default_pricing["updated_at"] == "2026-11-17"
+    assert len(default_pricing["models"]) >= 12
+    for row_id, row_meta in default_pricing["models"].items():
+        assert row_meta["per_second"] > 0, f"Invalid price for {row_id}"
+        assert str(row_meta.get("url", "")).startswith("https://"), f"Missing source URL for {row_id}"
+        assert row_meta.get("checked_at"), f"Missing checked_at for {row_id}"
+
+    # Corrected Seedance 2.0 Fast ($0.100/s) and Wan 2.2 Ultra Fast ($0.010/s)
     known_cost = estimate_ai_video_cost("bytedance/seedance-2.0-fast/text-to-video", 5, "720p")
     assert known_cost["known"] is True
-    assert known_cost["estimated_usd"] == pytest.approx(0.225, abs=1e-4)
+    assert known_cost["estimated_usd"] == pytest.approx(0.50, abs=1e-4)
+    assert known_cost["url"].startswith("https://")
+    wan_fast = estimate_ai_video_cost("wavespeed-ai/wan-2.2/t2v-480p-ultra-fast", 4, "480p")
+    assert wan_fast["known"] is True
+    assert wan_fast["estimated_usd"] == pytest.approx(0.04, abs=1e-4)
 
     custom_toml = tmp_path / "custom_longform.toml"
     custom_toml.write_text(
@@ -491,21 +504,21 @@ def test_f3_bulk_needs_review_enforces_budget_cap_and_never_runs_automatically(t
         shutil.copyfile(gen_src_mp4, dest)
         return dest
 
-    # Each 4s clip at 720p with seedance-2.0-fast costs 4 * 0.045 = $0.18
-    # Cap at $0.40 -> allows 2 shots ($0.36) and MUST stop before 3rd shot ($0.54 > $0.40)!
+    # Each 4s clip at 720p with seedance-2.0-fast costs 4 * 0.100 = $0.40
+    # Cap at $0.85 -> allows 2 shots ($0.80) and MUST stop before 3rd shot ($1.20 > $0.85)!
     res = generate_ai_video_for_needs_review(
         project_dir=p_dir,
         manifest=m,
         provider_id="wavespeed",
         model_id="bytedance/seedance-2.0-fast/text-to-video",
         resolution="720p",
-        max_budget_usd=0.40,
+        max_budget_usd=0.85,
         video_generator_fn=_mock_video_gen,
     )
     assert calls == 2
     assert res["generated"] == 2
     assert res["skipped_budget"] == 1
-    assert res["spent_usd"] <= 0.40
+    assert res["spent_usd"] <= 0.85
 
     # Ensure standard run_pipeline NEVER automatically calls AI video
     plan_only = plan_needs_review_ai_video_batch(m, "wavespeed", "bytedance/seedance-2.0-fast/text-to-video", "720p")
@@ -584,3 +597,363 @@ def test_f4_theme_hides_anchor_links_and_short_ai_image_checkbox(tmp_path: Path,
         assert len(cb) == 1
         assert cb[0].label == expected_lbl
         assert expected_help in (cb[0].help or "")
+
+
+# ---------------------------------------------------------------------------
+# F5: max_tokens Limits, 402/404 Zero-Retry + Friendly UI, Empty Model Fallback,
+#     Free/Paid Badge, Pricing Source URL/Disclaimer, Host config.toml Isolation
+# ---------------------------------------------------------------------------
+
+
+def test_f5_max_tokens_per_call_type_never_unbounded(tmp_path: Path, monkeypatch):
+    from app.services.longform.llm_adapter import (
+        LLMAdapter,
+        MAX_TOKENS_TEST_CONNECTION,
+        MAX_TOKENS_VISION_RELEVANCE,
+        compute_script_max_tokens,
+        test_llm_connection,
+    )
+    from app.services.longform.script_generator import ScriptGenerator
+    from app.services.longform.visual import ai_relevance, keyword_translator
+
+    monkeypatch.setattr("app.config.config.app", dict(config.app))
+    monkeypatch.setitem(config.app, "llm_provider", "openrouter")
+    monkeypatch.setitem(config.app, "openrouter_api_key", "sk-or-test-key")
+    monkeypatch.setitem(config.app, "openrouter_model_name", "openrouter/free")
+
+    # 1. Verify ScriptGenerator compute_script_max_tokens bounds per call type
+    assert compute_script_max_tokens("outline") == 800
+    assert compute_script_max_tokens("outline", target_words=1000) == 1050
+    assert compute_script_max_tokens("summary") == 320
+    assert compute_script_max_tokens("chapter", target_words=450) == 1525
+    assert compute_script_max_tokens("revise", target_words=500) == 1650
+
+    # 2. Verify test_llm_connection passes max_tokens <= 16 via OpenAI-compatible SDK
+    from openai.types.chat import ChatCompletion, ChatCompletionMessage
+    from openai.types.chat.chat_completion import Choice
+
+    def _mk_chat_resp(txt: str) -> ChatCompletion:
+        return ChatCompletion(
+            id="chatcmpl-f5-test",
+            choices=[Choice(finish_reason="stop", index=0, message=ChatCompletionMessage(role="assistant", content=txt))],
+            created=0,
+            model="openrouter/free",
+            object="chat.completion",
+        )
+
+    recorded_sdk_calls: list[dict] = []
+
+    class _FakeCompletions:
+        def create(self, **kwargs):
+            recorded_sdk_calls.append(kwargs)
+            return _mk_chat_resp("ok")
+
+    class _FakeOpenAI:
+        def __init__(self, **_kwargs):
+            self.chat = SimpleNamespace(completions=_FakeCompletions())
+
+    monkeypatch.setattr("openai.OpenAI", _FakeOpenAI)
+    ok_conn, conn_msg, _lat = test_llm_connection()
+    assert ok_conn is True
+    assert recorded_sdk_calls[-1]["max_tokens"] == MAX_TOKENS_TEST_CONNECTION
+    assert recorded_sdk_calls[-1]["max_tokens"] <= 16
+
+    # 3. Verify LLMAdapter.generate passes explicit max_tokens to SDK and records it
+    adapter = LLMAdapter(provider="openrouter", model="openrouter/free")
+    resp = adapter.generate("Hello", max_tokens=compute_script_max_tokens("outline", target_words=1000))
+    assert resp.max_tokens_requested == 1050
+    assert recorded_sdk_calls[-1]["max_tokens"] == 1050
+    assert recorded_sdk_calls[-1]["max_tokens"] != 65535
+
+    # 4. Verify ScriptGenerator passes bounded max_tokens for outline, chapter, revise_length, summary end-to-end
+    sg_dir, _ = _seed_project_with_shots(tmp_path / "sg_proj", "sg_max", lang="en-US", queries=["muscle car"])
+    recorded_sdk_calls.clear()
+    seen_script_kinds: list[tuple[str, int | None]] = []
+
+    class _FakeScriptCompletions:
+        def create(self, **kwargs):
+            recorded_sdk_calls.append(kwargs)
+            prompt_txt = str(kwargs["messages"][0]["content"])
+            mt = kwargs.get("max_tokens")
+            if "candidate_titles" in prompt_txt or '"chapters"' in prompt_txt:
+                seen_script_kinds.append(("outline", mt))
+                body = json.dumps({
+                    "topic": "Classic Muscle Cars",
+                    "target_duration_minutes": 5.0,
+                    "words_per_minute": 140,
+                    "total_target_words": 200,
+                    "candidate_titles": [
+                        "Classic Muscle Cars: How Detroit Built Icons",
+                        "Roaring V8 History of American Streets",
+                        "Golden Era of Muscle Car Legends",
+                    ],
+                    "opening_hook": "In nineteen sixty four America discovered affordable horsepower on the open road.",
+                    "chapters": [
+                        {
+                            "chapter_index": 1,
+                            "title": "Birth of the V8 Legend",
+                            "purpose": "Explain how Detroit engineers sparked the muscle car revolution.",
+                            "key_points": ["Pontiac GTO", "Street performance"],
+                            "target_words": 200,
+                        }
+                    ],
+                })
+            elif "narrative_summary" in prompt_txt:
+                seen_script_kinds.append(("summary", mt))
+                body = json.dumps({
+                    "narrative_summary": "Pontiac pioneered the intermediate V8 formula in nineteen sixty four.",
+                    "key_facts": ["Pontiac GTO debuted in 1964"],
+                })
+            elif "revise" in prompt_txt.lower() or "current_words" in prompt_txt.lower() or "condense" in prompt_txt.lower() or "expand" in prompt_txt.lower():
+                seen_script_kinds.append(("revise_length", mt))
+                words_200 = " ".join(["history"] * 200)
+                body = f"## Birth of the V8 Legend\n\n{words_200}."
+            else:
+                seen_script_kinds.append(("chapter", mt))
+                body = "## Birth of the V8 Legend\n\nShort English draft to trigger length revision."
+            return _mk_chat_resp(body)
+
+    monkeypatch.setattr(
+        "openai.OpenAI",
+        lambda **_kw: SimpleNamespace(chat=SimpleNamespace(completions=_FakeScriptCompletions())),
+    )
+    sg = ScriptGenerator(project_dir=sg_dir, provider="openrouter", model="openrouter/free")
+    sg.generate_outline(topic="Classic Muscle Cars", target_duration_minutes=5.0, force_refresh=True)
+    sg.write_chapters(force_refresh=True)
+
+    kinds_dict = dict(seen_script_kinds)
+    assert set(["outline", "chapter", "revise_length", "summary"]).issubset(kinds_dict.keys())
+    for k_name, mt_val in seen_script_kinds:
+        assert isinstance(mt_val, int) and 0 < mt_val < 65535, f"Unbounded max_tokens for {k_name}: {mt_val}"
+    assert kinds_dict["summary"] == compute_script_max_tokens("summary")
+    assert kinds_dict["chapter"] == compute_script_max_tokens("chapter", 200)
+    assert kinds_dict["revise_length"] == compute_script_max_tokens("revise_length", 200)
+
+    # 5. Verify keyword_translator uses proportional max_tokens (no 65535)
+    recorded_sdk_calls.clear()
+    p_dir, shots_kw = _seed_project_with_shots(
+        tmp_path / "kw_proj", "kw_max", lang="id-ID", queries=["mobil otot", "bengkel retro"]
+    )
+    m_kw = load_manifest(p_dir)
+
+    class _FakeKwCompletions:
+        def create(self, **kwargs):
+            recorded_sdk_calls.append(kwargs)
+            return _mk_chat_resp('{"ch01_shot001": "classic muscle car", "ch01_shot002": "retro garage"}')
+
+    monkeypatch.setattr(
+        "openai.OpenAI",
+        lambda **_kw: SimpleNamespace(chat=SimpleNamespace(completions=_FakeKwCompletions())),
+    )
+    kw_out = keyword_translator.translate_chapter_queries_to_english(
+        shots=shots_kw,
+        project_lang="id-ID",
+        cache_dir=p_dir / "cache",
+    )
+    assert kw_out["translated"] == 2
+    assert recorded_sdk_calls[-1]["max_tokens"] == 160
+
+    # 6. Verify ai_relevance uses MAX_TOKENS_VISION_RELEVANCE <= 100
+    recorded_sdk_calls.clear()
+    monkeypatch.setitem(config.app, "openrouter_model_name", "google/gemini-2.5-flash")
+
+    class _FakeVisionCompletions:
+        def create(self, **kwargs):
+            recorded_sdk_calls.append(kwargs)
+            return _mk_chat_resp('{"relevan": "ya", "alasan": "clear match"}')
+
+    monkeypatch.setattr(
+        "openai.OpenAI",
+        lambda **_kw: SimpleNamespace(chat=SimpleNamespace(completions=_FakeVisionCompletions())),
+    )
+    rel = ai_relevance.check_shot_relevance(
+        shots_kw[0],
+        m_kw.chapters[0],
+        p_dir,
+        m_kw,
+        force_refresh=True,
+        cache_dir=p_dir / "cache",
+    )
+    assert rel["verdict"]["relevan"] == "ya"
+    assert recorded_sdk_calls[-1]["max_tokens"] == MAX_TOKENS_VISION_RELEVANCE
+    assert recorded_sdk_calls[-1]["max_tokens"] <= 100
+
+
+def test_f5_402_credit_error_zero_retries_and_friendly_ui(tmp_path: Path, monkeypatch):
+    from app.services.longform.llm_adapter import LLMAdapter, LLMCreditError
+    from app.services.longform.visual import ai_relevance, keyword_translator
+
+    monkeypatch.setattr("app.config.config.app", dict(config.app))
+    monkeypatch.setattr("app.services.longform.store.get_projects_root", lambda: tmp_path)
+    monkeypatch.setattr("app.services.longform.ui.components.get_projects_root", lambda: tmp_path)
+    monkeypatch.setitem(config.app, "llm_provider", "openrouter")
+    monkeypatch.setitem(config.app, "openrouter_api_key", "sk-or-test-key")
+    monkeypatch.setitem(config.app, "openrouter_model_name", "google/gemini-2.5-flash")
+    monkeypatch.setitem(config.ui, "language", "id")
+
+    err_402_msg = (
+        "Error code: 402 - {'error': {'message': 'This request requires more credits, or fewer max_tokens. "
+        "You requested up to 65535 tokens, but can only afford 15659.', 'code': 402}}"
+    )
+    call_counter = {"n": 0}
+
+    class _Raise402Completions:
+        def create(self, **_kwargs):
+            call_counter["n"] += 1
+            raise RuntimeError(err_402_msg)
+
+    monkeypatch.setattr(
+        "openai.OpenAI",
+        lambda **_kw: SimpleNamespace(chat=SimpleNamespace(completions=_Raise402Completions())),
+    )
+
+    # 1. LLMAdapter.generate raises LLMCreditError with ZERO retries (call_count == 1)
+    adapter = LLMAdapter(provider="openrouter", model="google/gemini-2.5-flash")
+    with pytest.raises(LLMCreditError):
+        adapter.generate("hello", max_tokens=1200)
+    assert call_counter["n"] == 1
+
+    # 2. keyword_translator does NOT retry on 402
+    call_counter["n"] = 0
+    p_dir, shots_402 = _seed_project_with_shots(tmp_path / "kw402", "kw402", lang="id-ID", queries=["mobil antik"])
+    m_402 = load_manifest(p_dir)
+    kw_res = keyword_translator.translate_chapter_queries_to_english(
+        shots=shots_402,
+        project_lang="id-ID",
+        cache_dir=p_dir / "cache",
+    )
+    assert call_counter["n"] == 1
+    assert kw_res["warning"] and "402" in kw_res["warning"]
+
+    # 3. ai_relevance does NOT retry on 402
+    call_counter["n"] = 0
+    with pytest.raises(LLMCreditError):
+        ai_relevance.check_shot_relevance(
+            shots_402[0],
+            m_402.chapters[0],
+            p_dir,
+            m_402,
+            force_refresh=True,
+            cache_dir=p_dir / "cache",
+        )
+    assert call_counter["n"] == 1
+
+    # 4. AppTest: "Tes Koneksi" shows friendly Indonesian 402 message + openrouter/free hint + Settings button + Detail expander
+    pid = "f5_ui_402"
+    create_project(pid, "F5 402 Test", "automotive.muscle_car", projects_root=tmp_path)
+    at = AppTest.from_file(_get_long_video_app_file())
+    at.query_params["project"] = pid
+    at.session_state[f"active_step_{pid}"] = "script"
+    at.run(timeout=25)
+    assert not at.exception
+
+    # Verify Paid badge shown on Tulis dengan AI card for google/gemini-2.5-flash
+    all_md = "\n".join(m.value for m in at.markdown)
+    all_cap = "\n".join(c.value for c in at.caption)
+    assert "google/gemini-2.5-flash" in (all_md + all_cap)
+    assert "(Berbayar)" in (all_md + all_cap)
+
+    test_btns = [b for b in at.button if b.key == f"btn_test_llm_{pid}"]
+    assert len(test_btns) == 1
+    test_btns[0].click().run(timeout=25)
+    assert not at.exception
+    warn_text = "\n".join(w.value for w in at.warning)
+    err_text = "\n".join(e.value for e in at.error)
+    combined_alerts = warn_text + "\n" + err_text
+    assert "Kredit penyedia tidak cukup" in combined_alerts
+    assert "openrouter/free" in combined_alerts
+    assert any(b.key == f"btn_llm_set_conn_{pid}" for b in at.button)
+
+
+def test_f5_empty_openrouter_model_uses_openrouter_free_and_404_unavailable_for_free(tmp_path: Path, monkeypatch):
+    from app.models.llm_provider import get_llm_provider
+    from app.services.longform.llm_adapter import (
+        LLMAdapter,
+        LLMModelNotFoundError,
+        OPENROUTER_SAFE_DEFAULT_MODEL,
+        get_llm_readiness,
+        resolve_model_billing_tier,
+    )
+
+    monkeypatch.setattr("app.config.config.app", dict(config.app))
+    monkeypatch.setattr("app.services.longform.store.get_projects_root", lambda: tmp_path)
+    monkeypatch.setattr("app.services.longform.ui.components.get_projects_root", lambda: tmp_path)
+    monkeypatch.setitem(config.app, "llm_provider", "openrouter")
+    monkeypatch.setitem(config.app, "openrouter_api_key", "sk-or-test-key")
+    monkeypatch.setitem(config.app, "openrouter_model_name", "")
+    monkeypatch.setitem(config.ui, "language", "en")
+
+    # Upstream provider default remains untouched (minimax/minimax-m3:free)!
+    assert get_llm_provider("openrouter").default_model == "minimax/minimax-m3:free"
+
+    # Long Video resolves empty OpenRouter model to openrouter/free with Free billing tier
+    readiness = get_llm_readiness()
+    assert readiness["configured"] is True
+    assert readiness["model"] == OPENROUTER_SAFE_DEFAULT_MODEL
+    assert readiness["used_safe_default"] is True
+    assert readiness["billing_tier"] == "free"
+    assert resolve_model_billing_tier("openrouter", "openrouter/free") == "free"
+    assert resolve_model_billing_tier("openrouter", "google/gemini-2.5-flash") == "paid"
+
+    # Verify AppTest shows openrouter/free (Free) on both Script card & Visual relevance toggle
+    pid = "f5_empty_or"
+    create_project(pid, "F5 Empty OR", "automotive.muscle_car", projects_root=tmp_path)
+    at = AppTest.from_file(_get_long_video_app_file())
+    at.query_params["project"] = pid
+    at.session_state[f"active_step_{pid}"] = "script"
+    at.run(timeout=25)
+    assert not at.exception
+    txt_script = "\n".join([m.value for m in at.markdown] + [c.value for c in at.caption])
+    assert "openrouter/free (Free)" in txt_script
+
+    at.session_state[f"active_step_{pid}"] = "visual"
+    at.run(timeout=25)
+    assert not at.exception
+    txt_visual = "\n".join([m.value for m in at.markdown] + [c.value for c in at.caption])
+    assert "openrouter/free (Free)" in txt_visual
+
+    # Verify HTTP 404 "unavailable for free" raises LLMModelNotFoundError with ZERO retries
+    calls = {"n": 0}
+
+    class _Raise404Completions:
+        def create(self, **_kwargs):
+            calls["n"] += 1
+            raise RuntimeError(
+                "Error code: 404 - {'error': {'message': 'This model is unavailable for free. "
+                "The paid version is available now - use this slug instead: minimax/minimax-m3', 'code': 404}}"
+            )
+
+    monkeypatch.setattr(
+        "openai.OpenAI",
+        lambda **_kw: SimpleNamespace(chat=SimpleNamespace(completions=_Raise404Completions())),
+    )
+    adapter = LLMAdapter(provider="openrouter", model="minimax/minimax-m3:free")
+    with pytest.raises(LLMModelNotFoundError):
+        adapter.generate("hello", max_tokens=100)
+    assert calls["n"] == 1
+
+
+def test_f5_host_config_toml_untouched_by_tests(tmp_path: Path, monkeypatch):
+    import hashlib
+    from app.services.longform.llm_adapter import set_active_llm_model
+
+    root_cfg = Path(__file__).resolve().parents[2] / "config.toml"
+    before_bytes = root_cfg.read_bytes() if root_cfg.is_file() else b""
+    before_hash = hashlib.sha256(before_bytes).hexdigest()
+
+    monkeypatch.setattr("app.services.longform.store.get_projects_root", lambda: tmp_path)
+    monkeypatch.setattr("app.services.longform.ui.components.get_projects_root", lambda: tmp_path)
+
+    # Attempt mutations that internally call config.try_save_config() / save_ui_language()
+    set_active_llm_model("openrouter", "google/gemini-2.5-flash")
+    pid = "f5_iso"
+    create_project(pid, "Isolation Check", "automotive.muscle_car", projects_root=tmp_path)
+    at = AppTest.from_file(_get_long_video_app_file())
+    at.query_params["project"] = pid
+    at.run(timeout=25)
+    assert not at.exception
+
+    after_bytes = root_cfg.read_bytes() if root_cfg.is_file() else b""
+    after_hash = hashlib.sha256(after_bytes).hexdigest()
+    assert after_hash == before_hash
+

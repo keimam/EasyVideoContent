@@ -112,10 +112,17 @@ def _build_batch_prompt(
     )
 
 
-def _invoke_translation_llm(prompt: str, llm_adapter: Optional[LLMAdapter] = None) -> Tuple[str, str, str]:
-    """Call active LLM cleanly with bounded max_tokens (prevents 402 credit over-reservation)."""
+def _invoke_translation_llm(
+    prompt: str,
+    llm_adapter: Optional[LLMAdapter] = None,
+    max_tokens: int = 400,
+) -> Tuple[str, str, str]:
+    """Call active LLM cleanly with bounded batch max_tokens (prevents 402 credit over-reservation)."""
     if llm_adapter is not None:
-        resp = llm_adapter.generate(prompt=prompt)
+        try:
+            resp = llm_adapter.generate(prompt=prompt, max_tokens=max_tokens)
+        except TypeError:
+            resp = llm_adapter.generate(prompt=prompt)
         return resp.content, resp.provider, resp.model
 
     import time
@@ -128,16 +135,23 @@ def _invoke_translation_llm(prompt: str, llm_adapter: Optional[LLMAdapter] = Non
         _sanitize_error_message,
         _sdk_transport_options,
     )
-    from app.services.longform.llm_adapter import LLMRateLimitError, _classify_llm_error
+    from app.services.longform.llm_adapter import (
+        LLMCreditError,
+        LLMModelNotFoundError,
+        LLMRateLimitError,
+        _classify_llm_error,
+        resolve_effective_model,
+    )
     from app.utils.request_logging import trace_sdk_call
 
     pid = str(config.app.get("llm_provider", DEFAULT_LLM_PROVIDER_ID) or DEFAULT_LLM_PROVIDER_ID).lower()
     prov_def = get_llm_provider(pid)
     adapter = prov_def.adapter if prov_def else "openai_compatible"
-    model_name = prov_def.resolve_model_name(str(config.app.get(prov_def.config_key("model_name"), "") or "")) if prov_def else ""
+    raw_model = str(config.app.get(prov_def.config_key("model_name"), "") or "") if prov_def else ""
+    model_name, _ = resolve_effective_model(pid, raw_model)
 
     if adapter in ("claude_code", "openai_codex", "openai_chatgpt", "kimi_code", "litellm", "qwen"):
-        resp = LLMAdapter().generate(prompt=prompt)
+        resp = LLMAdapter().generate(prompt=prompt, max_tokens=max_tokens)
         return resp.content, resp.provider, resp.model
 
     api_key = str(config.app.get(prov_def.config_key("api_key"), "") or "") if prov_def else ""
@@ -153,7 +167,7 @@ def _invoke_translation_llm(prompt: str, llm_adapter: Optional[LLMAdapter] = Non
                 from google.genai import types
 
                 http_options = types.HttpOptions(base_url=base_url) if base_url else None
-                cfg = types.GenerateContentConfig(temperature=0.2, max_output_tokens=600)
+                cfg = types.GenerateContentConfig(temperature=0.2, max_output_tokens=int(max_tokens))
                 with genai.Client(api_key=api_key, http_options=http_options) as client:
                     r = trace_sdk_call(
                         pid, base_url, client.models.generate_content, model=model_name, contents=prompt, config=cfg
@@ -192,7 +206,7 @@ def _invoke_translation_llm(prompt: str, llm_adapter: Optional[LLMAdapter] = Non
                     model=model_name,
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.2,
-                    max_tokens=600,
+                    max_tokens=int(max_tokens),
                 )
                 if r and isinstance(r, ChatCompletion):
                     return _extract_chat_completion_text(r, pid), pid, model_name
@@ -207,6 +221,8 @@ def _invoke_translation_llm(prompt: str, llm_adapter: Optional[LLMAdapter] = Non
         except Exception as exc:
             msg = _sanitize_error_message(exc)
             classified = _classify_llm_error(msg, model=model_name)
+            if isinstance(classified, (LLMCreditError, LLMModelNotFoundError)):
+                raise classified
             is_rate = isinstance(classified, LLMRateLimitError) or "429" in msg or "rate limit" in msg.lower()
             if is_rate and attempt < 2:
                 time.sleep(min(1.5 * (2 ** attempt), 6.0))
@@ -270,8 +286,11 @@ def translate_chapter_queries_to_english(
         preset_snapshot=preset_snapshot,
     )
 
+    batch_max_tokens = min(1200, max(120, 40 * len(pending_uncached) + 80))
     try:
-        content, used_prov, used_model = _invoke_translation_llm(prompt, llm_adapter=llm_adapter)
+        content, used_prov, used_model = _invoke_translation_llm(
+            prompt, llm_adapter=llm_adapter, max_tokens=batch_max_tokens
+        )
         mapping = _extract_json_dict(content)
         translated_count = 0
         for shot, raw_q, c_key in pending_uncached:
@@ -333,7 +352,9 @@ def translate_single_query_to_english(
         preset_snapshot=preset_snapshot,
     )
     try:
-        content, used_prov, used_model = _invoke_translation_llm(prompt, llm_adapter=llm_adapter)
+        content, used_prov, used_model = _invoke_translation_llm(
+            prompt, llm_adapter=llm_adapter, max_tokens=160
+        )
         mapping = _extract_json_dict(content)
         en_clean = _sanitize_english_query(mapping.get("q1", ""))
         if en_clean:

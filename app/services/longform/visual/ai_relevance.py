@@ -32,9 +32,13 @@ from app.services.llm import (
 from app.services.longform.hashing import hash_string, normalize_text
 from app.services.longform.llm_adapter import (
     LLMAdapterError,
+    LLMCreditError,
+    LLMModelNotFoundError,
     LLMRateLimitError,
+    MAX_TOKENS_VISION_RELEVANCE,
     _classify_llm_error,
     get_llm_readiness,
+    resolve_effective_model,
 )
 from app.services.longform.schema import Chapter, ItemStatus, ProjectManifest, Shot
 from app.services.longform.store import is_stop_requested
@@ -306,7 +310,7 @@ def _call_vision_provider_once(image_bytes: bytes, prompt_text: str, timeout: fl
 
     api_key = str(config.app.get(prov_def.config_key("api_key"), "") or "")
     configured_model = str(config.app.get(prov_def.config_key("model_name"), "") or "")
-    model_name = prov_def.resolve_model_name(configured_model)
+    model_name, _ = resolve_effective_model(llm_provider, configured_model)
     base_url = prov_def.resolve_base_url(str(config.app.get(prov_def.config_key("base_url"), "") or ""))
     adapter = prov_def.adapter
 
@@ -321,7 +325,7 @@ def _call_vision_provider_once(image_bytes: bytes, prompt_text: str, timeout: fl
         from google.genai import types
 
         http_options = types.HttpOptions(base_url=base_url) if base_url else None
-        gen_cfg = types.GenerateContentConfig(temperature=0.1, max_output_tokens=200)
+        gen_cfg = types.GenerateContentConfig(temperature=0.1, max_output_tokens=MAX_TOKENS_VISION_RELEVANCE)
         parts = [
             types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
             prompt_text,
@@ -389,7 +393,7 @@ def _call_vision_provider_once(image_bytes: bytes, prompt_text: str, timeout: fl
             model=model_name,
             messages=messages,
             temperature=0.1,
-            max_tokens=200,
+            max_tokens=MAX_TOKENS_VISION_RELEVANCE,
         )
         if resp and isinstance(resp, ChatCompletion):
             return _extract_chat_completion_text(resp, llm_provider)
@@ -421,6 +425,8 @@ def _call_vision_with_retry(
             msg = _sanitize_error_message(exc)
             classified = _classify_llm_error(msg, model=model_name)
             last_err = classified or exc
+            if isinstance(classified, (LLMCreditError, LLMModelNotFoundError)):
+                raise classified
             is_rate = isinstance(classified, LLMRateLimitError) or "429" in msg or "rate limit" in msg.lower()
             if is_rate and attempt < max_retries - 1:
                 delay = min(1.5 * (2 ** attempt), 8.0)

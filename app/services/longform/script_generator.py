@@ -26,7 +26,11 @@ from app.services.longform.language_guard import (
     format_language_directive,
     resolve_project_language,
 )
-from app.services.longform.llm_adapter import LLMAdapter, LLMAdapterError
+from app.services.longform.llm_adapter import (
+    LLMAdapter,
+    LLMAdapterError,
+    compute_script_max_tokens,
+)
 from app.services.longform.presets import get_preset
 from app.services.longform.prompts import render_prompt
 from app.services.longform.schema import (
@@ -166,6 +170,7 @@ class ScriptGenerator:
                 "chapter_title": chapter_title,
             },
             force_refresh=force_refresh,
+            max_tokens=compute_script_max_tokens("summary"),
         )
         json_str = extract_json_payload(resp.content)
         try:
@@ -276,8 +281,10 @@ class ScriptGenerator:
                     "topic": topic,
                     "target_duration_minutes": target_duration_minutes,
                     "words_per_minute": wpm,
+                    "target_words": total_target_words,
                 },
                 force_refresh=eff_refresh,
+                max_tokens=compute_script_max_tokens("outline", total_target_words),
             )
 
             json_str = extract_json_payload(resp.content)
@@ -552,6 +559,7 @@ class ScriptGenerator:
                     "target_words": ch.target_words,
                 },
                 force_refresh=eff_refresh,
+                max_tokens=compute_script_max_tokens("chapter", ch.target_words),
             )
 
             chapter_content = resp.content.strip()
@@ -588,6 +596,7 @@ class ScriptGenerator:
                         "target_words": ch.target_words,
                     },
                     force_refresh=True,
+                    max_tokens=compute_script_max_tokens("revise_length", ch.target_words),
                 )
                 chapter_content = rev_resp.content.strip()
                 words = count_narration_words(chapter_content)

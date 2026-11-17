@@ -676,8 +676,9 @@ ID_TRANSLATIONS: Dict[str, str] = {
     "field_ai_video_duration": "Durasi generasi (detik)",
     "ai_video_duration_trim_note": "Durasi shot {shot_dur}s dibulatkan ke {gen_dur}s (dipotong pas saat build klip).",
     "field_ai_video_prompt": "Prompt AI Video (English, dapat diedit)",
-    "ai_video_cost_known": "Perkiraan biaya: ≈ ${usd} (perkiraan, cek tarif penyedia · ref {date})",
+    "ai_video_cost_known": "Perkiraan biaya: ≈ ${usd} (perkiraan — cek tarif penyedia · ref {date})",
     "ai_video_cost_unknown": "Perkiraan biaya: biaya mengikuti tarif penyedia",
+    "ai_video_cost_source": "Sumber tarif: {url} (diperiksa {date})",
     "btn_generate_ai_video_shot": "Buat dengan AI Video",
     "btn_bulk_ai_video_review": "Buat AI Video untuk shot Perlu dicek ({count})",
     "dlg_confirm_ai_video_title": "Konfirmasi Pembuatan AI Video",
@@ -689,6 +690,14 @@ ID_TRANSLATIONS: Dict[str, str] = {
     "dlg_budget_exceeded_warn": "Total perkiraan biaya (${est}) melebihi batas anggaran (${cap}). Naikkan batas anggaran atau pilih model lebih hemat.",
     "btn_confirm_generate": "Konfirmasi & Buat",
     "btn_cancel_dialog": "Batal",
+    "tier_badge_free": "Gratis",
+    "tier_badge_paid": "Berbayar",
+    "tier_badge_subscription": "Langganan",
+    "ai_model_safe_default_note": "Kolom model kosong di MPT — memakai default aman '{model}'.",
+    "ai_relevance_active_model_caption": "Model aktif: `{model}`",
+    "llm_err_credit_insufficient": "Kredit penyedia tidak cukup untuk model ini. Isi kredit atau pilih model gratis, mis. openrouter/free",
+    "llm_err_model_unavailable_free": "Model `{model}` tidak tersedia gratis. Buka Pengaturan dan pilih model gratis `openrouter/free`.",
+    "btn_open_llm_settings": "Buka Pengaturan",
 }
 
 
@@ -1357,8 +1366,9 @@ EN_TRANSLATIONS: Dict[str, str] = {
     "field_ai_video_duration": "Generation duration (seconds)",
     "ai_video_duration_trim_note": "Shot duration {shot_dur}s rounded up to {gen_dur}s (trimmed cleanly during clip build).",
     "field_ai_video_prompt": "AI Video Prompt (English, editable)",
-    "ai_video_cost_known": "Estimated cost: ≈ ${usd} (estimate, check provider rate · ref {date})",
+    "ai_video_cost_known": "Estimated cost: ≈ ${usd} (estimate — check provider rate · ref {date})",
     "ai_video_cost_unknown": "Estimated cost: cost follows your provider's rate",
+    "ai_video_cost_source": "Rate source: {url} (checked {date})",
     "btn_generate_ai_video_shot": "Create with AI Video",
     "btn_bulk_ai_video_review": "Create AI Video for Needs-check shots ({count})",
     "dlg_confirm_ai_video_title": "Confirm AI Video Generation",
@@ -1370,6 +1380,14 @@ EN_TRANSLATIONS: Dict[str, str] = {
     "dlg_budget_exceeded_warn": "Total estimated cost (${est}) exceeds budget cap (${cap}). Raise the cap or pick a cheaper model.",
     "btn_confirm_generate": "Confirm & Generate",
     "btn_cancel_dialog": "Cancel",
+    "tier_badge_free": "Free",
+    "tier_badge_paid": "Paid",
+    "tier_badge_subscription": "Subscription",
+    "ai_model_safe_default_note": "Model field empty in MPT — using safe default '{model}'.",
+    "ai_relevance_active_model_caption": "Active model: `{model}`",
+    "llm_err_credit_insufficient": "Provider credits are insufficient for this model. Add credits or choose a free model, e.g. openrouter/free",
+    "llm_err_model_unavailable_free": "Model `{model}` is unavailable for free. Open Settings and choose free model `openrouter/free`.",
+    "btn_open_llm_settings": "Open Settings",
 }
 
 

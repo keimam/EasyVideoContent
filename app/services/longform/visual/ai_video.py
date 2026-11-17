@@ -42,8 +42,10 @@ AI_VIDEO_PROVIDER_META: Dict[str, Dict[str, Any]] = {
     "wavespeed": {
         "label": "WaveSpeed",
         "config_model_key": "wavespeed_text_to_video_model",
-        "default_model": "bytedance/seedance-2.0-fast/text-to-video",
+        "default_model": "wavespeed-ai/wan-2.2/t2v-480p-ultra-fast",
         "models": [
+            "wavespeed-ai/wan-2.2/t2v-480p-ultra-fast",
+            "wavespeed-ai/wan-2.2/t2v-5b-720p",
             "bytedance/seedance-2.0-fast/text-to-video",
             "bytedance/seedance-1-pro-fast/text-to-video",
             "alibaba/wan-2.5/text-to-video",
@@ -233,9 +235,15 @@ def estimate_ai_video_cost(
         }
 
     dur = max(float(duration_seconds or 0.0), 1.0)
+    row_url = source
+    row_checked = updated_at
     if isinstance(entry, (int, float)):
         est = float(entry) * dur
     elif isinstance(entry, dict):
+        if entry.get("url"):
+            row_url = str(entry["url"])
+        if entry.get("checked_at"):
+            row_checked = str(entry["checked_at"])
         if "per_clip" in entry:
             est = float(entry["per_clip"])
         else:
@@ -249,13 +257,15 @@ def estimate_ai_video_cost(
             "estimated_usd": None,
             "updated_at": updated_at,
             "source": source,
+            "url": "",
         }
 
     return {
         "known": True,
         "estimated_usd": round(est, 4),
-        "updated_at": updated_at,
-        "source": source,
+        "updated_at": row_checked,
+        "source": row_url,
+        "url": row_url,
     }
 
 

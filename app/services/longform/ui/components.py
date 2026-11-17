@@ -96,6 +96,66 @@ def _open_mpt_settings_dialog(target_tab: str = "llm") -> None:
     st.rerun()
 
 
+def _format_model_with_tier(model_name: str, billing_tier: Optional[str]) -> str:
+    """Format active model string with localized Free/Paid indicator when known (F5)."""
+    base = str(model_name or "-").strip() or "-"
+    tier = (billing_tier or "unknown").strip().lower()
+    if tier in ("free", "paid", "subscription"):
+        return f"{base} ({t(f'tier_badge_{tier}')})"
+    return base
+
+
+def _classify_ui_llm_error_kind(raw_err: str) -> str:
+    low = (raw_err or "").lower()
+    if (
+        "[credit_error]" in low
+        or "402" in low
+        or "requires more credits" in low
+        or "can only afford" in low
+        or "insufficient credits" in low
+        or "insufficient balance" in low
+    ):
+        return "credit"
+    if "unavailable for free" in low or "paid version is available now" in low:
+        return "unavailable_free"
+    if "[model_not_found]" in low or "model_not_found" in low or "does not exist" in low or ("404" in low and "model" in low):
+        return "model_not_found"
+    if "[rate_limit]" in low or "429" in low or "rate limit" in low:
+        return "rate_limit"
+    return "generic"
+
+
+def _render_llm_friendly_error_box(
+    project_id: str,
+    raw_err: str,
+    *,
+    active_model: str = "",
+    key_suffix: str = "llm",
+) -> None:
+    """Render user-friendly guidance + Settings button + Detail expander for LLM errors (F5)."""
+    kind = _classify_ui_llm_error_kind(raw_err)
+    if kind == "credit":
+        st.error(t("llm_err_credit_insufficient"))
+        if st.button(t("btn_open_llm_settings"), key=f"btn_llm_set_{key_suffix}_{project_id}"):
+            _open_mpt_settings_dialog("llm")
+    elif kind == "unavailable_free":
+        st.error(t("llm_err_model_unavailable_free", model=active_model or "minimax/minimax-m3:free"))
+        if st.button(t("btn_open_llm_settings"), key=f"btn_llm_set_{key_suffix}_{project_id}"):
+            _open_mpt_settings_dialog("llm")
+    elif kind == "model_not_found":
+        st.error(t("llm_err_model_not_found", model=active_model or "selected"))
+        if st.button(t("btn_change_llm_provider"), key=f"btn_llm_chg_{key_suffix}_{project_id}"):
+            _open_mpt_settings_dialog("llm")
+    elif kind == "rate_limit":
+        st.warning(t("llm_err_rate_limit"))
+    else:
+        st.error(t("llm_connection_failed", msg=raw_err))
+
+    if raw_err:
+        with st.expander(t("error_details_expander"), expanded=False):
+            st.code(raw_err, language="text")
+
+
 def _get_step_subtitle(step_key: str, status: str, is_job_running: bool = False) -> str:
     """Return status-aware localized subtitle for the given workflow step."""
     eff = "berjalan" if is_job_running else (status or "belum")
@@ -367,14 +427,23 @@ def _render_job_monitor_content(project_id: str, state: Dict[str, Any], current_
             logs_tail = jobs.get_job_logs(project_id, max_lines=20)
             combined_err = "\n".join([err_detail] + list(logs_tail or []))
 
-            # Detect structured LLM failure reasons (Model not found / Rate limit)
+            # Detect structured LLM failure reasons (Credit / Unavailable free / Model not found / Rate limit)
             model_match = re.search(r"\[MODEL_NOT_FOUND\]\s*Model=([^\s|]+)", combined_err)
-            if model_match or "model_not_found" in combined_err.lower() or "does not exist" in combined_err.lower():
-                bad_model = model_match.group(1) if model_match else (get_llm_readiness().get("model") or "selected")
+            bad_model = model_match.group(1) if model_match else (get_llm_readiness().get("model") or "selected")
+            err_kind = _classify_ui_llm_error_kind(combined_err)
+            if err_kind == "credit":
+                st.error(t("llm_err_credit_insufficient"))
+                if st.button(t("btn_open_llm_settings"), key=f"btn_err_chg_prov_{project_id}"):
+                    _open_mpt_settings_dialog("llm")
+            elif err_kind == "unavailable_free":
+                st.error(t("llm_err_model_unavailable_free", model=bad_model))
+                if st.button(t("btn_open_llm_settings"), key=f"btn_err_chg_prov_{project_id}"):
+                    _open_mpt_settings_dialog("llm")
+            elif err_kind == "model_not_found":
                 st.error(t("llm_err_model_not_found", model=bad_model))
                 if st.button(t("btn_change_llm_provider"), key=f"btn_err_chg_prov_{project_id}"):
                     _open_mpt_settings_dialog("llm")
-            elif "[RATE_LIMIT]" in combined_err or "429" in combined_err or "rate limit" in combined_err.lower():
+            elif err_kind == "rate_limit":
                 st.warning(t("llm_err_rate_limit"))
 
             if failed_step_name in ("script_outline", "script_generate", "script"):
@@ -1174,9 +1243,12 @@ def render_script_step_flow(
             active_prov_id = str(llm_status.get("provider") or "")
             active_prov_label = str(llm_status.get("provider_label") or active_prov_id)
             active_model = str(llm_status.get("model") or "-")
+            active_model_disp = _format_model_with_tier(active_model, llm_status.get("billing_tier"))
             use_fake = st.session_state.get(f"fake_toggle_{project_id}", False)
 
-            st.markdown(t("ai_active_provider_model", provider=active_prov_label, model=active_model))
+            st.markdown(t("ai_active_provider_model", provider=active_prov_label, model=active_model_disp))
+            if llm_status.get("used_safe_default"):
+                st.caption(t("ai_model_safe_default_note", model=active_model))
             if llm_ok:
                 st.caption(t("ai_provider_ready_badge", masked=llm_status.get("masked_key") or "OK"))
             elif llm_status.get("is_invalid"):
@@ -1203,13 +1275,12 @@ def render_script_step_flow(
                     else:
                         st.success(t("llm_connection_ok_plain", latency=conn_lat))
                 else:
-                    lower_c = conn_msg.lower()
-                    if "does not exist" in lower_c or "model_not_found" in lower_c or ("not found" in lower_c and "model" in lower_c):
-                        st.error(t("llm_err_model_not_found", model=active_model))
-                    elif "429" in lower_c or "rate limit" in lower_c:
-                        st.warning(t("llm_err_rate_limit"))
-                    else:
-                        st.error(t("llm_connection_failed", msg=conn_msg))
+                    _render_llm_friendly_error_box(
+                        project_id,
+                        conn_msg,
+                        active_model=active_model,
+                        key_suffix="conn",
+                    )
 
             with st.expander(t("expander_ai_options"), expanded=False):
                 custom_topic = st.text_input(t("field_ai_topic"), value=getattr(manifest, "topic", None) or manifest.sub_niche_focus or "", key=f"ai_topic_{project_id}")
@@ -1858,12 +1929,15 @@ def render_visual_step_flow(
 
         st.divider()
         vision_ok = bool(vision_info.get("vision_supported", False))
+        vision_model_raw = str(vision_info.get("model") or vision_info.get("provider") or "-")
+        vision_model_disp = _format_model_with_tier(vision_model_raw, vision_info.get("billing_tier"))
         cb_ai_rel = st.checkbox(
             t("chk_ai_relevance_vision"),
             value=bool(st.session_state.get(f"cb_ai_rel_{project_id}", False)) if vision_ok else False,
             disabled=not vision_ok,
             key=f"cb_ai_rel_{project_id}",
         )
+        st.caption(t("ai_relevance_active_model_caption", model=vision_model_disp))
         if not vision_ok:
             st.caption(t("ai_relevance_no_vision_notice"))
         elif cb_ai_rel:
@@ -1871,7 +1945,7 @@ def render_visual_step_flow(
             st.info(
                 t(
                     "ai_relevance_estimate_notice",
-                    model=vision_info.get("model") or vision_info.get("provider"),
+                    model=vision_model_disp,
                     calls=est_rel["estimated_calls"],
                     cached=est_rel["cached"],
                 )
@@ -2318,6 +2392,14 @@ def render_visual_step_flow(
                                         date=cost_est["updated_at"],
                                     )
                                 )
+                                if cost_est.get("url"):
+                                    st.caption(
+                                        t(
+                                            "ai_video_cost_source",
+                                            url=cost_est["url"],
+                                            date=cost_est.get("updated_at", ""),
+                                        )
+                                    )
                             else:
                                 st.info(t("ai_video_cost_unknown"))
 
@@ -2341,6 +2423,7 @@ def render_visual_step_flow(
                                     "cost_known": bool(cost_est.get("known")),
                                     "estimated_usd": cost_est.get("estimated_usd"),
                                     "updated_at": cost_est.get("updated_at"),
+                                    "url": cost_est.get("url", ""),
                                 }
                                 st.rerun()
 
@@ -2373,6 +2456,14 @@ def render_visual_step_flow(
                             date=single_req.get("updated_at", ""),
                         )
                     )
+                    if single_req.get("url"):
+                        st.caption(
+                            t(
+                                "ai_video_cost_source",
+                                url=single_req["url"],
+                                date=single_req.get("updated_at", ""),
+                            )
+                        )
                 else:
                     st.info(t("ai_video_cost_unknown"))
                 col_c1, col_c2 = st.columns(2)
@@ -2451,13 +2542,22 @@ def render_visual_step_flow(
                 tot_est = b_plan.get("total_estimated_usd")
                 exceeds = False
                 if tot_est is not None:
+                    ref_cost = estimate_ai_video_cost(sel_bm, 4, sel_br)
                     st.info(
                         t(
                             "ai_video_cost_known",
                             usd=f"{tot_est:.2f}",
-                            date=estimate_ai_video_cost(sel_bm, 4, sel_br).get("updated_at", ""),
+                            date=ref_cost.get("updated_at", ""),
                         )
                     )
+                    if ref_cost.get("url"):
+                        st.caption(
+                            t(
+                                "ai_video_cost_source",
+                                url=ref_cost["url"],
+                                date=ref_cost.get("updated_at", ""),
+                            )
+                        )
                     if tot_est > float(budget_cap):
                         exceeds = True
                         st.error(

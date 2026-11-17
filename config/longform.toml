@@ -9,19 +9,21 @@ max_age_days = 30
 
 [ai_video_pricing]
 # Tabel perkiraan biaya AI Video (USD per detik) yang dapat diedit pengguna.
-# Selalu cek tarif terbaru pada dashboard penyedia sebelum eksekusi massal.
-updated_at = "2026-11-16"
-source = "Public reference pricing pages (WaveSpeed, Volcano Engine Ark, MiniMax/Ofox, MuAPI) checked 2026-11-16"
+# Setiap baris menyertakan URL sumber & tanggal pengecekan.
+updated_at = "2026-11-17"
+source = "Official public model pricing pages (checked 2026-11-17)"
 
 [ai_video_pricing.models]
-"bytedance/seedance-2.0-fast/text-to-video" = { per_second = 0.045, resolution_multipliers = { "480p" = 0.7, "720p" = 1.0, "1080p" = 1.6 } }
-"bytedance/seedance-2.0-fast" = { per_second = 0.045, resolution_multipliers = { "480p" = 0.7, "720p" = 1.0, "1080p" = 1.6 } }
-"bytedance/seedance-1-pro-fast/text-to-video" = { per_second = 0.060, resolution_multipliers = { "480p" = 0.7, "720p" = 1.0, "1080p" = 1.6 } }
-"alibaba/wan-2.5/text-to-video" = { per_second = 0.050, resolution_multipliers = { "480p" = 0.7, "720p" = 1.0, "1080p" = 1.5 } }
-"kwaivgi/kling-v2.1-t2v-std" = { per_second = 0.070, resolution_multipliers = { "480p" = 0.8, "720p" = 1.0, "1080p" = 1.5 } }
-"doubao-seedance-1-0-pro-250528" = { per_second = 0.060, resolution_multipliers = { "480p" = 0.7, "720p" = 1.0, "1080p" = 1.6 } }
-"doubao-seedance-2-0-fast-260128" = { per_second = 0.045, resolution_multipliers = { "480p" = 0.7, "720p" = 1.0, "1080p" = 1.6 } }
-"Doubao-Seedance-2-5-260628" = { per_second = 0.055, resolution_multipliers = { "480p" = 0.7, "720p" = 1.0, "1080p" = 1.6 } }
-"MiniMax-H3" = { per_second = 0.060, resolution_multipliers = { "720p" = 1.0, "1080p" = 1.5, "2K" = 2.0 } }
-"seedance-lite-t2v" = { per_second = 0.040, resolution_multipliers = { "480p" = 0.7, "720p" = 1.0, "1080p" = 1.5 } }
-"veo31fast" = { per_second = 0.100, resolution_multipliers = { "720p" = 1.0, "1080p" = 1.4 } }
+"wavespeed-ai/wan-2.2/t2v-480p-ultra-fast" = { per_second = 0.010, resolution_multipliers = { "480p" = 1.0, "720p" = 4.0, "1080p" = 6.0 }, url = "https://wavespeed.ai/models/wavespeed-ai/wan-2.2/t2v-480p-ultra-fast", checked_at = "2026-11-17" }
+"wavespeed-ai/wan-2.2/t2v-5b-720p" = { per_second = 0.060, resolution_multipliers = { "480p" = 0.7, "720p" = 1.0, "1080p" = 1.5 }, url = "https://wavespeed.ai/models/wavespeed-ai/wan-2.2/t2v-5b-720p", checked_at = "2026-11-17" }
+"bytedance/seedance-2.0-fast/text-to-video" = { per_second = 0.100, resolution_multipliers = { "480p" = 0.8, "720p" = 1.0, "1080p" = 1.5 }, url = "https://wavespeed.ai/models/bytedance/seedance-2.0-fast/text-to-video", checked_at = "2026-11-17" }
+"bytedance/seedance-2.0-fast" = { per_second = 0.100, resolution_multipliers = { "480p" = 0.8, "720p" = 1.0, "1080p" = 1.5 }, url = "https://ofox.ai/models", checked_at = "2026-11-17" }
+"bytedance/seedance-1-pro-fast/text-to-video" = { per_second = 0.090, resolution_multipliers = { "480p" = 0.8, "720p" = 1.0, "1080p" = 1.5 }, url = "https://wavespeed.ai/models/bytedance/seedance-v1-pro-fast/text-to-video", checked_at = "2026-11-17" }
+"alibaba/wan-2.5/text-to-video" = { per_second = 0.070, resolution_multipliers = { "480p" = 0.7, "720p" = 1.0, "1080p" = 1.5 }, url = "https://wavespeed.ai/models/alibaba/wan-2.5/text-to-video", checked_at = "2026-11-17" }
+"kwaivgi/kling-v2.1-t2v-std" = { per_second = 0.070, resolution_multipliers = { "480p" = 0.8, "720p" = 1.0, "1080p" = 1.5 }, url = "https://wavespeed.ai/models/kwaivgi/kling-v2.1-t2v-std", checked_at = "2026-11-17" }
+"doubao-seedance-1-0-pro-250528" = { per_second = 0.080, resolution_multipliers = { "480p" = 0.7, "720p" = 1.0, "1080p" = 1.6 }, url = "https://www.volcengine.com/docs/82379/1399008", checked_at = "2026-11-17" }
+"doubao-seedance-2-0-fast-260128" = { per_second = 0.120, resolution_multipliers = { "480p" = 0.8, "720p" = 1.0, "1080p" = 1.5 }, url = "https://infistar.cc/", checked_at = "2026-11-17" }
+"Doubao-Seedance-2-5-260628" = { per_second = 0.180, resolution_multipliers = { "480p" = 0.8, "720p" = 1.0, "1080p" = 1.5 }, url = "https://api.jalapeno-cloud.ai/", checked_at = "2026-11-17" }
+"MiniMax-H3" = { per_second = 0.080, resolution_multipliers = { "720p" = 1.0, "1080p" = 1.5, "2K" = 2.0 }, url = "https://metaso.cn/", checked_at = "2026-11-17" }
+"seedance-lite-t2v" = { per_second = 0.050, resolution_multipliers = { "480p" = 0.8, "720p" = 1.0, "1080p" = 1.5 }, url = "https://muapi.ai/pricing", checked_at = "2026-11-17" }
+"veo31fast" = { per_second = 0.100, resolution_multipliers = { "720p" = 1.0, "1080p" = 1.4 }, url = "https://loomloom.shengsuanyun.com/", checked_at = "2026-11-17" }

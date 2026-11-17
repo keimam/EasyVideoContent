@@ -518,6 +518,7 @@ def cmd_script_outline(args: argparse.Namespace) -> int:
 
     from app.services.longform.llm_adapter import (
         LLMConfigurationError,
+        LLMCreditError,
         LLMModelNotFoundError,
         LLMRateLimitError,
     )
@@ -543,6 +544,9 @@ def cmd_script_outline(args: argparse.Namespace) -> int:
         return 1
     except LLMModelNotFoundError as exc:
         print(f"\n[MODEL_NOT_FOUND] Model={exc.model} | {exc}\n", file=sys.stderr)
+        return 1
+    except LLMCreditError as exc:
+        print(f"\n[CREDIT_ERROR] {exc}\n", file=sys.stderr)
         return 1
     except LLMRateLimitError as exc:
         print(f"\n[RATE_LIMIT] {exc}\n", file=sys.stderr)
@@ -581,6 +585,7 @@ def cmd_script_write(args: argparse.Namespace) -> int:
 
     from app.services.longform.llm_adapter import (
         LLMConfigurationError,
+        LLMCreditError,
         LLMModelNotFoundError,
         LLMRateLimitError,
     )
@@ -605,6 +610,9 @@ def cmd_script_write(args: argparse.Namespace) -> int:
         return 1
     except LLMModelNotFoundError as exc:
         print(f"\n[MODEL_NOT_FOUND] Model={exc.model} | {exc}\n", file=sys.stderr)
+        return 1
+    except LLMCreditError as exc:
+        print(f"\n[CREDIT_ERROR] {exc}\n", file=sys.stderr)
         return 1
     except LLMRateLimitError as exc:
         print(f"\n[RATE_LIMIT] {exc}\n", file=sys.stderr)
@@ -635,6 +643,7 @@ def cmd_script_rewrite(args: argparse.Namespace) -> int:
 
     from app.services.longform.llm_adapter import (
         LLMConfigurationError,
+        LLMCreditError,
         LLMModelNotFoundError,
         LLMRateLimitError,
     )
@@ -652,6 +661,9 @@ def cmd_script_rewrite(args: argparse.Namespace) -> int:
         return 1
     except LLMModelNotFoundError as exc:
         print(f"\n[MODEL_NOT_FOUND] Model={exc.model} | {exc}\n", file=sys.stderr)
+        return 1
+    except LLMCreditError as exc:
+        print(f"\n[CREDIT_ERROR] {exc}\n", file=sys.stderr)
         return 1
     except LLMRateLimitError as exc:
         print(f"\n[RATE_LIMIT] {exc}\n", file=sys.stderr)
