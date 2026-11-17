@@ -2599,6 +2599,10 @@ def render_visual_step_flow(
                         if is_non_english_language(proj_lang_vis):
                             st.markdown(t("shot_keywords_orig_summary", orig=html.escape(short_q)))
 
+                    eff_q_disp = getattr(target_shot, "effective_query", None)
+                    if eff_q_disp:
+                        st.markdown(t("shot_found_with_query", q=html.escape(eff_q_disp)))
+
                     # F1: AI Relevance verdict & single-shot re-check button
                     rel_status = getattr(target_shot, "ai_relevance_status", None)
                     rel_reason = getattr(target_shot, "ai_relevance_reason", None) or "-"
@@ -2661,7 +2665,15 @@ def render_visual_step_flow(
                     ])
 
                     with tab_cands:
-                        raw_cands = target_shot.candidates or []
+                        from app.services.longform.visual.stock import filter_candidates_by_anchors_and_avoids
+
+                        raw_cands_all = target_shot.candidates or []
+                        raw_cands = filter_candidates_by_anchors_and_avoids(
+                            raw_cands_all,
+                            anchor_terms=list(getattr(manifest, "visual_anchor_terms", []) or []),
+                            avoid_terms=list(getattr(manifest, "visual_avoid_terms", []) or []),
+                            blocked_terms=list((preset_snap or {}).get("blocked_terms") or []),
+                        )
                         cur_asset_file = Path(target_shot.asset_path).name if target_shot.asset_path else ""
 
                         active_base_id = ""

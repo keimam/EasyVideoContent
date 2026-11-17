@@ -767,6 +767,8 @@ ID_TRANSLATIONS: Dict[str, str] = {
     "project_anchors_regen_ok": "Jangkar visual proyek diperbarui.",
     "err_project_anchors_friendly": "Gagal memperbarui jangkar visual proyek.",
     "shot_keywords_alts_caption": "Alternatif query: {alts}",
+    # --- F13 Additions ---
+    "shot_found_with_query": "**Ditemukan dengan:** `{q}`",
 }
 
 
@@ -1526,6 +1528,8 @@ EN_TRANSLATIONS: Dict[str, str] = {
     "project_anchors_regen_ok": "Project visual anchors updated.",
     "err_project_anchors_friendly": "Failed to update project visual anchors.",
     "shot_keywords_alts_caption": "Alternative queries: {alts}",
+    # --- F13 Additions ---
+    "shot_found_with_query": "**Found with:** `{q}`",
 }
 
 

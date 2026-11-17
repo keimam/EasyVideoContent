@@ -287,10 +287,12 @@ def score_candidate_relevance(
                 f"Candidate lacks required subject terms: subject not in first 5 tags and fewer than 2 distinct subject terms ({len(matched_distinct_subjects)} found)",
             )
 
-    # 2b. Project anchor_terms check (F12): reject candidates with 0 matching anchor terms
+    # 2b. Project anchor_terms check (F12 / F13): reject candidates lacking anchor in first 8 tags & < 2 overall
     anchor_matched = True
     if anchor_list:
-        anchor_matched = any(term_matches_tags(anc, cand_tags) for anc in anchor_list)
+        top_anchor_hit = any(term_matches_tags(anc, cand_tags[:8]) for anc in anchor_list)
+        distinct_anchor_hits = sum(1 for anc in anchor_list if term_matches_tags(anc, cand_tags))
+        anchor_matched = top_anchor_hit or (distinct_anchor_hits >= 2)
 
     # 3. Subject score (if passed, 1.0 if req_terms present else 0.5)
     subject_score = 1.0 if (req_terms or (anchor_list and anchor_matched)) else 0.5
@@ -357,6 +359,84 @@ def extract_narrower_query(
 ) -> str:
     """Extract a narrower query (subject term + 1-2 key nouns) for retry escalation (S1, S5)."""
     return restructure_stock_query(search_query, required_subject_terms)
+
+
+def build_short_core_queries(
+    search_query: str,
+    anchor_terms: Optional[List[str]] = None,
+) -> List[str]:
+    """Shorten a 4-6 word query into 2-3 core visual words anchored to project topic (F13).
+
+    Example:
+    - 'night street food stall crowd' -> ['street food night', 'food stall crowd', 'street food']
+    - 'tent food stall plastic table' -> ['food stall table', 'food stall']
+    """
+    clean_q = re.sub(r"[^a-z0-9\s]+", " ", (search_query or "").lower()).strip()
+    anchors = [a.lower().strip() for a in (anchor_terms or []) if str(a or "").strip()]
+    words = [w for w in clean_q.split() if len(w) > 2 and w not in STOP_WORDS]
+    anchor_tokens = {tok for anc in anchors for tok in anc.split()}
+
+    anchor_words = [w for w in words if w in anchor_tokens]
+    other_words = [w for w in words if w not in anchor_tokens and w not in GENERIC_WORDS]
+    generic_tail = [w for w in words if w in GENERIC_WORDS and w not in anchor_tokens]
+
+    ordered = anchor_words + other_words + generic_tail
+    out: List[str] = []
+    seen: set[str] = set()
+
+    def _add(parts: List[str]) -> None:
+        q_str = " ".join(parts).strip()
+        if q_str and q_str not in seen:
+            seen.add(q_str)
+            out.append(q_str)
+
+    # 3-word core combination preserving matching multi-word anchor phrase if present
+    matched_phrase = next((anc for anc in anchors if " " in anc and anc in clean_q), None)
+    if matched_phrase:
+        rest = [w for w in ordered if w not in matched_phrase.split()]
+        if rest:
+            _add([matched_phrase, rest[0]])
+        _add([matched_phrase])
+
+    if len(ordered) >= 3:
+        _add(ordered[:3])
+    if len(ordered) >= 2:
+        _add(ordered[:2])
+    # Fallback combining top anchor + primary non-anchor word
+    if anchors and other_words:
+        _add([anchors[0], other_words[0]])
+
+    return [q for q in out if q.lower() != clean_q]
+
+
+def filter_candidates_by_anchors_and_avoids(
+    candidates: List[Dict[str, Any]],
+    *,
+    anchor_terms: Optional[List[str]] = None,
+    avoid_terms: Optional[List[str]] = None,
+    blocked_terms: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    """Filter candidate dicts (e.g. tab Kandidat) rejecting any avoid_terms or 0-anchor-match entries (F13)."""
+    avoids = [str(x).lower().strip() for x in (avoid_terms or []) if str(x or "").strip()]
+    blocks = [str(x).lower().strip() for x in (blocked_terms or []) if str(x or "").strip()]
+    anchors = [str(x).lower().strip() for x in (anchor_terms or []) if str(x or "").strip()]
+    if not avoids and not blocks and not anchors:
+        return list(candidates)
+
+    kept: List[Dict[str, Any]] = []
+    for cand in candidates:
+        c_tags = [str(x).lower().strip() for x in (cand.get("tags") or []) if str(x or "").strip()]
+        if any(term_matches_tags(bt, c_tags) for bt in blocks):
+            continue
+        if any(term_matches_tags(av, c_tags) for av in avoids):
+            continue
+        if anchors and c_tags:
+            top_hit = any(term_matches_tags(anc, c_tags[:8]) for anc in anchors)
+            multi_hit = sum(1 for anc in anchors if term_matches_tags(anc, c_tags)) >= 2
+            if not (top_hit or multi_hit):
+                continue
+        kept.append(cand)
+    return kept
 
 
 def _has_non_empty_key(cfg_key: str) -> bool:

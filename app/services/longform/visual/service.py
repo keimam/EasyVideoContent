@@ -243,6 +243,41 @@ class VisualService:
                 logger.warning(f"Shot {shot.shot_id} asset {asset_file} failed media decode check: {reason}")
                 return False
 
+        # F13: If keyword changed (effective_query does not match current query set/short/anchor), invalidate stale asset
+        eff_q = str(getattr(shot, "effective_query", None) or "").strip().lower()
+        cur_en_q = str(getattr(shot, "search_query_en", None) or "").strip()
+        if not shot.locked and cur_en_q and eff_q:
+            from app.services.longform.visual.stock import (
+                build_short_core_queries,
+                extract_narrower_query,
+                restructure_stock_query,
+            )
+
+            allowed_eff: Set[str] = set()
+            base_qs = [
+                str(q or "").strip()
+                for q in ([cur_en_q] + list(getattr(shot, "search_queries_en", []) or []) + [shot.search_query])
+                if str(q or "").strip()
+            ]
+            for bq in base_qs:
+                allowed_eff.add(bq.lower())
+                for sq in build_short_core_queries(bq, anchor_terms):
+                    allowed_eff.add(sq.lower())
+                if required_subject_terms:
+                    allowed_eff.add(restructure_stock_query(bq, required_subject_terms).lower())
+                narrow = extract_narrower_query(bq, required_subject_terms)
+                if narrow:
+                    allowed_eff.add(narrow.lower())
+            for extra in list(anchor_terms or []) + list(visual_keywords or []):
+                ex_s = str(extra or "").strip().lower()
+                if ex_s:
+                    allowed_eff.add(ex_s)
+            if eff_q not in allowed_eff:
+                logger.info(
+                    f"Shot {shot.shot_id} effective_query '{eff_q}' outdated vs current keyword '{cur_en_q}'; marking stale for re-fetch"
+                )
+                return False
+
         # S5, T3, F12: Subject relevance, strict negative terms, and anchor/avoid check on existing stock asset tags
         is_stock_asset = (not shot.is_fake) and str(shot.actual_source or target_provider_name or "").lower() in (
             "stock",
@@ -333,14 +368,15 @@ class VisualService:
                 logger.warning(global_fallback_reason)
                 effective_provider_name = "fake"
 
-        # Track used candidate IDs across project for deduplication
+        # Track used candidate IDs across project for deduplication (skip invalidated/stale shots so re-fetch isn't blocked)
         used_candidate_ids: Set[str] = set()
         for ch in manifest.chapters:
             for s in ch.shots:
-                if s.candidates:
-                    for c in s.candidates:
-                        if c.get("candidate_id"):
-                            used_candidate_ids.add(c["candidate_id"])
+                if s.locked or getattr(s, "status", None) != ItemStatus.stale:
+                    if s.candidates:
+                        for c in s.candidates:
+                            if c.get("candidate_id"):
+                                used_candidate_ids.add(c["candidate_id"])
 
         # S5, T3: Load preset filtering and scoring rules from snapshot or PresetStore
         preset_snap = manifest.preset_snapshot or {}
@@ -506,8 +542,13 @@ class VisualService:
                     logger.warning(f"Shot {shot.shot_id}: {fallback_reason}")
                     active_provider = FakeVisualProvider(mode=target_provider_name)
 
-                # S5 Multi-tier escalation search
+                # F13: Clear stale candidate list/tags on unlocked shots being re-fetched
+                shot.candidates = []
+                shot.tags = []
+
+                # S5 / F12 / F13 Multi-tier escalation search
                 from app.services.longform.visual.stock import (
+                    build_short_core_queries,
                     extract_narrower_query,
                     restructure_stock_query,
                 )
@@ -518,17 +559,21 @@ class VisualService:
                     or shot.visual_prompt
                     or "cinematic scene"
                 )
-                # F12: Build ordered sequential alternative queries (`search_queries_en`), trying concrete primary + alternatives before narrow fallback
+                # Build ordered base queries (`search_query_en` + `search_queries_en` alternatives)
                 ordered_base_queries: List[str] = []
                 for q_cand in ([raw_query] + list(getattr(shot, "search_queries_en", []) or [])):
                     qc = str(q_cand or "").strip()
                     if qc and qc.lower() not in [x.lower() for x in ordered_base_queries]:
                         ordered_base_queries.append(qc)
 
-                candidates = []
+                candidates: List[VisualCandidate] = []
+                best_candidates: List[VisualCandidate] = []
+                cand_origin_query: Dict[str, str] = {}
+                seen_best_ids: Set[str] = set()
                 chosen_query = raw_query
 
                 query_tiers: List[Tuple[str, Optional[str]]] = []
+                # Tier 1 & 2: Primary query + alternative concrete queries
                 for bq in ordered_base_queries:
                     if req_terms:
                         restruct_q = restructure_stock_query(bq, req_terms, topic_kws)
@@ -537,14 +582,26 @@ class VisualService:
                     query_tiers.append((bq, stock_cat))
                     query_tiers.append((bq, None))
 
+                # Tier 3: Shortened 2-3 core word queries (helps Pixabay when 5-word queries yield < 3 hits)
+                for bq in ordered_base_queries:
+                    for short_q in build_short_core_queries(bq, proj_anchors):
+                        query_tiers.append((short_q, None))
                 narrow_q = extract_narrower_query(raw_query, req_terms)
-                if narrow_q and narrow_q.lower() not in [qt[0].lower() for qt in query_tiers]:
+                if narrow_q:
                     query_tiers.append((narrow_q, None))
+
+                # Tier 4: Project anchor_terms & preset visual_keywords fallbacks
+                if proj_anchors:
+                    if len(proj_anchors) >= 2 and " " not in proj_anchors[0] and " " not in proj_anchors[1]:
+                        query_tiers.append((f"{proj_anchors[0]} {proj_anchors[1]}", None))
+                    for anc_term in proj_anchors[:5]:
+                        if anc_term:
+                            query_tiers.append((anc_term, None))
                 for vk in visual_kws[:3]:
-                    if vk and vk.lower() not in [qt[0].lower() for qt in query_tiers]:
+                    if vk:
                         query_tiers.append((vk, stock_cat))
 
-                # Deduplicate preserving order
+                # Deduplicate preserving strict tier priority order
                 seen_tiers: set[Tuple[str, Optional[str]]] = set()
                 dedup_tiers: List[Tuple[str, Optional[str]]] = []
                 for qt_pair in query_tiers:
@@ -561,7 +618,7 @@ class VisualService:
                         "excluded_ids": used_candidate_ids,
                     }
                     try:
-                        candidates = active_provider.search_candidates(
+                        tier_cands = active_provider.search_candidates(
                             required_subject_terms=req_terms,
                             blocked_terms=block_terms,
                             negative_terms=neg_terms,
@@ -574,19 +631,39 @@ class VisualService:
                         )
                     except TypeError:
                         try:
-                            candidates = active_provider.search_candidates(
+                            tier_cands = active_provider.search_candidates(
                                 required_subject_terms=req_terms,
                                 blocked_terms=block_terms,
                                 visual_keywords=visual_kws,
                                 **search_kwargs,
                             )
                         except TypeError:
-                            candidates = active_provider.search_candidates(**search_kwargs)
+                            tier_cands = active_provider.search_candidates(**search_kwargs)
 
-                    if candidates:
-                        chosen_query = q_text
-                        logger.info(f"Shot {shot.shot_id}: found {len(candidates)} candidates using query '{q_text}' (cat={q_cat})")
+                    added_cnt = 0
+                    for tc in tier_cands or []:
+                        if tc.candidate_id not in seen_best_ids:
+                            seen_best_ids.add(tc.candidate_id)
+                            best_candidates.append(tc)
+                            cand_origin_query[tc.candidate_id] = q_text
+                            added_cnt += 1
+
+                    logger.info(
+                        f"Shot {shot.shot_id}: stock query '{q_text}' (cat={q_cat}) -> "
+                        f"{len(tier_cands or [])} valid hit(s), added={added_cnt}, accumulated={len(best_candidates)}"
+                    )
+                    if len(best_candidates) >= 3:
                         break
+
+                if best_candidates:
+                    best_candidates.sort(key=lambda c: c.relevance_score, reverse=True)
+                    candidates = best_candidates[:3]
+                    chosen_query = cand_origin_query.get(candidates[0].candidate_id, chosen_query)
+                    logger.info(
+                        f"Shot {shot.shot_id}: selected top candidate '{candidates[0].candidate_id}' "
+                        f"(score={candidates[0].relevance_score:.3f}) via query '{chosen_query}' "
+                        f"from {len(candidates)} candidate(s)"
+                    )
 
                 # Step 4: Fallback to next provider or mark needs_review
                 if not candidates:
@@ -632,6 +709,8 @@ class VisualService:
 
                 logger.info(f"Fetching asset for {shot.shot_id} via {active_provider.name} (score: {selected_candidate.relevance_score:.2f}, {selected_candidate.rendition_name or 'std'})...")
                 asset = active_provider.fetch_asset(selected_candidate, dest_file)
+                stale_thumb = self.project_dir / "assets" / "visual" / "thumbnails" / f"{shot.shot_id}.jpg"
+                stale_thumb.unlink(missing_ok=True)
 
                 # Update shot metadata
                 shot.asset_path = rel_dest
@@ -645,10 +724,17 @@ class VisualService:
                 shot.chosen_rendition = selected_candidate.rendition_name
                 shot.is_low_res = getattr(selected_candidate, "is_low_res", False)
                 shot.effective_query = chosen_query
+                shot.ai_relevance_status = None
+                shot.ai_relevance_reason = None
+                shot.ai_relevance_asset_hash = None
                 if req_terms:
                     from app.services.longform.visual.stock import term_matches_tags
                     has_subj = any(term_matches_tags(req, shot.tags or []) for req in req_terms)
                     shot.needs_review = not has_subj
+                elif proj_anchors and not shot.is_fake and shot.tags:
+                    from app.services.longform.visual.stock import term_matches_tags
+                    has_anchor = any(term_matches_tags(anc, shot.tags or []) for anc in proj_anchors)
+                    shot.needs_review = not has_anchor
                 else:
                     shot.needs_review = False
                 shot.status = ItemStatus.pending

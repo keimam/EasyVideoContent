@@ -2433,6 +2433,238 @@ def test_f12_anchor_avoid_stock_filter_and_alternative_query_fallback(tmp_path: 
     assert updated_sh.asset_path and (p_dir / updated_sh.asset_path).is_file()
 
 
+# ---------------------------------------------------------------------------
+# ADDENDUM F13 — Re-fetch on Changed Keywords, Short Query Escalation, Cand Filter
+# ---------------------------------------------------------------------------
+
+
+def test_f13_refetch_on_keyword_change_short_query_escalation_cand_filter_and_locked_preserved(
+    tmp_path: Path, monkeypatch
+):
+    from app.services.longform.schema import Segment
+    from app.services.longform.visual.base import VisualAsset, VisualCandidate
+    from app.services.longform.visual.stock import (
+        StockVisualProvider,
+        filter_candidates_by_anchors_and_avoids,
+        score_candidate_relevance,
+    )
+
+    proj_root = tmp_path / "projects_f13"
+    proj_root.mkdir()
+    monkeypatch.setattr("app.services.longform.store.get_projects_root", lambda: proj_root)
+    monkeypatch.setattr("app.services.longform.ui.components.get_projects_root", lambda: proj_root)
+    monkeypatch.setitem(config.ui, "language", "id")
+
+    manifest, p_dir = create_project(
+        "f13_refetch",
+        "Kulineran F13",
+        "umum.id",
+        language="id-ID",
+        projects_root=proj_root,
+    )
+    manifest.visual_anchor_terms = ["street food", "vendor", "cooking", "stall", "night market"]
+    manifest.visual_avoid_terms = ["animal", "wildlife", "pet", "panda", "cartoon"]
+
+    old_panda_mp4 = _make_sample_mp4(p_dir / "assets/visual/shots/ch01_shot001_asset.mp4", duration=3.5, color="red")
+    locked_mp4 = _make_sample_mp4(p_dir / "assets/visual/shots/ch01_shot002_asset.mp4", duration=3.5, color="green")
+    fresh_food_mp4 = _make_sample_mp4(tmp_path / "fresh_street_food.mp4", duration=3.5, color="blue")
+
+    old_cands = [
+        {"candidate_id": "pixabay_90290", "provider": "pixabay", "tags": ["red panda", "animal", "wildlife"], "relevance_score": 0.37},
+        {"candidate_id": "pixabay_90291", "provider": "pixabay", "tags": ["cheetah", "wildlife", "animal"], "relevance_score": 0.37},
+        {"candidate_id": "pixabay_90292", "provider": "pixabay", "tags": ["hedgehog", "pet", "animal"], "relevance_score": 0.37},
+    ]
+
+    # Case A: Filter candidates rejects avoid_terms (cheetah/hedgehog/panda) and keeps valid food candidates
+    mixed_cands = old_cands + [
+        {"candidate_id": "pixabay_24602", "provider": "pixabay", "tags": ["street food", "vendor", "night market"], "relevance_score": 0.72},
+    ]
+    filtered_cands = filter_candidates_by_anchors_and_avoids(
+        mixed_cands,
+        anchor_terms=manifest.visual_anchor_terms,
+        avoid_terms=manifest.visual_avoid_terms,
+    )
+    assert [c["candidate_id"] for c in filtered_cands] == ["pixabay_24602"]
+
+    sh1 = Shot(
+        shot_id="ch01_shot001",
+        chapter_index=1,
+        shot_index=1,
+        segment_indices=[1],
+        duration_seconds=3.5,
+        target_frames=87,
+        requested_source="pixabay",
+        actual_source="pixabay",
+        search_query="malam membangunkan lapar",
+        search_query_en="unplanned hunger night",
+        effective_query="unplanned hunger night",
+        asset_path="assets/visual/shots/ch01_shot001_asset.mp4",
+        asset_content_hash=compute_file_content_hash(old_panda_mp4),
+        tags=["red panda", "animal", "wildlife"],
+        relevance_score=0.37,
+        candidates=list(old_cands),
+        status=ItemStatus.completed,
+    )
+    sh2_locked = Shot(
+        shot_id="ch01_shot002",
+        chapter_index=1,
+        shot_index=2,
+        segment_indices=[2],
+        duration_seconds=3.5,
+        target_frames=87,
+        requested_source="pixabay",
+        actual_source="pixabay",
+        search_query="warung tenda malam",
+        search_query_en="night street food stall",
+        effective_query="night street food stall",
+        asset_path="assets/visual/shots/ch01_shot002_asset.mp4",
+        asset_content_hash=compute_file_content_hash(locked_mp4),
+        shot_hash="locked-hash-f13",
+        locked=True,
+        tags=["street food", "stall", "night"],
+        relevance_score=0.75,
+        status=ItemStatus.completed,
+    )
+    manifest.chapters = [
+        Chapter(
+            chapter_index=1,
+            chapter_title="Pembukaan",
+            tts_groups=[
+                TtsGroup(
+                    group_index=1,
+                    paragraph_text="Malam membuka rasa lapar. Di warung tenda makanan tersaji.",
+                    segments=[
+                        Segment(segment_index=1, narration_text="Malam membuka rasa lapar."),
+                        Segment(segment_index=2, narration_text="Di warung tenda makanan tersaji."),
+                    ],
+                )
+            ],
+            shots=[sh1, sh2_locked],
+        )
+    ]
+    save_manifest(manifest, p_dir)
+
+    # Case B: Updating keywords marks unlocked shot stale and IMMEDIATELY clears old animal candidates/tags, leaving locked intact
+    class _F13MockLLM:
+        def generate(self, prompt: str, **_kw):
+            return LLMResponse(
+                content=json.dumps({
+                    "ch01_shot001": [
+                        "night street food stall crowd",
+                        "vendor cooking noodles wok stall",
+                        "street food night market crowd",
+                    ]
+                }),
+                provider="fake",
+                model="fake-llm",
+                duration_seconds=0.1,
+            )
+
+    vis_svc = VisualService(p_dir)
+    monkeypatch.setattr(
+        "app.services.longform.visual.ai_keywords.get_llm_readiness",
+        lambda *_a, **_kw: {"configured": True, "is_invalid": False},
+    )
+    manifest, _ = vis_svc.update_keywords_with_ai(manifest, force=True, mark_stale=True, llm_adapter=_F13MockLLM())
+    assert sh1.status == ItemStatus.stale
+    assert sh1.candidates == []
+    assert sh1.tags == []
+    assert sh1.effective_query is None
+    assert sh2_locked.locked is True
+    assert sh2_locked.shot_hash == "locked-hash-f13"
+    assert sh2_locked.status == ItemStatus.completed
+
+    # Case C: Even if status was left 'completed' with old effective_query, fetch_all MUST detect outdated effective_query and re-fetch!
+    sh1.status = ItemStatus.completed
+    sh1.effective_query = "unplanned hunger night"
+
+    class _ShortQueryEscalationProvider(StockVisualProvider):
+        tried: list[str] = []
+
+        def validate_credentials(self) -> None:
+            return None
+
+        def search_candidates(
+            self,
+            query: str,
+            target_duration: float,
+            limit: int = 3,
+            excluded_ids=None,
+            required_subject_terms=None,
+            blocked_terms=None,
+            visual_keywords=None,
+            negative_terms=None,
+            anchor_terms=None,
+            avoid_terms=None,
+            min_relevance_score=None,
+            category=None,
+            **kwargs,
+        ):
+            self.tried.append(query)
+            # Simulate 5-word queries returning 0 results on Pixabay, while shortened 3-word "street food night" returns 3 hits
+            if len(query.split()) > 3:
+                return []
+            if query.lower() == "street food night":
+                return [
+                    VisualCandidate(
+                        candidate_id=f"pixabay_sf_{idx}",
+                        provider="pixabay",
+                        source_type="stock_video",
+                        url=str(fresh_food_mp4),
+                        duration_seconds=3.5,
+                        width=1920,
+                        height=1080,
+                        tags=["street food", "vendor", "night market"],
+                        relevance_score=0.72 - idx * 0.02,
+                    )
+                    for idx in range(1, 4)
+                ]
+            return []
+
+        def fetch_asset(self, candidate: VisualCandidate, dest_path: Path):
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(candidate.url, dest_path)
+            return VisualAsset(
+                asset_id=candidate.candidate_id,
+                provider=candidate.provider,
+                source_type=candidate.source_type,
+                local_path=dest_path,
+                content_hash=compute_file_content_hash(dest_path),
+                width=1920,
+                height=1080,
+                duration_seconds=3.5,
+            )
+
+    esc_prov = _ShortQueryEscalationProvider("pixabay")
+    monkeypatch.setattr(vis_svc, "get_provider", lambda *_a, **_kw: esc_prov)
+
+    fetched_m = vis_svc.fetch_all(manifest, provider_name="pixabay", allow_fallback=False, translate_keywords=False)
+    save_manifest(fetched_m, p_dir)
+
+    assert "night street food stall crowd" in esc_prov.tried
+    assert "street food night" in esc_prov.tried
+    assert sh1.effective_query == "street food night"
+    assert len(sh1.candidates) == 3
+    assert sh1.tags == ["street food", "vendor", "night market"]
+    assert sh2_locked.shot_hash == "locked-hash-f13"
+    assert sh2_locked.effective_query == "night street food stall"
+
+    # Case D: Detail panel shows "Ditemukan dengan: street food night" and excludes animal candidates
+    monkeypatch.setattr(
+        "app.services.longform.visual.ai_relevance.get_vision_readiness",
+        lambda *a, **k: {"vision_supported": False, "provider": "openrouter", "model": "openrouter/free", "reason": "text_only_model"},
+    )
+    at = AppTest.from_file(_get_long_video_app_file())
+    at.query_params["project"] = "f13_refetch"
+    at.session_state["active_step_f13_refetch"] = "visual"
+    at.run(timeout=25)
+    assert not at.exception
+    md_text = "\n".join(str(m.value) for m in at.markdown)
+    assert "Ditemukan dengan:" in md_text
+    assert "street food night" in md_text
+
+
+
 
 
 

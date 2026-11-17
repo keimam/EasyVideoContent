@@ -1044,9 +1044,17 @@ def update_project_visual_keywords_ai(
                 now_src = getattr(s, "search_query_source", None)
                 changed = (now_en != prev_en) or (now_alts != prev_alts) or (now_src != prev_src)
                 has_existing_media = bool(s.asset_path or s.rendered_clip)
-                if changed and has_existing_media:
-                    s.status = ItemStatus.stale
-                    stale_marked += 1
+                if changed:
+                    # F13: Clear stale search candidates/tags whenever keyword changed so old results (e.g. animals) never linger
+                    s.candidates = []
+                    s.tags = []
+                    s.relevance_score = None
+                    s.effective_query = None
+                    s.ai_relevance_status = None
+                    s.ai_relevance_reason = None
+                    if has_existing_media:
+                        s.status = ItemStatus.stale
+                        stale_marked += 1
 
     return {
         "updated": total_updated,
