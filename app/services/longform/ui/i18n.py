@@ -697,6 +697,7 @@ ID_TRANSLATIONS: Dict[str, str] = {
     "ai_relevance_active_model_caption": "Model aktif: `{model}`",
     "llm_err_credit_insufficient": "Kredit penyedia tidak cukup untuk model ini. Isi kredit atau pilih model gratis, mis. openrouter/free",
     "llm_err_model_unavailable_free": "Model `{model}` tidak tersedia gratis. Buka Pengaturan dan pilih model gratis `openrouter/free`.",
+    "llm_connection_empty_after_http_ok": "Terhubung, tetapi model tidak mengembalikan teks — coba lagi atau pilih model lain.",
     "btn_open_llm_settings": "Buka Pengaturan",
 }
 
@@ -1387,6 +1388,7 @@ EN_TRANSLATIONS: Dict[str, str] = {
     "ai_relevance_active_model_caption": "Active model: `{model}`",
     "llm_err_credit_insufficient": "Provider credits are insufficient for this model. Add credits or choose a free model, e.g. openrouter/free",
     "llm_err_model_unavailable_free": "Model `{model}` is unavailable for free. Open Settings and choose free model `openrouter/free`.",
+    "llm_connection_empty_after_http_ok": "Connected, but the model returned no text — try again or choose another model.",
     "btn_open_llm_settings": "Open Settings",
 }
 

@@ -33,11 +33,14 @@ from app.services.longform.hashing import hash_string, normalize_text
 from app.services.longform.llm_adapter import (
     LLMAdapterError,
     LLMCreditError,
+    LLMEmptyResponseError,
     LLMModelNotFoundError,
     LLMRateLimitError,
     MAX_TOKENS_VISION_RELEVANCE,
     _classify_llm_error,
+    extract_sdk_completion_or_raise,
     get_llm_readiness,
+    invoke_openai_chat_completion,
     resolve_effective_model,
 )
 from app.services.longform.schema import Chapter, ItemStatus, ProjectManifest, Shot
@@ -299,9 +302,14 @@ def _build_vision_prompt(narration: str, subject_context: str, search_query: str
     )
 
 
-def _call_vision_provider_once(image_bytes: bytes, prompt_text: str, timeout: float = 45.0) -> str:
+def _call_vision_provider_once(
+    image_bytes: bytes,
+    prompt_text: str,
+    timeout: float = 45.0,
+    max_tokens: int = MAX_TOKENS_VISION_RELEVANCE,
+) -> str:
+    """Invoke active MPT vision LLM with bounded max_tokens and reasoning minimization (F5/F6)."""
     from openai import AzureOpenAI, OpenAI
-    from openai.types.chat import ChatCompletion
 
     llm_provider = str(config.app.get("llm_provider", DEFAULT_LLM_PROVIDER_ID)).lower()
     prov_def = get_llm_provider(llm_provider)
@@ -325,7 +333,7 @@ def _call_vision_provider_once(image_bytes: bytes, prompt_text: str, timeout: fl
         from google.genai import types
 
         http_options = types.HttpOptions(base_url=base_url) if base_url else None
-        gen_cfg = types.GenerateContentConfig(temperature=0.1, max_output_tokens=MAX_TOKENS_VISION_RELEVANCE)
+        gen_cfg = types.GenerateContentConfig(temperature=0.1, max_output_tokens=int(max_tokens))
         parts = [
             types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
             prompt_text,
@@ -339,7 +347,18 @@ def _call_vision_provider_once(image_bytes: bytes, prompt_text: str, timeout: fl
                 contents=parts,
                 config=gen_cfg,
             )
-        return _normalize_text_response(getattr(resp, "text", ""), llm_provider)
+        try:
+            return _normalize_text_response(getattr(resp, "text", ""), llm_provider)
+        except ValueError as exc:
+            if "empty text content" in str(exc).lower():
+                raise LLMEmptyResponseError(
+                    str(exc),
+                    finish_reason="length",
+                    has_reasoning=False,
+                    http_ok=True,
+                    max_tokens_used=int(max_tokens),
+                ) from exc
+            raise
 
     if adapter == "azure":
         api_version = str(config.app.get(prov_def.config_key("api_version"), "2024-02-15-preview") or "2024-02-15-preview")
@@ -386,18 +405,19 @@ def _call_vision_provider_once(image_bytes: bytes, prompt_text: str, timeout: fl
                 ],
             }
         ]
-        resp = trace_sdk_call(
-            llm_provider,
-            base_url,
+        resp = invoke_openai_chat_completion(
             client.chat.completions.create,
+            llm_provider,
+            base_url=base_url,
+            minimize_reasoning=True,
             model=model_name,
             messages=messages,
             temperature=0.1,
-            max_tokens=MAX_TOKENS_VISION_RELEVANCE,
+            max_tokens=int(max_tokens),
         )
-        if resp and isinstance(resp, ChatCompletion):
-            return _extract_chat_completion_text(resp, llm_provider)
-        raise LLMAdapterError(f"[{llm_provider}] invalid multimodal response")
+        return extract_sdk_completion_or_raise(
+            resp, llm_provider, max_tokens_used=int(max_tokens)
+        )
     finally:
         close = getattr(client, "close", None)
         if callable(close):
@@ -416,11 +436,25 @@ def _call_vision_with_retry(
     transport_fn: Optional[Callable[[bytes, str], str]] = None,
 ) -> str:
     last_err: Optional[Exception] = None
+    cur_max_tokens = MAX_TOKENS_VISION_RELEVANCE
+    escalated_once = False
     for attempt in range(max_retries):
         try:
             if transport_fn is not None:
                 return transport_fn(image_bytes, prompt_text)
-            return _call_vision_provider_once(image_bytes, prompt_text)
+            return _call_vision_provider_once(
+                image_bytes, prompt_text, max_tokens=cur_max_tokens
+            )
+        except LLMEmptyResponseError as exc:
+            last_err = exc
+            if (exc.finish_reason == "length" or exc.has_reasoning) and not escalated_once:
+                escalated_once = True
+                cur_max_tokens = min(1024, max(cur_max_tokens * 2, 512))
+                logger.info(
+                    f"Vision call empty ({exc.finish_reason}); retrying once with max_tokens={cur_max_tokens}"
+                )
+                continue
+            raise
         except Exception as exc:
             msg = _sanitize_error_message(exc)
             classified = _classify_llm_error(msg, model=model_name)

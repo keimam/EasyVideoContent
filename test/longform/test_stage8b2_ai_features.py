@@ -656,7 +656,8 @@ def test_f5_max_tokens_per_call_type_never_unbounded(tmp_path: Path, monkeypatch
     ok_conn, conn_msg, _lat = test_llm_connection()
     assert ok_conn is True
     assert recorded_sdk_calls[-1]["max_tokens"] == MAX_TOKENS_TEST_CONNECTION
-    assert recorded_sdk_calls[-1]["max_tokens"] <= 16
+    assert recorded_sdk_calls[-1]["max_tokens"] == 256
+    assert recorded_sdk_calls[-1]["extra_body"] == {"reasoning": {"effort": "minimal", "exclude": True}}
 
     # 3. Verify LLMAdapter.generate passes explicit max_tokens to SDK and records it
     adapter = LLMAdapter(provider="openrouter", model="openrouter/free")
@@ -751,9 +752,9 @@ def test_f5_max_tokens_per_call_type_never_unbounded(tmp_path: Path, monkeypatch
         cache_dir=p_dir / "cache",
     )
     assert kw_out["translated"] == 2
-    assert recorded_sdk_calls[-1]["max_tokens"] == 160
+    assert recorded_sdk_calls[-1]["max_tokens"] == 320
 
-    # 6. Verify ai_relevance uses MAX_TOKENS_VISION_RELEVANCE <= 100
+    # 6. Verify ai_relevance uses MAX_TOKENS_VISION_RELEVANCE == 256 + OpenRouter reasoning minimization
     recorded_sdk_calls.clear()
     monkeypatch.setitem(config.app, "openrouter_model_name", "google/gemini-2.5-flash")
 
@@ -776,7 +777,7 @@ def test_f5_max_tokens_per_call_type_never_unbounded(tmp_path: Path, monkeypatch
     )
     assert rel["verdict"]["relevan"] == "ya"
     assert recorded_sdk_calls[-1]["max_tokens"] == MAX_TOKENS_VISION_RELEVANCE
-    assert recorded_sdk_calls[-1]["max_tokens"] <= 100
+    assert recorded_sdk_calls[-1]["max_tokens"] == 256
 
 
 def test_f5_402_credit_error_zero_retries_and_friendly_ui(tmp_path: Path, monkeypatch):
@@ -956,4 +957,207 @@ def test_f5_host_config_toml_untouched_by_tests(tmp_path: Path, monkeypatch):
     after_bytes = root_cfg.read_bytes() if root_cfg.is_file() else b""
     after_hash = hashlib.sha256(after_bytes).hexdigest()
     assert after_hash == before_hash
+
+
+# ---------------------------------------------------------------------------
+# F6: Reasoning-safe max_tokens, length/reasoning 1x retry, HTTP OK empty warning
+# ---------------------------------------------------------------------------
+
+
+def _mk_chat_completion_with_meta(
+    content: str | None,
+    *,
+    finish_reason: str = "stop",
+    reasoning_tokens: int = 0,
+    reasoning_text: str | None = None,
+):
+    from openai.types.chat import ChatCompletion, ChatCompletionMessage
+    from openai.types.chat.chat_completion import Choice
+    from openai.types.completion_usage import CompletionTokensDetails, CompletionUsage
+
+    msg_kwargs = {"role": "assistant", "content": content}
+    msg = ChatCompletionMessage(**msg_kwargs)
+    if reasoning_text is not None:
+        object.__setattr__(msg, "reasoning", reasoning_text)
+    usage = CompletionUsage(
+        completion_tokens=max(reasoning_tokens, 1),
+        prompt_tokens=20,
+        total_tokens=20 + max(reasoning_tokens, 1),
+        completion_tokens_details=CompletionTokensDetails(reasoning_tokens=reasoning_tokens),
+    )
+    return ChatCompletion(
+        id="chatcmpl-f6-test",
+        choices=[Choice(finish_reason=finish_reason, index=0, message=msg)],
+        created=0,
+        model="openrouter/free",
+        object="chat.completion",
+        usage=usage,
+    )
+
+
+def test_f6_connection_test_retries_length_reasoning_with_larger_max_tokens(monkeypatch):
+    from app.services.longform.llm_adapter import MAX_TOKENS_TEST_CONNECTION, test_llm_connection
+
+    monkeypatch.setattr("app.config.config.app", dict(config.app))
+    monkeypatch.setitem(config.app, "llm_provider", "openrouter")
+    monkeypatch.setitem(config.app, "openrouter_api_key", "sk-or-test-key")
+    monkeypatch.setitem(config.app, "openrouter_model_name", "openrouter/free")
+
+    calls: list[dict] = []
+
+    class _ReasoningRetryCompletions:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                # 1st attempt: HTTP 200, finish_reason="length", all tokens consumed in reasoning -> content=None
+                return _mk_chat_completion_with_meta(
+                    None,
+                    finish_reason="length",
+                    reasoning_tokens=MAX_TOKENS_TEST_CONNECTION,
+                    reasoning_text="Step 1: user wants OK...",
+                )
+            # 2nd attempt (escalated max_tokens=512): returns "OK"
+            return _mk_chat_completion_with_meta("OK", finish_reason="stop", reasoning_tokens=40)
+
+    monkeypatch.setattr(
+        "openai.OpenAI",
+        lambda **_kw: SimpleNamespace(chat=SimpleNamespace(completions=_ReasoningRetryCompletions())),
+    )
+
+    ok_conn, msg, _lat = test_llm_connection()
+    assert ok_conn is True
+    assert msg == "OK"
+    assert len(calls) == 2
+    assert calls[0]["max_tokens"] == 256
+    assert calls[1]["max_tokens"] == 512
+    assert calls[0]["extra_body"] == {"reasoning": {"effort": "minimal", "exclude": True}}
+    assert calls[0]["messages"][0]["content"] == "Reply with exactly: OK"
+
+
+@pytest.mark.parametrize("ui_lang,expected_warn", [
+    ("id", "Terhubung, tetapi model tidak mengembalikan teks — coba lagi atau pilih model lain."),
+    ("en", "Connected, but the model returned no text — try again or choose another model."),
+])
+def test_f6_permanent_empty_http_ok_shows_connected_empty_warning_not_failed(
+    tmp_path: Path, monkeypatch, ui_lang: str, expected_warn: str
+):
+    from app.services.longform.llm_adapter import test_llm_connection
+
+    monkeypatch.setattr("app.config.config.app", dict(config.app))
+    monkeypatch.setattr("app.services.longform.store.get_projects_root", lambda: tmp_path)
+    monkeypatch.setattr("app.services.longform.ui.components.get_projects_root", lambda: tmp_path)
+    monkeypatch.setitem(config.app, "llm_provider", "openrouter")
+    monkeypatch.setitem(config.app, "openrouter_api_key", "sk-or-test-key")
+    monkeypatch.setitem(config.app, "openrouter_model_name", "openrouter/free")
+    monkeypatch.setitem(config.ui, "language", ui_lang)
+
+    calls: list[dict] = []
+
+    class _AlwaysEmptyReasoningCompletions:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            return _mk_chat_completion_with_meta(
+                None,
+                finish_reason="length",
+                reasoning_tokens=kwargs.get("max_tokens", 256),
+                reasoning_text="Long internal monologue...",
+            )
+
+    monkeypatch.setattr(
+        "openai.OpenAI",
+        lambda **_kw: SimpleNamespace(chat=SimpleNamespace(completions=_AlwaysEmptyReasoningCompletions())),
+    )
+
+    # Backend test confirms 1x retry (256 -> 512) then HTTP-OK empty tag
+    ok_conn, raw_msg, _lat = test_llm_connection()
+    assert ok_conn is False
+    assert "[EMPTY_AFTER_HTTP_OK]" in raw_msg
+    assert len(calls) == 2
+    assert calls[0]["max_tokens"] == 256
+    assert calls[1]["max_tokens"] == 512
+
+    # AppTest UI verifies warning banner ("Terhubung, tetapi..." / "Connected, but..."), NOT "Tes koneksi gagal" error!
+    pid = f"f6_empty_{ui_lang}"
+    create_project(pid, "F6 Empty Test", "automotive.muscle_car", projects_root=tmp_path)
+    at = AppTest.from_file(_get_long_video_app_file())
+    at.query_params["project"] = pid
+    at.session_state[f"active_step_{pid}"] = "script"
+    at.run(timeout=25)
+    assert not at.exception
+
+    btn = [b for b in at.button if b.key == f"btn_test_llm_{pid}"]
+    assert len(btn) == 1
+    btn[0].click().run(timeout=25)
+    assert not at.exception
+
+    warn_text = "\n".join(w.value for w in at.warning)
+    err_text = "\n".join(e.value for e in at.error)
+    assert expected_warn in warn_text
+    assert "Tes koneksi gagal" not in err_text
+    assert "Connection test failed" not in err_text
+    assert any(b.key == f"btn_llm_set_conn_{pid}" for b in at.button)
+
+
+def test_f6_ai_relevance_and_keyword_translator_escalate_on_length_reasoning(tmp_path: Path, monkeypatch):
+    from app.services.longform.visual import ai_relevance, keyword_translator
+
+    monkeypatch.setattr("app.config.config.app", dict(config.app))
+    monkeypatch.setitem(config.app, "llm_provider", "openrouter")
+    monkeypatch.setitem(config.app, "openrouter_api_key", "sk-or-test-key")
+    monkeypatch.setitem(config.app, "openrouter_model_name", "google/gemini-2.5-flash")
+
+    p_dir, shots = _seed_project_with_shots(tmp_path / "f6_vis", "f6_vis", lang="id-ID", queries=["mobil sport"])
+    m = load_manifest(p_dir)
+
+    # 1. Vision relevance: empty+length at 256 -> retries 1x at 512 and succeeds
+    vis_calls: list[dict] = []
+
+    class _VisEscalationCompletions:
+        def create(self, **kwargs):
+            vis_calls.append(kwargs)
+            if len(vis_calls) == 1:
+                return _mk_chat_completion_with_meta(
+                    "<think>analyzing car frame...</think>",
+                    finish_reason="length",
+                    reasoning_tokens=256,
+                )
+            return _mk_chat_completion_with_meta('{"relevan": "ya", "alasan": "sports car"}', finish_reason="stop")
+
+    monkeypatch.setattr(
+        "openai.OpenAI",
+        lambda **_kw: SimpleNamespace(chat=SimpleNamespace(completions=_VisEscalationCompletions())),
+    )
+    rel = ai_relevance.check_shot_relevance(
+        shots[0], m.chapters[0], p_dir, m, force_refresh=True, cache_dir=p_dir / "cache"
+    )
+    assert rel["verdict"]["relevan"] == "ya"
+    assert [c["max_tokens"] for c in vis_calls] == [256, 512]
+    assert vis_calls[0]["extra_body"] == {"reasoning": {"effort": "minimal", "exclude": True}}
+
+    # 2. Keyword translation: empty+length at 320 -> retries 1x at 640 and succeeds
+    kw_calls: list[dict] = []
+
+    class _KwEscalationCompletions:
+        def create(self, **kwargs):
+            kw_calls.append(kwargs)
+            if len(kw_calls) == 1:
+                return _mk_chat_completion_with_meta(
+                    None,
+                    finish_reason="length",
+                    reasoning_tokens=320,
+                    reasoning_text="translating...",
+                )
+            return _mk_chat_completion_with_meta('{"ch01_shot001": "sports car"}', finish_reason="stop")
+
+    monkeypatch.setattr(
+        "openai.OpenAI",
+        lambda **_kw: SimpleNamespace(chat=SimpleNamespace(completions=_KwEscalationCompletions())),
+    )
+    kw_out = keyword_translator.translate_chapter_queries_to_english(
+        shots=shots, project_lang="id-ID", cache_dir=p_dir / "cache", force=True
+    )
+    assert kw_out["translated"] == 1
+    assert shots[0].search_query_en == "sports car"
+    assert [c["max_tokens"] for c in kw_calls] == [320, 640]
+
 

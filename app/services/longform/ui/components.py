@@ -120,6 +120,8 @@ def _classify_ui_llm_error_kind(raw_err: str) -> str:
         return "unavailable_free"
     if "[model_not_found]" in low or "model_not_found" in low or "does not exist" in low or ("404" in low and "model" in low):
         return "model_not_found"
+    if "[empty_after_http_ok]" in low:
+        return "empty_http_ok"
     if "[rate_limit]" in low or "429" in low or "rate limit" in low:
         return "rate_limit"
     return "generic"
@@ -132,7 +134,7 @@ def _render_llm_friendly_error_box(
     active_model: str = "",
     key_suffix: str = "llm",
 ) -> None:
-    """Render user-friendly guidance + Settings button + Detail expander for LLM errors (F5)."""
+    """Render user-friendly guidance + Settings button + Detail expander for LLM errors (F5/F6)."""
     kind = _classify_ui_llm_error_kind(raw_err)
     if kind == "credit":
         st.error(t("llm_err_credit_insufficient"))
@@ -145,6 +147,10 @@ def _render_llm_friendly_error_box(
     elif kind == "model_not_found":
         st.error(t("llm_err_model_not_found", model=active_model or "selected"))
         if st.button(t("btn_change_llm_provider"), key=f"btn_llm_chg_{key_suffix}_{project_id}"):
+            _open_mpt_settings_dialog("llm")
+    elif kind == "empty_http_ok":
+        st.warning(t("llm_connection_empty_after_http_ok"))
+        if st.button(t("btn_open_llm_settings"), key=f"btn_llm_set_{key_suffix}_{project_id}"):
             _open_mpt_settings_dialog("llm")
     elif kind == "rate_limit":
         st.warning(t("llm_err_rate_limit"))

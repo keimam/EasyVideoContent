@@ -129,7 +129,6 @@ def _invoke_translation_llm(
     from app.config import config
     from app.models.llm_provider import DEFAULT_LLM_PROVIDER_ID, get_llm_provider
     from app.services.llm import (
-        _extract_chat_completion_text,
         _normalize_text_response,
         _resolve_provider_field_value,
         _sanitize_error_message,
@@ -137,9 +136,12 @@ def _invoke_translation_llm(
     )
     from app.services.longform.llm_adapter import (
         LLMCreditError,
+        LLMEmptyResponseError,
         LLMModelNotFoundError,
         LLMRateLimitError,
         _classify_llm_error,
+        extract_sdk_completion_or_raise,
+        invoke_openai_chat_completion,
         resolve_effective_model,
     )
     from app.utils.request_logging import trace_sdk_call
@@ -151,7 +153,7 @@ def _invoke_translation_llm(
     model_name, _ = resolve_effective_model(pid, raw_model)
 
     if adapter in ("claude_code", "openai_codex", "openai_chatgpt", "kimi_code", "litellm", "qwen"):
-        resp = LLMAdapter().generate(prompt=prompt, max_tokens=max_tokens)
+        resp = LLMAdapter().generate(prompt=prompt, max_tokens=max_tokens, minimize_reasoning=True)
         return resp.content, resp.provider, resp.model
 
     api_key = str(config.app.get(prov_def.config_key("api_key"), "") or "") if prov_def else ""
@@ -160,6 +162,8 @@ def _invoke_translation_llm(
         api_key = "ollama"
         base_url = base_url or config.get_default_ollama_base_url()
 
+    cur_max_tokens = int(max_tokens)
+    escalated_once = False
     for attempt in range(3):
         try:
             if adapter == "gemini":
@@ -167,7 +171,7 @@ def _invoke_translation_llm(
                 from google.genai import types
 
                 http_options = types.HttpOptions(base_url=base_url) if base_url else None
-                cfg = types.GenerateContentConfig(temperature=0.2, max_output_tokens=int(max_tokens))
+                cfg = types.GenerateContentConfig(temperature=0.2, max_output_tokens=cur_max_tokens)
                 with genai.Client(api_key=api_key, http_options=http_options) as client:
                     r = trace_sdk_call(
                         pid, base_url, client.models.generate_content, model=model_name, contents=prompt, config=cfg
@@ -175,7 +179,6 @@ def _invoke_translation_llm(
                 return _normalize_text_response(getattr(r, "text", ""), pid), pid, model_name
 
             from openai import AzureOpenAI, OpenAI
-            from openai.types.chat import ChatCompletion
 
             if adapter == "azure":
                 api_ver = str(config.app.get(prov_def.config_key("api_version"), "2024-02-15-preview") or "2024-02-15-preview")
@@ -199,18 +202,18 @@ def _invoke_translation_llm(
                 client = OpenAI(api_key=api_key, base_url=base_url, **_sdk_transport_options(35.0, 0))
 
             try:
-                r = trace_sdk_call(
-                    pid,
-                    base_url,
+                r = invoke_openai_chat_completion(
                     client.chat.completions.create,
+                    pid,
+                    base_url=base_url,
+                    minimize_reasoning=True,
                     model=model_name,
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.2,
-                    max_tokens=int(max_tokens),
+                    max_tokens=cur_max_tokens,
                 )
-                if r and isinstance(r, ChatCompletion):
-                    return _extract_chat_completion_text(r, pid), pid, model_name
-                raise ValueError(f"[{pid}] invalid response")
+                txt = extract_sdk_completion_or_raise(r, pid, max_tokens_used=cur_max_tokens)
+                return txt, pid, model_name
             finally:
                 close = getattr(client, "close", None)
                 if callable(close):
@@ -218,6 +221,15 @@ def _invoke_translation_llm(
                         close()
                     except Exception:
                         pass
+        except LLMEmptyResponseError as exc:
+            if (exc.finish_reason == "length" or exc.has_reasoning) and not escalated_once:
+                escalated_once = True
+                cur_max_tokens = min(2048, max(512, cur_max_tokens * 2))
+                logger.info(
+                    f"Keyword translation empty ({exc.finish_reason}); retrying once with max_tokens={cur_max_tokens}"
+                )
+                continue
+            raise
         except Exception as exc:
             msg = _sanitize_error_message(exc)
             classified = _classify_llm_error(msg, model=model_name)
@@ -286,7 +298,7 @@ def translate_chapter_queries_to_english(
         preset_snapshot=preset_snapshot,
     )
 
-    batch_max_tokens = min(1200, max(120, 40 * len(pending_uncached) + 80))
+    batch_max_tokens = min(1600, max(320, 45 * len(pending_uncached) + 200))
     try:
         content, used_prov, used_model = _invoke_translation_llm(
             prompt, llm_adapter=llm_adapter, max_tokens=batch_max_tokens
@@ -353,7 +365,7 @@ def translate_single_query_to_english(
     )
     try:
         content, used_prov, used_model = _invoke_translation_llm(
-            prompt, llm_adapter=llm_adapter, max_tokens=160
+            prompt, llm_adapter=llm_adapter, max_tokens=320
         )
         mapping = _extract_json_dict(content)
         en_clean = _sanitize_english_query(mapping.get("q1", ""))
