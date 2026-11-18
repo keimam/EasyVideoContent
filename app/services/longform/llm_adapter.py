@@ -19,7 +19,7 @@ import time
 import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from loguru import logger
 
@@ -30,19 +30,24 @@ OPENROUTER_SAFE_DEFAULT_MODEL = "openrouter/free"
 MAX_TOKENS_TEST_CONNECTION = 256
 MAX_TOKENS_VISION_RELEVANCE = 256
 
-# Cached OpenRouter /models pricing classification keyed by lowercase model id
+# Cached OpenRouter /models pricing classification & metadata keyed by lowercase model id
 _MODEL_PRICING_CACHE: Dict[str, str] = {}
+_OPENROUTER_MODEL_META_CACHE: Dict[str, Dict[str, Any]] = {}
 
-# Regex to sanitize sensitive keys from error messages
+# Regex to sanitize sensitive keys from error messages (named params + raw OpenRouter/OpenAI/Groq/Gemini prefixes)
 _SENSITIVE_KEY_RE = re.compile(
     r"((?:api[_-]?key|access[_-]?token|secret|password|bearer\s+)[=:\s]+)([a-zA-Z0-9_\-\.]{8,})",
     re.IGNORECASE,
+)
+_RAW_TOKEN_RE = re.compile(
+    r"\b(sk-(?:or-|proj-|ant-)?[a-zA-Z0-9_\-]{12,}|AIza[0-9A-Za-z_\-]{20,}|gsk_[0-9A-Za-z_\-]{16,})"
 )
 
 
 def sanitize_error(msg: str) -> str:
     """Mask potential API keys or secrets in error messages."""
-    return _SENSITIVE_KEY_RE.sub(r"\1***REDACTED***", str(msg))
+    masked = _SENSITIVE_KEY_RE.sub(r"\1***REDACTED***", str(msg))
+    return _RAW_TOKEN_RE.sub("***REDACTED***", masked)
 
 
 def resolve_effective_model(provider_id: str, configured_model: Optional[str]) -> Tuple[str, bool]:
@@ -123,9 +128,44 @@ class LLMConfigurationError(LLMAdapterError):
     pass
 
 
+class LLMAuthError(LLMAdapterError):
+    """Raised on HTTP 401 / invalid or revoked API key (never retried)."""
+    pass
+
+
 class LLMRateLimitError(LLMAdapterError):
     """Raised when the active LLM provider returns HTTP 429 / rate limit exhaustion."""
-    pass
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        is_daily: bool = False,
+        retry_after_seconds: Optional[float] = None,
+        reset_hint: Optional[str] = None,
+    ) -> None:
+        super().__init__(message)
+        self.is_daily = bool(is_daily)
+        self.retry_after_seconds = retry_after_seconds
+        self.reset_hint = reset_hint
+
+
+class LLMDailyQuotaError(LLMRateLimitError):
+    """Raised when provider daily free request quota (429 per-day) is exhausted (never retried)."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        retry_after_seconds: Optional[float] = None,
+        reset_hint: Optional[str] = None,
+    ) -> None:
+        super().__init__(
+            message,
+            is_daily=True,
+            retry_after_seconds=retry_after_seconds,
+            reset_hint=reset_hint,
+        )
 
 
 class LLMCreditError(LLMAdapterError):
@@ -217,12 +257,25 @@ def invoke_openai_chat_completion(
         if extra_kwargs:
             low = str(exc).lower()
             if "reasoning" in low or "extra_body" in low or "unrecognized" in low or "unknown field" in low:
-                return trace_sdk_call(
-                    provider_id,
-                    base_url,
-                    create_fn,
-                    **call_kwargs,
-                )
+                # Some reasoning models reject enabled=False yet accept effort="low" before full removal
+                try:
+                    return trace_sdk_call(
+                        provider_id,
+                        base_url,
+                        create_fn,
+                        **call_kwargs,
+                        extra_body={"reasoning": {"effort": "low"}},
+                    )
+                except Exception as exc2:
+                    low2 = str(exc2).lower()
+                    if "reasoning" in low2 or "extra_body" in low2 or "unrecognized" in low2 or "unknown field" in low2:
+                        return trace_sdk_call(
+                            provider_id,
+                            base_url,
+                            create_fn,
+                            **call_kwargs,
+                        )
+                    raise
         raise
 
 
@@ -292,9 +345,107 @@ def _mask_secret(raw_key: str) -> str:
     return f"****{s[-4:]}"
 
 
-def _classify_llm_error(error_msg: str, model: str = "") -> Optional[LLMAdapterError]:
-    """Classify upstream error text into credit-shortage, rate-limit, or model-not-found errors."""
+def _extract_response_headers(exc: Any) -> Dict[str, str]:
+    """Extract lowercase response header map from SDK exceptions when available."""
+    resp = getattr(exc, "response", None)
+    headers = getattr(resp, "headers", None) if resp is not None else None
+    if not headers:
+        return {}
+    try:
+        return {str(k).lower(): str(v) for k, v in dict(headers).items()}
+    except Exception:
+        return {}
+
+
+def _parse_rate_limit_details(
+    error_msg: str,
+    headers: Optional[Dict[str, str]] = None,
+) -> Tuple[bool, Optional[float], Optional[str]]:
+    """Differentiate daily free quota vs per-minute 429 and compute wait duration."""
     lower = (error_msg or "").lower()
+    hdrs = {str(k).lower(): str(v) for k, v in (headers or {}).items()}
+
+    retry_after: Optional[float] = None
+    raw_ra = hdrs.get("retry-after") or ""
+    if raw_ra:
+        try:
+            retry_after = max(0.0, float(raw_ra))
+        except ValueError:
+            pass
+
+    reset_ts: Optional[float] = None
+    raw_reset = hdrs.get("x-ratelimit-reset") or hdrs.get("x-ratelimit-reset-requests") or ""
+    if raw_reset:
+        try:
+            val = float(raw_reset)
+            if val > 1e12:
+                val /= 1000.0
+            if val > 1e9:
+                reset_ts = val
+                wait_from_reset = max(0.0, val - time.time())
+                if retry_after is None:
+                    retry_after = wait_from_reset
+            elif retry_after is None:
+                retry_after = max(0.0, val)
+        except ValueError:
+            pass
+
+    is_daily = any(
+        tok in lower
+        for tok in (
+            "free-models-per-day",
+            "free models per day",
+            "per-day",
+            "per day",
+            "daily limit",
+            "daily quota",
+            "requests per day",
+            "exceeded your current quota",
+        )
+    )
+    if not is_daily:
+        is_rpm = any(tok in lower for tok in ("per-min", "per min", "requests per minute", "rpm"))
+        # If header shows remaining==0 and reset is >30 min away without RPM mention, treat as daily
+        rem_hdr = hdrs.get("x-ratelimit-remaining")
+        if not is_rpm and rem_hdr == "0" and retry_after is not None and retry_after > 1800:
+            is_daily = True
+
+    reset_hint: Optional[str] = None
+    if reset_ts is not None:
+        from datetime import datetime, timezone
+
+        reset_hint = datetime.fromtimestamp(reset_ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    elif raw_reset:
+        reset_hint = raw_reset
+
+    return is_daily, retry_after, reset_hint
+
+
+def _classify_llm_error(
+    error_msg: str,
+    model: str = "",
+    headers: Optional[Dict[str, str]] = None,
+) -> Optional[LLMAdapterError]:
+    """Classify upstream error text into auth, credit, daily/per-min 429, or model-not-found errors."""
+    lower = (error_msg or "").lower()
+    if any(
+        tok in lower
+        for tok in (
+            "error code: 401",
+            "http 401",
+            "'code': 401",
+            '"code": 401',
+            " 401 ",
+            "invalid_api_key",
+            "invalid api key",
+            "incorrect api key",
+            "user not found",
+            "unauthorized",
+            "authentication failed",
+        )
+    ):
+        return LLMAuthError(error_msg)
+
     if any(
         tok in lower
         for tok in (
@@ -323,9 +474,22 @@ def _classify_llm_error(error_msg: str, model: str = "") -> Optional[LLMAdapterE
             "requests per minute",
             "quota exceeded",
             "throttl",
+            "free-models-per-day",
         )
     ):
-        return LLMRateLimitError(error_msg)
+        is_daily, retry_after, reset_hint = _parse_rate_limit_details(error_msg, headers=headers)
+        if is_daily:
+            return LLMDailyQuotaError(
+                error_msg,
+                retry_after_seconds=retry_after,
+                reset_hint=reset_hint,
+            )
+        return LLMRateLimitError(
+            error_msg,
+            is_daily=False,
+            retry_after_seconds=retry_after,
+            reset_hint=reset_hint,
+        )
 
     model_not_found = (
         "model_not_found" in lower
@@ -656,16 +820,18 @@ class LLMAdapter:
         )
 
         last_empty_error: Optional[LLMEmptyResponseError] = None
+        cur_tokens = eff_max_tokens
+        eff_minimize = (
+            bool(minimize_reasoning)
+            if minimize_reasoning is not None
+            else (self.provider == "openrouter" or eff_max_tokens <= 512)
+        )
+        seen_empty_configs: set[Tuple[int, bool]] = set()
         for attempt in range(1, self.max_retries + 1):
             start_time = time.perf_counter()
-            cur_tokens = eff_max_tokens
+            self.last_request_max_tokens = cur_tokens
             try:
                 if can_call_bounded_sdk:
-                    eff_minimize = (
-                        bool(minimize_reasoning)
-                        if minimize_reasoning is not None
-                        else (eff_max_tokens <= 512)
-                    )
                     try:
                         raw_text = self._call_bounded_sdk(
                             prompt=prompt,
@@ -675,14 +841,18 @@ class LLMAdapter:
                             minimize_reasoning=eff_minimize,
                         )
                     except LLMEmptyResponseError as empty_exc:
+                        seen_empty_configs.add((cur_tokens, eff_minimize))
                         if empty_exc.finish_reason == "length" or empty_exc.has_reasoning:
-                            escalated = min(2048, max(cur_tokens * 2, 512))
-                            if escalated > cur_tokens:
+                            next_minimize = True
+                            escalated = min(6144, max(cur_tokens * 2, 512))
+                            if (escalated, next_minimize) not in seen_empty_configs:
                                 logger.info(
                                     f"LLM returned empty text (finish_reason={empty_exc.finish_reason or 'unknown'}) "
-                                    f"at max_tokens={cur_tokens}; retrying once with max_tokens={escalated}"
+                                    f"at max_tokens={cur_tokens}, minimize_reasoning={eff_minimize}; "
+                                    f"retrying with max_tokens={escalated}, minimize_reasoning={next_minimize}"
                                 )
                                 cur_tokens = escalated
+                                eff_minimize = next_minimize
                                 self.last_request_max_tokens = cur_tokens
                                 raw_text = self._call_bounded_sdk(
                                     prompt=prompt,
@@ -709,18 +879,24 @@ class LLMAdapter:
                 if not text_out or text_out.startswith("Error:"):
                     clean_err = sanitize_error(text_out or "Empty LLM response")
                     classified = _classify_llm_error(clean_err, model=resolved_model)
-                    if isinstance(classified, (LLMModelNotFoundError, LLMCreditError)):
+                    if isinstance(classified, (LLMAuthError, LLMModelNotFoundError, LLMCreditError, LLMDailyQuotaError)):
                         raise classified
                     last_error = clean_err
                     logger.warning(
                         f"LLM call attempt {attempt}/{self.max_retries} returned error ({duration:.2f}s): {last_error}"
                     )
                     if attempt < self.max_retries:
-                        time.sleep(self.retry_delay * (2 ** (attempt - 1)))
+                        wait_s = self.retry_delay * (2 ** (attempt - 1))
+                        if isinstance(classified, LLMRateLimitError) and classified.retry_after_seconds is not None:
+                            wait_s = min(max(float(classified.retry_after_seconds), wait_s), 65.0)
+                        time.sleep(wait_s)
                         continue
                     if isinstance(classified, LLMRateLimitError):
                         raise LLMRateLimitError(
-                            f"LLM provider '{self.provider}' rate limit (429) persisted after {self.max_retries} attempts: {last_error}"
+                            f"LLM provider '{self.provider}' rate limit (429) persisted after {self.max_retries} attempts: {last_error}",
+                            is_daily=classified.is_daily,
+                            retry_after_seconds=classified.retry_after_seconds,
+                            reset_hint=classified.reset_hint,
                         )
                     raise LLMAdapterError(
                         f"LLM request to provider '{self.provider}' failed after {self.max_retries} attempts. "
@@ -740,31 +916,50 @@ class LLMAdapter:
                 return resp
             except LLMEmptyResponseError as empty_exc:
                 duration = time.perf_counter() - start_time
+                seen_empty_configs.add((cur_tokens, eff_minimize))
                 last_empty_error = empty_exc
                 last_error = sanitize_error(str(empty_exc))
                 logger.warning(
                     f"LLM call attempt {attempt}/{self.max_retries} returned empty text ({duration:.2f}s): {last_error}"
                 )
                 if attempt < self.max_retries:
+                    reason_like = bool(empty_exc.has_reasoning or empty_exc.finish_reason == "length")
+                    next_minimize = True if (reason_like or self.provider == "openrouter") else eff_minimize
+                    next_tokens = (
+                        min(6144, max(cur_tokens * 2, 512))
+                        if reason_like
+                        else cur_tokens
+                    )
+                    if (next_tokens, next_minimize) in seen_empty_configs:
+                        raise
+                    cur_tokens = next_tokens
+                    eff_minimize = next_minimize
                     time.sleep(self.retry_delay * (2 ** (attempt - 1)))
                     continue
                 raise
-            except (LLMModelNotFoundError, LLMCreditError, LLMRateLimitError):
+            except (LLMAuthError, LLMModelNotFoundError, LLMCreditError, LLMRateLimitError):
                 raise
             except Exception as exc:
                 duration = time.perf_counter() - start_time
                 last_error = sanitize_error(str(exc))
-                classified = _classify_llm_error(last_error, model=resolved_model)
-                if isinstance(classified, (LLMModelNotFoundError, LLMCreditError)):
+                resp_headers = _extract_response_headers(exc)
+                classified = _classify_llm_error(last_error, model=resolved_model, headers=resp_headers)
+                if isinstance(classified, (LLMAuthError, LLMModelNotFoundError, LLMCreditError, LLMDailyQuotaError)):
                     raise classified
                 logger.warning(
                     f"LLM call attempt {attempt}/{self.max_retries} failed ({duration:.2f}s): {last_error}"
                 )
                 if attempt < self.max_retries:
-                    time.sleep(self.retry_delay * (2 ** (attempt - 1)))
+                    wait_s = self.retry_delay * (2 ** (attempt - 1))
+                    if isinstance(classified, LLMRateLimitError) and classified.retry_after_seconds is not None:
+                        wait_s = min(max(float(classified.retry_after_seconds), wait_s), 65.0)
+                    time.sleep(wait_s)
                 elif isinstance(classified, LLMRateLimitError):
                     raise LLMRateLimitError(
-                        f"LLM provider '{self.provider}' rate limit (429) persisted after {self.max_retries} attempts: {last_error}"
+                        f"LLM provider '{self.provider}' rate limit (429) persisted after {self.max_retries} attempts: {last_error}",
+                        is_daily=classified.is_daily,
+                        retry_after_seconds=classified.retry_after_seconds,
+                        reset_hint=classified.reset_hint,
                     )
 
         if last_empty_error is not None:
@@ -1370,18 +1565,180 @@ def list_llm_models(
                     continue
                 models.append(mid)
                 pricing = item.get("pricing")
+                pricing_kind = None
                 if active_id == "openrouter" and isinstance(pricing, dict):
                     try:
                         p_in = float(pricing.get("prompt", 0) or 0)
                         p_out = float(pricing.get("completion", 0) or 0)
-                        _MODEL_PRICING_CACHE[mid.lower()] = "free" if (p_in == 0.0 and p_out == 0.0) else "paid"
+                        pricing_kind = "free" if (p_in == 0.0 and p_out == 0.0) else "paid"
+                        _MODEL_PRICING_CACHE[mid.lower()] = pricing_kind
                     except (TypeError, ValueError):
                         pass
+                if active_id == "openrouter":
+                    supp_params = item.get("supported_parameters")
+                    supp_list = [str(p) for p in supp_params] if isinstance(supp_params, list) else []
+                    arch = item.get("architecture") or {}
+                    out_mods = arch.get("output_modalities") if isinstance(arch, dict) else []
+                    out_list = [str(m).lower() for m in out_mods] if isinstance(out_mods, list) else ["text"]
+                    _OPENROUTER_MODEL_META_CACHE[mid.lower()] = {
+                        "id": mid,
+                        "pricing_kind": pricing_kind or ("free" if ":free" in mid.lower() or mid.lower() == OPENROUTER_SAFE_DEFAULT_MODEL else "unknown"),
+                        "supported_parameters": supp_list,
+                        "output_modalities": out_list,
+                        "is_reasoning": is_openrouter_reasoning_model(mid, supp_list),
+                        "context_length": item.get("context_length"),
+                    }
             return sorted(set(models)), None
 
         return [], f"Provider '{active_id}' uses manual model configuration."
     except Exception as exc:
         return [], sanitize_error(str(exc))
+
+
+_REASONING_SLUG_RE = re.compile(
+    r"(deepseek[-_/]?r1|\bqwq\b|thinking|reasoner|[-_/]reasoning\b|[-/]r1\b|\bo1\b|\bo3\b|\bo4-mini\b|gpt-oss)",
+    re.IGNORECASE,
+)
+
+
+def is_openrouter_reasoning_model(
+    model_id: str,
+    supported_parameters: Optional[Sequence[str]] = None,
+) -> bool:
+    """Return True if an OpenRouter model is reasoning-heavy / reasoning-first (C8.3)."""
+    mid = (model_id or "").strip().lower()
+    if not mid:
+        return False
+    if _REASONING_SLUG_RE.search(mid):
+        return True
+    if supported_parameters:
+        params_low = {str(p).strip().lower() for p in supported_parameters}
+        if "reasoning_effort" in params_low or (
+            ("reasoning" in params_low or "include_reasoning" in params_low)
+            and "max_tokens" not in params_low
+        ):
+            return True
+    meta = _OPENROUTER_MODEL_META_CACHE.get(mid)
+    if meta and "is_reasoning" in meta:
+        return bool(meta["is_reasoning"])
+    return False
+
+
+def get_openrouter_model_metadata(model_id: str) -> Dict[str, Any]:
+    """Return cached OpenRouter model metadata (is_free, is_reasoning, context_length)."""
+    mid = (model_id or "").strip().lower()
+    cached = dict(_OPENROUTER_MODEL_META_CACHE.get(mid, {}))
+    if "is_reasoning" not in cached:
+        cached["is_reasoning"] = is_openrouter_reasoning_model(mid)
+    if "is_random_router" not in cached:
+        cached["is_random_router"] = (mid == OPENROUTER_SAFE_DEFAULT_MODEL)
+    return cached
+
+
+def list_openrouter_free_models(
+    force_refresh: bool = False,
+    timeout: float = 10.0,
+) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    """Fetch OpenRouter text/chat `:free` models annotated with reasoning flags cleanly (C8.3)."""
+    if force_refresh or not _OPENROUTER_MODEL_META_CACHE:
+        models, err = list_llm_models(provider_id="openrouter", force_refresh=force_refresh, timeout=timeout)
+        if err and not _OPENROUTER_MODEL_META_CACHE:
+            return [], err
+    else:
+        models = sorted({v["id"] for v in _OPENROUTER_MODEL_META_CACHE.values() if v.get("id")})
+
+    free_entries: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for mid in models:
+        low = mid.lower()
+        meta = _OPENROUTER_MODEL_META_CACHE.get(low, {})
+        out_mods = [str(m).lower() for m in (meta.get("output_modalities") or ["text"])]
+        if "audio" in out_mods or "image" in out_mods or "lyria" in low:
+            continue
+        is_free = (low == OPENROUTER_SAFE_DEFAULT_MODEL) or (":free" in low) or (meta.get("pricing_kind") == "free")
+        if not is_free or low in seen:
+            continue
+        seen.add(low)
+        is_random = low == OPENROUTER_SAFE_DEFAULT_MODEL
+        is_reasoning = is_openrouter_reasoning_model(mid, meta.get("supported_parameters"))
+        free_entries.append({
+            "id": mid,
+            "is_reasoning": is_reasoning,
+            "is_random_router": is_random,
+            "context_length": meta.get("context_length"),
+        })
+
+    # Prefer explicit non-reasoning `:free` models first, then `openrouter/free`, then reasoning `:free`
+    free_entries.sort(
+        key=lambda e: (
+            2 if e["is_reasoning"] else (1 if e["is_random_router"] else 0),
+            e["id"].lower(),
+        )
+    )
+    return free_entries, None
+
+
+def fetch_openrouter_key_quota(
+    api_key: Optional[str] = None,
+    timeout: float = 10.0,
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Query `GET https://openrouter.ai/api/v1/key` safely without logging the API key (C8.2)."""
+    import requests
+
+    eff_key = (api_key or str(config.app.get("openrouter_api_key") or "")).strip()
+    if not eff_key:
+        return None, "OpenRouter API key is not configured."
+
+    try:
+        resp = requests.get(
+            "https://openrouter.ai/api/v1/key",
+            headers={"Authorization": f"Bearer {eff_key}"},
+            timeout=timeout,
+        )
+        if resp.status_code == 401:
+            return None, "HTTP 401 Unauthorized — invalid OpenRouter API key."
+        resp.raise_for_status()
+        payload = resp.json()
+        data = payload.get("data", payload) if isinstance(payload, dict) else {}
+        if not isinstance(data, dict):
+            return None, "Invalid response from OpenRouter /key endpoint."
+
+        free_daily = data.get("free_model_daily_requests")
+        limit_val = data.get("limit")
+        limit_remaining = data.get("limit_remaining")
+        usage_val = data.get("usage")
+        usage_daily = data.get("usage_daily")
+        is_free_tier = bool(data.get("is_free_tier", False))
+
+        used_daily: Optional[int] = None
+        limit_daily: Optional[int] = None
+        remaining_daily: Optional[int] = None
+
+        if isinstance(free_daily, dict):
+            used_daily = free_daily.get("used")
+            limit_daily = free_daily.get("limit")
+            remaining_daily = free_daily.get("remaining")
+        elif isinstance(free_daily, (int, float)):
+            used_daily = int(free_daily)
+
+        if remaining_daily is None and isinstance(limit_daily, (int, float)) and isinstance(used_daily, (int, float)):
+            remaining_daily = max(0, int(limit_daily) - int(used_daily))
+
+        return {
+            "label": str(data.get("label") or ""),
+            "is_free_tier": is_free_tier,
+            "limit": limit_val,
+            "limit_remaining": limit_remaining,
+            "usage": usage_val,
+            "usage_daily": usage_daily,
+            "free_daily_used": used_daily,
+            "free_daily_limit": limit_daily,
+            "free_daily_remaining": remaining_daily,
+            "rate_limit": data.get("rate_limit") if isinstance(data.get("rate_limit"), dict) else None,
+            "raw": data,
+        }, None
+    except Exception as exc:
+        return None, sanitize_error(str(exc))
 
 
 def set_active_llm_model(model_name: str, provider_id: Optional[str] = None) -> str:

@@ -7,7 +7,7 @@ Dokumen ini mencatat hasil pengukuran riil (*benchmarking*) mode pembuatan video
 ## 1. Lingkungan dan Konfigurasi Pengujian
 
 - **Sistem Operasi**: Windows 11 (64-bit), PowerShell 5.1
-- **Profil User**: `C:\Users\IT SUPPORT 2` (mengandung spasi)
+- **Profil User**: `C:\Users\<USER>` (mengandung spasi)
 - **Runtime**: Python 3.11.9, uv 0.13.7
 - **FFmpeg**: FFmpeg 2025-11-17 gyan.dev full build (ada libass, nvenc, amf)
 - **Branch**: `stage/1-project-model`

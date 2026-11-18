@@ -9,6 +9,9 @@ from app.services.branding.constants import (
     APP_NAME,
     APP_SHORT,
     APP_TAGLINE,
+    APP_VERSION,
+    CORE_VERSION,
+    PROJECT_ROOT,
     VERSION_STRING,
     MIT_ATTRIBUTION,
     MIT_THANKS,
@@ -19,7 +22,7 @@ from app.services.longform.ui.i18n import t
 
 
 def _render_about_dialog_body():
-    """Dialog body displaying version, description, and MIT upstream attribution."""
+    """Dialog body displaying app/core versions, MIT upstream attribution, notices link, and LICENSE text (C7)."""
     logo_uri = get_logo_data_uri()
     st.markdown(
         f"""
@@ -27,7 +30,7 @@ def _render_about_dialog_body():
             <img src="{logo_uri}" style="width: 44px; height: 44px; border-radius: 10px;" alt="Logo" />
             <div>
                 <h3 style="margin: 0; font-size: 1.3rem; font-weight: 700; color: var(--efs-text);">{APP_NAME}</h3>
-                <span style="font-size: 0.82rem; color: var(--efs-accent); font-weight: 600;">{VERSION_STRING}</span>
+                <span style="font-size: 0.82rem; color: var(--efs-accent); font-weight: 600;">v{APP_VERSION}</span>
             </div>
         </div>
         """,
@@ -35,14 +38,24 @@ def _render_about_dialog_body():
     )
     st.markdown(t("about_dialog_desc"))
     st.divider()
-    st.markdown(f"### {t('about_dialog_license')}\n\n{MIT_THANKS}")
+    st.markdown(f"### {t('about_dialog_license')}")
     st.markdown(
-        f"""
-        - **{t('about_dialog_original_proj')}** [{UPSTREAM_REPO_URL}]({UPSTREAM_REPO_URL})
-        - **{t('about_dialog_license_type')}** {t('license_mit_detail')}
-        - **{t('about_dialog_status')}** {t('about_dialog_status_desc')}
-        """
+        f"- {t('about_dialog_app_version', app_ver=APP_VERSION)}\n"
+        f"- {t('about_dialog_core_version', core_ver=CORE_VERSION)}\n"
+        f"- {t('about_dialog_built_on', url=UPSTREAM_REPO_URL)}\n"
+        f"- **{t('about_dialog_original_proj')}** [{UPSTREAM_REPO_URL}]({UPSTREAM_REPO_URL})\n"
+        f"- **{t('about_dialog_license_type')}** {t('license_mit_detail')}\n"
+        f"- {t('about_dialog_third_party_line')}\n"
+        f"- **{t('about_dialog_status')}** {t('about_dialog_status_desc')}"
     )
+    license_path = PROJECT_ROOT / "LICENSE"
+    license_text = (
+        license_path.read_text(encoding="utf-8")
+        if license_path.is_file()
+        else t("about_dialog_license_missing")
+    )
+    with st.expander(t("about_dialog_view_license"), expanded=False):
+        st.code(license_text, language="text")
     if st.button(t("dialog_close"), key="btn_close_about_dialog", use_container_width=True):
         st.rerun()
 
@@ -50,6 +63,18 @@ def _render_about_dialog_body():
 def show_about_dialog():
     """Open localized About dialog dynamically."""
     st.dialog(t("about_dialog_title"))(_render_about_dialog_body)()
+
+
+def _render_help_dialog_body():
+    """Dialog body rendering the in-app Help document viewer (C8.1)."""
+    from app.services.branding.help_viewer import render_help_dialog_body
+
+    render_help_dialog_body()
+
+
+def show_help_dialog():
+    """Open localized Help & Documentation dialog dynamically."""
+    st.dialog(t("help_dialog_title"), width="large")(_render_help_dialog_body)()
 
 
 def _render_niche_dialog_body():
@@ -338,25 +363,36 @@ def _inject_sidebar_styles():
         color: var(--efs-text) !important;
     }
 
-    /* Sidebar Footer matching mockup: subtle card at bottom */
-    .efs-sb-footer {
-        margin-top: 2.5rem;
-        padding: 12px 14px;
-        border-radius: 10px;
-        background-color: var(--efs-surface);
-        border: 1px solid var(--efs-border);
-        font-size: 0.75rem;
-        line-height: 1.4;
-        color: var(--efs-muted);
+    /* C7: Minimal left-aligned clickable dimmed version link right above About */
+    [data-testid="stSidebar"] div.stElementContainer[class*="efs_btn_version"] div.stButton button,
+    [data-testid="stSidebar"] div[class*="efs_btn_version"] button {
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+        padding: 2px 4px !important;
+        min-height: 24px !important;
+        height: auto !important;
+        margin-top: 2rem !important;
+        margin-bottom: 2px !important;
+        justify-content: flex-start !important;
+        text-align: left !important;
+        color: var(--efs-dim) !important;
+        font-size: 0.78rem !important;
+        font-weight: 500 !important;
+        width: auto !important;
     }
-    .efs-sb-footer__version {
-        font-weight: 600;
-        color: var(--efs-text-2);
-        margin-bottom: 3px;
+    [data-testid="stSidebar"] div[class*="efs_btn_version"] button:hover {
+        background: transparent !important;
+        border: none !important;
+        color: var(--efs-text-2) !important;
+        text-decoration: underline !important;
     }
-    .efs-sb-footer__mit {
-        color: var(--efs-dim);
-        font-size: 0.72rem;
+    [data-testid="stSidebar"] div[class*="efs_btn_version"] button > div,
+    [data-testid="stSidebar"] div[class*="efs_btn_version"] button p {
+        justify-content: flex-start !important;
+        text-align: left !important;
+        font-size: 0.78rem !important;
+        margin: 0 !important;
     }
     </style>
     """
@@ -391,7 +427,7 @@ def render_brand_sidebar(current_page: str = "main"):
 
         is_lv = (current_page == "longform")
         lv_label = f"**{t('nav_long_video')}**" if is_lv else t("nav_long_video")
-        lv_help = t("nav_long_video_help") + (f" {t('active_page_indicator')}" if is_lv else "")
+        lv_help = t("nav_long_video_help")
         lv_rendered = False
         for path in ["pages/1_🎬_Long_Video.py", "1_🎬_Long_Video.py", "webui/pages/1_🎬_Long_Video.py"]:
             try:
@@ -403,7 +439,7 @@ def render_brand_sidebar(current_page: str = "main"):
 
         if not lv_rendered:
             if st.button(
-                t("nav_long_video") + (f" {t('active_page_indicator')}" if is_lv else ""),
+                lv_label,
                 key=f"efs_btn_lv_{current_page}",
                 icon=":material/movie:",
                 type="primary" if is_lv else "secondary",
@@ -418,7 +454,7 @@ def render_brand_sidebar(current_page: str = "main"):
 
         is_main = (current_page == "main")
         main_label = f"**{t('nav_short_video')}**" if is_main else t("nav_short_video")
-        main_help = t("nav_short_video_help") + (f" {t('active_page_indicator')}" if is_main else "")
+        main_help = t("nav_short_video_help")
         main_rendered = False
         for path in ["Main.py", "webui/Main.py", "../Main.py"]:
             try:
@@ -430,7 +466,7 @@ def render_brand_sidebar(current_page: str = "main"):
 
         if not main_rendered:
             if st.button(
-                t("nav_short_video") + (f" {t('active_page_indicator')}" if is_main else ""),
+                main_label,
                 key=f"efs_btn_main_{current_page}",
                 icon=":material/bolt:",
                 type="primary" if is_main else "secondary",
@@ -480,16 +516,23 @@ def render_brand_sidebar(current_page: str = "main"):
             st.session_state["settings_dialog_target_tab"] = "cache"
             st.rerun()
 
-        # 4. Footer (matching mockup)
-        st.markdown(
-            f"""
-            <div class="efs-sb-footer">
-                <div class="efs-sb-footer__version">{VERSION_STRING}</div>
-                <div class="efs-sb-footer__mit">{t("built_on_mpt")}<br>MoneyPrinterTurbo (MIT)</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        # 3.4 Bantuan / Help
+        if st.button(
+            t("nav_help"),
+            key=f"efs_btn_help_{current_page}",
+            icon=":material/help:",
+            use_container_width=True,
+            help=t("nav_help_tooltip"),
+        ):
+            show_help_dialog()
+
+        # 4. Compact footer: clickable dimmed version line + Tentang/About button (C7)
+        if st.button(
+            f"v{APP_VERSION}",
+            key=f"efs_btn_version_{current_page}",
+            help=t("sidebar_version_help"),
+        ):
+            show_about_dialog()
 
         if st.button(
             t("nav_about"),

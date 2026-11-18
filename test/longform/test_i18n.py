@@ -80,7 +80,7 @@ def test_brand_names_not_translated():
         about_title = t("about_dialog_title", lang=lang)
         assert "EasyFaceless Studio" in about_title
 
-        built_on = t("nav_about_help", lang=lang)
+        built_on = t("about_dialog_built_on", lang=lang, url="https://github.com/harry0703/MoneyPrinterTurbo")
         assert "MoneyPrinterTurbo" in built_on
 
 

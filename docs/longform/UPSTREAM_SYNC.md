@@ -125,7 +125,7 @@ Dibuat dari `test/resources/sample_script.md` dengan alur penuh:
    - Hasil: Sukses dalam 9.18s, durasi akhir 19.82s (drift 22.0ms, batas aman), loudness -14.7 LUFS. Berkas `final_video.mp4` tercipta.
 5. **Ekspor & Pemasangan CapCut (`--install`):**
    - Perintah: `uv run python cli_longform.py capcut export test_sync_79 --install --yes`
-   - Hasil: Berhasil dipasang ke folder CapCut draft: `C:\Users\IT SUPPORT 2\AppData\Local\CapCut\User Data\Projects\com.lveditor.draft\MPT_test_sync_79_20261112-1131`. Selisih timeline vs final video: 0.022s (dalam toleransi 1 frame).
+   - Hasil: Berhasil dipasang ke folder CapCut draft: `C:\Users\<USER>\AppData\Local\CapCut\User Data\Projects\com.lveditor.draft\MPT_test_sync_79_20261112-1131`. Selisih timeline vs final video: 0.022s (dalam toleransi 1 frame).
 
 ### 5.2 Uji Nyata Video Pendek Asli MPT
 - Dijalankan via pipeline asli MPT (`app.services.task.start`):

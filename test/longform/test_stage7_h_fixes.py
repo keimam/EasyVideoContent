@@ -160,10 +160,11 @@ def test_h3_long_video_renders_sidebar_and_back_link(tmp_path, monkeypatch):
 
     assert not at.exception, f"Long Video threw exceptions: {[e.value for e in at.exception]}"
 
-    # Verify return link exists
-    all_links = [pl.label for pl in at.page_link]
-    all_buttons = [b.label for b in at.button]
-    assert any("MoneyPrinterTurbo" in str(lbl) for lbl in all_links + all_buttons)
+    # Verify Short Video sidebar link exists and MoneyPrinterTurbo top back link was removed (C6)
+    all_links = [str(pl.label) for pl in at.page_link]
+    all_buttons = [str(b.label) for b in at.button]
+    assert not any("MoneyPrinterTurbo" in lbl for lbl in all_links + all_buttons)
+    assert any("Video Pendek" in lbl or "Short Video" in lbl for lbl in all_links + all_buttons)
 
 
 def test_h5_main_page_hides_stsidebar_nav_and_highlights_active_item():
@@ -187,13 +188,12 @@ def test_h5_main_page_hides_stsidebar_nav_and_highlights_active_item():
         md_texts = [m.value for m in at.markdown]
         assert any("Navigasi Studio" in s for s in subheaders) or any("EasyFaceless" in m for m in md_texts)
 
-        # 3. Verify short video item is highlighted as active (bold label or primary button)
+        # 3. Verify short video item is highlighted as active (bold label) without (Aktif) in tooltip (C6)
         links = [pl.label for pl in at.page_link]
         buttons = [b.label for b in at.button]
         all_labels = links + buttons
         assert any(
-            "**Video Pendek**" in l or "**MoneyPrinterTurbo (Video Pendek)**" in l or "(Aktif)" in l
-            for l in all_labels
+            "**Video Pendek**" in l or "**Short Video**" in l for l in all_labels
         ), (
             f"Short video item is not highlighted as active in: {all_labels}"
         )
@@ -219,13 +219,12 @@ def test_h5_long_video_hides_stsidebar_nav_and_highlights_active_item(tmp_path, 
     md_texts = [m.value for m in at.markdown]
     assert any("Navigasi Studio" in s for s in subheaders) or any("EasyFaceless" in m for m in md_texts)
 
-    # 3. Verify long video item is highlighted as active (bold label or primary button)
+    # 3. Verify long video item is highlighted as active (bold label) without (Aktif) in tooltip (C6)
     links = [pl.label for pl in at.page_link]
     buttons = [b.label for b in at.button]
     all_labels = links + buttons
     assert any(
-        "**Video Panjang**" in l or "**Studio Video Panjang**" in l or "(Aktif)" in l
-        for l in all_labels
+        "**Video Panjang**" in l or "**Long Video**" in l for l in all_labels
     ), (
         f"Studio Video Panjang item is not highlighted as active in: {all_labels}"
     )

@@ -65,6 +65,25 @@ def extract_json_payload(raw_text: str) -> str:
     return text
 
 
+def _parse_json_lenient(json_str: str) -> Any:
+    """Parse JSON strictly first, repairing minor LLM quote/stray-line typos cleanly."""
+    try:
+        return json.loads(json_str)
+    except json.JSONDecodeError:
+        # Remove stray bare identifier lines sometimes emitted by small free models (e.g., `_LARGE_`)
+        cleaned = re.sub(r"^\s*[A-Za-z_][A-Za-z0-9_]*\s*\n(?=\s*[\]}])", "", json_str, flags=re.MULTILINE)
+        # Escape interior unescaped ASCII quotes inside string lines (`"text "quoted" end"`)
+        repaired_lines = []
+        for ln in cleaned.splitlines():
+            m = re.match(r'^(\s*(?:"[^"]+"\s*:\s*)?")(.*)("(?:\s*,?\s*))$', ln)
+            if m and '"' in m.group(2):
+                inner = m.group(2).replace('\\"', '"').replace('"', '\\"')
+                repaired_lines.append(f"{m.group(1)}{inner}{m.group(3)}")
+            else:
+                repaired_lines.append(ln)
+        return json.loads("\n".join(repaired_lines))
+
+
 def count_narration_words(text: str) -> int:
     """Count narration words in a markdown chapter, ignoring headers and bracket tags."""
     # Strip markdown headers
@@ -308,7 +327,7 @@ class ScriptGenerator:
 
             json_str = extract_json_payload(resp.content)
             try:
-                outline_dict = json.loads(json_str)
+                outline_dict = _parse_json_lenient(json_str)
             except Exception as exc:
                 raise LLMAdapterError(
                     f"Failed to parse outline JSON returned by provider '{resp.provider}': {exc}\nRaw text:\n{resp.content}"
@@ -586,10 +605,10 @@ class ScriptGenerator:
             target = max(1, ch.target_words)
             deviation = abs(words - target) / target
 
-            if deviation > 0.15:
+            if not revised and deviation > 0.15:
                 logger.info(
                     f"Chapter {ch.chapter_index} word count ({words}) deviates >15% from target ({target}). "
-                    "Running automatic length revision..."
+                    "Running automatic length revision (max 1 per chapter)..."
                 )
                 action = (
                     "Expand narrative depth, technical details, and descriptions"
@@ -620,6 +639,12 @@ class ScriptGenerator:
                 chapter_content = rev_resp.content.strip()
                 words = count_narration_words(chapter_content)
                 revised = True
+                new_dev = abs(words - target) / target
+                if new_dev > 0.15:
+                    logger.info(
+                        f"Chapter {ch.chapter_index} remains {words}/{target} words ({new_dev:.0%} diff) "
+                        "after 1 length revision; accepting draft without further revision."
+                    )
 
             heading, body_text = self._extract_heading_and_body(chapter_content)
             if words < 8:

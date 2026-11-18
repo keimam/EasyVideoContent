@@ -15,9 +15,9 @@ ID_TRANSLATIONS: Dict[str, str] = {
     # --- Sidebar & Navigation ---
     "nav_production": "PRODUKSI",
     "nav_long_video": "Video Panjang",
-    "nav_long_video_help": "Studio Video Panjang Dokumenter (10–20 menit)",
+    "nav_long_video_help": "Video dokumenter 10–20 menit",
     "nav_short_video": "Video Pendek",
-    "nav_short_video_help": "Studio Pembuatan Video Pendek",
+    "nav_short_video_help": "Pembuatan video pendek otomatis",
     "nav_settings": "PENGATURAN",
     "nav_manage_niche": "Kelola Niche",
     "nav_manage_niche_help": "Kelola template topik, niche, dan kata kunci footage",
@@ -25,8 +25,11 @@ ID_TRANSLATIONS: Dict[str, str] = {
     "nav_ai_settings_help": "Buka konfigurasi model AI (LLM, TTS, dan Gambar)",
     "nav_cache_storage": "Cache & Penyimpanan",
     "nav_cache_storage_help": "Periksa dan bersihkan cache video & materi",
+    "nav_help": "Bantuan",
+    "nav_help_tooltip": "Buka daftar panduan pengguna & pemecahan masalah",
     "nav_about": "Tentang",
-    "nav_about_help": "Informasi versi, lisensi MIT, dan atribusi MoneyPrinterTurbo",
+    "nav_about_help": "Informasi versi aplikasi, catatan pihak ketiga, dan lisensi MIT",
+    "sidebar_version_help": "Lihat detail versi dan lisensi aplikasi",
     "built_on_mpt": "Dibangun di atas",
     "active_page_indicator": "(Aktif)",
 
@@ -36,6 +39,26 @@ ID_TRANSLATIONS: Dict[str, str] = {
         "EasyFaceless Studio adalah rangkaian alat pembuatan video otomatis faceless bertenaga AI, "
         "mendukung pembuatan naskah, sintesis suara, visualisasi shot otomatis, penggabungan musik latar, "
         "dan integrasi pengeditan timeline CapCut Desktop."
+    ),
+    "about_dialog_app_version": "**Versi aplikasi:** v{app_ver}",
+    "about_dialog_core_version": "**Versi inti MPT:** v{core_ver}",
+    "about_dialog_built_on": "Dibangun di atas [MoneyPrinterTurbo]({url}) oleh harry0703 (MIT License).",
+    "about_dialog_third_party_line": "Catatan pihak ketiga: [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)",
+    "about_dialog_view_license": "Lihat lisensi",
+    "about_dialog_license_missing": "Berkas LICENSE tidak ditemukan.",
+    "help_dialog_title": "Bantuan & Panduan Pengguna",
+    "help_dialog_intro": "Dokumentasi lengkap tersedia secara lokal di folder repositori berikut:",
+    "help_dialog_links_md": (
+        "- **[Ringkasan Aplikasi (README.md)](README.md)**\n"
+        "- **[Indeks Panduan Bahasa Indonesia](docs/user/id/README.md)**\n"
+        "  - [Mulai Cepat (Proyek → CapCut)](docs/user/id/mulai-cepat.md)\n"
+        "  - [Pengaturan API & Penyedia AI (LLM, TTS, Video AI, Error 402/404/429)](docs/user/id/pengaturan-ai.md)\n"
+        "  - [Niche & Preset Kustom](docs/user/id/niche-preset.md)\n"
+        "  - [Galeri Visual & Kata Kunci AI](docs/user/id/galeri-visual.md)\n"
+        "  - [Ekspor CapCut Desktop (v8.9.0 & Kalibrasi Teks)](docs/user/id/capcut-ekspor.md)\n"
+        "  - [Tempat Sampah & Penghapusan Proyek](docs/user/id/tempat-sampah.md)\n"
+        "  - [FAQ & Pemecahan Masalah](docs/user/id/faq-troubleshooting.md)\n"
+        "- **[English User Guide](docs/user/en/README.md)** · **[Pemberitahuan Pihak Ketiga](THIRD_PARTY_NOTICES.md)**"
     ),
     "about_dialog_license": "Atribusi & Lisensi",
     "about_dialog_original_proj": "Proyek Asli:",
@@ -297,8 +320,8 @@ ID_TRANSLATIONS: Dict[str, str] = {
     "subtitle_preview_title": "Pratinjau Teks Subtitle",
 
     # --- V7 Complete UI Localization Keys ---
-    "nav_back_mpt": "← MoneyPrinterTurbo (Video Pendek)",
-    "nav_back_mpt_help": "Kembali ke halaman utama pembuatan video pendek MoneyPrinterTurbo",
+    "nav_back_mpt": "← Video Pendek",
+    "nav_back_mpt_help": "Kembali ke halaman Video Pendek",
     "license_mit_detail": "MIT License (Hak Cipta © 2024 Harry)",
     "home_search_label": "Cari proyek",
     "btn_new_project": "+ Proyek Baru",
@@ -382,7 +405,7 @@ ID_TRANSLATIONS: Dict[str, str] = {
     "err_script_import_friendly": "Gagal mengimpor naskah. Pastikan format berkas atau teks markdown valid.",
     "ai_script_title": "Tulis dengan AI",
     "ai_script_desc": "AI menyusun kerangka dan menulis narasi dokumenter otomatis berdasarkan niche.",
-    "ai_missing_key_warning": "Belum ada API key AI. Isi di pengaturan MoneyPrinterTurbo, atau impor naskah sendiri.",
+    "ai_missing_key_warning": "Belum ada API key AI. Isi di Pengaturan EasyFaceless Studio, atau impor naskah sendiri.",
     "expander_ai_options": "Opsi Penulisan AI",
     "field_ai_topic": "Topik Tambahan / Fokus:",
     "field_use_fake_provider": "Gunakan Provider Simulasi / Pengujian (FAKE)",
@@ -553,7 +576,7 @@ ID_TRANSLATIONS: Dict[str, str] = {
     "capcut_subtitle_selesai": "Proyek timeline CapCut Desktop siap untuk pengeditan lanjutan.",
     "capcut_text_size_info": "Ukuran teks subtitle saat ini: **{size}** (Preset: `{preset}`)",
     "capcut_calib_desc": "Draft kalibrasi menghasilkan kalimat uji ukuran 5 sampai 10 di CapCut Desktop. Buka draft di CapCut untuk menentukan ukuran yang paling proporsional tanpa terpotong untuk rasio proyek Anda.",
-    "btn_create_calib_draft": "Buat Draft Kalibrasi (MPT_CALIBRATE)",
+    "btn_create_calib_draft": "Buat Draft Kalibrasi",
     "spinner_creating_calib": "Membuat draft kalibrasi di folder CapCut...",
     "calib_created_success": "Draft kalibrasi '{name}' berhasil dipasang ke CapCut! Buka CapCut untuk melihat perbandingannya.",
     "err_capcut_calib_friendly": "Gagal membuat draft kalibrasi CapCut.",
@@ -631,7 +654,7 @@ ID_TRANSLATIONS: Dict[str, str] = {
     "field_llm_model_select": "Pilih model dari daftar",
     "field_llm_model_custom": "Nama model (tulis manual jika perlu)",
     "btn_apply_llm_model": "Simpan model",
-    "llm_model_saved_success": "Model `{model}` disimpan ke pengaturan MPT.",
+    "llm_model_saved_success": "Model `{model}` disimpan ke pengaturan EasyFaceless Studio.",
     "llm_models_loaded_count": "{count} model tersedia untuk {provider}.",
     "llm_models_load_fallback": "Daftar model gagal dimuat ({error}). Gunakan input teks model di bawah.",
     "llm_connection_ok": "Koneksi berhasil ({latency:.2f} dtk): {msg}",
@@ -645,15 +668,15 @@ ID_TRANSLATIONS: Dict[str, str] = {
     "llm_err_rate_limit": "Batas permintaan API (429 / rate limit) tercapai setelah beberapa percobaan ulang. Tunggu sebentar atau ganti penyedia/model lalu klik Lanjutkan.",
     "llm_completed_chapters_preserved": "Naskah bab yang sudah selesai tetap aman tersimpan; klik Lanjutkan untuk meneruskan bab yang tersisa.",
     "btn_ai_resume_chapters": "Lanjutkan Bab Tersisa",
-    "field_tts_provider": "Penyedia Suara (MPT)",
+    "field_tts_provider": "Penyedia Suara",
     "voice_whisper_sync_note": "Sinkronisasi subtitle memakai Whisper untuk penyedia ini, sehingga proses sintesis berlangsung lebih lama.",
-    "btn_open_tts_settings": "Pengaturan Suara MPT",
+    "btn_open_tts_settings": "Pengaturan Suara",
     "prov_ai_ready": "Gambar AI ({provider})",
     "prov_ai_no_mpt_key": "Gambar AI — belum diatur",
-    "prov_ai_no_mpt_key_help": "Belum diatur di MPT — isi model & API key di Pengaturan → Pengaturan sumber materi (Gambar AI), lalu klik Gunakan.",
+    "prov_ai_no_mpt_key_help": "Belum diatur — isi model & API key di Pengaturan → Pengaturan sumber materi (Gambar AI), lalu klik Gunakan.",
     "prov_ai_estimate_notice": "Perkiraan Gambar AI ({provider}): ~{count} gambar akan dibuat; biaya mengikuti tarif penyedia Anda.",
     "btn_open_image_settings": "Pengaturan Gambar AI",
-    "err_open_settings_dialog": "Gagal membuka dialog Pengaturan MoneyPrinterTurbo: {err}",
+    "err_open_settings_dialog": "Gagal membuka dialog Pengaturan EasyFaceless Studio: {err}",
     "job_step_visual_ai_video": "Membuat AI Video untuk shot",
     "job_step_visual_ai_video_batch": "Membuat AI Video untuk shot Perlu dicek",
     "job_step_visual_ai_relevance": "Mengecek relevansi footage dengan AI",
@@ -668,7 +691,7 @@ ID_TRANSLATIONS: Dict[str, str] = {
     "shot_keywords_en_label": "**Kata kunci (English):** `{kw_en}`",
     "f2_translation_warning_prefix": "Penerjemahan kata kunci dilewati (memakai kata kunci asli): {msg}",
     "tab_ai_video": "AI Video",
-    "ai_video_not_configured": "Belum ada penyedia AI Video yang dikonfigurasi di MoneyPrinterTurbo.",
+    "ai_video_not_configured": "Belum ada penyedia AI Video yang dikonfigurasi di EasyFaceless Studio.",
     "btn_open_video_ai_settings": "Pengaturan Video AI",
     "field_ai_video_provider": "Penyedia AI Video",
     "field_ai_video_model": "Model AI Video",
@@ -693,7 +716,7 @@ ID_TRANSLATIONS: Dict[str, str] = {
     "tier_badge_free": "Gratis",
     "tier_badge_paid": "Berbayar",
     "tier_badge_subscription": "Langganan",
-    "ai_model_safe_default_note": "Kolom model kosong di MPT — memakai default aman '{model}'.",
+    "ai_model_safe_default_note": "Kolom model masih kosong — memakai default aman '{model}'.",
     "ai_relevance_active_model_caption": "Model aktif: `{model}`",
     "llm_err_credit_insufficient": "Kredit penyedia tidak cukup untuk model ini. Isi kredit atau pilih model gratis, mis. openrouter/free",
     "llm_err_model_unavailable_free": "Model `{model}` tidak tersedia gratis. Buka Pengaturan dan pilih model gratis `openrouter/free`.",
@@ -715,14 +738,14 @@ ID_TRANSLATIONS: Dict[str, str] = {
     "btn_confirm_update_ai_kw": "Jalankan Pembaruan Kata Kunci",
     "ai_kw_updated_success": "Kata kunci AI diperbarui untuk {updated} shot ({stale} ditandai perlu diperbarui — klik 'Cari & Susun' / 'Perbarui Visual').",
     "err_ai_kw_friendly": "Gagal memperbarui kata kunci dengan AI.",
-    "ai_video_supported_list_title": "**Penyedia AI Video yang didukung MoneyPrinterTurbo:**",
+    "ai_video_supported_list_title": "**Penyedia AI Video yang didukung EasyFaceless Studio:**",
     "popover_more_help": "Menu lainnya",
     "btn_delete_project": "Hapus proyek",
     "dlg_delete_project_title": "Hapus Proyek",
     "dlg_delete_project_meta": "Proyek **{title}** (`{pid}`) • Ukuran folder: **{mb} MB** • Draft CapCut terpasang: **{cc_count}**",
     "dlg_delete_project_soft_note": "Proyek dipindahkan ke Tempat Sampah (`_trash/`) dan masih dapat dipulihkan. Cache footage global & preset kustom tidak dihapus.",
     "dlg_delete_confirm_label": "Ketik judul proyek atau ID ({pid}) untuk konfirmasi:",
-    "chk_delete_with_capcut": "Hapus juga draft CapCut terpasang (EFS_/MPT_ proyek ini)",
+    "chk_delete_with_capcut": "Hapus juga draft CapCut terpasang (draft proyek ini)",
     "dlg_delete_locked_warn": "Proyek tidak dapat dihapus saat ada pekerjaan berjalan atau terkunci: {reason}",
     "btn_confirm_delete_project": "Pindahkan ke Sampah",
     "delete_project_success": "Proyek '{title}' dipindahkan ke Tempat Sampah.",
@@ -789,6 +812,48 @@ ID_TRANSLATIONS: Dict[str, str] = {
     "prog_voice_timeline": "Menyusun timeline audio bab…",
     "prog_render_chapters": "Merender bab ({done}/{total} bab)…",
     "prog_render_chapter_pct": "Merender bab {chapter} ({done}/{total} bab, {pct}%)…",
+    # --- C8 Additions (Help Viewer, Friendly Errors, OpenRouter Quota & Reasoning) ---
+    "help_doc_select_label": "Pilih dokumen panduan",
+    "help_doc_lang_label": "Bahasa dokumen",
+    "help_doc_source_label": "Berkas sumber:",
+    "help_doc_missing": "Berkas dokumen tidak ditemukan: `{path}`",
+    "help_doc_related_label": "Dokumen terkait (klik untuk membuka):",
+    "llm_err_empty_reasoning": (
+        "Model mengembalikan teks kosong karena batas token habis terpakai untuk reasoning internal. "
+        "Matikan reasoning atau pilih model non-reasoning di Opsi AI."
+    ),
+    "llm_err_invalid_key_401": (
+        "Kunci API tidak valid atau kedaluwarsa (401) — periksa dan perbarui kunci API di Pengaturan Penyedia AI."
+    ),
+    "llm_err_daily_quota_openrouter": (
+        "Kuota harian gratis OpenRouter habis — OpenRouter membatasi **50 request/hari** tanpa top-up "
+        "atau **1.000 request/hari** setelah top-up \\$10 sekali; reset pukul **07.00 WIB** (00.00 UTC). "
+        "Mengganti API key di akun OpenRouter yang sama tidak menambah kuota."
+    ),
+    "llm_err_job_failed_summary": "Proses gagal dengan alasan berikut: **{reason}**",
+    "btn_check_or_quota": "Cek kuota",
+    "or_quota_summary": (
+        "Kuota OpenRouter ({tier}): pemakaian harian kredit `{usage_daily}` · sisa batas kredit `{limit_remaining}`"
+    ),
+    "or_quota_free_daily_line": (
+        "Kuota model gratis harian: terpakai **{used}** / **{limit}** (sisa **{remaining}**)"
+    ),
+    "or_quota_free_tier_hint": (
+        "Akun Free Tier (50 request/hari; menjadi 1.000 request/hari setelah top-up \\$10 sekali, reset 07.00 WIB / 00.00 UTC)."
+    ),
+    "or_quota_paid_tier_hint": (
+        "Akun dengan saldo/riwayat top-up (batas model gratis 1.000 request/hari, reset 07.00 WIB / 00.00 UTC)."
+    ),
+    "or_quota_error": "Gagal mengecek kuota OpenRouter: {error}",
+    "openrouter_filter_free_only": "Utamakan & tampilkan model `:free` saja",
+    "openrouter_free_router_note": (
+        "Catatan: `openrouter/free` memilih model gratis secara acak; bila sering kosong/reasoning, muat daftar model lalu pilih model `:free` non-reasoning."
+    ),
+    "openrouter_reasoning_model_warning": (
+        "⚠️ Model `{model}` termasuk model **reasoning**. Token bisa habis untuk proses berpikir sebelum teks narasi keluar — disarankan memilih model non-reasoning `:free` bila hasil pendek/kosong."
+    ),
+    "openrouter_tag_reasoning": "reasoning",
+    "openrouter_tag_random": "auto-acak",
 }
 
 
@@ -796,9 +861,9 @@ EN_TRANSLATIONS: Dict[str, str] = {
     # --- Sidebar & Navigation ---
     "nav_production": "PRODUCTION",
     "nav_long_video": "Long Video",
-    "nav_long_video_help": "Longform Documentary Video Studio (10–20 min)",
+    "nav_long_video_help": "10–20 min documentary video",
     "nav_short_video": "Short Video",
-    "nav_short_video_help": "Short Video Creation Studio",
+    "nav_short_video_help": "Automated short video creation",
     "nav_settings": "SETTINGS",
     "nav_manage_niche": "Manage Niches",
     "nav_manage_niche_help": "Manage topic templates, niches, and footage keywords",
@@ -806,8 +871,11 @@ EN_TRANSLATIONS: Dict[str, str] = {
     "nav_ai_settings_help": "Open AI model configuration (LLM, TTS, and Image)",
     "nav_cache_storage": "Cache & Storage",
     "nav_cache_storage_help": "Inspect and clean video & material cache",
+    "nav_help": "Help",
+    "nav_help_tooltip": "Open user guides & troubleshooting documentation links",
     "nav_about": "About",
-    "nav_about_help": "Version info, MIT license, and MoneyPrinterTurbo attribution",
+    "nav_about_help": "App version, third-party notices, and MIT license info",
+    "sidebar_version_help": "View app version and license details",
     "built_on_mpt": "Built on",
     "active_page_indicator": "(Active Page)",
 
@@ -817,6 +885,26 @@ EN_TRANSLATIONS: Dict[str, str] = {
         "EasyFaceless Studio is an AI-powered automated faceless video creation suite, "
         "supporting script generation, voice synthesis, automatic shot visualization, background music mixing, "
         "and CapCut Desktop timeline export."
+    ),
+    "about_dialog_app_version": "**App version:** v{app_ver}",
+    "about_dialog_core_version": "**MPT core version:** v{core_ver}",
+    "about_dialog_built_on": "Built on [MoneyPrinterTurbo]({url}) by harry0703 (MIT License).",
+    "about_dialog_third_party_line": "Third-party notices: [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)",
+    "about_dialog_view_license": "View license",
+    "about_dialog_license_missing": "LICENSE file not found.",
+    "help_dialog_title": "Help & User Documentation",
+    "help_dialog_intro": "Complete user documentation is available locally in this repository:",
+    "help_dialog_links_md": (
+        "- **[Project Overview (README.md)](README.md)**\n"
+        "- **[English User Guide Index](docs/user/en/README.md)**\n"
+        "  - [Quick Start (Project → CapCut)](docs/user/en/quick-start.md)\n"
+        "  - [API & AI Provider Settings (LLM, TTS, AI Video, Errors 402/404/429)](docs/user/en/ai-settings.md)\n"
+        "  - [Niches & Custom Presets](docs/user/en/niches-presets.md)\n"
+        "  - [Visual Gallery & AI Keywords](docs/user/en/visual-gallery.md)\n"
+        "  - [CapCut Desktop Export (v8.9.0 & Text Calibration)](docs/user/en/capcut-export.md)\n"
+        "  - [Trash & Safe Project Deletion](docs/user/en/trash-management.md)\n"
+        "  - [FAQ & Troubleshooting](docs/user/en/faq-troubleshooting.md)\n"
+        "- **[Panduan Bahasa Indonesia](docs/user/id/README.md)** · **[Third-Party Notices](THIRD_PARTY_NOTICES.md)**"
     ),
     "about_dialog_license": "Attribution & License",
     "about_dialog_original_proj": "Original Project:",
@@ -1078,8 +1166,8 @@ EN_TRANSLATIONS: Dict[str, str] = {
     "subtitle_preview_title": "Subtitle Text Preview",
 
     # --- V7 Complete UI Localization Keys ---
-    "nav_back_mpt": "← MoneyPrinterTurbo (Short Video)",
-    "nav_back_mpt_help": "Return to MoneyPrinterTurbo short video main page",
+    "nav_back_mpt": "← Short Video",
+    "nav_back_mpt_help": "Return to Short Video page",
     "license_mit_detail": "MIT License (Copyright © 2024 Harry)",
     "home_search_label": "Search projects",
     "btn_new_project": "+ New Project",
@@ -1163,7 +1251,7 @@ EN_TRANSLATIONS: Dict[str, str] = {
     "err_script_import_friendly": "Failed to import script. Please verify the file or markdown format is valid.",
     "ai_script_title": "Write with AI",
     "ai_script_desc": "AI generates an outline and writes documentary narration automatically based on your niche.",
-    "ai_missing_key_warning": "No AI API key configured yet. Set it in MoneyPrinterTurbo settings, or import your own script.",
+    "ai_missing_key_warning": "No AI API key configured yet. Set it in EasyFaceless Studio settings, or import your own script.",
     "expander_ai_options": "AI Writing Options",
     "field_ai_topic": "Additional Topic / Focus:",
     "field_use_fake_provider": "Use Simulation / Testing Provider (FAKE)",
@@ -1334,7 +1422,7 @@ EN_TRANSLATIONS: Dict[str, str] = {
     "capcut_subtitle_selesai": "CapCut Desktop timeline project is ready for further editing.",
     "capcut_text_size_info": "Current subtitle text size: **{size}** (Preset: `{preset}`)",
     "capcut_calib_desc": "Calibration draft creates test segments sizes 5 through 10 in CapCut Desktop. Open the draft in CapCut to choose the most proportional text size without clipping for your aspect ratio.",
-    "btn_create_calib_draft": "Create Calibration Draft (MPT_CALIBRATE)",
+    "btn_create_calib_draft": "Create Calibration Draft",
     "spinner_creating_calib": "Creating calibration draft in CapCut folder...",
     "calib_created_success": "Calibration draft '{name}' installed to CapCut! Open CapCut to compare.",
     "err_capcut_calib_friendly": "Failed to create CapCut calibration draft.",
@@ -1412,7 +1500,7 @@ EN_TRANSLATIONS: Dict[str, str] = {
     "field_llm_model_select": "Select model from list",
     "field_llm_model_custom": "Model name (enter manually if needed)",
     "btn_apply_llm_model": "Save model",
-    "llm_model_saved_success": "Saved model `{model}` to MPT settings.",
+    "llm_model_saved_success": "Saved model `{model}` to EasyFaceless Studio settings.",
     "llm_models_loaded_count": "{count} models available for {provider}.",
     "llm_models_load_fallback": "Could not load model list ({error}). Use the manual model text field below.",
     "llm_connection_ok": "Connection succeeded ({latency:.2f} s): {msg}",
@@ -1426,15 +1514,15 @@ EN_TRANSLATIONS: Dict[str, str] = {
     "llm_err_rate_limit": "API rate limit (429) reached after retries. Wait a moment or change provider/model, then Resume.",
     "llm_completed_chapters_preserved": "Already completed chapter scripts are preserved; click Resume to continue the remaining chapters.",
     "btn_ai_resume_chapters": "Resume Remaining Chapters",
-    "field_tts_provider": "Voice Provider (MPT)",
+    "field_tts_provider": "Voice Provider",
     "voice_whisper_sync_note": "Subtitle sync uses Whisper for this provider, so synthesis takes longer.",
-    "btn_open_tts_settings": "MPT Voice Settings",
+    "btn_open_tts_settings": "Voice Settings",
     "prov_ai_ready": "AI Images ({provider})",
     "prov_ai_no_mpt_key": "AI Images — not configured",
-    "prov_ai_no_mpt_key_help": "Not configured in MPT — set model & API key in Settings → Material Source Settings (AI Images), then click Apply.",
+    "prov_ai_no_mpt_key_help": "Not configured — set model & API key in Settings → Material Source Settings (AI Images), then click Apply.",
     "prov_ai_estimate_notice": "AI Images estimate ({provider}): ~{count} images will be generated; cost follows your provider's rate.",
     "btn_open_image_settings": "AI Image Settings",
-    "err_open_settings_dialog": "Failed to open MoneyPrinterTurbo Settings dialog: {err}",
+    "err_open_settings_dialog": "Failed to open EasyFaceless Studio Settings dialog: {err}",
     "job_step_visual_ai_video": "Generating AI Video for shot",
     "job_step_visual_ai_video_batch": "Generating AI Video for Needs-check shots",
     "job_step_visual_ai_relevance": "Checking footage relevance with AI",
@@ -1449,7 +1537,7 @@ EN_TRANSLATIONS: Dict[str, str] = {
     "shot_keywords_en_label": "**Keywords (English):** `{kw_en}`",
     "f2_translation_warning_prefix": "Keyword translation skipped (using original keywords): {msg}",
     "tab_ai_video": "AI Video",
-    "ai_video_not_configured": "No AI Video provider is configured in MoneyPrinterTurbo yet.",
+    "ai_video_not_configured": "No AI Video provider is configured in EasyFaceless Studio yet.",
     "btn_open_video_ai_settings": "AI Video Settings",
     "field_ai_video_provider": "AI Video Provider",
     "field_ai_video_model": "AI Video Model",
@@ -1474,7 +1562,7 @@ EN_TRANSLATIONS: Dict[str, str] = {
     "tier_badge_free": "Free",
     "tier_badge_paid": "Paid",
     "tier_badge_subscription": "Subscription",
-    "ai_model_safe_default_note": "Model field empty in MPT — using safe default '{model}'.",
+    "ai_model_safe_default_note": "Model field is empty — using safe default '{model}'.",
     "ai_relevance_active_model_caption": "Active model: `{model}`",
     "llm_err_credit_insufficient": "Provider credits are insufficient for this model. Add credits or choose a free model, e.g. openrouter/free",
     "llm_err_model_unavailable_free": "Model `{model}` is unavailable for free. Open Settings and choose free model `openrouter/free`.",
@@ -1496,14 +1584,14 @@ EN_TRANSLATIONS: Dict[str, str] = {
     "btn_confirm_update_ai_kw": "Run Keyword Update",
     "ai_kw_updated_success": "AI keywords updated for {updated} shot(s) ({stale} marked needs update — click 'Fetch & Build' / 'Update Visuals').",
     "err_ai_kw_friendly": "Failed to update keywords with AI.",
-    "ai_video_supported_list_title": "**AI Video providers supported by MoneyPrinterTurbo:**",
+    "ai_video_supported_list_title": "**AI Video providers supported by EasyFaceless Studio:**",
     "popover_more_help": "More options",
     "btn_delete_project": "Delete project",
     "dlg_delete_project_title": "Delete Project",
     "dlg_delete_project_meta": "Project **{title}** (`{pid}`) • Folder size: **{mb} MB** • Installed CapCut drafts: **{cc_count}**",
     "dlg_delete_project_soft_note": "The project is moved to Trash (`_trash/`) and can still be restored. Global footage cache & custom presets are untouched.",
     "dlg_delete_confirm_label": "Type the project title or ID ({pid}) to confirm:",
-    "chk_delete_with_capcut": "Also delete installed CapCut drafts (EFS_/MPT_ for this project)",
+    "chk_delete_with_capcut": "Also delete installed CapCut drafts (for this project)",
     "dlg_delete_locked_warn": "Cannot delete project while a job is running or locked: {reason}",
     "btn_confirm_delete_project": "Move to Trash",
     "delete_project_success": "Project '{title}' moved to Trash.",
@@ -1570,6 +1658,48 @@ EN_TRANSLATIONS: Dict[str, str] = {
     "prog_voice_timeline": "Building chapter audio timeline…",
     "prog_render_chapters": "Rendering chapters ({done}/{total} chapters)…",
     "prog_render_chapter_pct": "Rendering chapter {chapter} ({done}/{total} chapters, {pct}%)…",
+    # --- C8 Additions (Help Viewer, Friendly Errors, OpenRouter Quota & Reasoning) ---
+    "help_doc_select_label": "Select guide document",
+    "help_doc_lang_label": "Document language",
+    "help_doc_source_label": "Source file:",
+    "help_doc_missing": "Document file not found: `{path}`",
+    "help_doc_related_label": "Related documents (click to open):",
+    "llm_err_empty_reasoning": (
+        "The model returned empty text because tokens were exhausted on internal reasoning. "
+        "Disable reasoning or choose a non-reasoning model in AI Options."
+    ),
+    "llm_err_invalid_key_401": (
+        "Invalid or expired API key (401) — verify and update your API key in AI Provider Settings."
+    ),
+    "llm_err_daily_quota_openrouter": (
+        "OpenRouter daily free quota exhausted — OpenRouter limits free models to **50 requests/day** without top-up "
+        "or **1,000 requests/day** after a one-time \\$10 top-up; resets at **00:00 UTC** (07:00 WIB). "
+        "Creating a new API key on the same OpenRouter account does not increase this quota."
+    ),
+    "llm_err_job_failed_summary": "Process failed: **{reason}**",
+    "btn_check_or_quota": "Check quota",
+    "or_quota_summary": (
+        "OpenRouter quota ({tier}): daily credit usage `{usage_daily}` · remaining credit limit `{limit_remaining}`"
+    ),
+    "or_quota_free_daily_line": (
+        "Daily free-model requests: used **{used}** / **{limit}** (remaining **{remaining}**)"
+    ),
+    "or_quota_free_tier_hint": (
+        "Free Tier account (50 requests/day; 1,000 requests/day after a one-time \\$10 top-up, resets 00:00 UTC / 07:00 WIB)."
+    ),
+    "or_quota_paid_tier_hint": (
+        "Account with top-up history (1,000 free-model requests/day limit, resets 00:00 UTC / 07:00 WIB)."
+    ),
+    "or_quota_error": "Failed to check OpenRouter quota: {error}",
+    "openrouter_filter_free_only": "Show & prioritize `:free` models only",
+    "openrouter_free_router_note": (
+        "Note: `openrouter/free` routes to a random free model; if output is empty or slow, load models and pick an explicit non-reasoning `:free` model."
+    ),
+    "openrouter_reasoning_model_warning": (
+        "⚠️ Model `{model}` is a **reasoning** model. Output tokens may be consumed by internal thinking before visible text — prefer a non-reasoning `:free` model if drafts come back short/empty."
+    ),
+    "openrouter_tag_reasoning": "reasoning",
+    "openrouter_tag_random": "auto-random",
 }
 
 

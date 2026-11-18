@@ -85,8 +85,12 @@ from app.services.branding.theme import (
     render_success_banner,
 )
 from app.services.longform.llm_adapter import (
+    fetch_openrouter_key_quota,
     get_llm_readiness,
+    get_openrouter_model_metadata,
+    is_openrouter_reasoning_model,
     list_llm_models,
+    list_openrouter_free_models,
     set_active_llm_model,
     supports_model_listing,
     test_llm_connection,
@@ -122,6 +126,36 @@ def _format_model_with_tier(model_name: str, billing_tier: Optional[str]) -> str
 
 def _classify_ui_llm_error_kind(raw_err: str) -> str:
     low = (raw_err or "").lower()
+    if "[empty_after_http_ok]" in low:
+        return "empty_http_ok"
+    if (
+        "[empty_reasoning]" in low
+        or (
+            ("empty text content" in low or "[empty_response]" in low)
+            and ("reasoning_tokens" in low or "finish_reason=length" in low or "reasoning" in low)
+        )
+    ):
+        return "empty_reasoning"
+    if (
+        "[auth_error]" in low
+        or "error code: 401" in low
+        or "http 401" in low
+        or "invalid_api_key" in low
+        or "invalid api key" in low
+        or "incorrect api key" in low
+        or "unauthorized" in low
+    ):
+        return "auth"
+    if (
+        "[daily_quota]" in low
+        or "free-models-per-day" in low
+        or "free models per day" in low
+        or "requests per day" in low
+        or "daily quota" in low
+        or "daily limit" in low
+        or "per-day" in low
+    ):
+        return "daily_quota"
     if (
         "[credit_error]" in low
         or "402" in low
@@ -135,7 +169,7 @@ def _classify_ui_llm_error_kind(raw_err: str) -> str:
         return "unavailable_free"
     if "[model_not_found]" in low or "model_not_found" in low or "does not exist" in low or ("404" in low and "model" in low):
         return "model_not_found"
-    if "[empty_after_http_ok]" in low:
+    if "[empty_after_http_ok]" in low or "[empty_response]" in low or "empty text content" in low:
         return "empty_http_ok"
     if "[rate_limit]" in low or "429" in low or "rate limit" in low:
         return "rate_limit"
@@ -148,10 +182,22 @@ def _render_llm_friendly_error_box(
     *,
     active_model: str = "",
     key_suffix: str = "llm",
+    show_raw_expander: bool = True,
+    generic_is_job: bool = False,
 ) -> None:
-    """Render user-friendly guidance + Settings button + Detail expander for LLM errors (F5/F6)."""
+    """Render user-friendly guidance + Settings button + Detail expander for LLM/job errors (F5/F6/C8.2)."""
     kind = _classify_ui_llm_error_kind(raw_err)
-    if kind == "credit":
+    if kind == "empty_reasoning":
+        st.error(t("llm_err_empty_reasoning"))
+        if st.button(t("btn_open_llm_settings"), key=f"btn_llm_set_{key_suffix}_{project_id}"):
+            _open_mpt_settings_dialog("llm")
+    elif kind == "auth":
+        st.error(t("llm_err_invalid_key_401"))
+        if st.button(t("btn_open_llm_settings"), key=f"btn_llm_set_{key_suffix}_{project_id}"):
+            _open_mpt_settings_dialog("llm")
+    elif kind == "daily_quota":
+        st.error(t("llm_err_daily_quota_openrouter"))
+    elif kind == "credit":
         st.error(t("llm_err_credit_insufficient"))
         if st.button(t("btn_open_llm_settings"), key=f"btn_llm_set_{key_suffix}_{project_id}"):
             _open_mpt_settings_dialog("llm")
@@ -169,10 +215,14 @@ def _render_llm_friendly_error_box(
             _open_mpt_settings_dialog("llm")
     elif kind == "rate_limit":
         st.warning(t("llm_err_rate_limit"))
+    elif generic_is_job:
+        clean_reason = (raw_err or "").strip().splitlines()[0][:240]
+        if clean_reason:
+            st.error(t("llm_err_job_failed_summary", reason=clean_reason))
     else:
         st.error(t("llm_connection_failed", msg=raw_err))
 
-    if raw_err:
+    if show_raw_expander and raw_err:
         with st.expander(t("error_details_expander"), expanded=False):
             st.code(raw_err, language="text")
 
@@ -314,7 +364,7 @@ def _render_job_monitor_content(project_id: str, state: Dict[str, Any], current_
 
     # Check if this job belongs to an earlier workflow step (W3)
     step_order = {
-        "script_outline": 1, "script_generate": 1, "script": 1,
+        "script_outline": 1, "script_generate": 1, "script": 1, "script_ai": 1,
         "audio_synthesize": 2, "voice": 2,
         "visual_pipeline": 3, "visual_fetch": 3, "visual_build": 3, "visual_generate": 3, "visual": 3,
         "render_final": 4, "render": 4,
@@ -451,36 +501,47 @@ def _render_job_monitor_content(project_id: str, state: Dict[str, Any], current_
             if failed_step_name:
                 st.caption(t("job_failed_step_caption", step=failed_step_name.capitalize()))
 
-            err_detail = str(state.get("error_message") or f"{t('job_exit_code_label')}: {state.get('exit_code', 'unknown')}")
+            inferred_log_err = jobs.extract_last_error_from_logs(project_id) if not state.get("error_message") else None
+            err_detail = str(
+                state.get("error_message")
+                or inferred_log_err
+                or f"{t('job_exit_code_label')}: {state.get('exit_code', 'unknown')}"
+            )
             logs_tail = jobs.get_job_logs(project_id, max_lines=20)
             combined_err = "\n".join([err_detail] + list(logs_tail or []))
 
-            # Detect structured LLM failure reasons (Credit / Unavailable free / Model not found / Rate limit)
+            # Detect structured failure reasons (Empty reasoning / 401 Auth / Daily Quota / Credit / 404 / RPM 429 / Generic)
             model_match = re.search(r"\[MODEL_NOT_FOUND\]\s*Model=([^\s|]+)", combined_err)
             bad_model = model_match.group(1) if model_match else (get_llm_readiness().get("model") or "selected")
-            err_kind = _classify_ui_llm_error_kind(combined_err)
-            if err_kind == "credit":
-                st.error(t("llm_err_credit_insufficient"))
-                if st.button(t("btn_open_llm_settings"), key=f"btn_err_chg_prov_{project_id}"):
-                    _open_mpt_settings_dialog("llm")
-            elif err_kind == "unavailable_free":
-                st.error(t("llm_err_model_unavailable_free", model=bad_model))
-                if st.button(t("btn_open_llm_settings"), key=f"btn_err_chg_prov_{project_id}"):
-                    _open_mpt_settings_dialog("llm")
-            elif err_kind == "model_not_found":
-                st.error(t("llm_err_model_not_found", model=bad_model))
-                if st.button(t("btn_change_llm_provider"), key=f"btn_err_chg_prov_{project_id}"):
-                    _open_mpt_settings_dialog("llm")
-            elif err_kind == "rate_limit":
-                st.warning(t("llm_err_rate_limit"))
+            _render_llm_friendly_error_box(
+                project_id,
+                combined_err,
+                active_model=bad_model,
+                key_suffix="job_err",
+                show_raw_expander=False,
+                generic_is_job=True,
+            )
 
-            if failed_step_name in ("script_outline", "script_generate", "script"):
+            if failed_step_name in ("script_outline", "script_generate", "script", "script_ai"):
                 script_dir = get_project_dir(project_id) / "script"
                 if script_dir.is_dir() and any(script_dir.glob("chapter_*.md")):
                     st.info(t("llm_completed_chapters_preserved"))
 
             if err_detail:
+                friendly_map = {
+                    "empty_reasoning": t("llm_err_empty_reasoning"),
+                    "auth": t("llm_err_invalid_key_401"),
+                    "daily_quota": t("llm_err_daily_quota_openrouter"),
+                    "credit": t("llm_err_credit_insufficient"),
+                    "unavailable_free": t("llm_err_model_unavailable_free", model=bad_model),
+                    "model_not_found": t("llm_err_model_not_found", model=bad_model),
+                    "empty_http_ok": t("llm_connection_empty_after_http_ok"),
+                    "rate_limit": t("llm_err_rate_limit"),
+                }
+                err_kind = _classify_ui_llm_error_kind(combined_err)
                 with st.expander(t("error_details_expander"), expanded=False):
+                    if err_kind in friendly_map:
+                        st.markdown(friendly_map[err_kind])
                     st.code(str(err_detail), language="text")
 
             col_retry, _ = st.columns([1, 4])
@@ -751,9 +812,9 @@ def _render_trash_management_view(trashed_items: List[Dict[str, Any]]) -> None:
 
 def render_home_page():
     """Render Beranda Long Video matching Mockup 1 (L1, 8A.2)."""
-    # G5: Return navigation link to MoneyPrinterTurbo Main
+    # C6: Studio sidebar navigation (sidebar already provides Short Video menu entry)
     from app.services.longform.ui.nav import render_mpt_entry
-    render_mpt_entry()
+    render_mpt_entry(show_top_return=False)
 
     notice_msg = st.session_state.pop("last_deleted_notice", None)
     if notice_msg:
@@ -1138,7 +1199,7 @@ def render_project_page(project_id: str):
     st_info = compute_project_step_status(p_dir)
     manifest = st_info["manifest"]
 
-    # G5, H3, H5: Sidebar studio navigation and CSS
+    # C6: Studio sidebar navigation without redundant top back link
     from app.services.longform.ui.nav import render_mpt_entry
     render_mpt_entry(show_top_return=False)
 
@@ -1598,6 +1659,11 @@ def render_script_step_flow(
             st.markdown(t("ai_active_provider_model", provider=active_prov_label, model=active_model_disp))
             if llm_status.get("used_safe_default"):
                 st.caption(t("ai_model_safe_default_note", model=active_model))
+            if active_prov_id == "openrouter":
+                if active_model.strip().lower() == "openrouter/free":
+                    st.caption(t("openrouter_free_router_note"))
+                elif is_openrouter_reasoning_model(active_model):
+                    st.warning(t("openrouter_reasoning_model_warning", model=active_model))
             if llm_ok:
                 st.caption(t("ai_provider_ready_badge", masked=llm_status.get("masked_key") or "OK"))
             elif llm_status.get("is_invalid"):
@@ -1605,7 +1671,19 @@ def render_script_step_flow(
             elif not use_fake:
                 st.warning(llm_status.get("message") or t("ai_missing_key_warning"))
 
-            col_llm_test, col_llm_cfg = st.columns(2)
+            if active_prov_id == "openrouter":
+                col_llm_test, col_llm_quota, col_llm_cfg = st.columns([1.0, 0.95, 1.45])
+                with col_llm_quota:
+                    if st.button(
+                        t("btn_check_or_quota"),
+                        key=f"btn_or_quota_{project_id}",
+                        disabled=(not llm_ok or is_job_running),
+                        use_container_width=True,
+                    ):
+                        q_data, q_err = fetch_openrouter_key_quota()
+                        st.session_state[f"or_quota_res_{project_id}"] = (q_data, q_err)
+            else:
+                col_llm_test, col_llm_cfg = st.columns(2)
             with col_llm_test:
                 if st.button(t("btn_test_llm_connection"), key=f"btn_test_llm_{project_id}", disabled=(not llm_ok or is_job_running), use_container_width=True):
                     ok_conn, conn_msg, conn_lat = test_llm_connection()
@@ -1613,6 +1691,40 @@ def render_script_step_flow(
             with col_llm_cfg:
                 if st.button(t("btn_change_llm_provider"), key=f"btn_chg_llm_{project_id}", use_container_width=True):
                     _open_mpt_settings_dialog("llm")
+
+            if active_prov_id == "openrouter":
+                or_quota_res = st.session_state.get(f"or_quota_res_{project_id}")
+                if or_quota_res:
+                    q_data, q_err = or_quota_res
+                    if q_err:
+                        st.warning(t("or_quota_error", error=q_err))
+                    elif isinstance(q_data, dict):
+                        tier_lbl = "Free Tier" if q_data.get("is_free_tier") else "Standard"
+                        rem_val = q_data.get("limit_remaining")
+                        lim_rem_str = "∞" if rem_val is None else f"{rem_val}"
+                        u_daily = q_data.get("usage_daily")
+                        u_daily_str = "0" if u_daily is None else f"{u_daily}"
+                        msg_parts = [
+                            t(
+                                "or_quota_summary",
+                                tier=tier_lbl,
+                                usage_daily=u_daily_str,
+                                limit_remaining=lim_rem_str,
+                            )
+                        ]
+                        if q_data.get("free_daily_limit") is not None or q_data.get("free_daily_used") is not None:
+                            msg_parts.append(
+                                t(
+                                    "or_quota_free_daily_line",
+                                    used=q_data.get("free_daily_used") if q_data.get("free_daily_used") is not None else "?",
+                                    limit=q_data.get("free_daily_limit") if q_data.get("free_daily_limit") is not None else "?",
+                                    remaining=q_data.get("free_daily_remaining") if q_data.get("free_daily_remaining") is not None else "?",
+                                )
+                            )
+                        msg_parts.append(
+                            t("or_quota_free_tier_hint" if q_data.get("is_free_tier") else "or_quota_paid_tier_hint")
+                        )
+                        st.info("\n\n".join(msg_parts))
 
             conn_res = st.session_state.get(f"llm_conn_res_{project_id}")
             if conn_res:
@@ -1638,19 +1750,56 @@ def render_script_step_flow(
                     if st.button(t("btn_load_llm_models"), key=f"btn_load_models_{project_id}", disabled=is_job_running):
                         fetched_models, fetch_err = list_llm_models(active_prov_id, force_refresh=True)
                         st.session_state[f"llm_models_cache_{active_prov_id}"] = (fetched_models, fetch_err)
+                        if active_prov_id == "openrouter":
+                            free_entries, _ = list_openrouter_free_models(force_refresh=False)
+                            st.session_state["llm_or_free_cache"] = free_entries
 
                     cached_models, fetch_err = st.session_state.get(f"llm_models_cache_{active_prov_id}", ([], None))
                     if fetch_err:
                         st.caption(t("llm_models_load_fallback", error=fetch_err))
                     elif cached_models:
                         st.caption(t("llm_models_loaded_count", count=len(cached_models), provider=active_prov_label))
-                        sel_idx = cached_models.index(active_model) if active_model in cached_models else 0
+                        display_models = list(cached_models)
+                        if active_prov_id == "openrouter":
+                            free_only = st.checkbox(
+                                t("openrouter_filter_free_only"),
+                                value=True,
+                                key=f"cb_or_free_only_{project_id}",
+                            )
+                            if free_only:
+                                free_entries = st.session_state.get("llm_or_free_cache")
+                                if free_entries:
+                                    display_models = [e["id"] for e in free_entries]
+                                else:
+                                    display_models = [
+                                        m for m in cached_models
+                                        if ":free" in m.lower() or m.lower() == "openrouter/free"
+                                    ]
+                                if active_model and active_model != "-" and active_model not in display_models:
+                                    display_models.append(active_model)
+                        if not display_models:
+                            display_models = list(cached_models)
+
+                        def _fmt_model_opt(mid: str) -> str:
+                            if active_prov_id != "openrouter":
+                                return mid
+                            meta = get_openrouter_model_metadata(mid)
+                            if meta.get("is_random_router"):
+                                return f"{mid} [{t('openrouter_tag_random')}]"
+                            if meta.get("is_reasoning"):
+                                return f"{mid} [{t('openrouter_tag_reasoning')}]"
+                            return mid
+
+                        sel_idx = display_models.index(active_model) if active_model in display_models else 0
                         picked_model = st.selectbox(
                             t("field_llm_model_select"),
-                            options=cached_models,
+                            options=display_models,
                             index=sel_idx,
+                            format_func=_fmt_model_opt,
                             key=f"sel_llm_model_{project_id}_{active_prov_id}",
                         )
+                        if active_prov_id == "openrouter" and picked_model and is_openrouter_reasoning_model(picked_model):
+                            st.caption(t("openrouter_reasoning_model_warning", model=picked_model))
                     else:
                         picked_model = ""
                 else:

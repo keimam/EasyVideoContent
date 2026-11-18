@@ -20,7 +20,7 @@ except Exception:
     CORE_VERSION = "1.3.10"
 
 VERSION_STRING = f"v{APP_VERSION} · inti v{CORE_VERSION}"
-UPSTREAM_UPDATE_PREFIX = "Pembaruan inti MoneyPrinterTurbo tersedia: "
+UPSTREAM_UPDATE_PREFIX = "Pembaruan inti tersedia: "
 
 # Legal & MIT Attribution (Preserved from MoneyPrinterTurbo)
 MIT_ATTRIBUTION = "Dibangun di atas MoneyPrinterTurbo (MIT)"

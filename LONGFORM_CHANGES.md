@@ -24,7 +24,8 @@ Tujuannya adalah menjaga kemudahan sinkronisasi (merge/rebase) dari repositori u
 | **Addendum 8A.2 v2 (V6)** | Tidak Ada | 0 baris | Resolusi tumpang tindih visual step, margin vertikal seragam 16-24px, automated CDP bounding box checks |
 | **Addendum 8A.2 v2 (V7)** | Tidak Ada | 0 baris | Pemulihan regresi logika Visual (is_replaced, upload file_path, provider), i18n tuntas seluruh langkah & dialog, AST scanner literal UI, pratinjau suara aman, expander Detail error |
 | **Tahap 8B.1** | `webui/Main.py` (B3) | ~31 baris | Penyatuan penyedia AI Long Video; Addendum B3 menambahkan guard `_efs_settings_library_only` + `render_embedded_settings_dialog()` di `webui/Main.py` agar dialog Settings MPT dapat dibuka langsung di halaman aktif Long Video tanpa `switch_page` |
-| **Tahap 8B.2** | Tidak Ada | 0 baris baru | Fitur AI opsional terintegrasi (F1: cek relevansi vision + cache + 429 retry, F2: batch terjemah kata kunci ke English per bab + fallback, F3: AI Video per shot & batch Perlu dicek + tabel tarif `config/longform.toml` + konfirmasi wajib + batas anggaran, F4: sembunyikan ikon jangkar heading & ringkas checkbox Gambar AI + tooltip) |
+| **Tahap 8B.2** | `webui/Main.py`, `webui/i18n/id.json`, `webui/i18n/en.json` (C6) | ~16 baris | Fitur AI F1–F15 + Addendum C6 (pembersihan string UI "MoneyPrinterTurbo"/"MPT" menjadi "EasyFaceless Studio" / nama fitur, mempertahankan kotak MIT sidebar & dialog Tentang) |
+| **Tahap 8C.1** | `webui/Main.py` (diperkecil), `.gitignore` | `webui/Main.py` dipangkas ke 46 baris (`20+`, `26-` vs `v1.3.10`) | Pemindahan hook `Main.py` ke `app/services/branding/hooks.py` (target << 97 baris tercapai), penghapusan duplikat `STAGE7_WEBUI.md`, perapian `screens/final/` & `scripts/dev/`, dokumentasi `README.md` + `docs/user/{id,en}/` + `THIRD_PARTY_NOTICES.md` + `CHANGELOG.md` + `LICENSE` |
 
 ---
 
@@ -393,6 +394,31 @@ Tujuannya adalah menjaga kemudahan sinkronisasi (merge/rebase) dari repositori u
   - **File Kode Upstream yang Disentuh:** **Nihil (0 berkas kode)** — Perubahan hanya pada `store.py`, `visual/service.py`, `voice_service.py`, `render/service.py`, `render/chapter_render.py`, `ui/jobs.py`, `ui/components.py`, `ui/i18n.py`, dan `cli_longform.py`.
   - **Penghitungan Target Terlingkup (`visual/service.py`, `voice_service.py`, `render/service.py`, `render/chapter_render.py`):** Sebelum memproses, setiap layanan mempartisi unit kerja vs unit valid/terkunci yang dilewati, lalu melaporkan kemajuan `0/N` (`0.0%`) hingga `N/N` (`<=99.0%` saat berjalan; fase tanpa unit terukur memakai `is_indeterminate=True` <=95%; mencapai `100.0%` hanya setelah selesai).
   - **Monitor Pekerjaan & i18n (`store.py`, `ui/jobs.py`, `ui/components.py`, `ui/i18n.py`):** `update_job_phase()` menyimpan `phase_key`/`phase_args`/`skipped`/`partial` secara atomik di `job_state.json`; `jobs.start_job()` memulai dari `0.0%` (*indeterminate*) agar tidak pernah melompat ke `99%`; widget monitor menampilkan `dilewati: N (sudah valid/terkunci)` / `skipped: N (already valid/locked)`.
+- **Addendum C6 (Pembersihan Nama MoneyPrinterTurbo/MPT dari String UI & Penyelarasan Tooltip Sidebar):**
+  - **File Upstream yang Disentuh (Rule A1):** `webui/Main.py` (~7 baris pada fallback `_main_page_title`, `_render_brand`, dan `_about_content`), `webui/i18n/id.json` (3 baris: `Settings Preset Import Failed`, `Key Restore Failed`, `chatgpt.oauth.pending`), dan `webui/i18n/en.json` (12 baris prosa UI penyedia/cadangan/OAuth — seluruh URL rujukan eksternal tetap dipertahankan).
+  - **Modul Longform & Branding (`nav.py`, `components.py`, `sidebar.py`, `constants.py`, `theme.py`, `i18n.py`):** Menghapus tautan berulang *"← MoneyPrinterTurbo (Video Pendek)"* di atas judul halaman Video Panjang (`show_top_return=False`, membiarkan teks fallback `nav_back_mpt` menjadi *"← Video Pendek"* / *"← Short Video"*), membersihkan *"MoneyPrinterTurbo"* dan *"MPT"* dari teks/tooltip/error `i18n.py`, `UPSTREAM_UPDATE_PREFIX`, dan `theme.py`, serta menghapus `"(Aktif)"` / `"(Active)"` dari tooltip sidebar (`nav_long_video_help`, `nav_short_video_help`). Kotak atribusi MIT sidebar dan dialog **Tentang** dipertahankan sesuai aturan masing-masing tahap.
+  - **Pemindai Terotomasi & Tangkapan Layar (`test/longform/test_branding.py`):** Menambahkan `test_c6_no_moneyprinter_or_mpt_in_ui_strings` + verifikasi screenshot ID & EN `docs/branding/screens/c6_{long,short}_video_{id,en}.png`.
+- **Addendum C7 (Peringkasan Kotak Versi Sidebar & Pemindahan Atribusi ke Dialog Tentang):**
+  - **File Kode Upstream yang Disentuh:** **Nihil (0 berkas kode baru)**.
+  - **Sidebar & Dialog Tentang (`app/services/branding/sidebar.py`, `app/services/longform/ui/i18n.py`):** Mengganti kotak versi/atribusi MIT di sidebar menjadi satu baris klik kecil rata kiri redup `"v1.0.0"` (`efs_btn_version_*`) tepat di atas tombol `"Tentang"` / `"About"` yang membuka dialog Tentang; memindahkan detail versi aplikasi (`v1.0.0`), versi inti MPT (`v1.3.10`), kalimat `"Dibangun di atas MoneyPrinterTurbo oleh harry0703 (MIT License)"` + tautan repo asli, tautan ke `THIRD_PARTY_NOTICES.md`, dan teks lengkap berkas `LICENSE` di dalam expander `"Lihat lisensi"` / `"View license"` (dibaca langsung dari `LICENSE`) ke `_render_about_dialog_body()`; seluruh teks melalui `t()` (ID & EN) serta memperketat pengecualian pemindai C6 agar atribusi hanya berada di dialog Tentang & berkas legal.
+
+---
+
+## HOOK UPSTREAM
+
+Daftar lengkap perubahan yang masih tersisa pada berkas asli upstream `MoneyPrinterTurbo v1.3.10`, alasan masing-masing, serta langkah melepas sementara saat menjalankan *merge/rebase* upstream:
+
+| Berkas Upstream | Baris Saat Ini | Ukuran Diff (`vs v1.3.10`) | Alasan Hook | Cara Melepas Saat Merge Upstream |
+|---|---|---|---|---|
+| `webui/Main.py` | 79–83 | ~21 baris | `try/except` memanggil `app.services.branding.hooks.init_main_page()` untuk `set_page_config` judul/ikon Studio, injeksi CSS tema gelap, dan sidebar terpadu (skip otomatis saat mode `_efs_settings_library_only`). | Kembalikan blok `st.set_page_config(...)` & `styles.css` upstream saat resolve conflict, lalu sisipkan kembali blok 5 baris `try/except init_main_page(...)`. |
+| `webui/Main.py` | 671 | +1 baris | `default_language="id"` pada `utils.resolve_ui_language(...)` agar bahasa bawaan Studio adalah Indonesia. | Tambahkan kembali argumen `default_language="id"` di panggilan `resolve_ui_language`. |
+| `webui/Main.py` | 1742–1771 | ~12 baris | `try/except` memanggil `render_brand_header()` untuk header merek *EasyFaceless Studio* + penyesuaian fallback C6 `"EasyFaceless Studio"`. | Pertahankan `_render_brand()` upstream, lalu sisipkan blok 6 baris `try/except render_brand_header(...) return` di awal fungsi. |
+| `webui/Main.py` | 9496–9500 | ~5 baris | `try/except` memanggil `hooks.run_main_or_settings(...)` untuk menangani query `?open_settings=` dan mengeksekusi dialog Settings secara aman saat diimpor oleh halaman Video Panjang. | Gantikan panggilan tunggal `_render_application()` di akhir berkas dengan blok `try/except run_main_or_settings(...)` sepanjang 5 baris. |
+| `webui/i18n/id.json` | 343, 351, 460 | 6 baris (`3+`, `3-`) | Addendum C6: membersihkan `"MoneyPrinterTurbo"` menjadi `"EasyFaceless Studio"` pada pesan error preset/cadangan kunci dan OAuth ChatGPT. | Terima versi upstream bila perlu lalu jalankan ulang penggantian 3 key tersebut (diverifikasi oleh `test_c6_no_moneyprinter_or_mpt_in_ui_strings`). |
+| `webui/i18n/en.json` | 268..737 (12 key) | 24 baris (`12+`, `12-`) | Addendum C6: membersihkan `"MoneyPrinterTurbo"`/`"MPT"` pada prosa tips penyedia & pesan error UI (URL rujukan tetap utuh). | Terima versi upstream lalu bersihkan teks UI non-URL (otomatis terdeteksi oleh `test_c6_no_moneyprinter_or_mpt_in_ui_strings`). |
+| `.gitignore` | 38 (dst.) | +7 baris | Memastikan `test/longform/*.py`, `*.backup*.toml`, `*.log`, `**/_trash/`, dan folder uji sementara terkelola dengan benar. | Pertahankan tambahan aturan abaikan di akhir `.gitignore`. |
+
+> **Ringkasan angka `webui/Main.py`:** Turun dari baseline **`97` baris (`67+`, `30-`)** vs `stage-7.9-complete` menjadi **`46` baris (`20+`, `26-`)** vs tag `v1.3.10` (dan `52` baris `20+`, `32-` vs `stage-7.9-complete`). Seluruh file `app/services/*.py`, `app/models/`, `app/config/`, dan `cli.py` memiliki **0 perubahan upstream**.
 
 
 

@@ -176,7 +176,7 @@ Berikut evaluasi mendalam per modul upstream untuk kebutuhan video panjang:
 
 ## 4. Lokasi File Temp dan Keamanan Path Berspasi
 
-Pada sistem Windows, direktori profil pengguna adalah `C:\Users\IT SUPPORT 2` (mengandung spasi). Berikut audit lokasi file temp dan sanitasi path:
+Pada sistem Windows, direktori profil pengguna dapat mengandung spasi (mis. `C:\Users\<USER>`). Berikut audit lokasi file temp dan sanitasi path:
 
 | Komponen | Lokasi File Temp | Mekanisme Pembuatan | Keamanan Spasi Windows | Catatan Evaluasi |
 |:---|:---|:---|:---|:---|

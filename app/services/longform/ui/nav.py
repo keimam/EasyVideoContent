@@ -26,8 +26,8 @@ def render_longform_entry():
     _render_studio_nav(current_page="main")
 
 
-def render_mpt_entry(show_top_return: bool = True):
-    """Render '← MoneyPrinterTurbo' link in Long Video, inject brand theme, and render sidebar (G5, H3, H5, 8A.1)."""
+def render_mpt_entry(show_top_return: bool = False):
+    """Inject brand theme and render studio sidebar; optional top return uses neutral Short Video label (G5, H3, H5, 8A.1, C6)."""
     # 1. Inject brand theme & CSS
     _inject_sidebar_css(is_main=False)
 

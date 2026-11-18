@@ -198,9 +198,12 @@ def test_apptest_branding_main_page(monkeypatch):
         has_brand = any("EasyFaceless Studio" in t for t in md_texts)
         assert has_brand, "EasyFaceless Studio brand title not found in Main.py"
 
-        # 2. MIT Attribution rendered
-        has_mit = any("MoneyPrinterTurbo (MIT)" in t for t in md_texts)
-        assert has_mit, "MIT attribution not found in Main.py sidebar footer"
+        # 2. C7: Sidebar attribution box removed; compact clickable version line v1.0.0 present
+        assert not any("MoneyPrinterTurbo" in str(t) for t in md_texts), (
+            "Sidebar must not render the old attribution box (C7)"
+        )
+        ver_btn = at.button(key="efs_btn_version_main")
+        assert ver_btn is not None and ver_btn.label == "v1.0.0"
 
         # 3. 5 Sidebar navigation / setting items present
         page_link_labels = [str(pl.label) for pl in at.page_link]
@@ -228,8 +231,11 @@ def test_apptest_branding_long_video_page(tmp_path, monkeypatch):
     assert not at.exception, f"Long Video threw exceptions: {[e.value for e in at.exception]}"
 
     md_texts = [m.value for m in at.markdown]
-    has_mit = any("MoneyPrinterTurbo (MIT)" in t for t in md_texts)
-    assert has_mit, "MIT attribution not found in Long Video sidebar footer"
+    assert not any("MoneyPrinterTurbo" in str(t) for t in md_texts), (
+        "Long Video sidebar must not render the old attribution box (C7)"
+    )
+    ver_btn = at.button(key="efs_btn_version_longform")
+    assert ver_btn is not None and ver_btn.label == "v1.0.0"
 
     page_link_labels = [str(pl.label) for pl in at.page_link]
     button_labels = [str(b.label) for b in at.button]
@@ -438,5 +444,233 @@ def test_r2_sidebar_click_all_items_long_video_page(tmp_path, monkeypatch):
     about_btn.click().run(timeout=15)
     assert not at4.exception, f"Long Video Tentang threw exception: {[e.value for e in at4.exception]}"
     assert any("MoneyPrinterTurbo" in m.value for m in at4.markdown)
+    assert any("MIT" in m.value for m in at4.markdown)
     assert not any("Navigasi Studio" in s.value for s in at4.subheader)
+
+
+def test_c7_about_dialog_contains_license_and_sidebar_version_opens_dialog(tmp_path, monkeypatch):
+    """C7: Sidebar has compact clickable v1.0.0 without attribution box; Tentang/About dialog has MoneyPrinterTurbo, MIT, THIRD_PARTY_NOTICES, and full LICENSE text."""
+    from streamlit.testing.v1 import AppTest
+    from app.config import config as app_cfg
+
+    repo_root = Path(__file__).resolve().parents[2]
+    lv_file = str(repo_root / "webui" / "pages" / "1_🎬_Long_Video.py")
+    license_text = (repo_root / "LICENSE").read_text(encoding="utf-8").strip()
+
+    monkeypatch.setattr("app.services.longform.store.get_projects_root", lambda: tmp_path)
+    monkeypatch.setattr("app.services.longform.ui.components.get_projects_root", lambda: tmp_path)
+
+    for lang_code, expected_exp, expected_core in (
+        ("id", "Lihat lisensi", "Versi inti MPT"),
+        ("en", "View license", "MPT core version"),
+    ):
+        monkeypatch.setitem(app_cfg.ui, "language", lang_code)
+        # 1. Sidebar initial render: no attribution box, has clickable version button
+        at = AppTest.from_file(lv_file)
+        at.session_state["ui_language"] = lang_code
+        at.query_params["lang"] = lang_code
+        at.run(timeout=20)
+        assert not at.exception
+        assert not any("MoneyPrinterTurbo" in str(m.value) for m in at.markdown)
+        ver_btn = at.button(key="efs_btn_version_longform")
+        assert ver_btn is not None and ver_btn.label == "v1.0.0"
+
+        # 2. Clicking clickable version button opens About dialog with MIT attribution + LICENSE file content
+        ver_btn.click().run(timeout=20)
+        assert not at.exception
+        dlg_md = "\n".join(str(m.value) for m in at.markdown)
+        assert "MoneyPrinterTurbo" in dlg_md
+        assert "harry0703" in dlg_md
+        assert "MIT License" in dlg_md
+        assert expected_core in dlg_md
+        assert "THIRD_PARTY_NOTICES.md" in dlg_md
+        exps = [e for e in at.expander if str(getattr(e, "label", "")) == expected_exp]
+        assert exps, f"License expander '{expected_exp}' not found in About dialog ({lang_code})"
+        code_blocks = "\n".join(str(getattr(c, "value", "")) for c in at.code)
+        assert "Permission is hereby granted, free of charge" in code_blocks
+        assert license_text in code_blocks
+
+        # 3. Clicking 'Tentang'/'About' button opens the exact same About dialog
+        at2 = AppTest.from_file(lv_file)
+        at2.session_state["ui_language"] = lang_code
+        at2.query_params["lang"] = lang_code
+        at2.run(timeout=20)
+        about_btn = at2.button(key="efs_btn_about_longform")
+        assert about_btn is not None
+        about_btn.click().run(timeout=20)
+        assert not at2.exception
+        assert any("MoneyPrinterTurbo" in str(m.value) for m in at2.markdown)
+        assert license_text in "\n".join(str(getattr(c, "value", "")) for c in at2.code)
+
+
+def test_c6_no_moneyprinter_or_mpt_in_ui_strings(tmp_path, monkeypatch):
+    """C6+C7 scanner: UI translations, tooltips, page titles, and initial rendered UI exclude MoneyPrinterTurbo/MPT outside About dialog & legal files."""
+    import json
+    import re
+    from streamlit.testing.v1 import AppTest
+    from app.services.longform.ui.i18n import EN_TRANSLATIONS, ID_TRANSLATIONS
+
+    repo_root = Path(__file__).resolve().parents[2]
+    url_re = re.compile(r"https?://\S+")
+    banned_re = re.compile(r"MoneyPrinterTurbo|MoneyPrinter|\bMPT\b", re.IGNORECASE)
+
+    # 1. Scan Long Video i18n dictionaries (C7: attribution only inside Tentang/About dialog keys)
+    i18n_allowlist = {
+        "about_dialog_title",
+        "about_dialog_desc",
+        "about_dialog_app_version",
+        "about_dialog_core_version",
+        "about_dialog_built_on",
+        "about_dialog_third_party_line",
+        "about_dialog_view_license",
+        "about_dialog_license_missing",
+        "about_dialog_license",
+        "about_dialog_original_proj",
+        "about_dialog_license_type",
+        "about_dialog_status",
+        "about_dialog_status_desc",
+        "license_mit_detail",
+    }
+    for lang_name, table in (("id", ID_TRANSLATIONS), ("en", EN_TRANSLATIONS)):
+        for key, val in table.items():
+            if key in i18n_allowlist:
+                continue
+            stripped = url_re.sub("", str(val))
+            assert not banned_re.search(stripped), (
+                f"C6 violation in i18n[{lang_name}]['{key}']: {val!r}"
+            )
+        # Tooltips for sidebar pages must be concise without (Aktif)/(Active)
+        assert "(Aktif)" not in table["nav_long_video_help"]
+        assert "(Active" not in table["nav_long_video_help"]
+        assert "(Aktif)" not in table["nav_short_video_help"]
+        assert "(Active" not in table["nav_short_video_help"]
+        assert "← Video Pendek" in table["nav_back_mpt"] or "← Short Video" in table["nav_back_mpt"]
+
+    # 2. Scan WebUI JSON translations (id.json & en.json) excluding external URLs
+    for json_name in ("id.json", "en.json"):
+        raw = json.loads((repo_root / "webui" / "i18n" / json_name).read_text(encoding="utf-8"))
+        tr_table = raw.get("Translation", raw) if isinstance(raw, dict) else {}
+        for k, v in tr_table.items():
+            stripped = url_re.sub("", str(v))
+            assert not banned_re.search(stripped), (
+                f"C6 violation in webui/i18n/{json_name}['{k}']: {v!r}"
+            )
+
+    # 3. Verify Main.py header/title fallbacks and initial rendered Long Video page (ID & EN)
+    main_src = (repo_root / "webui" / "Main.py").read_text(encoding="utf-8")
+    assert '_main_page_title = "MoneyPrinterTurbo"' not in main_src
+    assert '<span class="mpt-brand__name">MoneyPrinterTurbo</span>' not in main_src
+
+    lv_file = str(repo_root / "webui" / "pages" / "1_🎬_Long_Video.py")
+    monkeypatch.setattr("app.services.longform.store.get_projects_root", lambda: tmp_path)
+    monkeypatch.setattr("app.services.longform.ui.components.get_projects_root", lambda: tmp_path)
+
+    for lang_code in ("id", "en"):
+        at = AppTest.from_file(lv_file)
+        at.query_params["lang"] = lang_code
+        at.run(timeout=20)
+        assert not at.exception
+        # No back link containing MoneyPrinterTurbo or Video Pendek above title
+        btn_and_link_labels = [str(b.label) for b in at.button] + [str(pl.label) for pl in at.page_link]
+        assert not any("MoneyPrinter" in lbl for lbl in btn_and_link_labels), btn_and_link_labels
+        assert not any(lbl.startswith("← Video Pendek") or lbl.startswith("← Short Video") for lbl in btn_and_link_labels)
+        # C7: Even sidebar no longer contains MoneyPrinterTurbo/MPT anywhere on initial render!
+        for md in at.markdown:
+            txt = str(md.value)
+            assert not banned_re.search(url_re.sub("", txt)), f"Markdown leaked C6/C7: {txt!r}"
+        for elem in list(at.button) + list(at.page_link):
+            help_txt = str(getattr(elem, "help", "") or "")
+            assert "(Aktif)" not in help_txt and "(Active" not in help_txt, help_txt
+            assert not banned_re.search(url_re.sub("", help_txt)), f"Tooltip leaked C6/C7: {help_txt!r}"
+
+
+def test_c3_c4_c5_help_dialog_docs_notices_and_repo_hygiene(tmp_path, monkeypatch):
+    """8C.1 (C2-C5): Verify Bantuan/Help dialog, final screenshots, docs/user/{id,en}, LICENSE, THIRD_PARTY_NOTICES, CHANGELOG, single version, and no personal paths."""
+    import subprocess
+    from streamlit.testing.v1 import AppTest
+    from app.config import config as app_cfg
+    from app.services.branding.constants import APP_VERSION
+    import app.services.longform as longform_pkg
+
+    repo_root = Path(__file__).resolve().parents[2]
+
+    # C5: Single source of version 1.0.0 & CHANGELOG.md present
+    assert APP_VERSION == "1.0.0"
+    assert longform_pkg.__version__ == APP_VERSION
+    changelog = (repo_root / "CHANGELOG.md").read_text(encoding="utf-8")
+    for marker in ("8C.1", "8B.2", "C6", "C7"):
+        assert marker in changelog
+
+    # C4: LICENSE keeps Harry copyright + EasyFaceless placeholder; THIRD_PARTY_NOTICES covers required stacks
+    lic = (repo_root / "LICENSE").read_text(encoding="utf-8")
+    assert "Copyright (c) 2024 Harry" in lic
+    assert "[NAMA PEMILIK]" in lic
+    notices = (repo_root / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
+    for section in ("FFmpeg", "Plus Jakarta Sans", "OFL", "Pixabay", "Pexels", "Coverr", "Edge TTS", "CapCut"):
+        assert section in notices
+
+    # C2: Only final/ folder holds screenshots, mockup/ preserved, no duplicate root STAGE7_WEBUI.md
+    screens_dir = repo_root / "docs" / "branding" / "screens"
+    assert (screens_dir / "final").is_dir()
+    assert list(screens_dir.glob("*.png")) == []
+    assert len(list((screens_dir / "final").glob("*.png"))) >= 20
+    assert (repo_root / "docs" / "branding" / "mockup").is_dir()
+    assert not (repo_root / "STAGE7_WEBUI.md").exists()
+
+    # C2: Zero personal Windows path leaked in committed docs or tests
+    personal_user = "IT " + "SUPPORT 2"
+    tracked = subprocess.check_output(["git", "ls-files"], cwd=str(repo_root), text=True).splitlines()
+    for rel in tracked:
+        fp = repo_root / rel
+        if fp.suffix.lower() in {".png", ".jpg", ".mp3", ".mp4", ".wav", ".ttf", ".lock"} or not fp.is_file():
+            continue
+        assert personal_user not in fp.read_text(encoding="utf-8", errors="ignore"), f"Personal path leaked in {rel}"
+
+    # C3: User docs in ID & EN exist + Help dialog opens cleanly in ID & EN
+    readme = (repo_root / "README.md").read_text(encoding="utf-8")
+    assert "EasyFaceless Studio" in readme
+    assert "docs/branding/screens/final/" in readme
+    for rel in (
+        "docs/user/id/README.md",
+        "docs/user/id/mulai-cepat.md",
+        "docs/user/id/pengaturan-ai.md",
+        "docs/user/id/niche-preset.md",
+        "docs/user/id/galeri-visual.md",
+        "docs/user/id/capcut-ekspor.md",
+        "docs/user/id/tempat-sampah.md",
+        "docs/user/id/faq-troubleshooting.md",
+        "docs/user/en/README.md",
+        "docs/user/en/quick-start.md",
+        "docs/user/en/ai-settings.md",
+        "docs/user/en/niches-presets.md",
+        "docs/user/en/visual-gallery.md",
+        "docs/user/en/capcut-export.md",
+        "docs/user/en/trash-management.md",
+        "docs/user/en/faq-troubleshooting.md",
+    ):
+        assert (repo_root / rel).is_file(), f"Missing doc file: {rel}"
+
+    lv_file = str(repo_root / "webui" / "pages" / "1_🎬_Long_Video.py")
+    monkeypatch.setattr("app.services.longform.store.get_projects_root", lambda: tmp_path)
+    monkeypatch.setattr("app.services.longform.ui.components.get_projects_root", lambda: tmp_path)
+
+    for lang_code, expected_path, expected_body in (
+        ("id", "docs/user/id/README.md", "Panduan Pengguna EasyFaceless Studio"),
+        ("en", "docs/user/en/README.md", "EasyFaceless Studio User Guide"),
+    ):
+        monkeypatch.setitem(app_cfg.ui, "language", lang_code)
+        at = AppTest.from_file(lv_file)
+        at.session_state["ui_language"] = lang_code
+        at.query_params["lang"] = lang_code
+        at.run(timeout=20)
+        assert not at.exception
+        help_btn = at.button(key="efs_btn_help_longform")
+        assert help_btn is not None
+        help_btn.click().run(timeout=20)
+        assert not at.exception
+        dlg_md = "\n".join(str(m.value) for m in at.markdown)
+        assert expected_body in dlg_md
+        assert expected_path in "\n".join(str(c.value) for c in at.caption)
+
+
 
