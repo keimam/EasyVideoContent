@@ -35,6 +35,7 @@ from app.services.longform.visual.base import (
     VisualError,
     compute_file_content_hash,
     invalidate_shot_thumbnail_cache,
+    is_dev_or_test_mode,
 )
 # Builder imported eagerly (pure FFmpeg subprocess, no upstream deps)
 from app.services.longform.visual.builder import (
@@ -107,6 +108,11 @@ class VisualService:
         """
         p_name = provider_name.lower().strip()
         if p_name == "fake":
+            if not is_dev_or_test_mode():
+                raise VisualConfigurationError(
+                    "Penyedia visual 'fake' hanya aktif pada mode dev/tes (EFS_DEV=1 atau pytest). "
+                    "Isi API key Pexels/Pixabay di API & Penyedia AI atau gunakan Pustaka Lokal."
+                )
             return FakeVisualProvider(mode="ai_image")
         elif p_name in ("pexels", "pixabay", "coverr", "stock"):
             # V5: lazy import of StockVisualProvider (pulls in material.py)
@@ -153,7 +159,9 @@ class VisualService:
         if manifest.preset_snapshot:
             preferred = manifest.preset_snapshot.get("preferred_visual_source")
         if preferred and preferred != "auto":
-            return preferred.lower().strip()
+            pref_low = str(preferred).lower().strip()
+            if pref_low != "fake" or is_dev_or_test_mode():
+                return pref_low
 
         # Check local library
         lib_dir = self.project_dir / "assets" / "visual" / "library"
@@ -342,27 +350,30 @@ class VisualService:
             effective_fps = getattr(getattr(manifest, "encoder_settings", None), "fps", 25) or 25
             self.prepare_shots(manifest, fps=effective_fps)
 
-        # Early credentials validation for the effective provider (V1 fail-fast)
-        # Only validate once upfront, not per-shot, for real providers
+        # Early credentials validation for the effective provider (V1/D8 fail-fast)
+        # In normal/installed mode, 'fake' fallback is strictly forbidden.
+        allow_fake_fallback = bool(allow_fallback) and is_dev_or_test_mode()
         global_fallback_reason: Optional[str] = None
+        if effective_provider_name == "fake" and not is_dev_or_test_mode():
+            raise VisualConfigurationError(
+                "Penyedia visual 'fake' tidak diperbolehkan pada mode normal/terpasang. "
+                "Isi API key Pexels/Pixabay di API & Penyedia AI atau tambahkan media ke Pustaka Lokal."
+            )
         if effective_provider_name not in ("fake", "local"):
             try:
                 probe_provider = self.get_provider(effective_provider_name, manifest)
                 probe_provider.validate_credentials()
             except VisualConfigurationError as conf_err:
-                if not allow_fallback:
-                    # Build a clear informative error (V1)
+                if not allow_fake_fallback:
                     provider_guidance = (
+                        "Isi API key Pexels/Pixabay di menu API & Penyedia AI (atau tambahkan klip ke Pustaka Lokal).\n"
                         "To configure stock video credentials:\n"
                         "  1. Obtain a free API key from Pixabay: https://pixabay.com/api/docs/\n"
-                        "  2. Or from Pexels: https://www.pexels.com/api/ (note: new key issuance currently paused)\n"
-                        "  3. Set 'pixabay_api_keys' or 'pexels_api_keys' in config.toml\n"
-                        "     or via WebUI → Basic Settings.\n"
-                        "  Alternatively: use '--provider local' (visual library add --folder <path>)\n"
-                        "  or '--provider fake' for offline keyless testing."
+                        "  2. Or from Pexels: https://www.pexels.com/api/\n"
+                        "  3. Open API & Penyedia AI in the sidebar or use '--provider local'."
                     )
                     raise VisualConfigurationError(
-                        f"Provider '{effective_provider_name}' is not properly configured.\n"
+                        f"Provider '{effective_provider_name}' is not properly configured (belum terkonfigurasi).\n"
                         f"Reason: {conf_err}\n\n{provider_guidance}"
                     ) from conf_err
                 global_fallback_reason = (
@@ -584,13 +595,13 @@ class VisualService:
                     if target_provider_name in ("fake", "local"):
                         active_provider.validate_credentials()
                 except VisualConfigurationError as conf_err:
-                    if not allow_fallback:
+                    if not allow_fake_fallback:
                         raise
                     fallback_reason = f"Provider '{target_provider_name}' credentials missing ({conf_err}); fell back to fake provider"
                     logger.warning(f"Shot {shot.shot_id}: {fallback_reason}")
                     active_provider = FakeVisualProvider(mode=target_provider_name)
                 except Exception as exc:
-                    if not allow_fallback:
+                    if not allow_fake_fallback:
                         raise
                     fallback_reason = f"Provider '{target_provider_name}' error ({exc}); fell back to fake provider"
                     logger.warning(f"Shot {shot.shot_id}: {fallback_reason}")
@@ -719,9 +730,9 @@ class VisualService:
                         f"from {len(candidates)} candidate(s)"
                     )
 
-                # Step 4: Fallback to next provider or mark needs_review
+                # Step 4: Fallback to fake ONLY in dev/test mode; otherwise mark no visual cleanly (D8)
                 if not candidates:
-                    if allow_fallback and not active_provider.is_fake:
+                    if allow_fake_fallback and not active_provider.is_fake:
                         fallback_reason = f"Provider '{active_provider.name}' found 0 valid candidates for query; fell back to fake"
                         active_provider = FakeVisualProvider(mode=target_provider_name)
                         try:
@@ -741,14 +752,21 @@ class VisualService:
                             )
 
                     if not candidates:
-                        # S1, S5: Mark shot needs_review rather than silently using an irrelevant clip
-                        logger.warning(f"Shot {shot.shot_id}: no acceptable candidates found. Marked needs_review.")
+                        # D8: Mark shot cleanly as 'Belum ada visual' (never generate fake placeholder)
+                        logger.warning(f"Shot {shot.shot_id}: no acceptable candidates found. Marked 'no_visual_found'.")
+                        shot.asset_path = None
+                        shot.rendered_clip = None
+                        shot.shot_hash = None
+                        shot.asset_content_hash = None
+                        shot.actual_source = None
+                        shot.is_fake = False
                         shot.needs_review = True
                         shot.status = ItemStatus.pending
                         shot.relevance_score = 0.0
                         shot.tags = []
                         shot.candidates = []
-                        shot.fallback_reason = "No candidates matched required subject terms or query"
+                        shot.fallback_reason = "no_visual_found"
+                        invalidate_shot_thumbnail_cache(self.project_dir, shot.shot_id)
                         if shot.shot_id in target_fetch_ids and target_fetch_total > 0:
                             done_fetch_count += 1
                             pct = _pct_start + ((done_fetch_count / target_fetch_total) * (_pct_end - _pct_start))
@@ -864,18 +882,24 @@ class VisualService:
     def build_all(
         self,
         manifest: ProjectManifest,
+        use_neutral_fallback: bool = False,
         _pct_start: float = 0.0,
         _pct_end: float = 99.0,
     ) -> Tuple[ProjectManifest, Dict[str, Any]]:
-        """Build rendered video clips for all shots in manifest (4.3, V1).
+        """Build rendered video clips for all shots in manifest (4.3, V1, D8).
 
         V1 fix: shot hash now includes requested_provider + actual_provider so that
         switching providers correctly invalidates the rendered clip.
+        D8: shots without a fetched asset are skipped cleanly instead of failing the
+        entire batch, unless use_neutral_fallback=True (user confirmed continue in
+        Render / CapCut), which builds a clean subtle dark-gradient backdrop clip.
         """
         fps = getattr(getattr(manifest, "encoder_settings", None), "fps", 25) or 25
         builder = ShotClipBuilder(fps=fps)
         built_count = 0
         skipped_count = 0
+        missing_asset_count = 0
+        neutral_built_count = 0
         total_time = 0.0
 
         # F15: Pre-partition target build shots vs already-valid skipped shots
@@ -885,15 +909,23 @@ class VisualService:
         for ch in manifest.chapters:
             for shot in ch.shots:
                 total_project_shots += 1
+                is_legacy_fake_shot = bool(shot.is_fake or str(shot.actual_source or "").lower() == "fake")
+                asset_ok = bool(shot.asset_path and (self.project_dir / shot.asset_path).is_file())
+                needs_neutral = bool(use_neutral_fallback and (not asset_ok or is_legacy_fake_shot))
+                if not asset_ok and not needs_neutral:
+                    expected_hashes_by_id[shot.shot_id] = ""
+                    continue
+                eff_hash_input = "neutral_backdrop_v1" if needs_neutral else (shot.asset_content_hash or "")
+                eff_actual = "neutral_backdrop" if needs_neutral else (shot.actual_source or "")
                 expected_hash = compute_shot_hash(
                     shot_id=shot.shot_id,
                     duration_seconds=shot.duration_seconds,
                     target_frames=shot.target_frames,
                     motion=shot.motion.value,
-                    asset_content_hash=shot.asset_content_hash,
+                    asset_content_hash=eff_hash_input,
                     fps=fps,
                     requested_provider=shot.requested_source or "",
-                    actual_provider=shot.actual_source or "",
+                    actual_provider=eff_actual,
                 )
                 expected_hashes_by_id[shot.shot_id] = expected_hash
                 clip_path = (self.project_dir / f"assets/visual/shots/{shot.shot_id}.mp4").resolve()
@@ -933,12 +965,16 @@ class VisualService:
                     logger.info(f"Stop requested for project '{manifest.project_id}'. Exiting visual matching gracefully.")
                     stop_requested = True
                     break
-                if not shot.asset_path:
-                    raise VisualError(f"Cannot build shot {shot.shot_id}: asset_path is missing. Run visual fetch first.")
 
-                asset_file = (self.project_dir / shot.asset_path).resolve()
-                if not asset_file.is_file():
-                    raise FileNotFoundError(f"Shot asset file missing on disk: {asset_file}")
+                is_legacy_fake_shot = bool(shot.is_fake or str(shot.actual_source or "").lower() == "fake")
+                asset_file = (self.project_dir / shot.asset_path).resolve() if shot.asset_path else None
+                asset_exists = bool(asset_file and asset_file.is_file())
+                needs_neutral = bool(use_neutral_fallback and (not asset_exists or is_legacy_fake_shot))
+
+                if not asset_exists and not needs_neutral:
+                    missing_asset_count += 1
+                    logger.warning(f"Skipping shot {shot.shot_id}: no visual asset available yet.")
+                    continue
 
                 expected_hash = expected_hashes_by_id[shot.shot_id]
                 clip_rel = f"assets/visual/shots/{shot.shot_id}.mp4"
@@ -949,19 +985,35 @@ class VisualService:
                     skipped_count += 1
                     continue
 
-                logger.info(f"Building shot clip {shot.shot_id} ({shot.target_frames} frames, {shot.motion.value})...")
-                _, elapsed = builder.build_shot_clip(
-                    asset_path=asset_file,
-                    output_path=clip_path,
-                    motion=shot.motion,
-                    target_frames=shot.target_frames,
-                )
-                built_count += 1
-                total_time += elapsed
+                if needs_neutral:
+                    logger.info(f"Building neutral backdrop clip for {shot.shot_id} ({shot.target_frames} frames)...")
+                    _, elapsed = builder.build_neutral_backdrop_clip(
+                        output_path=clip_path,
+                        target_frames=shot.target_frames,
+                    )
+                    built_count += 1
+                    neutral_built_count += 1
+                    total_time += elapsed
+                    shot.asset_path = None
+                    shot.asset_content_hash = "neutral_backdrop_v1"
+                    shot.actual_source = "neutral_backdrop"
+                    shot.is_fake = False
+                    shot.fallback_reason = "neutral_backdrop_confirmed"
+                else:
+                    logger.info(f"Building shot clip {shot.shot_id} ({shot.target_frames} frames, {shot.motion.value})...")
+                    _, elapsed = builder.build_shot_clip(
+                        asset_path=asset_file,
+                        output_path=clip_path,
+                        motion=shot.motion,
+                        target_frames=shot.target_frames,
+                    )
+                    built_count += 1
+                    total_time += elapsed
 
-                # S2: In case source trimming modified asset_file, update asset content hash & shot hash
-                updated_content_hash = compute_file_content_hash(asset_file)
-                shot.asset_content_hash = updated_content_hash
+                    # S2: In case source trimming modified asset_file, update asset content hash & shot hash
+                    updated_content_hash = compute_file_content_hash(asset_file)
+                    shot.asset_content_hash = updated_content_hash
+
                 shot.shot_hash = compute_shot_hash(
                     shot_id=shot.shot_id,
                     duration_seconds=shot.duration_seconds,
@@ -1001,6 +1053,8 @@ class VisualService:
         stats = {
             "built_count": built_count,
             "skipped_count": skipped_count,
+            "missing_asset_count": missing_asset_count,
+            "neutral_built_count": neutral_built_count,
             "total_build_seconds": round(total_time, 2),
             "average_seconds_per_clip": round(avg_speed, 2),
         }
@@ -1541,7 +1595,7 @@ class VisualService:
         self,
         manifest: Optional[ProjectManifest] = None,
         provider_name: Optional[str] = None,
-        allow_fallback: bool = True,
+        allow_fallback: bool = False,
         check_ai_relevance: bool = False,
     ) -> Tuple[ProjectManifest, Dict[str, Any]]:
         """Execute the full 3-phase visual pipeline sequentially (Allocation -> Fetch -> Build).

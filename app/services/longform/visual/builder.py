@@ -385,3 +385,71 @@ class ShotClipBuilder:
             return self.build_video_clip(p, output_path, target_frames)
         else:
             return self.build_image_clip(p, output_path, motion, target_frames)
+
+    def build_neutral_backdrop_clip(
+        self,
+        output_path: Path,
+        target_frames: int,
+    ) -> Tuple[Path, float]:
+        """Build a clean, text-free subtle dark-slate gradient backdrop clip (D8).
+
+        Used only when the user explicitly confirms continuing Render or CapCut export
+        despite missing visuals; never emits debug/placeholder text cards.
+        """
+        from PIL import Image
+
+        out = Path(output_path).resolve()
+        out.parent.mkdir(parents=True, exist_ok=True)
+        tmp_png = out.parent / f"{out.stem}.backdrop.{uuid.uuid4().hex}.png"
+        tmp_out = out.parent / f"{out.stem}.tmp.{uuid.uuid4().hex}.mp4"
+
+        w, h = self.width, self.height
+        img = Image.new("RGB", (w, h))
+        # Subtle vertical gradient: #0D1015 (13, 16, 21) -> #18202C (24, 32, 44)
+        top = (13, 16, 21)
+        bot = (24, 32, 44)
+        rows = []
+        denom = max(1, h - 1)
+        for y in range(h):
+            t_ratio = y / denom
+            r = int(top[0] + (bot[0] - top[0]) * t_ratio)
+            g = int(top[1] + (bot[1] - top[1]) * t_ratio)
+            b = int(top[2] + (bot[2] - top[2]) * t_ratio)
+            rows.extend([(r, g, b)] * w)
+        img.putdata(rows)
+        img.save(tmp_png, format="PNG")
+
+        cmd = [
+            "ffmpeg", "-y",
+            "-framerate", str(self.fps),
+            "-loop", "1",
+            "-i", str(tmp_png),
+            "-vf", "setsar=1,scale=in_range=full:out_range=tv,format=yuv420p",
+            "-frames:v", str(target_frames),
+            "-c:v", "libx264",
+            "-profile:v", "high",
+            "-level:v", "4.1",
+            "-pix_fmt", "yuv420p",
+            "-r", str(self.fps),
+            "-g", str(self.fps),
+            "-keyint_min", str(self.fps),
+            "-sc_threshold", "0",
+            "-an",
+            str(tmp_out),
+        ]
+
+        t0 = time.perf_counter()
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True)
+            elapsed = time.perf_counter() - t0
+            if res.returncode != 0 or not tmp_out.is_file():
+                if tmp_out.exists():
+                    tmp_out.unlink(missing_ok=True)
+                raise VisualError(f"FFmpeg neutral backdrop clip failed ({res.returncode}): {res.stderr[-500:]}")
+            os.replace(tmp_out, out)
+            verify_clip_stream_parameters(out, target_frames, self.fps)
+            return out, elapsed
+        finally:
+            tmp_png.unlink(missing_ok=True)
+            if tmp_out.exists():
+                tmp_out.unlink(missing_ok=True)

@@ -1026,7 +1026,7 @@ def cmd_visual_pipeline(args: argparse.Namespace) -> int:
             manifest, stats = service.run_pipeline(
                 manifest=manifest,
                 provider_name=getattr(args, "provider", None),
-                allow_fallback=getattr(args, "allow_fallback", True),
+                allow_fallback=bool(getattr(args, "allow_fallback", False)),
                 check_ai_relevance=bool(getattr(args, "check_ai_relevance", False)),
             )
             return 0
@@ -1810,6 +1810,11 @@ def cmd_render_chapter(args: argparse.Namespace) -> int:
     try:
         with ProjectLock(proj_dir):
             manifest = load_manifest(proj_dir)
+            if getattr(args, "use_neutral_fallback", False):
+                from app.services.longform.visual.service import VisualService
+                manifest, nb_stats = VisualService(proj_dir).build_all(manifest, use_neutral_fallback=True)
+                save_manifest(manifest, proj_dir)
+                print(f"[Render All] Built {nb_stats.get('neutral_built_count', 0)} neutral backdrop clip(s) for missing visuals.")
             service = RenderService(proj_dir)
             print(f"\n[Render Chapter] Rendering Chapter {args.chapter} for project '{args.project_id}'...")
             print("-" * 75)
@@ -1855,6 +1860,11 @@ def cmd_render_all(args: argparse.Namespace) -> int:
     try:
         with ProjectLock(proj_dir):
             manifest = load_manifest(proj_dir)
+            if getattr(args, "use_neutral_fallback", False):
+                from app.services.longform.visual.service import VisualService
+                manifest, nb_stats = VisualService(proj_dir).build_all(manifest, use_neutral_fallback=True)
+                save_manifest(manifest, proj_dir)
+                print(f"[Render All] Built {nb_stats.get('neutral_built_count', 0)} neutral backdrop clip(s) for missing visuals.")
             service = RenderService(proj_dir)
             print(f"\n[Render All] Starting full rendering for project '{args.project_id}' (BGM: {'Disabled' if args.no_bgm else 'Enabled'})...")
             print("=" * 85)
@@ -1897,6 +1907,11 @@ def cmd_render_final(args: argparse.Namespace) -> int:
     try:
         with ProjectLock(proj_dir):
             manifest = load_manifest(proj_dir)
+            if getattr(args, "use_neutral_fallback", False):
+                from app.services.longform.visual.service import VisualService
+                manifest, nb_stats = VisualService(proj_dir).build_all(manifest, use_neutral_fallback=True)
+                save_manifest(manifest, proj_dir)
+                print(f"[Render All] Built {nb_stats.get('neutral_built_count', 0)} neutral backdrop clip(s) for missing visuals.")
             service = RenderService(proj_dir)
             print(f"\n[Render Final] Assembling final video for project '{args.project_id}' (BGM: {'Disabled' if args.no_bgm else 'Enabled'})...")
             print("-" * 75)
@@ -2090,6 +2105,13 @@ def cmd_capcut_export(args: argparse.Namespace) -> int:
         return 1
 
     try:
+        if getattr(args, "use_neutral_fallback", False):
+            from app.services.longform.visual.service import VisualService
+            with ProjectLock(proj_dir):
+                manifest = load_manifest(proj_dir)
+                manifest, nb_stats = VisualService(proj_dir).build_all(manifest, use_neutral_fallback=True)
+                save_manifest(manifest, proj_dir)
+                print(f"[CapCut Export] Built {nb_stats.get('neutral_built_count', 0)} neutral backdrop clip(s) for missing visuals.")
         print(f"\nExporting full CapCut project for '{args.project_id}'...")
         if args.install:
             print("Mode: Export and Install directly to CapCut draft folder")
@@ -2296,7 +2318,7 @@ def cmd_pipeline_auto(args: argparse.Namespace) -> int:
             manifest, _ = vis_svc.run_pipeline(
                 manifest=manifest,
                 provider_name=getattr(args, "provider", None),
-                allow_fallback=getattr(args, "allow_fallback", True),
+                allow_fallback=bool(getattr(args, "allow_fallback", False)),
             )
             save_manifest(manifest, proj_dir)
             if is_stop_requested(proj_dir):
@@ -2661,6 +2683,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_r_all.add_argument("project_id", help="Project ID")
     p_r_all.add_argument("--no-bgm", action="store_true", help="Disable background music mixing")
     p_r_all.add_argument("--force", action="store_true", help="Force re-render of all chapters")
+    p_r_all.add_argument("--use-neutral-fallback", action="store_true", help="Build clean neutral backdrop clips for shots missing visuals")
 
     # render status <id>
     p_r_status = render_subs.add_parser("status", help="Show render completion and hash status for chapters and final video")
@@ -2698,6 +2721,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_c_export.add_argument("--portable", action="store_true", help="Copy all media into draft folder (requires --yes to confirm disk copy)")
     p_c_export.add_argument("--yes", action="store_true", help="Confirm media copying when using --portable")
     p_c_export.add_argument("--name", help="Custom draft name override (default: EFS_<id>_<timestamp>)")
+    p_c_export.add_argument("--use-neutral-fallback", action="store_true", help="Build clean neutral backdrop clips for shots missing visuals")
 
     # capcut calibrate [id] [--no-install]
     p_c_calib = capcut_subs.add_parser("calibrate", help="Generate empirical subtitle calibration draft (sizes 5..10) (6B.1)")

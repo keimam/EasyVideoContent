@@ -1253,10 +1253,23 @@ def render_project_page(project_id: str):
                     and "Menunggu pengecekan visual" in (job_state.get("phase") or "")
                 )
 
+                from app.services.longform.visual.base import has_real_visual_source
+                visual_done_auto = (st_info["steps"]["visual"]["status"] == "selesai")
+                has_vis_src_auto = has_real_visual_source(p_dir)
+                auto_missing_vis_src = (not visual_done_auto) and (not has_vis_src_auto)
+                if auto_missing_vis_src:
+                    st.warning(t("vis_no_source_warning"))
+                    if st.button(
+                        t("btn_open_provider_settings"),
+                        key=f"btn_auto_open_prov_{project_id}",
+                        use_container_width=True,
+                    ):
+                        _open_mpt_settings_dialog("stock")
+
                 if is_review_paused:
                     phase_msg = f" ({job_state.get('phase')})" if job_state.get("phase") else ""
                     st.warning(t("auto_review_paused_warn", phase=phase_msg))
-                    if st.button(t("btn_resume_auto_skip"), key=f"btn_resume_auto_{project_id}", type="primary", use_container_width=True):
+                    if st.button(t("btn_resume_auto_skip"), key=f"btn_resume_auto_{project_id}", disabled=(is_job_running or auto_missing_vis_src), type="primary", use_container_width=True):
                         auto_args = ["pipeline", "auto", project_id, "--skip-review-check"]
                         if auto_with_capcut:
                             auto_args.append("--with-capcut")
@@ -1268,7 +1281,7 @@ def render_project_page(project_id: str):
                 elif all_done and not auto_with_capcut:
                     st.button(t("status_done"), disabled=True, key=f"btn_auto_done_{project_id}", use_container_width=True)
                 else:
-                    if st.button(f"▷ {t('btn_auto_run_until_done')}", disabled=is_job_running, type="primary", key=f"btn_start_auto_{project_id}", use_container_width=True):
+                    if st.button(f"▷ {t('btn_auto_run_until_done')}", disabled=(is_job_running or auto_missing_vis_src), type="primary", key=f"btn_start_auto_{project_id}", use_container_width=True):
                         auto_args = ["pipeline", "auto", project_id]
                         if auto_with_capcut:
                             auto_args.append("--with-capcut")
@@ -2289,10 +2302,18 @@ def render_visual_step_flow(
         translate_single_query_to_english,
     )
 
+    from app.services.longform.visual.base import (
+        has_real_visual_source,
+        inspect_project_missing_visuals,
+        is_dev_or_test_mode,
+    )
+
     ai_readiness = get_ai_image_readiness()
     has_ai_image = bool(ai_readiness.get("ready", False))
     vision_info = get_vision_readiness()
     ai_vid_providers = list_configured_ai_video_providers()
+    has_vis_source = has_real_visual_source(p_dir)
+    start_vis_blocked = (not has_vis_source) and (not is_dev_or_test_mode())
 
     _cb_pix = st.session_state.get(f"cb_prov_pixabay_{project_id}", has_pixabay) if has_pixabay else False
     _cb_cov = st.session_state.get(f"cb_prov_coverr_{project_id}", has_coverr) if has_coverr else False
@@ -2319,16 +2340,16 @@ def render_visual_step_flow(
                     st.session_state[f"active_step_{project_id}"] = "render"
                     st.rerun()
             elif st_val == "terhenti":
-                if st.button(t("visual_btn_resume"), type="primary", key=f"btn_resume_vis_{project_id}", use_container_width=True):
-                    vis_args = ["visual", "pipeline", project_id, "--allow-fallback"]
+                if st.button(t("visual_btn_resume"), type="primary", disabled=start_vis_blocked, key=f"btn_resume_vis_{project_id}", use_container_width=True):
+                    vis_args = ["visual", "pipeline", project_id]
                     if target_prov:
                         vis_args.extend(["--provider", target_prov])
                     if _cb_ai_rel:
                         vis_args.append("--check-ai-relevance")
                     _start_job_safe(project_id, "visual_pipeline", jobs.build_longform_cli_command(*vis_args))
             elif st_val == "perlu_diperbarui":
-                if st.button(t("visual_btn_rebuild_stale"), type="primary", key=f"btn_update_vis_{project_id}", use_container_width=True):
-                    vis_args = ["visual", "pipeline", project_id, "--allow-fallback"]
+                if st.button(t("visual_btn_rebuild_stale"), type="primary", disabled=start_vis_blocked, key=f"btn_update_vis_{project_id}", use_container_width=True):
+                    vis_args = ["visual", "pipeline", project_id]
                     if target_prov:
                         vis_args.extend(["--provider", target_prov])
                     if _cb_ai_rel:
@@ -2340,9 +2361,9 @@ def render_visual_step_flow(
                 voice_st = st_all["steps"]["voice"]["status"]
                 script_done = (script_st == "selesai")
                 voice_done = (voice_st == "selesai")
-                btn_disabled = not (script_done and voice_done)
+                btn_disabled = not (script_done and voice_done) or start_vis_blocked
 
-                if btn_disabled:
+                if not (script_done and voice_done):
                     if not script_done and not voice_done:
                         st.caption(t("visual_prereq_both"))
                     elif not script_done:
@@ -2351,12 +2372,26 @@ def render_visual_step_flow(
                         st.caption(t("visual_prereq_voice"))
 
                 if st.button(t("visual_btn_start"), type="primary", disabled=btn_disabled, key=f"btn_start_vis_{project_id}", use_container_width=True):
-                    vis_args = ["visual", "pipeline", project_id, "--allow-fallback"]
+                    vis_args = ["visual", "pipeline", project_id]
                     if target_prov:
                         vis_args.extend(["--provider", target_prov])
                     if _cb_ai_rel:
                         vis_args.append("--check-ai-relevance")
                     _start_job_safe(project_id, "visual_pipeline", jobs.build_longform_cli_command(*vis_args))
+
+    # --- D8: Clear warning when no stock/local visual source is configured ---
+    if not has_vis_source:
+        col_vw, col_vb = st.columns([3.2, 1.2])
+        with col_vw:
+            st.warning(t("vis_no_source_warning"))
+        with col_vb:
+            st.write("")
+            if st.button(
+                t("btn_open_provider_settings"),
+                key=f"btn_vis_open_prov_{project_id}",
+                use_container_width=True,
+            ):
+                _open_mpt_settings_dialog("stock")
 
     # --- V1: Summary Metric Tiles (Mockup 2 V3) ---
     total_shots = sum(len(ch.shots) for ch in manifest.chapters)
@@ -2385,10 +2420,18 @@ def render_visual_step_flow(
             if has_asset or has_clip:
                 if getattr(s, "is_fake", False) or s.actual_source == "fake":
                     used_sources_set.add(t("source_placeholder"))
+                elif s.actual_source == "neutral_backdrop":
+                    used_sources_set.add(t("source_neutral_backdrop"))
                 else:
                     src = s.actual_source or s.requested_source or "stock"
                     used_sources_set.add(src if str(src).startswith("AI Video") else str(src).capitalize())
     sources_str = ", ".join(sorted(used_sources_set)) if used_sources_set else t("source_none_yet")
+
+    unready_vis_info = inspect_project_missing_visuals(p_dir, manifest) if total_shots > 0 else {
+        "missing_count": 0,
+        "legacy_fake_count": 0,
+        "unready_count": 0,
+    }
 
     col_m1, col_m2, col_m3, col_m4 = st.columns(4)
     with col_m1:
@@ -2399,6 +2442,23 @@ def render_visual_step_flow(
         render_metric_tile(t("metric_locked"), str(locked_count), status="accent" if locked_count > 0 else "")
     with col_m4:
         render_metric_tile(t("metric_sources_used"), sources_str)
+
+    if unready_vis_info["missing_count"] > 0:
+        st.warning(t("vis_missing_summary_warn", missing=unready_vis_info["missing_count"]))
+    if unready_vis_info["legacy_fake_count"] > 0:
+        st.warning(t("vis_legacy_fake_summary_warn", fake=unready_vis_info["legacy_fake_count"]))
+    if unready_vis_info["unready_count"] > 0:
+        if st.button(
+            t("btn_refetch_unready"),
+            key=f"btn_refetch_unready_{project_id}",
+            disabled=(is_job_running or start_vis_blocked),
+        ):
+            ref_args = ["visual", "pipeline", project_id]
+            if target_prov:
+                ref_args.extend(["--provider", target_prov])
+            if _cb_ai_rel:
+                ref_args.append("--check-ai-relevance")
+            _start_job_safe(project_id, "visual_pipeline", jobs.build_longform_cli_command(*ref_args))
 
     # --- Footage Sources Expander (V3: Collapsible, saves vertical space) ---
     with st.expander(t("expander_footage_sources"), expanded=False):
@@ -2622,15 +2682,17 @@ def render_visual_step_flow(
                 label_visibility="collapsed",
             )
 
-            # Filter Mode Chips with Exact Counts (Mockup 2 V3 + F14 Perlu diperbarui)
+            # Filter Mode Chips with Exact Counts (Mockup 2 V3 + F14 Perlu diperbarui + D8 Belum ada visual)
+            missing_visual_count = int(unready_vis_info.get("missing_count", 0))
             opt_all_f = f"{t('filter_all')} ({total_shots})"
+            opt_no_vis_f = t("filter_no_visual", count=missing_visual_count)
             opt_upd_f = t("filter_needs_update", count=needs_update_count)
             opt_rev_f = f"{t('filter_needs_review')} ({needs_review_count})"
             opt_lock_f = f"{t('filter_locked')} ({locked_count})"
             opt_ph_f = f"{t('filter_placeholder')} ({placeholder_count})"
             filter_mode = st.pills(
                 t("label_filter_status"),
-                options=[opt_all_f, opt_upd_f, opt_rev_f, opt_lock_f, opt_ph_f],
+                options=[opt_all_f, opt_no_vis_f, opt_upd_f, opt_rev_f, opt_lock_f, opt_ph_f],
                 default=opt_all_f,
                 key=f"vis_filter_{project_id}",
                 label_visibility="collapsed",
@@ -2643,6 +2705,8 @@ def render_visual_step_flow(
                 if ch_choice != t("all_chapters_option") and ch_choice != ch_label:
                     continue
                 for s in ch.shots:
+                    if filter_mode == opt_no_vis_f and not vis_state_map.get(s.shot_id, {}).get("is_missing_visual"):
+                        continue
                     if filter_mode == opt_upd_f and not vis_state_map.get(s.shot_id, {}).get("is_needs_update"):
                         continue
                     if filter_mode == opt_rev_f and not getattr(s, "needs_review", False):
@@ -2670,7 +2734,9 @@ def render_visual_step_flow(
                                 st.markdown(render_project_thumbnail_html(thumb_p, dur_s), unsafe_allow_html=True)
 
                                 badges = []
-                                if shot_vst.get("needs_rebuild"):
+                                if shot_vst.get("is_missing_visual"):
+                                    badges.append(t("badge_no_visual"))
+                                elif shot_vst.get("needs_rebuild"):
                                     badges.append(t("badge_needs_rebuild"))
                                 elif shot_vst.get("not_built"):
                                     badges.append(t("badge_not_built"))
@@ -2680,11 +2746,16 @@ def render_visual_step_flow(
                                     badges.append(t("badge_needs_review"))
                                 if getattr(shot, "locked", False):
                                     badges.append(t("badge_locked"))
-                                if getattr(shot, "is_fake", False) or (getattr(shot, "actual_source", "") == "fake"):
-                                    badges.append(t("badge_placeholder"))
+                                if shot_vst.get("is_legacy_fake"):
+                                    badges.append(t("badge_legacy_fake"))
                                 badge_str = f" {' '.join(badges)}" if badges else ""
 
-                                src = shot.actual_source or shot.requested_source or ("fake" if shot.is_fake else "stock")
+                                if shot_vst.get("is_missing_visual"):
+                                    src = t("source_none_yet")
+                                elif shot.actual_source == "neutral_backdrop":
+                                    src = t("source_neutral_backdrop")
+                                else:
+                                    src = shot.actual_source or shot.requested_source or ("fake" if shot.is_fake else "stock")
                                 st.caption(f"**#{shot.shot_index}** ({dur_s}) • `{src}`{badge_str}")
 
                                 narr = get_shot_narration(ch, shot)
@@ -2733,10 +2804,14 @@ def render_visual_step_flow(
                             st.video(str(prev_p))
                         elif prev_p and prev_p.is_file():
                             st.image(str(prev_p), use_container_width=True)
+                        elif det_vst.get("is_missing_visual"):
+                            st.warning(t("shot_no_visual_notice"))
                         else:
                             st.info(t("shot_clip_not_built"))
 
-                    if det_vst.get("needs_rebuild"):
+                    if det_vst.get("is_legacy_fake"):
+                        st.warning(t("vis_legacy_fake_summary_warn", fake=1))
+                    elif det_vst.get("needs_rebuild"):
                         st.warning(t("shot_needs_rebuild_notice"))
                     elif det_vst.get("not_built"):
                         st.info(t("shot_preview_from_asset_not_built"))
@@ -3350,6 +3425,73 @@ def _safe_open_path(path: Path | str, is_folder: bool = False):
 
 # --- Step 4: Render Flow (Stage 7B.2 R1-R5) ---
 
+def _render_missing_visual_confirmation(
+    project_id: str,
+    p_dir: Path,
+    manifest: ProjectManifest,
+    mode: str,
+    job_step_name: str,
+    cli_base_args: List[str],
+) -> None:
+    """Display confirmation prompt when Render or CapCut encounters missing/fake visuals (D8)."""
+    confirm_key = f"{mode}_missing_confirm_{project_id}"
+    if not st.session_state.get(confirm_key):
+        return
+
+    from app.services.longform.visual.base import inspect_project_missing_visuals
+
+    info = inspect_project_missing_visuals(p_dir, manifest)
+    if info["unready_count"] <= 0:
+        st.session_state[confirm_key] = False
+        return
+
+    items = info["unready_shots"]
+    bullets = [
+        f"• #{e['global_idx']} ({e['shot_id']}) — {e['snippet']}"
+        for e in items[:8]
+    ]
+    if len(items) > 8:
+        bullets.append(f"• +{len(items) - 8} …")
+    list_text = "\n".join(bullets)
+
+    with st.container(border=True):
+        st.warning(t("vis_confirm_missing_title", count=info["unready_count"]))
+        st.markdown(t("vis_confirm_missing_body", count=info["unready_count"], list_text=list_text))
+        col_c1, col_c2, col_c3 = st.columns([2, 2, 1])
+        with col_c1:
+            if st.button(
+                t("btn_search_again_first"),
+                type="primary",
+                key=f"btn_{mode}_search_first_{project_id}",
+                use_container_width=True,
+            ):
+                st.session_state[confirm_key] = False
+                st.session_state[f"active_step_{project_id}"] = "visual"
+                st.rerun()
+        with col_c2:
+            if st.button(
+                t("btn_continue_neutral"),
+                type="secondary",
+                key=f"btn_{mode}_continue_neutral_{project_id}",
+                use_container_width=True,
+            ):
+                st.session_state[confirm_key] = False
+                _start_job_safe(
+                    project_id,
+                    job_step_name,
+                    jobs.build_longform_cli_command(*cli_base_args, "--use-neutral-fallback"),
+                    sleep_after=0.5,
+                )
+        with col_c3:
+            if st.button(
+                t("btn_cancel_confirm"),
+                key=f"btn_{mode}_cancel_confirm_{project_id}",
+                use_container_width=True,
+            ):
+                st.session_state[confirm_key] = False
+                st.rerun()
+
+
 def render_render_step_flow(
     project_id: str,
     p_dir: Path,
@@ -3360,6 +3502,7 @@ def render_render_step_flow(
 ):
     """Render Step 4: Render Video Final + Subtitle + BGM (Stage 7B.2 R1-R5, Mockup 3 V4)."""
     from app.services.longform.render.service import RenderService
+    from app.services.longform.visual.base import inspect_project_missing_visuals
 
     job_state = jobs.get_job_state(project_id)
     is_job_running = is_job_running or bool(job_state and job_state.get("status") == "running")
@@ -3367,7 +3510,8 @@ def render_render_step_flow(
     st_info = compute_project_step_status(p_dir)
     voice_done = (st_info["steps"]["voice"]["status"] == "selesai")
     visual_done = (st_info["steps"]["visual"]["status"] == "selesai")
-    can_render = voice_done and visual_done
+    total_shots_r = sum(len(ch.shots) for ch in manifest.chapters)
+    can_render = voice_done and total_shots_r > 0
     st_val = step_info["status"]
 
     final_vid = step_info.get("final_video_file") or manifest.final_video_file
@@ -3680,19 +3824,33 @@ def render_render_step_flow(
                     st.session_state[f"active_step_{project_id}"] = "capcut"
                     st.rerun()
                 else:
-                    _start_job_safe(
-                        project_id,
-                        "render_all",
-                        jobs.build_longform_cli_command("render", "all", project_id),
-                        sleep_after=0.5,
-                    )
+                    vis_unready = inspect_project_missing_visuals(p_dir, manifest)
+                    if vis_unready["unready_count"] > 0:
+                        st.session_state[f"render_missing_confirm_{project_id}"] = True
+                        st.rerun()
+                    else:
+                        _start_job_safe(
+                            project_id,
+                            "render_all",
+                            jobs.build_longform_cli_command("render", "all", project_id),
+                            sleep_after=0.5,
+                        )
+
+        _render_missing_visual_confirmation(
+            project_id,
+            p_dir,
+            manifest,
+            mode="render",
+            job_step_name="render_all",
+            cli_base_args=["render", "all", project_id],
+        )
 
         if not can_render:
-            if not voice_done and not visual_done:
+            if not voice_done and total_shots_r == 0:
                 st.warning(t("render_prereq_both"))
             elif not voice_done:
                 st.warning(t("render_prereq_voice"))
-            elif not visual_done:
+            elif total_shots_r == 0:
                 st.warning(t("render_prereq_visual", comp=st_info["steps"]["visual"]["completed"], tot=st_info["steps"]["visual"]["total"]))
 
         with st.expander(t("expander_render_settings"), expanded=False):
@@ -3793,7 +3951,7 @@ def render_capcut_step_flow(
     draft_info = step_info.get("draft_info") or find_latest_capcut_draft(p_dir, project_id)
     is_exported = bool(draft_info)
     total_shots = sum(len(ch.shots) for ch in manifest.chapters)
-    can_export = voice_done and visual_done and not capcut_running
+    can_export = voice_done and total_shots > 0 and not capcut_running
 
     # Export History List
     exp_root = p_dir / "export" / "capcut"
@@ -3888,12 +4046,27 @@ def render_capcut_step_flow(
             key=f"btn_capcut_main_{project_id}",
             use_container_width=True,
         ):
-            _start_job_safe(
-                project_id,
-                "capcut_export",
-                jobs.build_longform_cli_command("capcut", "export", project_id, "--install"),
-                sleep_after=0.5,
-            )
+            from app.services.longform.visual.base import inspect_project_missing_visuals
+            vis_unready = inspect_project_missing_visuals(p_dir, manifest)
+            if vis_unready["unready_count"] > 0:
+                st.session_state[f"capcut_missing_confirm_{project_id}"] = True
+                st.rerun()
+            else:
+                _start_job_safe(
+                    project_id,
+                    "capcut_export",
+                    jobs.build_longform_cli_command("capcut", "export", project_id, "--install"),
+                    sleep_after=0.5,
+                )
+
+        _render_missing_visual_confirmation(
+            project_id,
+            p_dir,
+            manifest,
+            mode="capcut",
+            job_step_name="capcut_export",
+            cli_base_args=["capcut", "export", project_id, "--install"],
+        )
 
         if draft_info:
             if st.button(t("btn_open_draft_folder"), key=f"btn_open_draft_{project_id}", use_container_width=True):
@@ -3922,12 +4095,27 @@ def render_capcut_step_flow(
                 key=f"btn_capcut_main_{project_id}",
                 use_container_width=True,
             ):
-                _start_job_safe(
-                    project_id,
-                    "capcut_export",
-                    jobs.build_longform_cli_command("capcut", "export", project_id, "--install"),
-                    sleep_after=0.5,
-                )
+                from app.services.longform.visual.base import inspect_project_missing_visuals
+                vis_unready = inspect_project_missing_visuals(p_dir, manifest)
+                if vis_unready["unready_count"] > 0:
+                    st.session_state[f"capcut_missing_confirm_{project_id}"] = True
+                    st.rerun()
+                else:
+                    _start_job_safe(
+                        project_id,
+                        "capcut_export",
+                        jobs.build_longform_cli_command("capcut", "export", project_id, "--install"),
+                        sleep_after=0.5,
+                    )
+
+        _render_missing_visual_confirmation(
+            project_id,
+            p_dir,
+            manifest,
+            mode="capcut",
+            job_step_name="capcut_export",
+            cli_base_args=["capcut", "export", project_id, "--install"],
+        )
 
         with st.container(border=True):
             col_cch, col_cc_btn = st.columns([3, 1])

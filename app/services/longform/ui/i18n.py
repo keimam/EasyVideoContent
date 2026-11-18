@@ -865,6 +865,34 @@ ID_TRANSLATIONS: Dict[str, str] = {
     "exit_app_btn_cancel": "Batal",
     "exit_app_btn_confirm": "Ya, tutup aplikasi",
     "exit_app_goodbye": "Aplikasi sedang ditutup dengan aman. Anda dapat menutup tab browser ini.",
+    # --- D8: No Fake Placeholders in Production ---
+    "vis_no_source_warning": (
+        "Belum ada sumber visual yang siap. Isi API key Pexels/Pixabay di API & Penyedia AI "
+        "(atau tambahkan klip ke Pustaka Lokal) sebelum mencari visual."
+    ),
+    "btn_open_provider_settings": "Buka Pengaturan Penyedia",
+    "badge_no_visual": "🚫 Belum ada visual",
+    "badge_legacy_fake": "⚠️ Placeholder lama — klik Cari ulang",
+    "filter_no_visual": "Belum ada visual · {count}",
+    "vis_missing_summary_warn": (
+        "⚠️ {missing} shot belum memiliki visual. Gunakan tab 'Cari lagi' di panel detail atau klik tombol di bawah untuk mencari ulang."
+    ),
+    "vis_legacy_fake_summary_warn": (
+        "⚠️ {fake} shot dari proyek lama masih memakai placeholder ('fake'). Klik tombol di bawah untuk menggantinya dengan footage asli."
+    ),
+    "btn_refetch_unready": "🔄 Cari ulang shot tanpa visual/placeholder",
+    "vis_confirm_missing_title": "⚠️ Konfirmasi: {count} shot belum memiliki visual",
+    "vis_confirm_missing_body": (
+        "Sebanyak **{count} shot** belum memiliki visual asli:\n{list_text}\n\n"
+        "Pilih **Cari ulang dulu** untuk mencari footage di langkah Visual, atau **Lanjutkan** untuk memakai latar belakang gelap netral yang bersih:"
+    ),
+    "btn_search_again_first": "Cari ulang dulu",
+    "btn_continue_neutral": "Lanjutkan",
+    "btn_cancel_confirm": "Batal",
+    "source_neutral_backdrop": "Latar netral",
+    "shot_no_visual_notice": (
+        "Belum ada visual untuk shot ini. Gunakan tab **Cari lagi** atau **Unggah** di bawah untuk memasang footage asli."
+    ),
 }
 
 
@@ -1722,6 +1750,34 @@ EN_TRANSLATIONS: Dict[str, str] = {
     "exit_app_btn_cancel": "Cancel",
     "exit_app_btn_confirm": "Yes, close app",
     "exit_app_goodbye": "Application is shutting down safely. You can close this browser tab.",
+    # --- D8: No Fake Placeholders in Production ---
+    "vis_no_source_warning": (
+        "No visual source is configured yet. Add a Pexels/Pixabay API key in AI & Provider Settings "
+        "(or add clips to Local Library) before searching visuals."
+    ),
+    "btn_open_provider_settings": "Open Provider Settings",
+    "badge_no_visual": "🚫 No visual yet",
+    "badge_legacy_fake": "⚠️ Legacy placeholder — click Refetch",
+    "filter_no_visual": "No visual yet · {count}",
+    "vis_missing_summary_warn": (
+        "⚠️ {missing} shot(s) have no visual yet. Use 'Search again' in the detail panel or click below to retry."
+    ),
+    "vis_legacy_fake_summary_warn": (
+        "⚠️ {fake} shot(s) from an older project still use legacy placeholders ('fake'). Click below to fetch real footage."
+    ),
+    "btn_refetch_unready": "🔄 Refetch missing/placeholder shots",
+    "vis_confirm_missing_title": "⚠️ Confirmation: {count} shot(s) have no visual",
+    "vis_confirm_missing_body": (
+        "**{count} shot(s)** still have no real visuals:\n{list_text}\n\n"
+        "Choose **Search again first** to fetch footage in the Visual step, or **Continue** to use clean neutral dark backdrop clips:"
+    ),
+    "btn_search_again_first": "Search again first",
+    "btn_continue_neutral": "Continue",
+    "btn_cancel_confirm": "Cancel",
+    "source_neutral_backdrop": "Neutral backdrop",
+    "shot_no_visual_notice": (
+        "No visual yet for this shot. Use the **Search again** or **Upload** tab below to attach real footage."
+    ),
 }
 
 

@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import json
 import re
 import sys
+import tomllib
 from pathlib import Path
 from typing import List
 
@@ -81,12 +83,60 @@ REQUIRED_BUNDLE_PATHS = (
 )
 
 
+def check_default_configs_no_fake(root: Path) -> List[str]:
+    """Fail if packaged default configuration enables 'fake' visual provider or allow_fallback=true (D8)."""
+    errors: List[str] = []
+
+    cfg_example = root / "config.example.toml"
+    if cfg_example.is_file():
+        try:
+            data = tomllib.loads(cfg_example.read_text(encoding="utf-8"))
+            app_sec = data.get("app") if isinstance(data.get("app"), dict) else {}
+            if str(app_sec.get("video_source", "")).strip().lower() == "fake":
+                errors.append("Default config config.example.toml activates video_source='fake'")
+            if str(app_sec.get("preferred_visual_source", "")).strip().lower() == "fake":
+                errors.append("Default config config.example.toml activates preferred_visual_source='fake'")
+            if app_sec.get("allow_fallback") is True:
+                errors.append("Default config config.example.toml enables allow_fallback=true")
+        except Exception as exc:
+            errors.append(f"Failed to parse config.example.toml: {exc}")
+
+    longform_toml = root / "config" / "longform.toml"
+    if longform_toml.is_file():
+        try:
+            data = tomllib.loads(longform_toml.read_text(encoding="utf-8"))
+            vis_sec = data.get("visual") if isinstance(data.get("visual"), dict) else {}
+            for key in ("preferred_visual_source", "provider", "default_provider"):
+                if str(vis_sec.get(key, "")).strip().lower() == "fake":
+                    errors.append(f"Default config/longform.toml sets visual.{key}='fake'")
+            if vis_sec.get("allow_fallback") is True:
+                errors.append("Default config/longform.toml sets visual.allow_fallback=true")
+        except Exception as exc:
+            errors.append(f"Failed to parse config/longform.toml: {exc}")
+
+    presets_dir = root / "resource" / "presets"
+    if presets_dir.is_dir():
+        for pfile in sorted(presets_dir.glob("*.json")):
+            try:
+                pdata = json.loads(pfile.read_text(encoding="utf-8"))
+                if str(pdata.get("preferred_visual_source", "")).strip().lower() == "fake":
+                    errors.append(f"Preset {pfile.name} sets preferred_visual_source='fake'")
+                if pdata.get("allow_fallback") is True:
+                    errors.append(f"Preset {pfile.name} sets allow_fallback=true")
+            except Exception as exc:
+                errors.append(f"Failed to parse preset {pfile.name}: {exc}")
+
+    return errors
+
+
 def verify_staging_dir(staging_dir: Path, *, check_required: bool = True) -> List[str]:
     """Return list of human-readable verification errors; empty list means clean."""
     root = Path(staging_dir).resolve()
     errors: List[str] = []
     if not root.is_dir():
         return [f"Staging directory does not exist: {root}"]
+
+    errors.extend(check_default_configs_no_fake(root))
 
     if check_required:
         for rel in REQUIRED_BUNDLE_PATHS:
@@ -97,7 +147,7 @@ def verify_staging_dir(staging_dir: Path, *, check_required: bool = True) -> Lis
         if (root / sub).exists():
             errors.append(f"Forbidden path present in staging: {sub}")
 
-    personal_dev_path_re = re.compile(r"F:\\MPTLong|IT SUPPORT 2", re.IGNORECASE)
+    personal_dev_path_re = re.compile(r"F:\\MPTLong|" + re.escape("IT " + "SUPPORT 2"), re.IGNORECASE)
 
     for item in root.rglob("*"):
         rel = item.relative_to(root)
