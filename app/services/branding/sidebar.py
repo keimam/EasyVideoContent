@@ -65,6 +65,19 @@ def show_about_dialog():
     st.dialog(t("about_dialog_title"))(_render_about_dialog_body)()
 
 
+def _render_help_dialog_body():
+    """Dialog body linking to bilingual user guides in docs/user/ (C3)."""
+    st.markdown(t("help_dialog_intro"))
+    st.markdown(t("help_dialog_links_md"))
+    if st.button(t("dialog_close"), key="btn_close_help_dialog", use_container_width=True):
+        st.rerun()
+
+
+def show_help_dialog():
+    """Open localized Help & Documentation dialog dynamically."""
+    st.dialog(t("help_dialog_title"))(_render_help_dialog_body)()
+
+
 def _render_niche_dialog_body():
     """Dialog body for inspecting and managing niches & sub-niches (R2)."""
     from app.services.longform.presets import (
@@ -503,6 +516,16 @@ def render_brand_sidebar(current_page: str = "main"):
             st.session_state["settings_dialog_open"] = True
             st.session_state["settings_dialog_target_tab"] = "cache"
             st.rerun()
+
+        # 3.4 Bantuan / Help
+        if st.button(
+            t("nav_help"),
+            key=f"efs_btn_help_{current_page}",
+            icon=":material/help:",
+            use_container_width=True,
+            help=t("nav_help_tooltip"),
+        ):
+            show_help_dialog()
 
         # 4. Compact footer: clickable dimmed version line + Tentang/About button (C7)
         if st.button(

@@ -77,45 +77,10 @@ from app.utils import utils
 from app.utils.request_logging import trace_http_call
 
 try:
-    from app.services.branding.constants import APP_NAME, FAVICON_PATH, MIT_THANKS, UPSTREAM_REPO_URL
-    _main_page_title = f"{APP_NAME} — Video Pendek"
-    _main_page_icon = str(FAVICON_PATH) if FAVICON_PATH.is_file() else "🎬"
-    _about_content = f"# {APP_NAME}\n\n{MIT_THANKS}\n\n{UPSTREAM_REPO_URL}"
+    from app.services.branding.hooks import init_main_page
+    init_main_page(Path(__file__).with_name("styles.css"))
 except Exception:
-    _main_page_title = "EasyFaceless Studio — Video Pendek"
-    _main_page_icon = "🎬"
-    _about_content = (
-        "# EasyFaceless Studio\n\nDibangun di atas MoneyPrinterTurbo (MIT).\n\n"
-        "https://github.com/harry0703/MoneyPrinterTurbo"
-    )
-
-if not st.session_state.get("_efs_settings_library_only", False):
-    st.set_page_config(
-        page_title=_main_page_title,
-        page_icon=_main_page_icon,
-        layout="wide",
-        initial_sidebar_state="auto",
-        menu_items={
-            "Report a bug": "https://github.com/harry0703/MoneyPrinterTurbo/issues",
-            "About": _about_content,
-        },
-    )
-
-
-    # Streamlit 1.59 会在页面右上角默认展示 Deploy、skills nudge 等平台入口。
-    # MoneyPrinterTurbo 是面向终端用户的本地工具，这些入口会造成顶部大块空白，
-    # 也会让新用户误以为需要安装额外组件。这里统一隐藏 Streamlit 平台工具栏，
-    # 并压缩主容器顶部留白，只保留项目自己的标题、语言选择和业务设置区域。
-    style_file = Path(__file__).with_name("styles.css")
-    streamlit_style = f"<style>{style_file.read_text(encoding='utf-8')}</style>"
-    st.markdown(streamlit_style, unsafe_allow_html=True)
-    try:
-        from app.services.branding.theme import inject_brand_theme
-        from app.services.branding.sidebar import render_brand_sidebar
-        inject_brand_theme()
-        render_brand_sidebar(current_page="main")
-    except Exception:
-        pass
+    st.set_page_config(page_title="EasyFaceless Studio", page_icon="🎬", layout="wide")
 # 定义资源目录
 font_dir = utils.font_dir()
 song_dir = utils.song_dir()
@@ -9478,11 +9443,6 @@ def _render_generation_controls(
 
 def _render_application():
     """按固定顺序渲染顶部栏、弹窗、生成表单和任务结果。"""
-    if "open_settings" in st.query_params:
-        target = st.query_params.pop("open_settings")
-        st.session_state["settings_dialog_open"] = True
-        st.session_state["settings_dialog_target_tab"] = target
-
     _render_top_bar()
 
     if st.session_state.get("settings_dialog_open", False):
@@ -9533,17 +9493,8 @@ def _render_application():
         _save_runtime_config()
 
 
-def render_embedded_settings_dialog() -> None:
-    """Render MoneyPrinterTurbo's native Settings dialog on the active page."""
-    _initialize_session_state()
-    qp_lang = str(st.query_params.get("lang", "") or "").strip().lower()
-    if qp_lang.startswith("id") and "id" in locales:
-        st.session_state["ui_language"] = "id"
-    elif qp_lang.startswith("en") and "en" in locales:
-        st.session_state["ui_language"] = "en"
-    _render_settings_dialog()
-    _save_runtime_config()
-
-
-if not st.session_state.get("_efs_settings_library_only", False):
+try:
+    from app.services.branding.hooks import run_main_or_settings
+    run_main_or_settings(_render_application, _render_settings_dialog, _initialize_session_state, locales, _save_runtime_config)
+except Exception:
     _render_application()

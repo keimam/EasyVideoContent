@@ -49,9 +49,9 @@ def test_api_key_masking_security():
 
 def test_safe_windows_path_handling():
     """Verify safe Windows path normalization with spaces."""
-    raw_path = r"C:\Users\IT SUPPORT 2\Desktop\test project"
+    raw_path = r"C:\Users\Test User\Desktop\test project"
     safe = safe_windows_path(raw_path)
-    assert "IT SUPPORT 2" in safe
+    assert "Test User" in safe
     assert isinstance(safe, str)
 
 

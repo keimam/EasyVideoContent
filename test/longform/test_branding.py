@@ -584,3 +584,90 @@ def test_c6_no_moneyprinter_or_mpt_in_ui_strings(tmp_path, monkeypatch):
             assert not banned_re.search(url_re.sub("", help_txt)), f"Tooltip leaked C6/C7: {help_txt!r}"
 
 
+def test_c3_c4_c5_help_dialog_docs_notices_and_repo_hygiene(tmp_path, monkeypatch):
+    """8C.1 (C2-C5): Verify Bantuan/Help dialog, final screenshots, docs/user/{id,en}, LICENSE, THIRD_PARTY_NOTICES, CHANGELOG, single version, and no personal paths."""
+    import subprocess
+    from streamlit.testing.v1 import AppTest
+    from app.config import config as app_cfg
+    from app.services.branding.constants import APP_VERSION
+    import app.services.longform as longform_pkg
+
+    repo_root = Path(__file__).resolve().parents[2]
+
+    # C5: Single source of version 1.0.0 & CHANGELOG.md present
+    assert APP_VERSION == "1.0.0"
+    assert longform_pkg.__version__ == APP_VERSION
+    changelog = (repo_root / "CHANGELOG.md").read_text(encoding="utf-8")
+    for marker in ("8C.1", "8B.2", "C6", "C7"):
+        assert marker in changelog
+
+    # C4: LICENSE keeps Harry copyright + EasyFaceless placeholder; THIRD_PARTY_NOTICES covers required stacks
+    lic = (repo_root / "LICENSE").read_text(encoding="utf-8")
+    assert "Copyright (c) 2024 Harry" in lic
+    assert "[NAMA PEMILIK]" in lic
+    notices = (repo_root / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
+    for section in ("FFmpeg", "Plus Jakarta Sans", "OFL", "Pixabay", "Pexels", "Coverr", "Edge TTS", "CapCut"):
+        assert section in notices
+
+    # C2: Only final/ folder holds screenshots, mockup/ preserved, no duplicate root STAGE7_WEBUI.md
+    screens_dir = repo_root / "docs" / "branding" / "screens"
+    assert (screens_dir / "final").is_dir()
+    assert list(screens_dir.glob("*.png")) == []
+    assert len(list((screens_dir / "final").glob("*.png"))) >= 20
+    assert (repo_root / "docs" / "branding" / "mockup").is_dir()
+    assert not (repo_root / "STAGE7_WEBUI.md").exists()
+
+    # C2: Zero personal Windows path leaked in committed docs or tests
+    personal_user = "IT " + "SUPPORT 2"
+    tracked = subprocess.check_output(["git", "ls-files"], cwd=str(repo_root), text=True).splitlines()
+    for rel in tracked:
+        fp = repo_root / rel
+        if fp.suffix.lower() in {".png", ".jpg", ".mp3", ".mp4", ".wav", ".ttf", ".lock"} or not fp.is_file():
+            continue
+        assert personal_user not in fp.read_text(encoding="utf-8", errors="ignore"), f"Personal path leaked in {rel}"
+
+    # C3: User docs in ID & EN exist + Help dialog opens cleanly in ID & EN
+    readme = (repo_root / "README.md").read_text(encoding="utf-8")
+    assert "EasyFaceless Studio" in readme
+    assert "docs/branding/screens/final/" in readme
+    for rel in (
+        "docs/user/id/README.md",
+        "docs/user/id/mulai-cepat.md",
+        "docs/user/id/pengaturan-ai.md",
+        "docs/user/id/niche-preset.md",
+        "docs/user/id/galeri-visual.md",
+        "docs/user/id/capcut-ekspor.md",
+        "docs/user/id/tempat-sampah.md",
+        "docs/user/id/faq-troubleshooting.md",
+        "docs/user/en/README.md",
+        "docs/user/en/quick-start.md",
+        "docs/user/en/ai-settings.md",
+        "docs/user/en/niches-presets.md",
+        "docs/user/en/visual-gallery.md",
+        "docs/user/en/capcut-export.md",
+        "docs/user/en/trash-management.md",
+        "docs/user/en/faq-troubleshooting.md",
+    ):
+        assert (repo_root / rel).is_file(), f"Missing doc file: {rel}"
+
+    lv_file = str(repo_root / "webui" / "pages" / "1_🎬_Long_Video.py")
+    monkeypatch.setattr("app.services.longform.store.get_projects_root", lambda: tmp_path)
+    monkeypatch.setattr("app.services.longform.ui.components.get_projects_root", lambda: tmp_path)
+
+    for lang_code, expected_path in (("id", "docs/user/id/README.md"), ("en", "docs/user/en/README.md")):
+        monkeypatch.setitem(app_cfg.ui, "language", lang_code)
+        at = AppTest.from_file(lv_file)
+        at.session_state["ui_language"] = lang_code
+        at.query_params["lang"] = lang_code
+        at.run(timeout=20)
+        assert not at.exception
+        help_btn = at.button(key="efs_btn_help_longform")
+        assert help_btn is not None
+        help_btn.click().run(timeout=20)
+        assert not at.exception
+        dlg_md = "\n".join(str(m.value) for m in at.markdown)
+        assert expected_path in dlg_md
+        assert "THIRD_PARTY_NOTICES.md" in dlg_md
+
+
+

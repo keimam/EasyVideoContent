@@ -42,16 +42,11 @@ try:
 except Exception:
     pass
 
-# B3: Render MPT's native Settings dialog right on Long Video without switching pages
+# B3/C1: Render native Settings dialog right on Long Video via cached hook without switching pages
 if st.session_state.get("settings_dialog_open", False):
     try:
-        import importlib
-        st.session_state["_efs_settings_library_only"] = True
-        try:
-            _mpt_main = importlib.import_module("webui.Main")
-        finally:
-            st.session_state.pop("_efs_settings_library_only", None)
-        _mpt_main.render_embedded_settings_dialog()
+        from app.services.branding.hooks import open_embedded_settings_dialog
+        open_embedded_settings_dialog()
     except Exception as _exc:
         st.error(t("err_open_settings_dialog", err=str(_exc)))
 

@@ -25,6 +25,8 @@ ID_TRANSLATIONS: Dict[str, str] = {
     "nav_ai_settings_help": "Buka konfigurasi model AI (LLM, TTS, dan Gambar)",
     "nav_cache_storage": "Cache & Penyimpanan",
     "nav_cache_storage_help": "Periksa dan bersihkan cache video & materi",
+    "nav_help": "Bantuan",
+    "nav_help_tooltip": "Buka daftar panduan pengguna & pemecahan masalah",
     "nav_about": "Tentang",
     "nav_about_help": "Informasi versi aplikasi, catatan pihak ketiga, dan lisensi MIT",
     "sidebar_version_help": "Lihat detail versi dan lisensi aplikasi",
@@ -44,6 +46,20 @@ ID_TRANSLATIONS: Dict[str, str] = {
     "about_dialog_third_party_line": "Catatan pihak ketiga: [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)",
     "about_dialog_view_license": "Lihat lisensi",
     "about_dialog_license_missing": "Berkas LICENSE tidak ditemukan.",
+    "help_dialog_title": "Bantuan & Panduan Pengguna",
+    "help_dialog_intro": "Dokumentasi lengkap tersedia secara lokal di folder repositori berikut:",
+    "help_dialog_links_md": (
+        "- **[Ringkasan Aplikasi (README.md)](README.md)**\n"
+        "- **[Indeks Panduan Bahasa Indonesia](docs/user/id/README.md)**\n"
+        "  - [Mulai Cepat (Proyek → CapCut)](docs/user/id/mulai-cepat.md)\n"
+        "  - [Pengaturan API & Penyedia AI (LLM, TTS, Video AI, Error 402/404/429)](docs/user/id/pengaturan-ai.md)\n"
+        "  - [Niche & Preset Kustom](docs/user/id/niche-preset.md)\n"
+        "  - [Galeri Visual & Kata Kunci AI](docs/user/id/galeri-visual.md)\n"
+        "  - [Ekspor CapCut Desktop (v8.9.0 & Kalibrasi Teks)](docs/user/id/capcut-ekspor.md)\n"
+        "  - [Tempat Sampah & Penghapusan Proyek](docs/user/id/tempat-sampah.md)\n"
+        "  - [FAQ & Pemecahan Masalah](docs/user/id/faq-troubleshooting.md)\n"
+        "- **[English User Guide](docs/user/en/README.md)** · **[Pemberitahuan Pihak Ketiga](THIRD_PARTY_NOTICES.md)**"
+    ),
     "about_dialog_license": "Atribusi & Lisensi",
     "about_dialog_original_proj": "Proyek Asli:",
     "about_dialog_license_type": "Lisensi:",
@@ -813,6 +829,8 @@ EN_TRANSLATIONS: Dict[str, str] = {
     "nav_ai_settings_help": "Open AI model configuration (LLM, TTS, and Image)",
     "nav_cache_storage": "Cache & Storage",
     "nav_cache_storage_help": "Inspect and clean video & material cache",
+    "nav_help": "Help",
+    "nav_help_tooltip": "Open user guides & troubleshooting documentation links",
     "nav_about": "About",
     "nav_about_help": "App version, third-party notices, and MIT license info",
     "sidebar_version_help": "View app version and license details",
@@ -832,6 +850,20 @@ EN_TRANSLATIONS: Dict[str, str] = {
     "about_dialog_third_party_line": "Third-party notices: [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)",
     "about_dialog_view_license": "View license",
     "about_dialog_license_missing": "LICENSE file not found.",
+    "help_dialog_title": "Help & User Documentation",
+    "help_dialog_intro": "Complete user documentation is available locally in this repository:",
+    "help_dialog_links_md": (
+        "- **[Project Overview (README.md)](README.md)**\n"
+        "- **[English User Guide Index](docs/user/en/README.md)**\n"
+        "  - [Quick Start (Project → CapCut)](docs/user/en/quick-start.md)\n"
+        "  - [API & AI Provider Settings (LLM, TTS, AI Video, Errors 402/404/429)](docs/user/en/ai-settings.md)\n"
+        "  - [Niches & Custom Presets](docs/user/en/niches-presets.md)\n"
+        "  - [Visual Gallery & AI Keywords](docs/user/en/visual-gallery.md)\n"
+        "  - [CapCut Desktop Export (v8.9.0 & Text Calibration)](docs/user/en/capcut-export.md)\n"
+        "  - [Trash & Safe Project Deletion](docs/user/en/trash-management.md)\n"
+        "  - [FAQ & Troubleshooting](docs/user/en/faq-troubleshooting.md)\n"
+        "- **[Panduan Bahasa Indonesia](docs/user/id/README.md)** · **[Third-Party Notices](THIRD_PARTY_NOTICES.md)**"
+    ),
     "about_dialog_license": "Attribution & License",
     "about_dialog_original_proj": "Original Project:",
     "about_dialog_license_type": "License:",

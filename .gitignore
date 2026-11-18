@@ -1,7 +1,9 @@
 .DS_Store
 /config.toml
 /config.toml.bak
+*.backup*.toml
 /storage/
+**/_trash/
 /.idea/
 /app/services/__pycache__
 /app/__pycache__/
@@ -37,6 +39,10 @@ test_*.py
 !test/test_*.py
 !test/longform/*.py
 streamlit.log
+*.log
+.pytest_cache/
+temp_test_*/
+.temp_test_chrome/
 .coverage
 coverage.xml
 htmlcov/
