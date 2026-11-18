@@ -37,16 +37,21 @@ from app.services.longform.visual.base import compute_file_content_hash
 
 
 def get_repo_root() -> Path:
-    """Return repository root path."""
-    return Path(__file__).resolve().parent.parent.parent.parent.parent
+    """Return application/repository root path."""
+    from app.services.longform import app_paths
+
+    return app_paths.get_install_root()
 
 
 def get_global_cache_dir(repo_root: Optional[Path] = None) -> Path:
     """Return the resolved path to storage/longform_cache/."""
-    root = repo_root or get_repo_root()
-    cache_dir = root / "storage" / "longform_cache"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    return cache_dir
+    from app.services.longform import app_paths
+
+    if repo_root is not None:
+        cache_dir = Path(repo_root) / "storage" / "longform_cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        return cache_dir
+    return app_paths.get_longform_cache_dir(create=True)
 
 
 @dataclass

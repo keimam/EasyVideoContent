@@ -14,8 +14,12 @@ Dokumen ini dihasilkan secara otomatis untuk bagian dependensi Python oleh [`scr
 ## 2. Media, Font, & Integrasi Eksternal
 
 ### FFmpeg
-- **Build terdeteksi saat pembuatan:** `ffmpeg version 2025-11-17-git-e94439e49b-full_build-www.gyan.dev Copyright (c) 2000-2025 the FFmpeg developers`
-- **Lisensi:** GNU General Public License v3+ (GPLv3). EasyFaceless Studio memanggil biner eksternal `ffmpeg`/`ffprobe` sebagai subproses terpisah dan tidak mendistribusikan ulang kode sumber FFmpeg di repositori ini.
+- **Build dibundel pada paket Windows:** `ffmpeg version 2025-11-17-git-e94439e49b-full_build-www.gyan.dev Copyright (c) 2000-2025 the FFmpeg developers`
+- **Sumber build binary:** https://www.gyan.dev/ffmpeg/builds/
+- **Tautan source code resmi:** https://github.com/FFmpeg/FFmpeg/commit/e94439e49b (dan arsip resmi https://ffmpeg.org/download.html)
+- **Lisensi:** GNU General Public License v3 (GPLv3). Teks lengkap lisensi GPLv3 disertakan pada paket di [`licenses/FFMPEG-GPLv3-LICENSE.txt`](licenses/FFMPEG-GPLv3-LICENSE.txt) beserta rincian build di [`licenses/FFMPEG-BUILD-INFO.txt`](licenses/FFMPEG-BUILD-INFO.txt).
+- **Arsitektur pemanggilan:** EasyFaceless Studio memanggil biner eksternal `ffmpeg`/`ffprobe` sebagai subproses terpisah tanpa me-link ke kode Python aplikasi.
+- **Catatan opsi LGPL:** Build `win64-lgpl` (mis. `BtbN/FFmpeg-Builds`) mengecualikan `libx264`/`libx265` karena lisensi GPL; saat ini video pendek maupun video panjang masih memakai `-c:v libx264`, sehingga penggantian ke build LGPL membutuhkan perubahan codec default ke `libopenh264` atau encoder hardware (`h264_mf`/`h264_nvenc`).
 
 ### Tipografi: Plus Jakarta Sans
 - **Berkas:** `webui/static/fonts/PlusJakartaSans[wght].ttf`

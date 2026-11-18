@@ -7,12 +7,10 @@ stale lock takeover (K5).
 
 from __future__ import annotations
 
-import ctypes
 import json
 import os
 import shutil
 import socket
-import sys
 import time
 import uuid
 from datetime import datetime, timezone
@@ -23,6 +21,7 @@ from loguru import logger
 
 from pydantic import ValidationError
 
+from app.services.longform import app_paths, platform_utils
 from app.services.longform.config import load_longform_config
 from app.services.longform.hashing import (
     compute_audio_group_hash,
@@ -51,33 +50,8 @@ class ProjectNotFoundError(ProjectStoreError):
 
 
 def is_pid_alive(pid: int) -> bool:
-    """Check whether a given PID is still running.
-
-    Safe for Windows (uses Win32 OpenProcess/GetExitCodeProcess) and POSIX.
-    """
-    if pid <= 0:
-        return False
-
-    if sys.platform == "win32":
-        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-        STILL_ACTIVE = 259
-        kernel32 = ctypes.windll.kernel32
-        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
-        if not handle:
-            return False
-        try:
-            exit_code = ctypes.c_ulong()
-            if kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
-                return exit_code.value == STILL_ACTIVE
-            return False
-        finally:
-            kernel32.CloseHandle(handle)
-    else:
-        try:
-            os.kill(pid, 0)
-            return True
-        except OSError:
-            return False
+    """Check whether a given PID is still running (delegated to platform_utils)."""
+    return platform_utils.is_pid_alive(pid)
 
 
 class ProjectLock:
@@ -186,8 +160,7 @@ def clear_stop_request(project_dir: str | Path) -> None:
 
 def get_projects_root() -> Path:
     """Return the absolute path to storage/longform_projects/."""
-    repo_root = Path(__file__).resolve().parent.parent.parent.parent
-    return repo_root / "storage" / "longform_projects"
+    return app_paths.get_longform_projects_dir()
 
 
 def get_project_dir(project_id: str) -> Path:

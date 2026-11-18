@@ -2,50 +2,27 @@
 
 from __future__ import annotations
 
-import os
-import subprocess
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
 from loguru import logger
 
+from app.services.longform import platform_utils
+
 TEMPLATE_VERSION = "8.9.0"
 
 
 def is_capcut_running() -> bool:
-    """Check if CapCut Desktop process is currently running on Windows."""
-    try:
-        # Standard Windows tasklist command filtering for CapCut.exe
-        result = subprocess.run(
-            ["tasklist", "/FI", "IMAGENAME eq CapCut.exe", "/FO", "CSV"],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=5,
-        )
-        output = result.stdout or ""
-        # If running, output will contain '"CapCut.exe"'
-        for line in output.splitlines():
-            if "CapCut.exe" in line or "capcut.exe" in line.lower():
-                return True
-        return False
-    except Exception as exc:
-        logger.warning(f"Error checking CapCut process status: {exc}")
-        return False
+    """Check if CapCut Desktop process is currently running."""
+    return platform_utils.is_capcut_running()
 
 
 def detect_capcut_version() -> dict[str, Any]:
     """
-    Detect installed CapCut version from ProductInfo.xml.
+    Detect installed CapCut version from ProductInfo.xml / bundle metadata.
     Returns dictionary with version details.
     """
-    local_app = os.environ.get("LOCALAPPDATA")
-    if not local_app:
-        user_profile = os.environ.get("USERPROFILE", "")
-        if user_profile:
-            local_app = os.path.join(user_profile, "AppData", "Local")
-
     info = {
         "installed": False,
         "app_ver": None,
@@ -54,12 +31,11 @@ def detect_capcut_version() -> dict[str, Any]:
         "product_info_path": None,
     }
 
-    if not local_app:
+    product_xml = platform_utils.get_capcut_product_info_path()
+    if not product_xml:
         return info
 
-    apps_dir = Path(local_app) / "CapCut" / "Apps"
-    product_xml = apps_dir / "ProductInfo.xml"
-
+    apps_dir = product_xml.parent
     if product_xml.is_file():
         try:
             tree = ET.parse(product_xml)
@@ -82,17 +58,8 @@ def detect_capcut_version() -> dict[str, Any]:
 
 def detect_draft_folder() -> Path | None:
     """Detect CapCut user projects draft folder."""
-    local_app = os.environ.get("LOCALAPPDATA")
-    if not local_app:
-        user_profile = os.environ.get("USERPROFILE", "")
-        if user_profile:
-            local_app = os.path.join(user_profile, "AppData", "Local")
-
-    if not local_app:
-        return None
-
-    draft_folder = Path(local_app) / "CapCut" / "User Data" / "Projects" / "com.lveditor.draft"
-    if draft_folder.is_dir():
+    draft_folder = platform_utils.get_capcut_drafts_dir()
+    if draft_folder and draft_folder.is_dir():
         return draft_folder
     return None
 

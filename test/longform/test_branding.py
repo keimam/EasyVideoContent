@@ -601,10 +601,11 @@ def test_c3_c4_c5_help_dialog_docs_notices_and_repo_hygiene(tmp_path, monkeypatc
     for marker in ("8C.1", "8B.2", "C6", "C7"):
         assert marker in changelog
 
-    # C4: LICENSE keeps Harry copyright + EasyFaceless placeholder; THIRD_PARTY_NOTICES covers required stacks
+    # C4: LICENSE keeps Harry copyright + Naseh Ngulik owner; THIRD_PARTY_NOTICES covers required stacks
     lic = (repo_root / "LICENSE").read_text(encoding="utf-8")
     assert "Copyright (c) 2024 Harry" in lic
-    assert "[NAMA PEMILIK]" in lic
+    assert "Copyright (c) 2026 Naseh Ngulik" in lic
+    assert "[NAMA PEMILIK]" not in lic
     notices = (repo_root / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
     for section in ("FFmpeg", "Plus Jakarta Sans", "OFL", "Pixabay", "Pexels", "Coverr", "Edge TTS", "CapCut"):
         assert section in notices

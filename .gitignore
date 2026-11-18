@@ -46,6 +46,8 @@ temp_test_*/
 .coverage
 coverage.xml
 htmlcov/
+/build/
+/dist/
 .codegraph
 /docs/superpowers
 .understand-anything

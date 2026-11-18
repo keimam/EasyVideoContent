@@ -6,7 +6,9 @@ import html
 import streamlit as st
 
 from app.services.branding.constants import (
+    APP_COPYRIGHT_YEAR,
     APP_NAME,
+    APP_OWNER,
     APP_SHORT,
     APP_TAGLINE,
     APP_VERSION,
@@ -41,6 +43,7 @@ def _render_about_dialog_body():
     st.markdown(f"### {t('about_dialog_license')}")
     st.markdown(
         f"- {t('about_dialog_app_version', app_ver=APP_VERSION)}\n"
+        f"- {t('about_dialog_owner_line', owner=APP_OWNER, year=APP_COPYRIGHT_YEAR)}\n"
         f"- {t('about_dialog_core_version', core_ver=CORE_VERSION)}\n"
         f"- {t('about_dialog_built_on', url=UPSTREAM_REPO_URL)}\n"
         f"- **{t('about_dialog_original_proj')}** [{UPSTREAM_REPO_URL}]({UPSTREAM_REPO_URL})\n"
@@ -75,6 +78,44 @@ def _render_help_dialog_body():
 def show_help_dialog():
     """Open localized Help & Documentation dialog dynamically."""
     st.dialog(t("help_dialog_title"), width="large")(_render_help_dialog_body)()
+
+
+def _render_exit_app_dialog_body():
+    """Confirm and trigger clean application server shutdown (D3)."""
+    from app.services.longform.launcher_runtime import (
+        list_active_running_jobs,
+        request_app_shutdown,
+    )
+
+    active_jobs = list_active_running_jobs()
+    if active_jobs:
+        st.warning(t("exit_app_running_jobs_warning", count=len(active_jobs)))
+        for item in active_jobs[:5]:
+            st.caption(
+                t(
+                    "exit_app_job_item",
+                    project_id=item.get("project_id"),
+                    step=item.get("step"),
+                    pid=item.get("pid"),
+                )
+            )
+    else:
+        st.markdown(t("exit_app_confirm_desc"))
+
+    col_cancel, col_ok = st.columns(2)
+    with col_cancel:
+        if st.button(t("exit_app_btn_cancel"), key="btn_exit_app_cancel", use_container_width=True):
+            st.rerun()
+    with col_ok:
+        if st.button(t("exit_app_btn_confirm"), key="btn_exit_app_confirm", type="primary", use_container_width=True):
+            request_app_shutdown(stop_running_jobs=True)
+            st.success(t("exit_app_goodbye"))
+            st.stop()
+
+
+def show_exit_app_dialog():
+    """Open localized Exit App confirmation dialog dynamically (D3)."""
+    st.dialog(t("exit_app_dialog_title"))(_render_exit_app_dialog_body)()
 
 
 def _render_niche_dialog_body():
@@ -542,3 +583,12 @@ def render_brand_sidebar(current_page: str = "main"):
             help=t("nav_about_help"),
         ):
             show_about_dialog()
+
+        if st.button(
+            t("nav_exit_app"),
+            key=f"efs_btn_exit_app_{current_page}",
+            icon=":material/power_settings_new:",
+            use_container_width=True,
+            help=t("nav_exit_app_help"),
+        ):
+            show_exit_app_dialog()

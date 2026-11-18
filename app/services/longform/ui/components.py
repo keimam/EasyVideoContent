@@ -3343,20 +3343,9 @@ def render_visual_step_flow(
 
 def _safe_open_path(path: Path | str, is_folder: bool = False):
     """Safely open a file or directory using the OS default shell handler."""
-    p = Path(path).resolve()
-    if sys.platform == "win32":
-        try:
-            if is_folder and p.is_file():
-                subprocess.Popen(["explorer.exe", f"/select,{str(p)}"])
-            else:
-                os.startfile(str(p))
-        except Exception as exc:
-            logger.warning(f"Could not open path {p}: {exc}")
-    else:
-        try:
-            subprocess.Popen(["xdg-open", str(p)])
-        except Exception:
-            pass
+    from app.services.longform import platform_utils
+
+    platform_utils.open_path_in_os(path, is_folder=is_folder)
 
 
 # --- Step 4: Render Flow (Stage 7B.2 R1-R5) ---

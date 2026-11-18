@@ -854,6 +854,17 @@ ID_TRANSLATIONS: Dict[str, str] = {
     ),
     "openrouter_tag_reasoning": "reasoning",
     "openrouter_tag_random": "auto-acak",
+    # --- C8.2 / 8C.2 Installer, Owner & Shutdown ---
+    "about_dialog_owner_line": "**Pemilik & Pembuat Ekstensi:** {owner} (Copyright © {year})",
+    "nav_exit_app": "Tutup aplikasi",
+    "nav_exit_app_help": "Hentikan server EasyFaceless Studio dengan aman",
+    "exit_app_dialog_title": "Tutup EasyFaceless Studio?",
+    "exit_app_confirm_desc": "Server lokal EasyFaceless Studio akan dihentikan. Data proyek tetap tersimpan aman.",
+    "exit_app_running_jobs_warning": "⚠️ Masih ada **{count} tugas** yang sedang berjalan di latar belakang. Menutup aplikasi sekarang akan menghentikan proses tersebut:",
+    "exit_app_job_item": "• `{project_id}` ({step}, PID {pid})",
+    "exit_app_btn_cancel": "Batal",
+    "exit_app_btn_confirm": "Ya, tutup aplikasi",
+    "exit_app_goodbye": "Aplikasi sedang ditutup dengan aman. Anda dapat menutup tab browser ini.",
 }
 
 
@@ -1700,6 +1711,17 @@ EN_TRANSLATIONS: Dict[str, str] = {
     ),
     "openrouter_tag_reasoning": "reasoning",
     "openrouter_tag_random": "auto-random",
+    # --- 8C.2 Installer, Owner & Shutdown ---
+    "about_dialog_owner_line": "**Owner & Extension Author:** {owner} (Copyright © {year})",
+    "nav_exit_app": "Exit App",
+    "nav_exit_app_help": "Safely stop the EasyFaceless Studio local server",
+    "exit_app_dialog_title": "Exit EasyFaceless Studio?",
+    "exit_app_confirm_desc": "The local EasyFaceless Studio server will stop. Your project files remain safely saved.",
+    "exit_app_running_jobs_warning": "⚠️ **{count} background job(s)** are still running. Closing the app now will stop them:",
+    "exit_app_job_item": "• `{project_id}` ({step}, PID {pid})",
+    "exit_app_btn_cancel": "Cancel",
+    "exit_app_btn_confirm": "Yes, close app",
+    "exit_app_goodbye": "Application is shutting down safely. You can close this browser tab.",
 }
 
 

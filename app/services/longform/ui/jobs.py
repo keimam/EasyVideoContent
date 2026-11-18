@@ -21,6 +21,8 @@ from typing import Any, Dict, List, Optional
 
 from loguru import logger
 
+from app.services.longform import app_paths, platform_utils
+
 
 class JobLaunchError(RuntimeError):
     """Raised when a background job cannot be started (e.g. missing executable or CLI script)."""
@@ -28,8 +30,8 @@ class JobLaunchError(RuntimeError):
 
 
 def get_repo_root() -> Path:
-    """Return the repository root containing cli_longform.py."""
-    return Path(__file__).resolve().parents[4]
+    """Return the application root containing cli_longform.py."""
+    return app_paths.get_install_root()
 
 
 def get_cli_script_path(repo_root: Optional[Path] = None) -> Path:
@@ -317,10 +319,8 @@ def start_job(
     # Clear any lingering stop marker from previous cancellation (D2)
     clear_stop_request(p_dir)
 
-    # 4. Configure process creation flags (D2: Completely headless without console window)
-    creationflags = 0
-    if sys.platform == "win32":
-        creationflags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
+    # 4. Configure process creation flags via platform_utils (D2: Completely headless without console window)
+    creationflags = platform_utils.get_hidden_subprocess_flags()
 
     repo_root = (cwd or get_repo_root()).resolve()
     if not repo_root.is_dir():
@@ -431,13 +431,7 @@ def cancel_job(project_id: str, timeout_seconds: float = 15.0) -> bool:
             except subprocess.TimeoutExpired:
                 proc.kill()
         elif pid and is_pid_alive(pid):
-            if sys.platform == "win32":
-                subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True)
-            else:
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                except OSError:
-                    pass
+            platform_utils.terminate_process_tree(pid, force=True, timeout=5.0)
         cancelled = True
 
     clear_stop_request(p_dir)
@@ -445,7 +439,7 @@ def cancel_job(project_id: str, timeout_seconds: float = 15.0) -> bool:
 
     state["status"] = "cancelled"
     state["finished_at"] = datetime.now().isoformat()
-    state["exit_code"] = -signal.SIGTERM if sys.platform != "win32" else 3221225786
+    state["exit_code"] = platform_utils.get_cancelled_exit_code()
     _save_job_state_to_disk(project_id, state)
     _ACTIVE_PROCESSES.pop(project_id, None)
 

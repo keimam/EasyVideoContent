@@ -26,6 +26,7 @@ Tujuannya adalah menjaga kemudahan sinkronisasi (merge/rebase) dari repositori u
 | **Tahap 8B.1** | `webui/Main.py` (B3) | ~31 baris | Penyatuan penyedia AI Long Video; Addendum B3 menambahkan guard `_efs_settings_library_only` + `render_embedded_settings_dialog()` di `webui/Main.py` agar dialog Settings MPT dapat dibuka langsung di halaman aktif Long Video tanpa `switch_page` |
 | **Tahap 8B.2** | `webui/Main.py`, `webui/i18n/id.json`, `webui/i18n/en.json` (C6) | ~16 baris | Fitur AI F1–F15 + Addendum C6 (pembersihan string UI "MoneyPrinterTurbo"/"MPT" menjadi "EasyFaceless Studio" / nama fitur, mempertahankan kotak MIT sidebar & dialog Tentang) |
 | **Tahap 8C.1** | `webui/Main.py` (diperkecil), `.gitignore` | `webui/Main.py` dipangkas ke 46 baris (`20+`, `26-` vs `v1.3.10`) | Pemindahan hook `Main.py` ke `app/services/branding/hooks.py` (target << 97 baris tercapai), penghapusan duplikat `STAGE7_WEBUI.md`, perapian `screens/final/` & `scripts/dev/`, dokumentasi `README.md` + `docs/user/{id,en}/` + `THIRD_PARTY_NOTICES.md` + `CHANGELOG.md` + `LICENSE` |
+| **Tahap 8C.2** | `app/paths.py`, `.gitignore` | ~18 baris di `app/paths.py` (`try/except` hook) | Menghubungkan `runtime_root()`, `config_template()`, dan `resource_directory()` ke `app_paths.py` agar mode instalasi Windows menyimpan `config.toml` & `storage/` ke `%LOCALAPPDATA%\EasyFaceless Studio` sementara mode source tetap di root repo; menambahkan `/build/` dan `/dist/` di `.gitignore` |
 
 ---
 

@@ -24,18 +24,16 @@ from pathlib import Path
 
 from loguru import logger
 
-# Reconfigure stdout/stderr for UTF-8 on Windows console
-if sys.platform == "win32":
-    try:
-        sys.stdout.reconfigure(encoding="utf-8")
-        sys.stderr.reconfigure(encoding="utf-8")
-    except Exception:
-        pass
-
-# Ensure repo root is on sys.path
+# Ensure repo root is on sys.path before importing local modules
 REPO_ROOT = Path(__file__).resolve().parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+from app.services.longform.app_paths import bootstrap_runtime_environment
+from app.services.longform.platform_utils import configure_console_utf8
+
+configure_console_utf8()
+bootstrap_runtime_environment()
 
 from app.services.longform.config import load_longform_config
 from app.services.longform.hashing import (
