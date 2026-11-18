@@ -198,9 +198,12 @@ def test_apptest_branding_main_page(monkeypatch):
         has_brand = any("EasyFaceless Studio" in t for t in md_texts)
         assert has_brand, "EasyFaceless Studio brand title not found in Main.py"
 
-        # 2. MIT Attribution rendered
-        has_mit = any("MoneyPrinterTurbo (MIT)" in t for t in md_texts)
-        assert has_mit, "MIT attribution not found in Main.py sidebar footer"
+        # 2. C7: Sidebar attribution box removed; compact clickable version line v1.0.0 present
+        assert not any("MoneyPrinterTurbo" in str(t) for t in md_texts), (
+            "Sidebar must not render the old attribution box (C7)"
+        )
+        ver_btn = at.button(key="efs_btn_version_main")
+        assert ver_btn is not None and ver_btn.label == "v1.0.0"
 
         # 3. 5 Sidebar navigation / setting items present
         page_link_labels = [str(pl.label) for pl in at.page_link]
@@ -228,8 +231,11 @@ def test_apptest_branding_long_video_page(tmp_path, monkeypatch):
     assert not at.exception, f"Long Video threw exceptions: {[e.value for e in at.exception]}"
 
     md_texts = [m.value for m in at.markdown]
-    has_mit = any("MoneyPrinterTurbo (MIT)" in t for t in md_texts)
-    assert has_mit, "MIT attribution not found in Long Video sidebar footer"
+    assert not any("MoneyPrinterTurbo" in str(t) for t in md_texts), (
+        "Long Video sidebar must not render the old attribution box (C7)"
+    )
+    ver_btn = at.button(key="efs_btn_version_longform")
+    assert ver_btn is not None and ver_btn.label == "v1.0.0"
 
     page_link_labels = [str(pl.label) for pl in at.page_link]
     button_labels = [str(b.label) for b in at.button]
@@ -438,11 +444,67 @@ def test_r2_sidebar_click_all_items_long_video_page(tmp_path, monkeypatch):
     about_btn.click().run(timeout=15)
     assert not at4.exception, f"Long Video Tentang threw exception: {[e.value for e in at4.exception]}"
     assert any("MoneyPrinterTurbo" in m.value for m in at4.markdown)
+    assert any("MIT" in m.value for m in at4.markdown)
     assert not any("Navigasi Studio" in s.value for s in at4.subheader)
 
 
+def test_c7_about_dialog_contains_license_and_sidebar_version_opens_dialog(tmp_path, monkeypatch):
+    """C7: Sidebar has compact clickable v1.0.0 without attribution box; Tentang/About dialog has MoneyPrinterTurbo, MIT, THIRD_PARTY_NOTICES, and full LICENSE text."""
+    from streamlit.testing.v1 import AppTest
+    from app.config import config as app_cfg
+
+    repo_root = Path(__file__).resolve().parents[2]
+    lv_file = str(repo_root / "webui" / "pages" / "1_🎬_Long_Video.py")
+    license_text = (repo_root / "LICENSE").read_text(encoding="utf-8").strip()
+
+    monkeypatch.setattr("app.services.longform.store.get_projects_root", lambda: tmp_path)
+    monkeypatch.setattr("app.services.longform.ui.components.get_projects_root", lambda: tmp_path)
+
+    for lang_code, expected_exp, expected_core in (
+        ("id", "Lihat lisensi", "Versi inti MPT"),
+        ("en", "View license", "MPT core version"),
+    ):
+        monkeypatch.setitem(app_cfg.ui, "language", lang_code)
+        # 1. Sidebar initial render: no attribution box, has clickable version button
+        at = AppTest.from_file(lv_file)
+        at.session_state["ui_language"] = lang_code
+        at.query_params["lang"] = lang_code
+        at.run(timeout=20)
+        assert not at.exception
+        assert not any("MoneyPrinterTurbo" in str(m.value) for m in at.markdown)
+        ver_btn = at.button(key="efs_btn_version_longform")
+        assert ver_btn is not None and ver_btn.label == "v1.0.0"
+
+        # 2. Clicking clickable version button opens About dialog with MIT attribution + LICENSE file content
+        ver_btn.click().run(timeout=20)
+        assert not at.exception
+        dlg_md = "\n".join(str(m.value) for m in at.markdown)
+        assert "MoneyPrinterTurbo" in dlg_md
+        assert "harry0703" in dlg_md
+        assert "MIT License" in dlg_md
+        assert expected_core in dlg_md
+        assert "THIRD_PARTY_NOTICES.md" in dlg_md
+        exps = [e for e in at.expander if str(getattr(e, "label", "")) == expected_exp]
+        assert exps, f"License expander '{expected_exp}' not found in About dialog ({lang_code})"
+        code_blocks = "\n".join(str(getattr(c, "value", "")) for c in at.code)
+        assert "Permission is hereby granted, free of charge" in code_blocks
+        assert license_text in code_blocks
+
+        # 3. Clicking 'Tentang'/'About' button opens the exact same About dialog
+        at2 = AppTest.from_file(lv_file)
+        at2.session_state["ui_language"] = lang_code
+        at2.query_params["lang"] = lang_code
+        at2.run(timeout=20)
+        about_btn = at2.button(key="efs_btn_about_longform")
+        assert about_btn is not None
+        about_btn.click().run(timeout=20)
+        assert not at2.exception
+        assert any("MoneyPrinterTurbo" in str(m.value) for m in at2.markdown)
+        assert license_text in "\n".join(str(getattr(c, "value", "")) for c in at2.code)
+
+
 def test_c6_no_moneyprinter_or_mpt_in_ui_strings(tmp_path, monkeypatch):
-    """C6 scanner: UI translations, tooltips, page titles, and rendered labels exclude MoneyPrinterTurbo/MPT outside explicit allowlist."""
+    """C6+C7 scanner: UI translations, tooltips, page titles, and initial rendered UI exclude MoneyPrinterTurbo/MPT outside About dialog & legal files."""
     import json
     import re
     from streamlit.testing.v1 import AppTest
@@ -452,12 +514,16 @@ def test_c6_no_moneyprinter_or_mpt_in_ui_strings(tmp_path, monkeypatch):
     url_re = re.compile(r"https?://\S+")
     banned_re = re.compile(r"MoneyPrinterTurbo|MoneyPrinter|\bMPT\b", re.IGNORECASE)
 
-    # 1. Scan Long Video i18n dictionaries (allowlist: Tentang/About attribution & MIT footer prefix only)
+    # 1. Scan Long Video i18n dictionaries (C7: attribution only inside Tentang/About dialog keys)
     i18n_allowlist = {
-        "built_on_mpt",
-        "nav_about_help",
         "about_dialog_title",
         "about_dialog_desc",
+        "about_dialog_app_version",
+        "about_dialog_core_version",
+        "about_dialog_built_on",
+        "about_dialog_third_party_line",
+        "about_dialog_view_license",
+        "about_dialog_license_missing",
         "about_dialog_license",
         "about_dialog_original_proj",
         "about_dialog_license_type",
@@ -490,7 +556,7 @@ def test_c6_no_moneyprinter_or_mpt_in_ui_strings(tmp_path, monkeypatch):
                 f"C6 violation in webui/i18n/{json_name}['{k}']: {v!r}"
             )
 
-    # 3. Verify Main.py header/title fallbacks and rendered Long Video page (ID & EN)
+    # 3. Verify Main.py header/title fallbacks and initial rendered Long Video page (ID & EN)
     main_src = (repo_root / "webui" / "Main.py").read_text(encoding="utf-8")
     assert '_main_page_title = "MoneyPrinterTurbo"' not in main_src
     assert '<span class="mpt-brand__name">MoneyPrinterTurbo</span>' not in main_src
@@ -508,19 +574,13 @@ def test_c6_no_moneyprinter_or_mpt_in_ui_strings(tmp_path, monkeypatch):
         btn_and_link_labels = [str(b.label) for b in at.button] + [str(pl.label) for pl in at.page_link]
         assert not any("MoneyPrinter" in lbl for lbl in btn_and_link_labels), btn_and_link_labels
         assert not any(lbl.startswith("← Video Pendek") or lbl.startswith("← Short Video") for lbl in btn_and_link_labels)
-        # Non-MIT markdown/titles/captions/help tooltips must not leak MoneyPrinterTurbo
+        # C7: Even sidebar no longer contains MoneyPrinterTurbo/MPT anywhere on initial render!
         for md in at.markdown:
             txt = str(md.value)
-            if "MoneyPrinterTurbo (MIT)" in txt or "github.com/harry0703/MoneyPrinterTurbo" in txt:
-                continue
-            assert not banned_re.search(url_re.sub("", txt)), f"Markdown leaked C6: {txt!r}"
+            assert not banned_re.search(url_re.sub("", txt)), f"Markdown leaked C6/C7: {txt!r}"
         for elem in list(at.button) + list(at.page_link):
             help_txt = str(getattr(elem, "help", "") or "")
             assert "(Aktif)" not in help_txt and "(Active" not in help_txt, help_txt
-            if str(getattr(elem, "key", "") or "").startswith("efs_btn_about_"):
-                continue
-            assert not banned_re.search(url_re.sub("", help_txt)), f"Tooltip leaked C6: {help_txt!r}"
-        # Allowlisted MIT footer box MUST remain present!
-        assert any("MoneyPrinterTurbo (MIT)" in str(m.value) for m in at.markdown)
+            assert not banned_re.search(url_re.sub("", help_txt)), f"Tooltip leaked C6/C7: {help_txt!r}"
 
 

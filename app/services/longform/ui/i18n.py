@@ -26,7 +26,8 @@ ID_TRANSLATIONS: Dict[str, str] = {
     "nav_cache_storage": "Cache & Penyimpanan",
     "nav_cache_storage_help": "Periksa dan bersihkan cache video & materi",
     "nav_about": "Tentang",
-    "nav_about_help": "Informasi versi, lisensi MIT, dan atribusi MoneyPrinterTurbo",
+    "nav_about_help": "Informasi versi aplikasi, catatan pihak ketiga, dan lisensi MIT",
+    "sidebar_version_help": "Lihat detail versi dan lisensi aplikasi",
     "built_on_mpt": "Dibangun di atas",
     "active_page_indicator": "(Aktif)",
 
@@ -37,6 +38,12 @@ ID_TRANSLATIONS: Dict[str, str] = {
         "mendukung pembuatan naskah, sintesis suara, visualisasi shot otomatis, penggabungan musik latar, "
         "dan integrasi pengeditan timeline CapCut Desktop."
     ),
+    "about_dialog_app_version": "**Versi aplikasi:** v{app_ver}",
+    "about_dialog_core_version": "**Versi inti MPT:** v{core_ver}",
+    "about_dialog_built_on": "Dibangun di atas [MoneyPrinterTurbo]({url}) oleh harry0703 (MIT License).",
+    "about_dialog_third_party_line": "Catatan pihak ketiga: [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)",
+    "about_dialog_view_license": "Lihat lisensi",
+    "about_dialog_license_missing": "Berkas LICENSE tidak ditemukan.",
     "about_dialog_license": "Atribusi & Lisensi",
     "about_dialog_original_proj": "Proyek Asli:",
     "about_dialog_license_type": "Lisensi:",
@@ -807,7 +814,8 @@ EN_TRANSLATIONS: Dict[str, str] = {
     "nav_cache_storage": "Cache & Storage",
     "nav_cache_storage_help": "Inspect and clean video & material cache",
     "nav_about": "About",
-    "nav_about_help": "Version info, MIT license, and MoneyPrinterTurbo attribution",
+    "nav_about_help": "App version, third-party notices, and MIT license info",
+    "sidebar_version_help": "View app version and license details",
     "built_on_mpt": "Built on",
     "active_page_indicator": "(Active Page)",
 
@@ -818,6 +826,12 @@ EN_TRANSLATIONS: Dict[str, str] = {
         "supporting script generation, voice synthesis, automatic shot visualization, background music mixing, "
         "and CapCut Desktop timeline export."
     ),
+    "about_dialog_app_version": "**App version:** v{app_ver}",
+    "about_dialog_core_version": "**MPT core version:** v{core_ver}",
+    "about_dialog_built_on": "Built on [MoneyPrinterTurbo]({url}) by harry0703 (MIT License).",
+    "about_dialog_third_party_line": "Third-party notices: [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)",
+    "about_dialog_view_license": "View license",
+    "about_dialog_license_missing": "LICENSE file not found.",
     "about_dialog_license": "Attribution & License",
     "about_dialog_original_proj": "Original Project:",
     "about_dialog_license_type": "License:",
