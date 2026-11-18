@@ -66,16 +66,15 @@ def show_about_dialog():
 
 
 def _render_help_dialog_body():
-    """Dialog body linking to bilingual user guides in docs/user/ (C3)."""
-    st.markdown(t("help_dialog_intro"))
-    st.markdown(t("help_dialog_links_md"))
-    if st.button(t("dialog_close"), key="btn_close_help_dialog", use_container_width=True):
-        st.rerun()
+    """Dialog body rendering the in-app Help document viewer (C8.1)."""
+    from app.services.branding.help_viewer import render_help_dialog_body
+
+    render_help_dialog_body()
 
 
 def show_help_dialog():
     """Open localized Help & Documentation dialog dynamically."""
-    st.dialog(t("help_dialog_title"))(_render_help_dialog_body)()
+    st.dialog(t("help_dialog_title"), width="large")(_render_help_dialog_body)()
 
 
 def _render_niche_dialog_body():

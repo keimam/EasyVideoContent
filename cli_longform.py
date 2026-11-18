@@ -583,6 +583,43 @@ def cmd_project_dev_simulate(args: argparse.Namespace) -> int:
 # STAGE 2 CLI COMMANDS: SCRIPT GENERATION & QUALITY
 # =========================================================================
 
+def _handle_script_cli_error(proj_dir: Path, step_name: str, exc: Exception, fallback_prefix: str) -> int:
+    """Print tagged sanitized script error to stderr and record it into job_state.json (C8.2)."""
+    from app.services.longform.llm_adapter import (
+        LLMAuthError,
+        LLMConfigurationError,
+        LLMCreditError,
+        LLMDailyQuotaError,
+        LLMEmptyResponseError,
+        LLMModelNotFoundError,
+        LLMRateLimitError,
+        sanitize_error,
+    )
+
+    clean = sanitize_error(str(exc))
+    if isinstance(exc, LLMConfigurationError):
+        tag_msg = f"[CONFIGURATION ERROR] {clean}"
+    elif isinstance(exc, LLMAuthError):
+        tag_msg = f"[AUTH_ERROR] {clean}"
+    elif isinstance(exc, LLMDailyQuotaError):
+        tag_msg = f"[DAILY_QUOTA] {clean}"
+    elif isinstance(exc, LLMModelNotFoundError):
+        tag_msg = f"[MODEL_NOT_FOUND] Model={exc.model} | {clean}"
+    elif isinstance(exc, LLMCreditError):
+        tag_msg = f"[CREDIT_ERROR] {clean}"
+    elif isinstance(exc, LLMRateLimitError):
+        tag_msg = f"[DAILY_QUOTA] {clean}" if getattr(exc, "is_daily", False) else f"[RATE_LIMIT] {clean}"
+    elif isinstance(exc, LLMEmptyResponseError):
+        tag = "[EMPTY_REASONING]" if (exc.has_reasoning or exc.finish_reason == "length") else "[EMPTY_RESPONSE]"
+        tag_msg = f"{tag} {clean}"
+    else:
+        tag_msg = f"{fallback_prefix}: {clean}"
+
+    print(f"\n{tag_msg}\n", file=sys.stderr)
+    _record_job_failure(proj_dir, step_name, tag_msg, 1)
+    return 1
+
+
 def cmd_script_outline(args: argparse.Namespace) -> int:
     """Generate structured outline with candidate titles, hook, and chapters (2.3, 2.6)."""
     project_dir = get_project_dir(args.project_id)
@@ -590,12 +627,6 @@ def cmd_script_outline(args: argparse.Namespace) -> int:
         print(f"Error: Project '{args.project_id}' not found at {project_dir}", file=sys.stderr)
         return 1
 
-    from app.services.longform.llm_adapter import (
-        LLMConfigurationError,
-        LLMCreditError,
-        LLMModelNotFoundError,
-        LLMRateLimitError,
-    )
     from app.services.longform.script_generator import ScriptGenerator
     generator = ScriptGenerator(project_dir=project_dir, provider=args.provider, model=args.model)
 
@@ -613,24 +644,11 @@ def cmd_script_outline(args: argparse.Namespace) -> int:
         )
         if getattr(args, "write", False):
             generator.write_chapters()
-    except LLMConfigurationError as exc:
-        print(f"\n[CONFIGURATION ERROR] {exc}\n", file=sys.stderr)
-        return 1
-    except LLMModelNotFoundError as exc:
-        print(f"\n[MODEL_NOT_FOUND] Model={exc.model} | {exc}\n", file=sys.stderr)
-        return 1
-    except LLMCreditError as exc:
-        print(f"\n[CREDIT_ERROR] {exc}\n", file=sys.stderr)
-        return 1
-    except LLMRateLimitError as exc:
-        print(f"\n[RATE_LIMIT] {exc}\n", file=sys.stderr)
-        return 1
     except KeyboardInterrupt:
         print("\n[SCRIPT OUTLINE INTERRUPTED] KeyboardInterrupt received. Safely exiting.\n", file=sys.stderr)
         return 130
     except Exception as exc:
-        print(f"Error generating outline: {exc}", file=sys.stderr)
-        return 1
+        return _handle_script_cli_error(project_dir, "script_ai", exc, "Error generating outline")
 
     print(f"\nScript Outline Generated Successfully for Project: {args.project_id}")
     print("=" * 65)
@@ -657,12 +675,6 @@ def cmd_script_write(args: argparse.Namespace) -> int:
         print(f"Error: Project '{args.project_id}' not found at {project_dir}", file=sys.stderr)
         return 1
 
-    from app.services.longform.llm_adapter import (
-        LLMConfigurationError,
-        LLMCreditError,
-        LLMModelNotFoundError,
-        LLMRateLimitError,
-    )
     from app.services.longform.script_generator import ScriptGenerator
     generator = ScriptGenerator(
         project_dir=project_dir,
@@ -679,24 +691,11 @@ def cmd_script_write(args: argparse.Namespace) -> int:
         full_script = generator.write_chapters(
             fail_at_chapter=args.fail_at,
         )
-    except LLMConfigurationError as exc:
-        print(f"\n[CONFIGURATION ERROR] {exc}\n", file=sys.stderr)
-        return 1
-    except LLMModelNotFoundError as exc:
-        print(f"\n[MODEL_NOT_FOUND] Model={exc.model} | {exc}\n", file=sys.stderr)
-        return 1
-    except LLMCreditError as exc:
-        print(f"\n[CREDIT_ERROR] {exc}\n", file=sys.stderr)
-        return 1
-    except LLMRateLimitError as exc:
-        print(f"\n[RATE_LIMIT] {exc}\n", file=sys.stderr)
-        return 1
     except KeyboardInterrupt:
         print("\n[SCRIPT WRITE INTERRUPTED] KeyboardInterrupt received. Safely exiting without saving incomplete chapter.\n", file=sys.stderr)
         return 130
     except Exception as exc:
-        print(f"Error writing script chapters: {exc}", file=sys.stderr)
-        return 1
+        return _handle_script_cli_error(project_dir, "script_ai", exc, "Error writing script chapters")
 
     print(f"\nScript Writing Completed Successfully for Project: {args.project_id}")
     print("-" * 65)
@@ -715,12 +714,6 @@ def cmd_script_rewrite(args: argparse.Namespace) -> int:
         print(f"Error: Project '{args.project_id}' not found at {project_dir}", file=sys.stderr)
         return 1
 
-    from app.services.longform.llm_adapter import (
-        LLMConfigurationError,
-        LLMCreditError,
-        LLMModelNotFoundError,
-        LLMRateLimitError,
-    )
     from app.services.longform.script_generator import ScriptGenerator
 
     generator = ScriptGenerator(
@@ -730,21 +723,13 @@ def cmd_script_rewrite(args: argparse.Namespace) -> int:
     )
     try:
         full_script = generator.rewrite_chapter(chapter_index=int(args.chapter))
-    except LLMConfigurationError as exc:
-        print(f"\n[CONFIGURATION ERROR] {exc}\n", file=sys.stderr)
-        return 1
-    except LLMModelNotFoundError as exc:
-        print(f"\n[MODEL_NOT_FOUND] Model={exc.model} | {exc}\n", file=sys.stderr)
-        return 1
-    except LLMCreditError as exc:
-        print(f"\n[CREDIT_ERROR] {exc}\n", file=sys.stderr)
-        return 1
-    except LLMRateLimitError as exc:
-        print(f"\n[RATE_LIMIT] {exc}\n", file=sys.stderr)
-        return 1
+    except KeyboardInterrupt:
+        print("\n[SCRIPT REWRITE INTERRUPTED] KeyboardInterrupt received. Safely exiting.\n", file=sys.stderr)
+        return 130
     except Exception as exc:
-        print(f"Error rewriting chapter {args.chapter}: {exc}", file=sys.stderr)
-        return 1
+        return _handle_script_cli_error(
+            project_dir, "script_ai", exc, f"Error rewriting chapter {args.chapter}"
+        )
 
     print(f"\nChapter {args.chapter} Rewritten Successfully for Project: {args.project_id}")
     print(f"  Saved Full Script: {full_script}\n")

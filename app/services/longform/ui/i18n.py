@@ -812,6 +812,48 @@ ID_TRANSLATIONS: Dict[str, str] = {
     "prog_voice_timeline": "Menyusun timeline audio bab…",
     "prog_render_chapters": "Merender bab ({done}/{total} bab)…",
     "prog_render_chapter_pct": "Merender bab {chapter} ({done}/{total} bab, {pct}%)…",
+    # --- C8 Additions (Help Viewer, Friendly Errors, OpenRouter Quota & Reasoning) ---
+    "help_doc_select_label": "Pilih dokumen panduan",
+    "help_doc_lang_label": "Bahasa dokumen",
+    "help_doc_source_label": "Berkas sumber:",
+    "help_doc_missing": "Berkas dokumen tidak ditemukan: `{path}`",
+    "help_doc_related_label": "Dokumen terkait (klik untuk membuka):",
+    "llm_err_empty_reasoning": (
+        "Model mengembalikan teks kosong karena batas token habis terpakai untuk reasoning internal. "
+        "Matikan reasoning atau pilih model non-reasoning di Opsi AI."
+    ),
+    "llm_err_invalid_key_401": (
+        "Kunci API tidak valid atau kedaluwarsa (401) — periksa dan perbarui kunci API di Pengaturan Penyedia AI."
+    ),
+    "llm_err_daily_quota_openrouter": (
+        "Kuota harian gratis OpenRouter habis — OpenRouter membatasi **50 request/hari** tanpa top-up "
+        "atau **1.000 request/hari** setelah top-up \\$10 sekali; reset pukul **07.00 WIB** (00.00 UTC). "
+        "Mengganti API key di akun OpenRouter yang sama tidak menambah kuota."
+    ),
+    "llm_err_job_failed_summary": "Proses gagal dengan alasan berikut: **{reason}**",
+    "btn_check_or_quota": "Cek kuota",
+    "or_quota_summary": (
+        "Kuota OpenRouter ({tier}): pemakaian harian kredit `{usage_daily}` · sisa batas kredit `{limit_remaining}`"
+    ),
+    "or_quota_free_daily_line": (
+        "Kuota model gratis harian: terpakai **{used}** / **{limit}** (sisa **{remaining}**)"
+    ),
+    "or_quota_free_tier_hint": (
+        "Akun Free Tier (50 request/hari; menjadi 1.000 request/hari setelah top-up \\$10 sekali, reset 07.00 WIB / 00.00 UTC)."
+    ),
+    "or_quota_paid_tier_hint": (
+        "Akun dengan saldo/riwayat top-up (batas model gratis 1.000 request/hari, reset 07.00 WIB / 00.00 UTC)."
+    ),
+    "or_quota_error": "Gagal mengecek kuota OpenRouter: {error}",
+    "openrouter_filter_free_only": "Utamakan & tampilkan model `:free` saja",
+    "openrouter_free_router_note": (
+        "Catatan: `openrouter/free` memilih model gratis secara acak; bila sering kosong/reasoning, muat daftar model lalu pilih model `:free` non-reasoning."
+    ),
+    "openrouter_reasoning_model_warning": (
+        "⚠️ Model `{model}` termasuk model **reasoning**. Token bisa habis untuk proses berpikir sebelum teks narasi keluar — disarankan memilih model non-reasoning `:free` bila hasil pendek/kosong."
+    ),
+    "openrouter_tag_reasoning": "reasoning",
+    "openrouter_tag_random": "auto-acak",
 }
 
 
@@ -1616,6 +1658,48 @@ EN_TRANSLATIONS: Dict[str, str] = {
     "prog_voice_timeline": "Building chapter audio timeline…",
     "prog_render_chapters": "Rendering chapters ({done}/{total} chapters)…",
     "prog_render_chapter_pct": "Rendering chapter {chapter} ({done}/{total} chapters, {pct}%)…",
+    # --- C8 Additions (Help Viewer, Friendly Errors, OpenRouter Quota & Reasoning) ---
+    "help_doc_select_label": "Select guide document",
+    "help_doc_lang_label": "Document language",
+    "help_doc_source_label": "Source file:",
+    "help_doc_missing": "Document file not found: `{path}`",
+    "help_doc_related_label": "Related documents (click to open):",
+    "llm_err_empty_reasoning": (
+        "The model returned empty text because tokens were exhausted on internal reasoning. "
+        "Disable reasoning or choose a non-reasoning model in AI Options."
+    ),
+    "llm_err_invalid_key_401": (
+        "Invalid or expired API key (401) — verify and update your API key in AI Provider Settings."
+    ),
+    "llm_err_daily_quota_openrouter": (
+        "OpenRouter daily free quota exhausted — OpenRouter limits free models to **50 requests/day** without top-up "
+        "or **1,000 requests/day** after a one-time \\$10 top-up; resets at **00:00 UTC** (07:00 WIB). "
+        "Creating a new API key on the same OpenRouter account does not increase this quota."
+    ),
+    "llm_err_job_failed_summary": "Process failed: **{reason}**",
+    "btn_check_or_quota": "Check quota",
+    "or_quota_summary": (
+        "OpenRouter quota ({tier}): daily credit usage `{usage_daily}` · remaining credit limit `{limit_remaining}`"
+    ),
+    "or_quota_free_daily_line": (
+        "Daily free-model requests: used **{used}** / **{limit}** (remaining **{remaining}**)"
+    ),
+    "or_quota_free_tier_hint": (
+        "Free Tier account (50 requests/day; 1,000 requests/day after a one-time \\$10 top-up, resets 00:00 UTC / 07:00 WIB)."
+    ),
+    "or_quota_paid_tier_hint": (
+        "Account with top-up history (1,000 free-model requests/day limit, resets 00:00 UTC / 07:00 WIB)."
+    ),
+    "or_quota_error": "Failed to check OpenRouter quota: {error}",
+    "openrouter_filter_free_only": "Show & prioritize `:free` models only",
+    "openrouter_free_router_note": (
+        "Note: `openrouter/free` routes to a random free model; if output is empty or slow, load models and pick an explicit non-reasoning `:free` model."
+    ),
+    "openrouter_reasoning_model_warning": (
+        "⚠️ Model `{model}` is a **reasoning** model. Output tokens may be consumed by internal thinking before visible text — prefer a non-reasoning `:free` model if drafts come back short/empty."
+    ),
+    "openrouter_tag_reasoning": "reasoning",
+    "openrouter_tag_random": "auto-random",
 }
 
 

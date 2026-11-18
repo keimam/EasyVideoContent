@@ -654,7 +654,10 @@ def test_c3_c4_c5_help_dialog_docs_notices_and_repo_hygiene(tmp_path, monkeypatc
     monkeypatch.setattr("app.services.longform.store.get_projects_root", lambda: tmp_path)
     monkeypatch.setattr("app.services.longform.ui.components.get_projects_root", lambda: tmp_path)
 
-    for lang_code, expected_path in (("id", "docs/user/id/README.md"), ("en", "docs/user/en/README.md")):
+    for lang_code, expected_path, expected_body in (
+        ("id", "docs/user/id/README.md", "Panduan Pengguna EasyFaceless Studio"),
+        ("en", "docs/user/en/README.md", "EasyFaceless Studio User Guide"),
+    ):
         monkeypatch.setitem(app_cfg.ui, "language", lang_code)
         at = AppTest.from_file(lv_file)
         at.session_state["ui_language"] = lang_code
@@ -666,8 +669,8 @@ def test_c3_c4_c5_help_dialog_docs_notices_and_repo_hygiene(tmp_path, monkeypatc
         help_btn.click().run(timeout=20)
         assert not at.exception
         dlg_md = "\n".join(str(m.value) for m in at.markdown)
-        assert expected_path in dlg_md
-        assert "THIRD_PARTY_NOTICES.md" in dlg_md
+        assert expected_body in dlg_md
+        assert expected_path in "\n".join(str(c.value) for c in at.caption)
 
 
 

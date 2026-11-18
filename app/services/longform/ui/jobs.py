@@ -171,6 +171,35 @@ def is_job_step_completed(project_id: str, step: str) -> bool:
     return False
 
 
+def extract_last_error_from_logs(project_id: str, max_lines: int = 80) -> Optional[str]:
+    """Extract the most informative recent error line from the project's job log (C8.2)."""
+    lines = get_job_logs(project_id, max_lines=max_lines)
+    if not lines:
+        return None
+    tagged_markers = (
+        "[EMPTY_REASONING]",
+        "[DAILY_QUOTA]",
+        "[AUTH_ERROR]",
+        "[CREDIT_ERROR]",
+        "[MODEL_NOT_FOUND]",
+        "[RATE_LIMIT]",
+        "[CONFIGURATION ERROR]",
+        "[EMPTY_RESPONSE]",
+    )
+    for ln in reversed(lines):
+        s = ln.strip()
+        if any(m in s for m in tagged_markers):
+            return s
+    for ln in reversed(lines):
+        s = ln.strip()
+        low = s.lower()
+        if not s:
+            continue
+        if any(k in low for k in ("error:", "exception", "rate limit", "402", "401", "404", "429", "empty text content", "failed")):
+            return s
+    return None
+
+
 def get_job_state(project_id: str) -> Optional[Dict[str, Any]]:
     """Get the current job state for a project, refreshing live status if running."""
     cleanup_stale_lock(project_id)
@@ -209,6 +238,10 @@ def get_job_state(project_id: str) -> Optional[Dict[str, Any]]:
                         state["status"] = "stopped"
                     else:
                         state["status"] = "failed" if not is_job_step_completed(project_id, step) else "completed"
+                        if state["status"] == "failed" and not state.get("error_message"):
+                            inferred_err = extract_last_error_from_logs(project_id)
+                            if inferred_err:
+                                state["error_message"] = inferred_err
                 _save_job_state_to_disk(project_id, state)
                 _ACTIVE_PROCESSES.pop(project_id, None)
         elif pid and not is_pid_alive(pid):
@@ -229,6 +262,10 @@ def get_job_state(project_id: str) -> Optional[Dict[str, Any]]:
             else:
                 state["status"] = "failed"
                 state["exit_code"] = state.get("exit_code") or -1
+                if not state.get("error_message"):
+                    inferred_err = extract_last_error_from_logs(project_id)
+                    if inferred_err:
+                        state["error_message"] = inferred_err
             _save_job_state_to_disk(project_id, state)
 
     return state

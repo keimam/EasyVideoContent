@@ -21,10 +21,14 @@ from app.services.longform.hashing import hash_string, normalize_text
 from app.services.longform.language_guard import normalize_language_code
 from app.services.longform.llm_adapter import (
     LLMAdapter,
+    LLMAuthError,
     LLMCreditError,
+    LLMDailyQuotaError,
     LLMModelNotFoundError,
     get_llm_readiness,
 )
+
+AI_KEYWORDS_BATCH_SIZE = 15
 from app.services.longform.schema import Chapter, ItemStatus, ProjectManifest, Shot
 from app.services.longform.visual.cache import get_global_cache_dir
 from app.services.longform.visual.keyword_translator import (
@@ -830,128 +834,125 @@ def generate_chapter_visual_keywords_ai(
             "examples": examples,
         }
 
-    # 3. Issue ONE batched LLM call for this chapter (bounded max_tokens + reasoning minimization)
-    payload_items: List[Dict[str, Any]] = []
-    for shot, src_text, _c_key, part_idx, part_total, focus_clause in pending:
-        item: Dict[str, Any] = {
-            "id": shot.shot_id,
-            "narration": src_text,
-        }
-        if part_total > 1:
-            item["part"] = f"{part_idx}/{part_total}"
-            item["focus_clause"] = focus_clause
-        payload_items.append(item)
+    # 3. Issue batched LLM calls in chunks of 10-20 shots (default 15) with per-shot caching
+    llm_calls = 0
+    fallback_used = False
+    chunk_size = max(10, min(20, AI_KEYWORDS_BATCH_SIZE))
+    for start_idx in range(0, len(pending), chunk_size):
+        chunk = pending[start_idx : start_idx + chunk_size]
+        payload_items: List[Dict[str, Any]] = []
+        for shot, src_text, _c_key, part_idx, part_total, focus_clause in chunk:
+            item: Dict[str, Any] = {
+                "id": shot.shot_id,
+                "narration": src_text,
+            }
+            if part_total > 1:
+                item["part"] = f"{part_idx}/{part_total}"
+                item["focus_clause"] = focus_clause
+            payload_items.append(item)
 
-    prompt = _build_visual_keywords_batch_prompt(
-        payload_items,
-        source_lang=norm_lang,
-        preset_snapshot=snap,
-        project_topic=project_topic,
-        chapter_title=getattr(chapter, "chapter_title", None),
-        sub_niche_focus=sub_niche_focus,
-        visual_summary=visual_summary,
-        anchor_terms=clean_anchors,
-        avoid_terms=clean_avoids,
-    )
-    batch_max_tokens = min(2400, max(520, 95 * len(pending) + 260))
-
-    try:
-        content, used_prov, used_model = _invoke_translation_llm(
-            prompt, llm_adapter=llm_adapter, max_tokens=batch_max_tokens
+        prompt = _build_visual_keywords_batch_prompt(
+            payload_items,
+            source_lang=norm_lang,
+            preset_snapshot=snap,
+            project_topic=project_topic,
+            chapter_title=getattr(chapter, "chapter_title", None),
+            sub_niche_focus=sub_niche_focus,
+            visual_summary=visual_summary,
+            anchor_terms=clean_anchors,
+            avoid_terms=clean_avoids,
         )
-        llm_calls = 1
-        mapping = _extract_json_any_dict(content)
-        for shot, src_text, c_key, _part_idx, _part_total, focus_clause in pending:
-            raw_q = mapping.get(shot.shot_id)
-            alts = _build_concrete_query_alternatives(
-                raw_q,
-                anchor_terms=clean_anchors,
-                visual_keywords=vis_terms,
+        batch_max_tokens = min(2400, max(520, 95 * len(chunk) + 260))
+
+        try:
+            content, used_prov, used_model = _invoke_translation_llm(
+                prompt, llm_adapter=llm_adapter, max_tokens=batch_max_tokens
             )
-            if alts:
-                q_clean = alts[0]
-                shot.search_query_en = q_clean
-                shot.search_queries_en = alts
-                shot.search_query_source = "ai"
-                shot.search_query_reason = None
-                if not shot.search_query:
-                    shot.search_query = q_clean
-                cache[c_key] = {
-                    "lang": norm_lang,
-                    "en": q_clean,
-                    "alts": alts,
-                    "provider": used_prov,
-                    "model": used_model,
-                }
-                updated += 1
-                examples.append({
-                    "shot_id": shot.shot_id,
-                    "narration": src_text,
-                    "focus": focus_clause,
-                    "query": q_clean,
-                    "alternatives": ", ".join(alts[1:]),
-                    "source": "ai",
-                })
-            else:
-                ext_q = extract_short_search_query(focus_clause or src_text, visual_keywords=vis_terms)
+            llm_calls += 1
+            mapping = _extract_json_any_dict(content)
+            for shot, src_text, c_key, _part_idx, _part_total, focus_clause in chunk:
+                raw_q = mapping.get(shot.shot_id)
+                alts = _build_concrete_query_alternatives(
+                    raw_q,
+                    anchor_terms=clean_anchors,
+                    visual_keywords=vis_terms,
+                )
+                if alts:
+                    q_clean = alts[0]
+                    shot.search_query_en = q_clean
+                    shot.search_queries_en = alts
+                    shot.search_query_source = "ai"
+                    shot.search_query_reason = None
+                    if not shot.search_query:
+                        shot.search_query = q_clean
+                    cache[c_key] = {
+                        "lang": norm_lang,
+                        "en": q_clean,
+                        "alts": alts,
+                        "provider": used_prov,
+                        "model": used_model,
+                    }
+                    updated += 1
+                    examples.append({
+                        "shot_id": shot.shot_id,
+                        "narration": src_text,
+                        "focus": focus_clause,
+                        "query": q_clean,
+                        "alternatives": ", ".join(alts[1:]),
+                        "source": "ai",
+                    })
+                else:
+                    ext_q = extract_short_search_query(focus_clause or src_text, visual_keywords=vis_terms)
+                    shot.search_query = shot.search_query or ext_q
+                    shot.search_query_source = "extraction"
+                    shot.search_query_reason = "ai_empty_mapping"
+                    if norm_lang == "en" and not shot.search_query_en:
+                        shot.search_query_en = ext_q
+                    updated += 1
+            _save_ai_kw_cache(cache, cache_dir)
+        except (LLMAuthError, LLMCreditError, LLMDailyQuotaError, LLMModelNotFoundError):
+            raise
+        except Exception as exc:
+            llm_calls += 1
+            fallback_used = True
+            short_err = str(exc).strip().splitlines()[0][:120]
+            warning = f"AI gagal ({type(exc).__name__}): {short_err}"
+            logger.warning(warning)
+            for shot, src_text, _c_key, _p_i, _p_t, focus_clause in chunk:
+                ext_q = extract_short_search_query(
+                    focus_clause or src_text,
+                    visual_keywords=vis_terms,
+                    topic_keywords=snap.get("topic_keywords"),
+                    required_subject_terms=snap.get("required_subject_terms"),
+                )
                 shot.search_query = shot.search_query or ext_q
                 shot.search_query_source = "extraction"
-                shot.search_query_reason = "ai_empty_mapping"
+                shot.search_query_reason = f"ai_failed:{type(exc).__name__}: {short_err}"
                 if norm_lang == "en" and not shot.search_query_en:
                     shot.search_query_en = ext_q
                 updated += 1
 
-        _differentiate_duplicate_same_sentence_queries(shots, chapter, snap)
-        # Sync differentiated queries back into cache/examples
-        for shot, _src_text, c_key, _p_i, _p_t, _fc in pending:
-            if shot.search_query_source == "ai" and shot.search_query_en and c_key in cache:
-                cache[c_key]["en"] = shot.search_query_en
-                if getattr(shot, "search_queries_en", None):
-                    cache[c_key]["alts"] = list(shot.search_queries_en)
-        for ex in examples:
-            sh_obj = next((p[0] for p in pending if p[0].shot_id == ex["shot_id"]), None)
-            if sh_obj and sh_obj.search_query_en:
-                ex["query"] = sh_obj.search_query_en
-        _save_ai_kw_cache(cache, cache_dir)
-        return {
-            "updated": updated,
-            "skipped_locked": skipped_locked,
-            "tag_preserved": tag_preserved,
-            "cached": cached_hits,
-            "llm_calls": llm_calls,
-            "fallback_used": False,
-            "warning": warning,
-            "examples": examples,
-        }
-    except (LLMCreditError, LLMModelNotFoundError):
-        raise
-    except Exception as exc:
-        short_err = str(exc).strip().splitlines()[0][:120]
-        warn_msg = f"AI gagal ({type(exc).__name__}): {short_err}"
-        logger.warning(warn_msg)
-        for shot, src_text, _c_key, _p_i, _p_t, focus_clause in pending:
-            ext_q = extract_short_search_query(
-                focus_clause or src_text,
-                visual_keywords=vis_terms,
-                topic_keywords=snap.get("topic_keywords"),
-                required_subject_terms=snap.get("required_subject_terms"),
-            )
-            shot.search_query = shot.search_query or ext_q
-            shot.search_query_source = "extraction"
-            shot.search_query_reason = f"ai_failed:{type(exc).__name__}: {short_err}"
-            if norm_lang == "en" and not shot.search_query_en:
-                shot.search_query_en = ext_q
-            updated += 1
-        return {
-            "updated": updated,
-            "skipped_locked": skipped_locked,
-            "tag_preserved": tag_preserved,
-            "cached": cached_hits,
-            "llm_calls": 1,
-            "fallback_used": True,
-            "warning": warn_msg,
-            "examples": examples,
-        }
+    _differentiate_duplicate_same_sentence_queries(shots, chapter, snap)
+    for shot, _src_text, c_key, _p_i, _p_t, _fc in pending:
+        if shot.search_query_source == "ai" and shot.search_query_en and c_key in cache:
+            cache[c_key]["en"] = shot.search_query_en
+            if getattr(shot, "search_queries_en", None):
+                cache[c_key]["alts"] = list(shot.search_queries_en)
+    for ex in examples:
+        sh_obj = next((p[0] for p in pending if p[0].shot_id == ex["shot_id"]), None)
+        if sh_obj and sh_obj.search_query_en:
+            ex["query"] = sh_obj.search_query_en
+    _save_ai_kw_cache(cache, cache_dir)
+    return {
+        "updated": updated,
+        "skipped_locked": skipped_locked,
+        "tag_preserved": tag_preserved,
+        "cached": cached_hits,
+        "llm_calls": llm_calls,
+        "fallback_used": fallback_used,
+        "warning": warning,
+        "examples": examples,
+    }
 
 
 def update_project_visual_keywords_ai(
