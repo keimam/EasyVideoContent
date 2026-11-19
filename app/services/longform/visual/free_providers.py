@@ -221,6 +221,8 @@ class _FreeApiProviderBase(BaseVisualProvider):
         anchor_terms: Optional[List[str]],
         avoid_terms: Optional[List[str]],
         min_relevance_score: Optional[float],
+        narration_text: Optional[str] = None,
+        strict_ai_relevance: bool = False,
     ) -> Tuple[List[VisualCandidate], int, List[str]]:
         """Apply resolution preference (>=720p unless no alt), license check, and relevance scoring."""
         excluded = excluded_ids or set()
@@ -255,6 +257,8 @@ class _FreeApiProviderBase(BaseVisualProvider):
                 avoid_terms=avoid_terms,
                 min_relevance_score=min_relevance_score,
                 is_low_res=is_low_res,
+                narration_text=narration_text,
+                strict_ai_relevance=strict_ai_relevance,
             )
             if not is_valid:
                 rejected_reasons.append(reason)
@@ -481,6 +485,8 @@ class WikimediaVisualProvider(_FreeApiProviderBase):
             anchor_terms=anchor_terms,
             avoid_terms=avoid_terms,
             min_relevance_score=min_relevance_score,
+            narration_text=kwargs.get("narration_text"),
+            strict_ai_relevance=bool(kwargs.get("strict_ai_relevance", False)),
         )
         return accepted, len(page_iter), (rejected_early + rej_score)
 
@@ -611,6 +617,8 @@ class NasaVisualProvider(_FreeApiProviderBase):
             anchor_terms=anchor_terms,
             avoid_terms=avoid_terms,
             min_relevance_score=min_relevance_score,
+            narration_text=kwargs.get("narration_text"),
+            strict_ai_relevance=bool(kwargs.get("strict_ai_relevance", False)),
         )
         resolved_accepted: List[VisualCandidate] = []
         for cand in accepted:
@@ -717,6 +725,8 @@ class OpenverseVisualProvider(_FreeApiProviderBase):
             anchor_terms=anchor_terms,
             avoid_terms=avoid_terms,
             min_relevance_score=min_relevance_score,
+            narration_text=kwargs.get("narration_text"),
+            strict_ai_relevance=bool(kwargs.get("strict_ai_relevance", False)),
         )
         return accepted, len(results), (rejected_early + rej_score)
 

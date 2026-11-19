@@ -244,6 +244,81 @@ def _extract_fallback_tags(query: str, source_info: Optional[Dict[str, Any]] = N
     return tags
 
 
+_DIGITAL_OFFICE_TRAP_TAGS = {
+    "keyboard",
+    "typing",
+    "laptop",
+    "computer",
+    "pc",
+    "desktop",
+    "mouse",
+    "smartphone",
+    "gaming",
+    "coding",
+    "tablet",
+    "monitor",
+    "notebook",
+}
+
+_GENERIC_NARRATION_NOUNS = {
+    "workplace",
+    "work",
+    "working",
+    "office",
+    "business",
+    "project",
+    "people",
+    "person",
+    "thing",
+    "things",
+    "time",
+    "day",
+    "year",
+    "years",
+    "history",
+    "historical",
+    "story",
+    "part",
+    "side",
+    "way",
+    "place",
+    "others",
+}
+
+_NARRATION_VERB_NOISE = {
+    "some", "died", "while", "caused", "beneath", "under", "extreme", "many",
+    "most", "more", "very", "such", "much", "also", "then", "when", "where",
+    "there", "their", "these", "those", "could", "would", "should", "might",
+    "built", "made", "used", "took", "went", "came", "kept", "held", "began",
+    "started", "became", "remained", "continued", "suffered", "later", "early",
+}
+
+
+def extract_narration_nouns(narration_text: Optional[str]) -> Tuple[List[str], List[str]]:
+    """Extract (concrete_nouns, generic_nouns) from narration text for non-AI candidate ranking (D9.7)."""
+    raw_words = re.findall(r"[a-z]{3,}", (narration_text or "").lower())
+    concrete: List[str] = []
+    generic: List[str] = []
+    seen: set[str] = set()
+    for w in raw_words:
+        if w in STOP_WORDS or w in GENERIC_WORDS or w in ABSTRACT_WORDS or w in NUMBER_WORDS or w in _NARRATION_VERB_NOISE:
+            continue
+        forms = [w]
+        if len(w) > 4 and w.endswith("es"):
+            forms.append(w[:-2])
+        elif len(w) > 3 and w.endswith("s"):
+            forms.append(w[:-1])
+        norm = forms[-1]
+        if norm in seen:
+            continue
+        seen.add(norm)
+        if w in _GENERIC_NARRATION_NOUNS or norm in _GENERIC_NARRATION_NOUNS:
+            generic.append(norm)
+        else:
+            concrete.append(norm)
+    return concrete, generic
+
+
 def score_candidate_relevance(
     candidate_tags: List[str],
     search_query: str,
@@ -255,6 +330,8 @@ def score_candidate_relevance(
     avoid_terms: Optional[List[str]] = None,
     min_relevance_score: Optional[float] = None,
     is_low_res: bool = False,
+    narration_text: Optional[str] = None,
+    strict_ai_relevance: bool = False,
 ) -> Tuple[bool, float, str]:
     """Score candidate relevance against search query, preset rules, and project anchor/avoid terms (S1, S5, T3, F12)."""
     req_terms = [t.lower().strip() for t in (required_subject_terms or []) if str(t or "").strip()]
@@ -339,6 +416,24 @@ def score_candidate_relevance(
     if is_low_res:
         score = max(0.05, score - 0.20)
 
+    # D9.7: Prioritize concrete narration nouns & reject unrequested office/keyboard mismatches
+    conc_narration_nouns, gen_narration_nouns = extract_narration_nouns(narration_text)
+    if conc_narration_nouns or gen_narration_nouns:
+        conc_hits = sum(1 for n in conc_narration_nouns if term_matches_tags(n, cand_tags))
+        gen_hits = sum(1 for n in gen_narration_nouns if term_matches_tags(n, cand_tags))
+        asked_tokens = set(re.findall(r"[a-z]+", f"{search_query or ''} {narration_text or ''}".lower()))
+        head_tags = " ".join(cand_tags[:8])
+        trap_hits = [
+            tp for tp in _DIGITAL_OFFICE_TRAP_TAGS
+            if tp not in asked_tokens and re.search(rf"\b{re.escape(tp)}\b", head_tags)
+        ]
+        if trap_hits and conc_hits == 0:
+            score = max(0.0, score - 0.20)
+        elif conc_hits > 0:
+            score = min(1.0, score + min(conc_hits * 0.07, 0.21))
+        elif gen_hits > 0:
+            score = min(1.0, score + min(gen_hits * 0.02, 0.04))
+
     score = round(score, 3)
 
     # F12: Anchor penalty & rejection when zero anchor terms match candidate tags
@@ -346,9 +441,10 @@ def score_candidate_relevance(
         score = round(min(score * 0.35, max(0.0, min_thresh - 0.10)), 3)
         return False, score, "No anchor_terms matched candidate tags"
 
-    # T3: Minimum threshold enforcement
-    if score < min_thresh:
-        return False, score, f"Score {score:.3f} below minimum threshold {min_thresh:.2f}"
+    # T3 + D9.7: Minimum threshold enforcement (stricter pre-filter when ai_relevance is enabled)
+    effective_min = max(float(min_thresh), 0.42) if strict_ai_relevance else float(min_thresh)
+    if score < effective_min:
+        return False, score, f"Score {score:.3f} below minimum threshold {effective_min:.2f}"
 
     return True, score, "Accepted"
 
@@ -686,6 +782,8 @@ class StockVisualProvider(BaseVisualProvider):
         raw_total_count = 0
         rejected_reasons_log: List[str] = []
         min_sec = max(int(target_duration), 2)
+        narration_txt = kwargs.get("narration_text")
+        strict_ai = bool(kwargs.get("strict_ai_relevance", False))
 
         has_pixabay = _has_non_empty_key("pixabay_api_keys")
         has_pexels = _has_non_empty_key("pexels_api_keys")
@@ -721,6 +819,8 @@ class StockVisualProvider(BaseVisualProvider):
                             avoid_terms=avoid_terms,
                             min_relevance_score=min_relevance_score,
                             is_low_res=raw.get("is_low_res", False),
+                            narration_text=narration_txt,
+                            strict_ai_relevance=strict_ai,
                         )
                         if not is_valid:
                             rejected_reasons_log.append(reason)
@@ -781,6 +881,8 @@ class StockVisualProvider(BaseVisualProvider):
                             anchor_terms=anchor_terms,
                             avoid_terms=avoid_terms,
                             min_relevance_score=min_relevance_score,
+                            narration_text=narration_txt,
+                            strict_ai_relevance=strict_ai,
                         )
                         if not is_valid:
                             rejected_reasons_log.append(reason)
@@ -842,6 +944,8 @@ class StockVisualProvider(BaseVisualProvider):
                         anchor_terms=anchor_terms,
                         avoid_terms=avoid_terms,
                         min_relevance_score=min_relevance_score,
+                        narration_text=narration_txt,
+                        strict_ai_relevance=strict_ai,
                     )
                     if not is_valid:
                         continue
@@ -902,6 +1006,8 @@ class StockVisualProvider(BaseVisualProvider):
                         anchor_terms=anchor_terms,
                         avoid_terms=avoid_terms,
                         min_relevance_score=min_relevance_score,
+                        narration_text=narration_txt,
+                        strict_ai_relevance=strict_ai,
                     )
                     if not is_valid:
                         continue

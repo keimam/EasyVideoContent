@@ -423,6 +423,420 @@ class VisualService:
 
         return True
 
+    @staticmethod
+    def _get_shot_narration_text(manifest: ProjectManifest, shot: Shot) -> str:
+        """Return concatenated narration text for a shot from its chapter segments (D9.7)."""
+        seg_ids = set(getattr(shot, "segment_indices", []) or [])
+        for ch in getattr(manifest, "chapters", []) or []:
+            if ch.chapter_index != shot.chapter_index:
+                continue
+            if seg_ids:
+                parts = [
+                    str(seg.narration_text or "").strip()
+                    for g in (getattr(ch, "tts_groups", []) or [])
+                    for seg in (getattr(g, "segments", []) or [])
+                    if seg.segment_index in seg_ids and str(seg.narration_text or "").strip()
+                ]
+                if parts:
+                    return " ".join(parts)
+            return str(getattr(shot, "visual_prompt", "") or "").strip()
+        return str(getattr(shot, "visual_prompt", "") or "").strip()
+
+    @staticmethod
+    def _build_shot_query_ladder(
+        shot: Shot,
+        manifest: ProjectManifest,
+        *,
+        explicit_prompt: Optional[str] = None,
+    ) -> Tuple[str, List[Tuple[str, Optional[str]]]]:
+        """Build deduplicated multi-tier (query, category) escalation ladder for any shot search (D9.7)."""
+        from app.services.longform.visual.stock import (
+            build_generalized_visual_queries,
+            build_short_core_queries,
+            extract_narrower_query,
+            restructure_stock_query,
+        )
+
+        preset_snap = manifest.preset_snapshot or {}
+        req_terms = preset_snap.get("required_subject_terms") or []
+        stock_cat = preset_snap.get("stock_category")
+        topic_kws = preset_snap.get("topic_keywords") or []
+        visual_kws = preset_snap.get("visual_keywords") or []
+        proj_anchors = list(getattr(manifest, "visual_anchor_terms", []) or [])
+
+        raw_query = (
+            str(explicit_prompt or "").strip()
+            or getattr(shot, "search_query_en", None)
+            or shot.search_query
+            or shot.visual_prompt
+            or "cinematic scene"
+        )
+        ordered_base_queries: List[str] = []
+        for q_cand in ([raw_query] + list(getattr(shot, "search_queries_en", []) or [])):
+            qc = str(q_cand or "").strip()
+            if qc and qc.lower() not in [x.lower() for x in ordered_base_queries]:
+                ordered_base_queries.append(qc)
+
+        query_tiers: List[Tuple[str, Optional[str]]] = []
+        for bq in ordered_base_queries:
+            if req_terms:
+                restruct_q = restructure_stock_query(bq, req_terms, topic_kws)
+                query_tiers.append((restruct_q, stock_cat))
+                query_tiers.append((restruct_q, None))
+            query_tiers.append((bq, stock_cat))
+            query_tiers.append((bq, None))
+
+        for bq in ordered_base_queries:
+            for short_q in build_short_core_queries(bq, proj_anchors):
+                query_tiers.append((short_q, None))
+            for gen_q in build_generalized_visual_queries(
+                bq,
+                anchor_terms=proj_anchors,
+                topic_keywords=topic_kws,
+                visual_keywords=visual_kws,
+            ):
+                query_tiers.append((gen_q, None))
+        narrow_q = extract_narrower_query(raw_query, req_terms)
+        if narrow_q:
+            query_tiers.append((narrow_q, None))
+
+        if proj_anchors:
+            if len(proj_anchors) >= 2 and " " not in proj_anchors[0] and " " not in proj_anchors[1]:
+                query_tiers.append((f"{proj_anchors[0]} {proj_anchors[1]}", None))
+            for anc_term in proj_anchors[:5]:
+                if anc_term:
+                    query_tiers.append((anc_term, None))
+        for vk in visual_kws[:3]:
+            if vk:
+                query_tiers.append((vk, stock_cat))
+
+        seen_tiers: set[Tuple[str, Optional[str]]] = set()
+        dedup_tiers: List[Tuple[str, Optional[str]]] = []
+        for qt_pair in query_tiers:
+            k_pair = (qt_pair[0].lower(), qt_pair[1])
+            if qt_pair[0].strip() and k_pair not in seen_tiers:
+                seen_tiers.add(k_pair)
+                dedup_tiers.append(qt_pair)
+        return raw_query, dedup_tiers
+
+    def _call_provider_search(
+        self,
+        provider: BaseVisualProvider,
+        *,
+        query: str,
+        target_duration: float,
+        limit: int,
+        excluded_ids: Optional[Set[str]],
+        req_terms: List[str],
+        block_terms: List[str],
+        neg_terms: List[str],
+        anchor_terms: Optional[List[str]],
+        avoid_terms: List[str],
+        min_rel_score: Optional[float],
+        visual_kws: List[str],
+        category: Optional[str],
+        narration_text: str,
+        strict_ai_relevance: bool,
+    ) -> Tuple[List[VisualCandidate], int, List[str]]:
+        """Invoke provider search_with_diagnostics or search_candidates with graceful stub compatibility."""
+        search_kwargs: Dict[str, Any] = {
+            "query": query,
+            "target_duration": target_duration,
+            "limit": limit,
+            "excluded_ids": excluded_ids,
+        }
+        if hasattr(provider, "search_with_diagnostics"):
+            try:
+                return provider.search_with_diagnostics(
+                    required_subject_terms=req_terms,
+                    blocked_terms=block_terms,
+                    negative_terms=neg_terms,
+                    anchor_terms=anchor_terms,
+                    avoid_terms=avoid_terms,
+                    min_relevance_score=min_rel_score,
+                    visual_keywords=visual_kws,
+                    category=category,
+                    narration_text=narration_text,
+                    strict_ai_relevance=strict_ai_relevance,
+                    **search_kwargs,
+                )
+            except TypeError:
+                return provider.search_with_diagnostics(
+                    required_subject_terms=req_terms,
+                    blocked_terms=block_terms,
+                    negative_terms=neg_terms,
+                    anchor_terms=anchor_terms,
+                    avoid_terms=avoid_terms,
+                    min_relevance_score=min_rel_score,
+                    visual_keywords=visual_kws,
+                    category=category,
+                    **search_kwargs,
+                )
+
+        try:
+            cands = provider.search_candidates(
+                required_subject_terms=req_terms,
+                blocked_terms=block_terms,
+                negative_terms=neg_terms,
+                anchor_terms=anchor_terms,
+                avoid_terms=avoid_terms,
+                min_relevance_score=min_rel_score,
+                visual_keywords=visual_kws,
+                category=category,
+                narration_text=narration_text,
+                strict_ai_relevance=strict_ai_relevance,
+                **search_kwargs,
+            )
+        except TypeError:
+            try:
+                cands = provider.search_candidates(
+                    required_subject_terms=req_terms,
+                    blocked_terms=block_terms,
+                    negative_terms=neg_terms,
+                    anchor_terms=anchor_terms,
+                    avoid_terms=avoid_terms,
+                    min_relevance_score=min_rel_score,
+                    visual_keywords=visual_kws,
+                    category=category,
+                    **search_kwargs,
+                )
+            except TypeError:
+                try:
+                    cands = provider.search_candidates(
+                        required_subject_terms=req_terms,
+                        blocked_terms=block_terms,
+                        visual_keywords=visual_kws,
+                        **search_kwargs,
+                    )
+                except TypeError:
+                    cands = provider.search_candidates(**search_kwargs)
+        cands_list = list(cands or [])
+        return cands_list, len(cands_list), []
+
+    def _search_shot_across_providers(
+        self,
+        shot: Shot,
+        manifest: ProjectManifest,
+        *,
+        providers_order: List[str],
+        explicit_prompt: Optional[str] = None,
+        limit: int = 5,
+        excluded_ids: Optional[Set[str]] = None,
+        allow_waterfall: bool = True,
+        allow_fake_fallback: bool = False,
+        strict_ai_relevance: bool = False,
+        initial_fallback_reason: Optional[str] = None,
+    ) -> Tuple[List[VisualCandidate], Optional[BaseVisualProvider], str, List[Dict[str, Any]], Optional[str]]:
+        """Shared candidate search used identically by fetch_all, Otomatis, Search again, and candidate grid (D9.7)."""
+        preset_snap = manifest.preset_snapshot or {}
+        req_terms = preset_snap.get("required_subject_terms") or []
+        block_terms = preset_snap.get("blocked_terms") or []
+        neg_terms = preset_snap.get("negative_terms") or []
+        min_rel_score = preset_snap.get("min_relevance_score", 0.35)
+        visual_kws = preset_snap.get("visual_keywords") or []
+        proj_anchors = list(getattr(manifest, "visual_anchor_terms", []) or [])
+        proj_avoids = list(getattr(manifest, "visual_avoid_terms", []) or [])
+
+        raw_query, dedup_tiers = self._build_shot_query_ladder(
+            shot, manifest, explicit_prompt=explicit_prompt
+        )
+        narration_txt = self._get_shot_narration_text(manifest, shot)
+
+        candidates: List[VisualCandidate] = []
+        chosen_provider: Optional[BaseVisualProvider] = None
+        fallback_reason: Optional[str] = initial_fallback_reason
+        chosen_query = raw_query
+        attempts_log: List[Dict[str, Any]] = []
+
+        for prov_name in providers_order:
+            if is_stop_requested(self.project_dir):
+                break
+            try:
+                active_provider = self.get_provider(prov_name, manifest)
+                if prov_name in ("fake", "local"):
+                    active_provider.validate_credentials()
+            except VisualConfigurationError as conf_err:
+                if not allow_waterfall and allow_fake_fallback:
+                    fallback_reason = f"Provider '{prov_name}' credentials missing ({conf_err}); fell back to fake provider"
+                    active_provider = FakeVisualProvider(mode=prov_name)
+                elif allow_waterfall:
+                    attempts_log.append({
+                        "provider": prov_name,
+                        "query": raw_query,
+                        "raw_count": 0,
+                        "accepted_count": 0,
+                        "rejected_reasons": [],
+                        "error": str(conf_err)[:120],
+                    })
+                    continue
+                else:
+                    raise
+            except Exception as exc:
+                if allow_waterfall:
+                    attempts_log.append({
+                        "provider": prov_name,
+                        "query": raw_query,
+                        "raw_count": 0,
+                        "accepted_count": 0,
+                        "rejected_reasons": [],
+                        "error": str(exc)[:120],
+                    })
+                    continue
+                if not allow_fake_fallback:
+                    raise
+                fallback_reason = f"Provider '{prov_name}' error ({exc}); fell back to fake provider"
+                active_provider = FakeVisualProvider(mode=prov_name)
+
+            best_candidates: List[VisualCandidate] = []
+            cand_origin_query: Dict[str, str] = {}
+            seen_best_ids: Set[str] = set()
+
+            if prov_name in ("pixabay", "pexels", "coverr", "stock"):
+                prov_tiers = dedup_tiers[:6]
+            else:
+                seen_q_only: set[str] = set()
+                prov_tiers = []
+                for q_t, _c in dedup_tiers:
+                    ql = q_t.lower()
+                    if ql not in seen_q_only:
+                        seen_q_only.add(ql)
+                        prov_tiers.append((q_t, None))
+                prov_tiers = prov_tiers[:3] if prov_name == "openverse" else prov_tiers[:4]
+
+            zero_raw_streak = 0
+            for q_text, q_cat in prov_tiers:
+                raw_cnt = 0
+                rej_reasons: List[str] = []
+                err_txt: Optional[str] = None
+                tier_cands: List[VisualCandidate] = []
+                try:
+                    tier_cands, raw_cnt, rej_reasons = self._call_provider_search(
+                        active_provider,
+                        query=q_text,
+                        target_duration=shot.duration_seconds,
+                        limit=limit,
+                        excluded_ids=excluded_ids,
+                        req_terms=req_terms,
+                        block_terms=block_terms,
+                        neg_terms=neg_terms,
+                        anchor_terms=proj_anchors,
+                        avoid_terms=proj_avoids,
+                        min_rel_score=min_rel_score,
+                        visual_kws=visual_kws,
+                        category=q_cat,
+                        narration_text=narration_txt,
+                        strict_ai_relevance=strict_ai_relevance,
+                    )
+                except Exception as search_exc:
+                    err_txt = str(search_exc)[:120]
+                    logger.warning(f"Shot {shot.shot_id}: {prov_name} query '{q_text}' error: {err_txt}")
+
+                attempts_log.append({
+                    "provider": prov_name,
+                    "query": q_text,
+                    "raw_count": raw_cnt,
+                    "accepted_count": len(tier_cands or []),
+                    "rejected_reasons": rej_reasons[:3],
+                    "error": err_txt,
+                })
+
+                added_cnt = 0
+                for tc in tier_cands or []:
+                    if tc.candidate_id not in seen_best_ids:
+                        seen_best_ids.add(tc.candidate_id)
+                        best_candidates.append(tc)
+                        cand_origin_query[tc.candidate_id] = q_text
+                        added_cnt += 1
+
+                logger.info(
+                    f"Shot {shot.shot_id}: [{prov_name}] query '{q_text}' (cat={q_cat}) -> "
+                    f"raw={raw_cnt}, valid={len(tier_cands or [])}, added={added_cnt}, accumulated={len(best_candidates)}"
+                )
+                if err_txt and ("429" in err_txt or "rate" in err_txt.lower() or "403" in err_txt):
+                    break
+                if raw_cnt == 0 and not err_txt:
+                    zero_raw_streak += 1
+                    if prov_name == "coverr" and zero_raw_streak >= 2:
+                        break
+                else:
+                    zero_raw_streak = 0
+                if len(best_candidates) >= limit:
+                    break
+
+            if best_candidates:
+                best_candidates.sort(key=lambda c: c.relevance_score, reverse=True)
+                candidates = best_candidates[:limit]
+                chosen_provider = active_provider
+                chosen_query = cand_origin_query.get(candidates[0].candidate_id, chosen_query)
+                logger.info(
+                    f"Shot {shot.shot_id}: selected '{candidates[0].candidate_id}' from {prov_name} "
+                    f"(score={candidates[0].relevance_score:.3f}) via query '{chosen_query}'"
+                )
+                break
+
+        # Pass 2: If strict project anchor_terms blocked candidates, retry shot concrete queries without
+        # anchor lock (still preserving avoid_terms, blocked_terms, required_subject_terms, narration ranking).
+        if not candidates and proj_anchors and any(
+            "anchor_terms" in str(r)
+            for att in attempts_log
+            for r in (att.get("rejected_reasons") or [])
+        ):
+            relaxed_queries = list(dict.fromkeys([q for q, _c in dedup_tiers[:4] if q]))
+            for prov_name in providers_order:
+                try:
+                    rel_prov = self.get_provider(prov_name, manifest)
+                    rel_prov.validate_credentials()
+                except Exception:
+                    continue
+                rel_best: List[VisualCandidate] = []
+                rel_origin: Dict[str, str] = {}
+                for rq in relaxed_queries:
+                    try:
+                        r_cands, r_raw, r_rej = self._call_provider_search(
+                            rel_prov,
+                            query=rq,
+                            target_duration=shot.duration_seconds,
+                            limit=limit,
+                            excluded_ids=excluded_ids,
+                            req_terms=req_terms,
+                            block_terms=block_terms,
+                            neg_terms=neg_terms,
+                            anchor_terms=None,
+                            avoid_terms=proj_avoids,
+                            min_rel_score=min_rel_score,
+                            visual_kws=visual_kws,
+                            category=None,
+                            narration_text=narration_txt,
+                            strict_ai_relevance=strict_ai_relevance,
+                        )
+                    except Exception:
+                        continue
+                    attempts_log.append({
+                        "provider": prov_name,
+                        "query": rq,
+                        "raw_count": r_raw,
+                        "accepted_count": len(r_cands or []),
+                        "rejected_reasons": r_rej[:2],
+                        "error": None,
+                    })
+                    for tc in r_cands or []:
+                        rel_best.append(tc)
+                        rel_origin[tc.candidate_id] = rq
+                    if rel_best:
+                        break
+                if rel_best:
+                    rel_best.sort(key=lambda c: c.relevance_score, reverse=True)
+                    candidates = rel_best[:limit]
+                    chosen_provider = rel_prov
+                    chosen_query = rel_origin.get(candidates[0].candidate_id, chosen_query)
+                    logger.info(
+                        f"Shot {shot.shot_id}: relaxed-anchor selected '{candidates[0].candidate_id}' "
+                        f"from {prov_name} (score={candidates[0].relevance_score:.3f}) via query '{chosen_query}'"
+                    )
+                    break
+
+        return candidates, chosen_provider, chosen_query, attempts_log, fallback_reason
+
     def fetch_all(
         self,
         manifest: ProjectManifest,
@@ -712,293 +1126,24 @@ class VisualService:
                 shot.search_attempts = []
                 shot.no_visual_reason_summary = None
 
-                # S5 / F12 / F13 / D9.1 Multi-tier escalation search
-                from app.services.longform.visual.stock import (
-                    build_generalized_visual_queries,
-                    build_short_core_queries,
-                    extract_narrower_query,
-                    restructure_stock_query,
-                )
-
                 raw_query = (
                     getattr(shot, "search_query_en", None)
                     or shot.search_query
                     or shot.visual_prompt
                     or "cinematic scene"
                 )
-                # Build ordered base queries (`search_query_en` + `search_queries_en` alternatives)
-                ordered_base_queries: List[str] = []
-                for q_cand in ([raw_query] + list(getattr(shot, "search_queries_en", []) or [])):
-                    qc = str(q_cand or "").strip()
-                    if qc and qc.lower() not in [x.lower() for x in ordered_base_queries]:
-                        ordered_base_queries.append(qc)
-
-                candidates: List[VisualCandidate] = []
-                chosen_provider: Optional[BaseVisualProvider] = None
-                fallback_reason: Optional[str] = global_fallback_reason
-                chosen_query = raw_query
-                attempts_log: List[Dict[str, Any]] = []
-
-                query_tiers: List[Tuple[str, Optional[str]]] = []
-                # Tier 1 & 2: Primary query + alternative concrete AI queries
-                for bq in ordered_base_queries:
-                    if req_terms:
-                        restruct_q = restructure_stock_query(bq, req_terms, topic_kws)
-                        query_tiers.append((restruct_q, stock_cat))
-                        query_tiers.append((restruct_q, None))
-                    query_tiers.append((bq, stock_cat))
-                    query_tiers.append((bq, None))
-
-                # Tier 3: Shortened core & generalized broader visual noun/concept queries (D9.1)
-                for bq in ordered_base_queries:
-                    for short_q in build_short_core_queries(bq, proj_anchors):
-                        query_tiers.append((short_q, None))
-                    for gen_q in build_generalized_visual_queries(
-                        bq,
-                        anchor_terms=proj_anchors,
-                        topic_keywords=topic_kws,
-                        visual_keywords=visual_kws,
-                    ):
-                        query_tiers.append((gen_q, None))
-                narrow_q = extract_narrower_query(raw_query, req_terms)
-                if narrow_q:
-                    query_tiers.append((narrow_q, None))
-
-                # Tier 4: Project anchor_terms & preset visual_keywords fallbacks
-                if proj_anchors:
-                    if len(proj_anchors) >= 2 and " " not in proj_anchors[0] and " " not in proj_anchors[1]:
-                        query_tiers.append((f"{proj_anchors[0]} {proj_anchors[1]}", None))
-                    for anc_term in proj_anchors[:5]:
-                        if anc_term:
-                            query_tiers.append((anc_term, None))
-                for vk in visual_kws[:3]:
-                    if vk:
-                        query_tiers.append((vk, stock_cat))
-
-                # Deduplicate preserving strict tier priority order
-                seen_tiers: set[Tuple[str, Optional[str]]] = set()
-                dedup_tiers: List[Tuple[str, Optional[str]]] = []
-                for qt_pair in query_tiers:
-                    k_pair = (qt_pair[0].lower(), qt_pair[1])
-                    if k_pair not in seen_tiers:
-                        seen_tiers.add(k_pair)
-                        dedup_tiers.append(qt_pair)
-
-                for prov_name in shot_providers:
-                    if is_stop_requested(self.project_dir):
-                        break
-                    try:
-                        active_provider = self.get_provider(prov_name, manifest)
-                        if prov_name in ("fake", "local"):
-                            active_provider.validate_credentials()
-                    except VisualConfigurationError as conf_err:
-                        if not use_waterfall and allow_fake_fallback:
-                            fallback_reason = f"Provider '{prov_name}' credentials missing ({conf_err}); fell back to fake provider"
-                            active_provider = FakeVisualProvider(mode=prov_name)
-                        elif use_waterfall:
-                            attempts_log.append({
-                                "provider": prov_name,
-                                "query": raw_query,
-                                "raw_count": 0,
-                                "accepted_count": 0,
-                                "rejected_reasons": [],
-                                "error": str(conf_err)[:120],
-                            })
-                            continue
-                        else:
-                            raise
-                    except Exception as exc:
-                        if use_waterfall:
-                            attempts_log.append({
-                                "provider": prov_name,
-                                "query": raw_query,
-                                "raw_count": 0,
-                                "accepted_count": 0,
-                                "rejected_reasons": [],
-                                "error": str(exc)[:120],
-                            })
-                            continue
-                        if not allow_fake_fallback:
-                            raise
-                        fallback_reason = f"Provider '{prov_name}' error ({exc}); fell back to fake provider"
-                        active_provider = FakeVisualProvider(mode=prov_name)
-
-                    best_candidates: List[VisualCandidate] = []
-                    cand_origin_query: Dict[str, str] = {}
-                    seen_best_ids: Set[str] = set()
-
-                    # Cap category-free duplicates cleanly when moving beyond stock category providers
-                    if prov_name in ("pixabay", "pexels", "coverr", "stock"):
-                        prov_tiers = dedup_tiers[:6]
-                    else:
-                        # Rebuild unique query sequence for non-category providers
-                        seen_q_only: set[str] = set()
-                        prov_tiers = []
-                        for q_t, _c in dedup_tiers:
-                            ql = q_t.lower()
-                            if ql not in seen_q_only:
-                                seen_q_only.add(ql)
-                                prov_tiers.append((q_t, None))
-                        # Free public APIs: keep top 3-4 distinct queries per shot to respect rate limits
-                        prov_tiers = prov_tiers[:3] if prov_name == "openverse" else prov_tiers[:4]
-
-                    zero_raw_streak = 0
-                    for q_text, q_cat in prov_tiers:
-                        search_kwargs = {
-                            "query": q_text,
-                            "target_duration": shot.duration_seconds,
-                            "limit": 3,
-                            "excluded_ids": used_candidate_ids,
-                        }
-                        raw_cnt = 0
-                        rej_reasons: List[str] = []
-                        err_txt: Optional[str] = None
-                        tier_cands: List[VisualCandidate] = []
-                        try:
-                            if hasattr(active_provider, "search_with_diagnostics"):
-                                tier_cands, raw_cnt, rej_reasons = active_provider.search_with_diagnostics(
-                                    required_subject_terms=req_terms,
-                                    blocked_terms=block_terms,
-                                    negative_terms=neg_terms,
-                                    anchor_terms=proj_anchors,
-                                    avoid_terms=proj_avoids,
-                                    min_relevance_score=min_rel_score,
-                                    visual_keywords=visual_kws,
-                                    category=q_cat,
-                                    **search_kwargs,
-                                )
-                            else:
-                                try:
-                                    tier_cands = active_provider.search_candidates(
-                                        required_subject_terms=req_terms,
-                                        blocked_terms=block_terms,
-                                        negative_terms=neg_terms,
-                                        anchor_terms=proj_anchors,
-                                        avoid_terms=proj_avoids,
-                                        min_relevance_score=min_rel_score,
-                                        visual_keywords=visual_kws,
-                                        category=q_cat,
-                                        **search_kwargs,
-                                    )
-                                except TypeError:
-                                    try:
-                                        tier_cands = active_provider.search_candidates(
-                                            required_subject_terms=req_terms,
-                                            blocked_terms=block_terms,
-                                            visual_keywords=visual_kws,
-                                            **search_kwargs,
-                                        )
-                                    except TypeError:
-                                        tier_cands = active_provider.search_candidates(**search_kwargs)
-                                raw_cnt = len(tier_cands or [])
-                        except Exception as search_exc:
-                            err_txt = str(search_exc)[:120]
-                            logger.warning(f"Shot {shot.shot_id}: {prov_name} query '{q_text}' error: {err_txt}")
-
-                        attempts_log.append({
-                            "provider": prov_name,
-                            "query": q_text,
-                            "raw_count": raw_cnt,
-                            "accepted_count": len(tier_cands or []),
-                            "rejected_reasons": rej_reasons[:3],
-                            "error": err_txt,
-                        })
-
-                        added_cnt = 0
-                        for tc in tier_cands or []:
-                            if tc.candidate_id not in seen_best_ids:
-                                seen_best_ids.add(tc.candidate_id)
-                                best_candidates.append(tc)
-                                cand_origin_query[tc.candidate_id] = q_text
-                                added_cnt += 1
-
-                        logger.info(
-                            f"Shot {shot.shot_id}: [{prov_name}] query '{q_text}' (cat={q_cat}) -> "
-                            f"raw={raw_cnt}, valid={len(tier_cands or [])}, added={added_cnt}, accumulated={len(best_candidates)}"
-                        )
-                        if err_txt and ("429" in err_txt or "rate" in err_txt.lower() or "403" in err_txt):
-                            break
-                        if raw_cnt == 0 and not err_txt:
-                            zero_raw_streak += 1
-                            if prov_name == "coverr" and zero_raw_streak >= 2:
-                                break
-                        else:
-                            zero_raw_streak = 0
-                        if len(best_candidates) >= 3:
-                            break
-
-                    if best_candidates:
-                        best_candidates.sort(key=lambda c: c.relevance_score, reverse=True)
-                        candidates = best_candidates[:3]
-                        chosen_provider = active_provider
-                        chosen_query = cand_origin_query.get(candidates[0].candidate_id, chosen_query)
-                        logger.info(
-                            f"Shot {shot.shot_id}: selected '{candidates[0].candidate_id}' from {prov_name} "
-                            f"(score={candidates[0].relevance_score:.3f}) via query '{chosen_query}'"
-                        )
-                        break
-
-                # Tiered Pass 2: If strict project anchor_terms blocked every candidate on all providers,
-                # retry the shot's top concrete queries without project-level anchor lock (preserving
-                # avoid_terms, blocked_terms, required_subject_terms, and a stricter relevance bar).
-                if not candidates and proj_anchors and any(
-                    "anchor_terms" in str(r)
-                    for att in attempts_log
-                    for r in (att.get("rejected_reasons") or [])
-                ):
-                    relaxed_queries = list(dict.fromkeys([q for q, _c in dedup_tiers[:3] if q]))
-                    relaxed_min = max(float(min_rel_score or 0.35), 0.42)
-                    for prov_name in shot_providers:
-                        try:
-                            rel_prov = self.get_provider(prov_name, manifest)
-                            rel_prov.validate_credentials()
-                        except Exception:
-                            continue
-                        if not hasattr(rel_prov, "search_with_diagnostics"):
-                            continue
-                        rel_best: List[VisualCandidate] = []
-                        rel_origin: Dict[str, str] = {}
-                        for rq in relaxed_queries:
-                            try:
-                                r_cands, r_raw, r_rej = rel_prov.search_with_diagnostics(
-                                    query=rq,
-                                    target_duration=shot.duration_seconds,
-                                    limit=3,
-                                    excluded_ids=used_candidate_ids,
-                                    required_subject_terms=req_terms,
-                                    blocked_terms=block_terms,
-                                    negative_terms=neg_terms,
-                                    anchor_terms=None,
-                                    avoid_terms=proj_avoids,
-                                    min_relevance_score=relaxed_min,
-                                    visual_keywords=visual_kws,
-                                    category=None,
-                                )
-                            except Exception:
-                                continue
-                            attempts_log.append({
-                                "provider": prov_name,
-                                "query": rq,
-                                "raw_count": r_raw,
-                                "accepted_count": len(r_cands or []),
-                                "rejected_reasons": r_rej[:2],
-                                "error": None,
-                            })
-                            for tc in r_cands or []:
-                                rel_best.append(tc)
-                                rel_origin[tc.candidate_id] = rq
-                            if rel_best:
-                                break
-                        if rel_best:
-                            rel_best.sort(key=lambda c: c.relevance_score, reverse=True)
-                            candidates = rel_best[:3]
-                            chosen_provider = rel_prov
-                            chosen_query = rel_origin.get(candidates[0].candidate_id, chosen_query)
-                            logger.info(
-                                f"Shot {shot.shot_id}: relaxed-anchor selected '{candidates[0].candidate_id}' "
-                                f"from {prov_name} (score={candidates[0].relevance_score:.3f}) via query '{chosen_query}'"
-                            )
-                            break
+                candidates, chosen_provider, chosen_query, attempts_log, fallback_reason = self._search_shot_across_providers(
+                    shot,
+                    manifest,
+                    providers_order=shot_providers,
+                    explicit_prompt=None,
+                    limit=5,
+                    excluded_ids=used_candidate_ids,
+                    allow_waterfall=use_waterfall,
+                    allow_fake_fallback=allow_fake_fallback,
+                    strict_ai_relevance=bool(check_ai_relevance),
+                    initial_fallback_reason=global_fallback_reason,
+                )
 
                 active_provider = chosen_provider or self.get_provider(shot_providers[0], manifest)
                 shot.search_attempts = attempts_log[-25:]
@@ -1579,50 +1724,20 @@ class VisualService:
             raise ValueError(f"Shot {shot_id} not found in project")
 
         prov_name = provider_name or target_shot.requested_source or "pixabay"
-        prov = self.get_provider(prov_name, manifest)
-
-        preset_snap = manifest.preset_snapshot or {}
-        req_terms = preset_snap.get("required_subject_terms") or []
-        block_terms = preset_snap.get("blocked_terms") or []
-        neg_terms = preset_snap.get("negative_terms") or []
-        min_rel = preset_snap.get("min_relevance_score", 0.35)
-        stock_cat = preset_snap.get("stock_category")
-        vis_kws = preset_snap.get("visual_keywords") or []
-
-        q = search_query or getattr(target_shot, "search_query_en", None) or target_shot.search_query or target_shot.visual_prompt or "cinematic scene"
-        proj_anchors = list(getattr(manifest, "visual_anchor_terms", []) or [])
-        proj_avoids = list(getattr(manifest, "visual_avoid_terms", []) or [])
-
-        candidates = prov.search_candidates(
-            query=q,
-            target_duration=target_shot.duration_seconds,
+        candidates, chosen_provider, _q_used, _att, _fb = self._search_shot_across_providers(
+            target_shot,
+            manifest,
+            providers_order=[prov_name],
+            explicit_prompt=search_query,
             limit=limit,
-            required_subject_terms=req_terms,
-            blocked_terms=block_terms,
-            negative_terms=neg_terms,
-            anchor_terms=proj_anchors,
-            avoid_terms=proj_avoids,
-            min_relevance_score=min_rel,
-            visual_keywords=vis_kws,
-            category=stock_cat,
+            excluded_ids=None,
+            allow_waterfall=False,
+            allow_fake_fallback=False,
+            strict_ai_relevance=False,
         )
 
-        if not candidates and stock_cat:
-            candidates = prov.search_candidates(
-                query=q,
-                target_duration=target_shot.duration_seconds,
-                limit=limit,
-                required_subject_terms=req_terms,
-                blocked_terms=block_terms,
-                negative_terms=neg_terms,
-                anchor_terms=proj_anchors,
-                avoid_terms=proj_avoids,
-                min_relevance_score=min_rel,
-                visual_keywords=vis_kws,
-                category=None,
-            )
-
         if not candidates:
+            q = search_query or getattr(target_shot, "search_query_en", None) or target_shot.search_query or target_shot.visual_prompt or "cinematic scene"
             raise VisualError(f"No valid candidates found for shot {shot_id} with query '{q}'")
 
         target_shot.candidates = [c.to_dict() for c in candidates]
@@ -1642,6 +1757,7 @@ class VisualService:
         provider_name: Optional[str] = None,
         prompt: Optional[str] = None,
         rebuild: bool = False,
+        check_ai_relevance: bool = False,
     ) -> Shot:
         """Replace visual asset for a shot, lock it, and immediately re-build clip (T4)."""
         target_shot: Optional[Shot] = None
@@ -1779,20 +1895,24 @@ class VisualService:
 
         if provider_name or prompt:
             prov_name = provider_name or target_shot.requested_source or "pixabay"
-            prov = self.get_provider(prov_name, manifest)
-            q = prompt or target_shot.search_query or target_shot.visual_prompt
-            preset_snap = manifest.preset_snapshot or {}
-            cands = prov.search_candidates(
-                query=q,
-                target_duration=target_shot.duration_seconds,
+            q_input = prompt or getattr(target_shot, "search_query_en", None) or target_shot.search_query or target_shot.visual_prompt
+            cands, used_prov, used_q, attempts_log, _fb = self._search_shot_across_providers(
+                target_shot,
+                manifest,
+                providers_order=[prov_name],
+                explicit_prompt=q_input,
                 limit=5,
-                required_subject_terms=preset_snap.get("required_subject_terms"),
-                blocked_terms=preset_snap.get("blocked_terms"),
-                negative_terms=preset_snap.get("negative_terms"),
-                min_relevance_score=preset_snap.get("min_relevance_score", 0.35),
+                excluded_ids=None,
+                allow_waterfall=False,
+                allow_fake_fallback=False,
+                strict_ai_relevance=bool(check_ai_relevance),
             )
+            target_shot.search_attempts = attempts_log[-25:]
             if not cands:
-                raise VisualError(f"No valid candidates found for query '{q}'")
+                target_shot.no_visual_reason_summary = self._summarize_search_failures(attempts_log)
+                raise VisualError(f"No valid candidates found for query '{q_input}'")
+            prov = used_prov or self.get_provider(prov_name, manifest)
+            q = used_q or q_input
             target_shot.candidates = [c.to_dict() for c in cands]
             sel = cands[0]
             ext = ".mp4" if sel.source_type == "stock_video" else ".jpg"

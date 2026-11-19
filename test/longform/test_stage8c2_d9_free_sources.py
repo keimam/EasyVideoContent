@@ -608,9 +608,13 @@ def test_d9_ui_sources_pexels_notice_attribution_and_reason_bilingual(tmp_path, 
     if lang == "id":
         assert "Pendaftaran key baru Pexels sedang ditutup" in captions
         assert "Perlu atribusi" in infos
+        assert "`Belum ada`" not in captions
+        assert "Belum ada visual" in captions
     else:
         assert "New Pexels API key registration is closed" in captions
         assert "Attribution required" in infos
+        assert "`None yet`" not in captions
+        assert "No visual yet" in captions
 
     # Select shot 2 to inspect missing visual reason & search diagnostics
     btn_s2 = [b for b in at.button if b.key == f"btn_sh_{pid}_ch01_shot002"][0]
@@ -654,3 +658,145 @@ def test_d9_installer_script_and_launcher_runtime_non_elevated_and_shutdown(tmp_
     assert res.returncode == 0, res.stderr
     parsed = json.loads(res.stdout.strip())
     assert "running" in parsed and "pids" in parsed and "jobs" in parsed
+
+
+def test_d9_7_unified_search_narration_ranking_and_ai_cutoff(tmp_path):
+    """D9.7: Batch fetch, Otomatis, Search again share one strategy; keyboard traps penalized; strict AI cutoff rejects weak hits."""
+    from app.services.longform.visual.stock import score_candidate_relevance
+    import cli_longform
+
+    narr = "Some died in workplace accidents, while others suffered from illnesses caused by working under extreme air pressure deep beneath the river."
+    q = "workplace accident historical"
+
+    ok_kb, sc_kb, _ = score_candidate_relevance(
+        candidate_tags=["keyboard", "typing", "writing", "computer", "laptop", "workplace"],
+        search_query=q,
+        min_relevance_score=0.35,
+        narration_text=narr,
+        strict_ai_relevance=False,
+    )
+    assert ok_kb is False
+    assert sc_kb < 0.35
+
+    ok_rescue, sc_rescue, _ = score_candidate_relevance(
+        candidate_tags=["fire fighters", "rescue operation", "accident", "rescue", "ambulance"],
+        search_query=q,
+        min_relevance_score=0.35,
+        narration_text=narr,
+        strict_ai_relevance=False,
+    )
+    assert ok_rescue is True
+    assert sc_rescue > sc_kb
+    assert sc_rescue >= 0.42
+
+    # When ai_relevance is enabled, weak matches (<0.42) without concrete narration hits are rejected
+    ok_weak_ai, sc_weak_ai, _ = score_candidate_relevance(
+        candidate_tags=["office", "workplace", "meeting"],
+        search_query=q,
+        min_relevance_score=0.35,
+        narration_text=narr,
+        strict_ai_relevance=True,
+    )
+    assert ok_weak_ai is False
+    assert sc_weak_ai < 0.42
+
+    # Verify CLI pipeline auto supports unified --providers and --check-ai-relevance flags
+    parser = cli_longform.build_parser()
+    ns = parser.parse_args(["pipeline", "auto", "demo_proj", "--providers", "pixabay,wikimedia,nasa", "--check-ai-relevance"])
+    assert ns.providers == "pixabay,wikimedia,nasa"
+    assert ns.check_ai_relevance is True
+
+    # Verify fetch_all, search_and_preview_candidates, and replace_shot use identical limit=5 & query ladder
+    manifest, p_dir = create_project("d9_7_unified", "Unified Search Test", "documentary_en", projects_root=tmp_path)
+    ch = Chapter(
+        chapter_index=1,
+        chapter_title="Work Accidents",
+        audio_duration_seconds=4.0,
+        tts_groups=[
+            TtsGroup(
+                group_index=1,
+                paragraph_text=narr,
+                segments=[Segment(segment_index=1, narration_text=narr)],
+            )
+        ],
+        shots=[
+            Shot(
+                shot_id="ch01_shot001",
+                chapter_index=1,
+                shot_index=1,
+                segment_indices=[1],
+                duration_seconds=4.0,
+                target_frames=100,
+                search_query="workplace accident historical",
+                search_query_en="workplace accident historical",
+                search_queries_en=["workplace accident historical", "bridge worker rescue"],
+                search_query_source="ai",
+            )
+        ],
+    )
+    manifest.chapters = [ch]
+    save_manifest(manifest, p_dir)
+
+    svc = VisualService(p_dir)
+    recorded_limits = []
+
+    class _RecordingProv(BaseVisualProvider):
+        @property
+        def name(self):
+            return "pixabay"
+
+        @property
+        def is_fake(self):
+            return False
+
+        def validate_credentials(self):
+            return None
+
+        def search_with_diagnostics(self, query, target_duration, limit=3, **kwargs):
+            recorded_limits.append((query, limit, kwargs.get("narration_text"), kwargs.get("avoid_terms") is not None))
+            return [
+                VisualCandidate(
+                    candidate_id="pix_resq_1",
+                    provider="pixabay",
+                    source_type="stock_video",
+                    url="https://cdn.example.com/resq.mp4",
+                    width=1920,
+                    height=1080,
+                    duration_seconds=5.0,
+                    tags=["accident", "rescue", "bridge"],
+                    relevance_score=0.55,
+                )
+            ], 1, []
+
+        def search_candidates(self, query, target_duration, limit=3, **kwargs):
+            c, _, _ = self.search_with_diagnostics(query, target_duration, limit=limit, **kwargs)
+            return c
+
+        def fetch_asset(self, candidate, dest_path):
+            sample_jpg = _make_sample_jpg(dest_path.with_suffix(".jpg"))
+            return VisualAsset(
+                asset_id=candidate.candidate_id,
+                provider="pixabay",
+                source_type="stock_image",
+                local_path=sample_jpg,
+                content_hash="abc123",
+            )
+
+    svc.get_provider = lambda name, m: _RecordingProv()
+    svc.fetch_all(manifest, providers_order=["pixabay"], allow_fallback=False)
+    calls_fetch = list(recorded_limits)
+    recorded_limits.clear()
+
+    svc.search_and_preview_candidates(manifest, "ch01_shot001", provider_name="pixabay")
+    calls_preview = list(recorded_limits)
+    recorded_limits.clear()
+
+    svc.replace_shot(manifest, "ch01_shot001", provider_name="pixabay", prompt="workplace accident historical")
+    calls_replace = list(recorded_limits)
+
+    assert len(calls_fetch) == len(calls_preview) == len(calls_replace) >= 2
+    assert calls_fetch == calls_preview == calls_replace
+    for _q, lim, narr_arg, has_avoids in calls_fetch:
+        assert lim == 5
+        assert "under extreme air pressure" in (narr_arg or "")
+        assert has_avoids is True

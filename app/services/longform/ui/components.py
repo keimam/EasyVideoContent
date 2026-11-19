@@ -1349,11 +1349,22 @@ def render_project_page(project_id: str):
                     ):
                         _open_mpt_settings_dialog("stock")
 
+                auto_providers_order = [
+                    p for p in auto_enabled_sources
+                    if p in ("pixabay", "coverr", "pexels", "wikimedia", "nasa", "openverse")
+                ]
+                auto_providers_csv = ",".join(auto_providers_order)
+                auto_check_ai_rel = bool(st.session_state.get(f"cb_ai_rel_{project_id}", False))
+
                 if is_review_paused:
                     phase_msg = f" ({job_state.get('phase')})" if job_state.get("phase") else ""
                     st.warning(t("auto_review_paused_warn", phase=phase_msg))
                     if st.button(t("btn_resume_auto_skip"), key=f"btn_resume_auto_{project_id}", disabled=(is_job_running or auto_missing_vis_src), type="primary", use_container_width=True):
                         auto_args = ["pipeline", "auto", project_id, "--skip-review-check"]
+                        if auto_providers_csv:
+                            auto_args.extend(["--providers", auto_providers_csv])
+                        if auto_check_ai_rel:
+                            auto_args.append("--check-ai-relevance")
                         if auto_with_capcut:
                             auto_args.append("--with-capcut")
                         cmd = jobs.build_longform_cli_command(*auto_args)
@@ -1366,6 +1377,10 @@ def render_project_page(project_id: str):
                 else:
                     if st.button(f"▷ {t('btn_auto_run_until_done')}", disabled=(is_job_running or auto_missing_vis_src), type="primary", key=f"btn_start_auto_{project_id}", use_container_width=True):
                         auto_args = ["pipeline", "auto", project_id]
+                        if auto_providers_csv:
+                            auto_args.extend(["--providers", auto_providers_csv])
+                        if auto_check_ai_rel:
+                            auto_args.append("--check-ai-relevance")
                         if auto_with_capcut:
                             auto_args.append("--with-capcut")
                         if auto_stop_review:
@@ -2893,12 +2908,15 @@ def render_visual_step_flow(
                                 badge_str = f" {' '.join(badges)}" if badges else ""
 
                                 if shot_vst.get("is_missing_visual"):
-                                    src = t("source_none_yet")
+                                    # D9.7: Single clean status without duplicate `None yet` code chip
+                                    st.caption(f"**#{shot.shot_index}** ({dur_s}){badge_str}")
                                 elif shot.actual_source == "neutral_backdrop":
                                     src = t("source_neutral_backdrop")
+                                    st.caption(f"**#{shot.shot_index}** ({dur_s}) • `{src}`{badge_str}")
                                 else:
-                                    src = shot.actual_source or shot.requested_source or ("fake" if shot.is_fake else t("source_not_selected_yet"))
-                                st.caption(f"**#{shot.shot_index}** ({dur_s}) • `{src}`{badge_str}")
+                                    src = shot.actual_source or shot.requested_source or ("fake" if shot.is_fake else "")
+                                    src_part = f" • `{src}`" if src else ""
+                                    st.caption(f"**#{shot.shot_index}** ({dur_s}){src_part}{badge_str}")
 
                                 narr = get_shot_narration(ch, shot)
                                 snippet = (narr[:40] + "...") if len(narr) > 40 else narr
@@ -3246,6 +3264,7 @@ def render_visual_step_flow(
                                         prompt=eff_prompt,
                                         provider_name=sel_p,
                                         rebuild=True,
+                                        check_ai_relevance=bool(st.session_state.get(f"cb_ai_rel_{project_id}", False)),
                                     )
                                     invalidate_shot_thumbnail_cache(p_dir, target_shot.shot_id)
                                     save_manifest(manifest, p_dir)

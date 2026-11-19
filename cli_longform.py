@@ -2329,10 +2329,18 @@ def cmd_pipeline_auto(args: argparse.Namespace) -> int:
             _update_pipeline_auto_phase(proj_dir, f"[2/4 Visual] Mencari footage & menyusun klip ({built_shots}/{total_shots})...")
             print(f"\n>>> [2/4 Visual] Building visual assets & clips ({built_shots}/{total_shots} done)...")
             vis_svc = VisualService(proj_dir)
+            raw_auto_provs = getattr(args, "providers", None)
+            auto_providers_order = (
+                [p.strip().lower() for p in str(raw_auto_provs).split(",") if p.strip()]
+                if raw_auto_provs
+                else None
+            )
             manifest, _ = vis_svc.run_pipeline(
                 manifest=manifest,
                 provider_name=getattr(args, "provider", None),
+                providers_order=auto_providers_order,
                 allow_fallback=bool(getattr(args, "allow_fallback", False)),
+                check_ai_relevance=bool(getattr(args, "check_ai_relevance", False)),
             )
             save_manifest(manifest, proj_dir)
             if is_stop_requested(proj_dir):
@@ -2758,6 +2766,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_pipe_auto.add_argument("--stop-on-review", action="store_true", default=True, help="Pause if shots have needs_review=True")
     p_pipe_auto.add_argument("--skip-review-check", action="store_true", help="Do not pause on needs_review (resume past review)")
     p_pipe_auto.add_argument("--no-bgm", action="store_true", help="Disable BGM during render")
+    p_pipe_auto.add_argument("--providers", default=None, help="Comma-separated ordered visual providers waterfall (D9.7)")
+    p_pipe_auto.add_argument("--check-ai-relevance", action="store_true", help="Verify visual relevance with AI Vision and pre-filter low-score candidates (D9.7)")
 
     return parser
 
