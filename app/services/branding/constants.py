@@ -26,6 +26,13 @@ except Exception:
 VERSION_STRING = f"v{APP_VERSION} · inti v{CORE_VERSION}"
 UPSTREAM_UPDATE_PREFIX = "Pembaruan inti tersedia: "
 
+# E1 / E2 / E3 External URLs & Release Update Manifest (Single Source)
+UPDATE_MANIFEST_URL = "https://raw.githubusercontent.com/nasehngulik/EasyFacelessStudio/main/latest.json"
+OPENROUTER_KEYS_URL = "https://openrouter.ai/keys"
+PIXABAY_API_DOCS_URL = "https://pixabay.com/api/docs/"
+COVERR_API_URL = "https://coverr.co/api"
+CAPCUT_DOWNLOAD_URL = "https://www.capcut.com/"
+
 # Legal & MIT Attribution (Preserved from MoneyPrinterTurbo)
 MIT_ATTRIBUTION = "Dibangun di atas MoneyPrinterTurbo (MIT)"
 MIT_THANKS = (

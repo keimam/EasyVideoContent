@@ -33,9 +33,11 @@ def init_main_page(styles_css_path: Path) -> None:
 
     from app.services.branding.theme import inject_brand_theme
     from app.services.branding.sidebar import render_brand_sidebar
+    from app.services.branding.lifecycle_ui import render_studio_lifecycle_ui
 
     inject_brand_theme()
     render_brand_sidebar(current_page="main")
+    render_studio_lifecycle_ui(key_prefix="main")
 
 
 _EMBEDDED_SETTINGS_RUNNER: Callable[[], Any] | None = None
@@ -88,3 +90,10 @@ def open_embedded_settings_dialog() -> None:
         importlib.import_module("webui.Main")
     finally:
         st.session_state.pop("_efs_settings_library_only", None)
+
+
+def render_settings_studio_controls() -> None:
+    """Hook rendered inside Settings General tab for Setup Wizard re-run and Update checks (E1/E2)."""
+    from app.services.branding.lifecycle_ui import render_settings_studio_controls as _render
+
+    _render(key_prefix="general_settings")

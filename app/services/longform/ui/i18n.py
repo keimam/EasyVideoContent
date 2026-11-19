@@ -917,6 +917,121 @@ ID_TRANSLATIONS: Dict[str, str] = {
     "copied_error_details_toast": "Detail error siap disalin dari kotak di bawah.",
     "home_corrupt_projects_warn": "⚠️ {count} proyek tidak bisa dibuka (data rusak/versi lama):",
     "btn_inspect_broken_project": "Lihat detail: {id}",
+    # --- Stage 8C.3 (E1: First-Run Wizard, E2: Update Checker, E3: CapCut Version, E5: Output/Credits) ---
+    "wizard_title": "Wizard Pengaturan Pertama Kali",
+    "wizard_subtitle": "Siapkan bahasa, cek kesiapan PC, API opsional, dan folder CapCut sebelum mulai memproduksi video.",
+    "wizard_step_counter": "Langkah {cur} dari {total}",
+    "wizard_btn_skip": "Lewati setup",
+    "wizard_btn_prev": "← Sebelumnya",
+    "wizard_btn_next": "Berikutnya →",
+    "wizard_step1_name": "1. Bahasa",
+    "wizard_step2_name": "2. Cek Sistem",
+    "wizard_step3_name": "3. AI Naskah",
+    "wizard_step4_name": "4. Footage",
+    "wizard_step5_name": "5. CapCut",
+    "wizard_step6_name": "6. Selesai",
+    "wizard_lang_heading": "Pilih Bahasa Tampilan Aplikasi",
+    "wizard_lang_desc": "Bahasa dapat diubah kapan saja nanti di Pengaturan atau sidebar.",
+    "wizard_lang_label": "Bahasa antarmuka",
+    "wizard_sys_heading": "Pemeriksaan Sistem & Dependensi",
+    "wizard_sys_desc": "Memeriksa kesesuaian PC terhadap kebutuhan minimum & rekomendasi produksi video 10–20 menit.",
+    "wizard_btn_recheck_sys": "Cek ulang sistem",
+    "wizard_sys_overall_green": "Semua komponen memenuhi atau melampaui spesifikasi yang disarankan.",
+    "wizard_sys_overall_yellow": "PC memenuhi syarat minimum. Beberapa item bertanda kuning masih bisa berjalan.",
+    "wizard_sys_overall_red": "Ada komponen di bawah syarat minimum (tanda merah) yang perlu dilengkapi terlebih dahulu.",
+    "wizard_spec_ram": "**RAM Fisik:** {val:.2f} GiB (min 8 GB · disarankan 16 GB)",
+    "wizard_spec_cpu": "**CPU:** {model} — {phys} core / {val} thread (min 4 thread · disarankan 8+)",
+    "wizard_spec_disk": "**Disk Kosong (`{path}`):** {val:.2f} GiB (min 5 GB · disarankan 20 GB)",
+    "wizard_spec_ffmpeg_ok": "**FFmpeg:** Tersedia (`{ver}`)",
+    "wizard_spec_ffmpeg_missing": "**FFmpeg:** Tidak ditemukan — instal atau pastikan FFmpeg tersedia di folder runtime.",
+    "wizard_spec_net_ok": "**Koneksi Internet:** Terhubung",
+    "wizard_spec_net_off": "**Koneksi Internet:** Offline (stok daring & Edge TTS membutuhkan koneksi internet)",
+    "wizard_spec_capcut_label": "**CapCut Desktop:** {text}",
+    "wizard_or_heading": "AI Penulis Naskah (OpenRouter — Opsional)",
+    "wizard_or_desc": (
+        "OpenRouter menyediakan akses ke berbagai model AI (termasuk model `:free` / `openrouter/free` gratis tanpa kartu kredit). "
+        "Langkah ini **boleh dilewati** bila Anda ingin mengimpor naskah Markdown secara manual."
+    ),
+    "wizard_or_signup_link": "Cara membuat kunci API: buka [Halaman Keys OpenRouter]({url})",
+    "wizard_or_free_limits": (
+        "**Batas tier gratis OpenRouter:** Model gratis (`openrouter/free` / `:free`) memiliki batas permintaan per menit (~20 req/menit) "
+        "dan kuota harian gratis (~50–1000 req/hari tergantung saldo). Bila kuota penuh, gunakan jeda atau impor naskah."
+    ),
+    "wizard_or_key_label": "Kunci API OpenRouter",
+    "wizard_or_key_placeholder": "sk-or-v1-...",
+    "wizard_btn_save_or_key": "Simpan key",
+    "wizard_or_key_saved": "Kunci OpenRouter disimpan dengan model default `openrouter/free`.",
+    "wizard_btn_test_or": "Tes koneksi AI",
+    "wizard_btn_quota_or": "Cek kuota OpenRouter",
+    "wizard_or_test_ok": "Koneksi OpenRouter berhasil ({latency:.2f} dtk): {msg}",
+    "wizard_or_test_fail": "Tes koneksi gagal: {msg}",
+    "wizard_sources_heading": "Sumber Footage Visual",
+    "wizard_sources_builtin_info": (
+        "**Aktif bawaan tanpa API key:** Wikimedia Commons (video & foto publik/CC), NASA Images Library, dan Openverse Photos. "
+        "Anda langsung bisa memproduksi video meskipun tanpa mengisi key tambahan."
+    ),
+    "wizard_pixabay_label": "Kunci API Pixabay (opsional)",
+    "wizard_pixabay_link": "Daftar gratis: [Pixabay API Docs]({url})",
+    "wizard_coverr_label": "Kunci API Coverr (opsional)",
+    "wizard_coverr_link": "Daftar gratis: [Coverr API]({url})",
+    "wizard_btn_save_sources": "Simpan kunci sumber footage",
+    "wizard_sources_saved": "Pengaturan sumber footage tersimpan.",
+    "wizard_capcut_heading": "Integrasi CapCut Desktop",
+    "wizard_capcut_folder_label": "Folder Draft CapCut (`com.lveditor.draft`)",
+    "wizard_capcut_folder_help": "Otomatis terdeteksi dari AppData lokal. Ubah manual bila Anda memindahkan folder draft CapCut.",
+    "wizard_btn_save_capcut_dir": "Simpan folder CapCut",
+    "wizard_capcut_dir_saved": "Folder draft CapCut disimpan: {path}",
+    "wizard_capcut_dir_warn": "Folder belum ditemukan di disk ({path}), tetapi tetap disimpan.",
+    "wizard_finish_heading": "Pengaturan Selesai!",
+    "wizard_finish_desc": "EasyFaceless Studio siap dipakai. Anda dapat langsung membuka proyek contoh kecil (~2 menit) atau mulai dari Beranda.",
+    "wizard_finish_summary_lang": "- Bahasa: **{language_label}**",
+    "wizard_finish_summary_or": "- AI OpenRouter: **{status}**",
+    "wizard_finish_summary_sources": "- Sumber footage gratis: **Wikimedia + NASA + Openverse aktif**{extra}",
+    "wizard_finish_summary_capcut": "- CapCut Desktop: **{status}**",
+    "wizard_btn_create_sample": "✨ Buat proyek contoh kecil & Mulai",
+    "wizard_btn_finish_only": "Selesai ke Beranda",
+    "wizard_sample_created": "Proyek contoh `{id}` siap!",
+    "wizard_configured": "Terisi",
+    "wizard_skipped_optional": "Dilewati (opsional)",
+    # --- E2: Update Checker & Settings ---
+    "update_banner_title": "🚀 Pembaruan Tersedia: EasyFaceless Studio v{version}",
+    "update_banner_released": "Tanggal rilis: {date}",
+    "btn_update_download": "Unduh Pembaruan",
+    "btn_update_later": "Nanti",
+    "btn_update_skip": "Lewati versi ini",
+    "settings_studio_heading": "EasyFaceless Studio — Wizard & Pembaruan",
+    "settings_auto_update_check": "Cek pembaruan otomatis saat aplikasi dibuka (maks. 1× per 24 jam)",
+    "btn_check_updates_now": "Cek pembaruan sekarang",
+    "btn_run_wizard_again": "Jalankan wizard lagi",
+    "update_up_to_date": "Aplikasi Anda sudah versi terbaru (v{ver}).",
+    "update_available_msg": "Versi baru v{ver} tersedia! Tutup dialog Pengaturan untuk melihat banner unduhan.",
+    "update_check_offline_note": "Tidak dapat menghubungi server pembaruan (offline atau URL tidak terjangkau).",
+    "update_opening_url": "Membuka halaman unduhan: {url}",
+    # --- E3: CapCut Version Detection ---
+    "capcut_status_tested_badge": "CapCut {ver} — teruji ✓",
+    "capcut_status_untested_badge": "CapCut {ver} — belum diuji, cek hasil draft",
+    "capcut_untested_warn": (
+        "CapCut {ver} terdeteksi — belum diuji penuh (teruji pada {tested}). "
+        "Ekspor tetap diperbolehkan, harap periksa hasil draft langsung di CapCut."
+    ),
+    "capcut_download_guide": (
+        "CapCut Desktop belum terpasang atau folder tidak ditemukan. "
+        "Unduh gratis dari [situs resmi CapCut]({url}), pasang, lalu klik **Cek Ulang**."
+    ),
+    "capcut_unsupported_os_note": "Deteksi versi CapCut otomatis belum didukung di sistem operasi ini: {reason}",
+    # --- E5: Output Folder & Credits.md Viewer ---
+    "btn_open_output_folder": "📂 Buka folder output",
+    "btn_open_credits_md": "📜 Buka credits.md",
+    "credits_dialog_title": "Atribusi Footage & Musik (`credits.md`)",
+    "credits_file_path_caption": "Lokasi berkas: `{path}`",
+    "credits_btn_copy": "📋 Salin isi credits.md",
+    "credits_btn_download": "⬇️ Unduh credits.md",
+    "credits_copied_ok": "Isi `credits.md` disalin ke clipboard!",
+    "credits_copy_fallback": "Clipboard sistem tidak tersedia; silakan salin dari kotak di bawah:",
+    "credits_file_missing": (
+        "Berkas `export/credits.md` belum dibuat untuk proyek ini. "
+        "Jalankan **Render Final** atau perbarui ekspor agar `credits.md` terisi otomatis."
+    ),
 }
 
 
@@ -1826,6 +1941,121 @@ EN_TRANSLATIONS: Dict[str, str] = {
     "copied_error_details_toast": "Error details are ready to copy from the box below.",
     "home_corrupt_projects_warn": "⚠️ {count} project(s) could not be opened (corrupted/legacy data):",
     "btn_inspect_broken_project": "View details: {id}",
+    # --- Stage 8C.3 (E1: First-Run Wizard, E2: Update Checker, E3: CapCut Version, E5: Output/Credits) ---
+    "wizard_title": "First-Run Setup Wizard",
+    "wizard_subtitle": "Set your language, check PC readiness, optional AI/footage API keys, and CapCut folder before creating videos.",
+    "wizard_step_counter": "Step {cur} of {total}",
+    "wizard_btn_skip": "Skip setup",
+    "wizard_btn_prev": "← Back",
+    "wizard_btn_next": "Next →",
+    "wizard_step1_name": "1. Language",
+    "wizard_step2_name": "2. System Check",
+    "wizard_step3_name": "3. AI Script",
+    "wizard_step4_name": "4. Footage",
+    "wizard_step5_name": "5. CapCut",
+    "wizard_step6_name": "6. Finish",
+    "wizard_lang_heading": "Choose Interface Language",
+    "wizard_lang_desc": "You can change the display language anytime later from Settings or the sidebar.",
+    "wizard_lang_label": "Display language",
+    "wizard_sys_heading": "System & Dependency Check",
+    "wizard_sys_desc": "Evaluates your computer against minimum and recommended specs for 10–20 min documentary production.",
+    "wizard_btn_recheck_sys": "Re-check system",
+    "wizard_sys_overall_green": "All checks meet or exceed the recommended system specifications.",
+    "wizard_sys_overall_yellow": "PC meets minimum requirements. Yellow items remain usable.",
+    "wizard_sys_overall_red": "One or more items are below minimum requirements (red) and need attention.",
+    "wizard_spec_ram": "**Physical RAM:** {val:.2f} GiB (min 8 GB · recommended 16 GB)",
+    "wizard_spec_cpu": "**CPU:** {model} — {phys} cores / {val} threads (min 4 threads · recommended 8+)",
+    "wizard_spec_disk": "**Free Disk Space (`{path}`):** {val:.2f} GiB (min 5 GB · recommended 20 GB)",
+    "wizard_spec_ffmpeg_ok": "**FFmpeg:** Available (`{ver}`)",
+    "wizard_spec_ffmpeg_missing": "**FFmpeg:** Not found — install FFmpeg or check bundled runtime.",
+    "wizard_spec_net_ok": "**Internet Connection:** Connected",
+    "wizard_spec_net_off": "**Internet Connection:** Offline (stock search & Edge TTS require internet access)",
+    "wizard_spec_capcut_label": "**CapCut Desktop:** {text}",
+    "wizard_or_heading": "AI Script Writer (OpenRouter — Optional)",
+    "wizard_or_desc": (
+        "OpenRouter provides access to AI models including free tiers (`openrouter/free` / `:free` with no credit card required). "
+        "This step is **optional** if you prefer importing Markdown scripts directly."
+    ),
+    "wizard_or_signup_link": "How to get a key: visit [OpenRouter Keys Page]({url})",
+    "wizard_or_free_limits": (
+        "**OpenRouter Free Tier Limits:** Free models (`openrouter/free` / `:free`) have per-minute rate limits (~20 req/min) "
+        "and daily caps (~50–1000 req/day depending on account credits)."
+    ),
+    "wizard_or_key_label": "OpenRouter API Key",
+    "wizard_or_key_placeholder": "sk-or-v1-...",
+    "wizard_btn_save_or_key": "Save key",
+    "wizard_or_key_saved": "OpenRouter key saved using safe default model `openrouter/free`.",
+    "wizard_btn_test_or": "Test AI connection",
+    "wizard_btn_quota_or": "Check OpenRouter quota",
+    "wizard_or_test_ok": "OpenRouter connection succeeded ({latency:.2f}s): {msg}",
+    "wizard_or_test_fail": "Connection test failed: {msg}",
+    "wizard_sources_heading": "Stock Footage Sources",
+    "wizard_sources_builtin_info": (
+        "**Built-in free sources (no API key needed):** Wikimedia Commons (CC/public video & photos), NASA Images Library, and Openverse Photos. "
+        "You can produce complete videos immediately without entering any extra key."
+    ),
+    "wizard_pixabay_label": "Pixabay API Key (optional)",
+    "wizard_pixabay_link": "Sign up free: [Pixabay API Docs]({url})",
+    "wizard_coverr_label": "Coverr API Key (optional)",
+    "wizard_coverr_link": "Sign up free: [Coverr API]({url})",
+    "wizard_btn_save_sources": "Save footage source keys",
+    "wizard_sources_saved": "Footage source settings saved.",
+    "wizard_capcut_heading": "CapCut Desktop Integration",
+    "wizard_capcut_folder_label": "CapCut Drafts Folder (`com.lveditor.draft`)",
+    "wizard_capcut_folder_help": "Auto-detected from local AppData. Edit manually if you moved your CapCut projects folder.",
+    "wizard_btn_save_capcut_dir": "Save CapCut folder",
+    "wizard_capcut_dir_saved": "CapCut drafts folder saved: {path}",
+    "wizard_capcut_dir_warn": "Folder does not exist yet on disk ({path}), saved anyway.",
+    "wizard_finish_heading": "Setup Complete!",
+    "wizard_finish_desc": "EasyFaceless Studio is ready. Create a small ~2-minute starter project now or go straight to Home.",
+    "wizard_finish_summary_lang": "- Language: **{language_label}**",
+    "wizard_finish_summary_or": "- OpenRouter AI: **{status}**",
+    "wizard_finish_summary_sources": "- Free footage sources: **Wikimedia + NASA + Openverse active**{extra}",
+    "wizard_finish_summary_capcut": "- CapCut Desktop: **{status}**",
+    "wizard_btn_create_sample": "✨ Create starter sample project & Finish",
+    "wizard_btn_finish_only": "Finish and go to Home",
+    "wizard_sample_created": "Starter project `{id}` created!",
+    "wizard_configured": "Configured",
+    "wizard_skipped_optional": "Skipped (optional)",
+    # --- E2: Update Checker & Settings ---
+    "update_banner_title": "🚀 Update Available: EasyFaceless Studio v{version}",
+    "update_banner_released": "Released: {date}",
+    "btn_update_download": "Download Update",
+    "btn_update_later": "Later",
+    "btn_update_skip": "Skip this version",
+    "settings_studio_heading": "EasyFaceless Studio — Setup Wizard & Updates",
+    "settings_auto_update_check": "Automatically check for updates on startup (max once per 24h)",
+    "btn_check_updates_now": "Check for updates now",
+    "btn_run_wizard_again": "Run wizard again",
+    "update_up_to_date": "You are running the latest version (v{ver}).",
+    "update_available_msg": "New version v{ver} is available! Close Settings to view the download banner.",
+    "update_check_offline_note": "Could not reach the update server (offline or unreachable URL).",
+    "update_opening_url": "Opening download page: {url}",
+    # --- E3: CapCut Version Detection ---
+    "capcut_status_tested_badge": "CapCut {ver} — tested ✓",
+    "capcut_status_untested_badge": "CapCut {ver} — untested, verify exported draft",
+    "capcut_untested_warn": (
+        "CapCut {ver} detected — not yet verified (tested on {tested}). "
+        "Draft export is still allowed; please inspect the resulting draft in CapCut."
+    ),
+    "capcut_download_guide": (
+        "CapCut Desktop is not installed or its folder was not found. "
+        "Download free from [CapCut official site]({url}), install it, then click **Re-check**."
+    ),
+    "capcut_unsupported_os_note": "Automatic CapCut version detection is not yet implemented on this OS: {reason}",
+    # --- E5: Output Folder & Credits.md Viewer ---
+    "btn_open_output_folder": "📂 Open output folder",
+    "btn_open_credits_md": "📜 Open credits.md",
+    "credits_dialog_title": "Footage & Music Attribution (`credits.md`)",
+    "credits_file_path_caption": "File path: `{path}`",
+    "credits_btn_copy": "📋 Copy credits.md",
+    "credits_btn_download": "⬇️ Download credits.md",
+    "credits_copied_ok": "`credits.md` contents copied to clipboard!",
+    "credits_copy_fallback": "System clipboard is unavailable; copy directly from the box below:",
+    "credits_file_missing": (
+        "`export/credits.md` has not been generated for this project yet. "
+        "Run **Final Render** or re-export to generate `credits.md`."
+    ),
 }
 
 

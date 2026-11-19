@@ -28,6 +28,8 @@ class LongformConfig:
     hardware_encoder: str = "auto"
     atomic_retry_count: int = 5
     atomic_retry_delay_seconds: float = 0.05
+    capcut_tested_versions: tuple[str, ...] = ("8.9.0",)
+    capcut_download_url: str = "https://www.capcut.com/"
 
 
 _CONFIG_CACHE: LongformConfig | None = None
@@ -50,7 +52,7 @@ def load_longform_config(reload: bool = False) -> LongformConfig:
         return _CONFIG_CACHE
 
     config_path = get_config_file_path()
-    defaults = {
+    defaults: dict[str, Any] = {
         "min_duration_seconds": 600,
         "max_duration_seconds": 1200,
         "target_lufs": -14.0,
@@ -58,6 +60,8 @@ def load_longform_config(reload: bool = False) -> LongformConfig:
         "hardware_encoder": "auto",
         "atomic_retry_count": 5,
         "atomic_retry_delay_seconds": 0.05,
+        "capcut_tested_versions": ("8.9.0",),
+        "capcut_download_url": "https://www.capcut.com/",
     }
 
     if config_path.is_file() and toml is not None:
@@ -65,9 +69,26 @@ def load_longform_config(reload: bool = False) -> LongformConfig:
             with open(config_path, "r", encoding="utf-8") as fp:
                 data = toml.load(fp)
                 section = data.get("longform", data)
-                for key in defaults:
+                for key in (
+                    "min_duration_seconds",
+                    "max_duration_seconds",
+                    "target_lufs",
+                    "ducking_attenuation_db",
+                    "hardware_encoder",
+                    "atomic_retry_count",
+                    "atomic_retry_delay_seconds",
+                ):
                     if key in section:
                         defaults[key] = section[key]
+                cc_section = data.get("capcut")
+                if isinstance(cc_section, dict):
+                    raw_vers = cc_section.get("tested_versions")
+                    if isinstance(raw_vers, (list, tuple)):
+                        cleaned = tuple(str(v).strip() for v in raw_vers if str(v).strip())
+                        if cleaned:
+                            defaults["capcut_tested_versions"] = cleaned
+                    if cc_section.get("download_url"):
+                        defaults["capcut_download_url"] = str(cc_section["download_url"]).strip()
             logger.debug(f"Loaded longform configuration from {config_path}")
         except Exception as exc:
             logger.warning(f"Failed to load {config_path}, falling back to defaults: {exc}")

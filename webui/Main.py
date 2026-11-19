@@ -4249,6 +4249,11 @@ def _render_settings_dialog():
         with general_config_panel:
             if general_config_panel.open:
                 _render_general_settings(app_settings)
+                try:
+                    from app.services.branding.hooks import render_settings_studio_controls
+                    render_settings_studio_controls()
+                except Exception:
+                    pass
 
         with publish_config_panel:
             if publish_config_panel.open:

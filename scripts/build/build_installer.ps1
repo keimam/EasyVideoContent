@@ -248,9 +248,48 @@ try {
     $StagingMB = [Math]::Round($StagingBytes / 1MB, 2)
     $InstallerMB = [Math]::Round($InstallerBytes / 1MB, 2)
 
+    # E7: Generate SHA256 checksum & release notes from CHANGELOG.md in dist\
+    $ShaObj = Get-FileHash -Path $InstallerExe -Algorithm SHA256
+    $ShaHash = $ShaObj.Hash.ToLowerInvariant()
+    $ShaFile = "$InstallerExe.sha256"
+    "$ShaHash  $SetupBaseName.exe" | Out-File -FilePath $ShaFile -Encoding ascii -Force
+
+    $ChangelogPath = Join-Path $RepoRoot "CHANGELOG.md"
+    $ReleaseNotesOut = Join-Path $DistDir "RELEASE-NOTES-$AppVersion.md"
+    if (Test-Path $ChangelogPath) {
+        $ChangelogLines = Get-Content $ChangelogPath -Encoding UTF8
+        $Captured = New-Object System.Collections.Generic.List[string]
+        $InSection = $false
+        $HeaderEsc = [regex]::Escape("[$AppVersion]")
+        foreach ($ln in $ChangelogLines) {
+            if ($ln -match "^##\s+$HeaderEsc") {
+                $InSection = $true
+                $Captured.Add($ln)
+                continue
+            }
+            if ($InSection) {
+                if ($ln -match "^##\s+") { break }
+                $Captured.Add($ln)
+            }
+        }
+        if ($Captured.Count -gt 0) {
+            @(
+                "# EasyFaceless Studio v$AppVersion Release Notes",
+                "",
+                "Installer: ``$SetupBaseName.exe``",
+                "SHA-256: ``$ShaHash``",
+                ""
+            ) + $Captured | Out-File -FilePath $ReleaseNotesOut -Encoding utf8 -Force
+        }
+    }
+
     Write-Host ""
     Write-Host "=== BUILD SUCCEEDED ===" -ForegroundColor Green
     Write-Host "Installer   : $InstallerExe ($InstallerMB MB / $InstallerBytes bytes)"
+    Write-Host "SHA256      : $ShaFile ($ShaHash)"
+    if (Test-Path $ReleaseNotesOut) {
+        Write-Host "ReleaseNote : $ReleaseNotesOut"
+    }
     Write-Host "Staged Size : $StagingMB MB ($StagingBytes bytes)"
     Write-Host "Top-level items in package:"
     Get-ChildItem $StagingDir | Select-Object Name, Mode | Format-Table -AutoSize
