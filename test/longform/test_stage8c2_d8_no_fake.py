@@ -11,8 +11,17 @@ from PIL import Image
 from streamlit.testing.v1 import AppTest
 
 from app.config import config
-from app.services.longform.schema import AudioSpec, Chapter, ItemStatus, Segment, Shot, TtsGroup
-from app.services.longform.store import create_project, load_manifest, save_manifest
+from app.services.longform.schema import (
+    CURRENT_SCHEMA_VERSION,
+    AudioSpec,
+    Chapter,
+    ItemStatus,
+    Segment,
+    Shot,
+    TtsGroup,
+)
+from app.services.longform.status import compute_project_step_status
+from app.services.longform.store import ProjectStoreError, create_project, load_manifest, save_manifest
 from app.services.longform.visual.base import (
     BaseVisualProvider,
     VisualAsset,
@@ -452,3 +461,201 @@ def test_d8_verify_package_rejects_fake_in_default_configs(tmp_path):
 
     (tmp_path / "resource" / "presets" / "sample.json").write_text(json.dumps({"id": "sample", "preferred_visual_source": "fake"}), encoding="utf-8")
     assert any("sample.json" in e for e in verify_staging_dir(tmp_path, check_required=False))
+
+
+def test_d8_1_roundtrip_missing_visual_neutral_and_legacy_fake_shots(tmp_path):
+    """D8.1: Save -> load round-trip preserves missing visual, neutral_backdrop, legacy fake, and status counts."""
+    manifest, p_dir = create_project("d81_roundtrip", "Roundtrip Test", "automotive.muscle_car", projects_root=tmp_path)
+    shots_dir = p_dir / "assets" / "visual" / "shots"
+    shots_dir.mkdir(parents=True, exist_ok=True)
+    (shots_dir / "ch01_shot002.mp4").write_bytes(b"ftypisom" + b"\x00" * 120)
+    (shots_dir / "ch01_shot003.mp4").write_bytes(b"ftypisom" + b"\x00" * 120)
+
+    manifest.chapters = [
+        Chapter(
+            chapter_index=1,
+            chapter_title="Ch 1",
+            shots=[
+                Shot(
+                    shot_id="ch01_shot001",
+                    chapter_index=1,
+                    shot_index=1,
+                    duration_seconds=3.0,
+                    target_frames=75,
+                    requested_source="pixabay",
+                    actual_source=None,
+                    asset_path=None,
+                    rendered_clip=None,
+                    fallback_reason="no_visual_found",
+                    is_fake=False,
+                    needs_review=True,
+                ),
+                Shot(
+                    shot_id="ch01_shot002",
+                    chapter_index=1,
+                    shot_index=2,
+                    duration_seconds=3.0,
+                    target_frames=75,
+                    requested_source="pixabay",
+                    actual_source="neutral_backdrop",
+                    asset_path=None,
+                    rendered_clip="assets/visual/shots/ch01_shot002.mp4",
+                    fallback_reason="neutral_backdrop_confirmed",
+                    status=ItemStatus.completed,
+                ),
+                Shot(
+                    shot_id="ch01_shot003",
+                    chapter_index=1,
+                    shot_index=3,
+                    duration_seconds=3.0,
+                    target_frames=75,
+                    requested_source="pixabay",
+                    actual_source="fake",
+                    is_fake=True,
+                    rendered_clip="assets/visual/shots/ch01_shot003.mp4",
+                    status=ItemStatus.completed,
+                ),
+            ],
+        )
+    ]
+    save_manifest(manifest, p_dir)
+    loaded = load_manifest(p_dir)
+    assert loaded.schema_version == CURRENT_SCHEMA_VERSION
+    s1, s2, s3 = loaded.chapters[0].shots
+    assert s1.actual_source is None and s1.asset_path is None and s1.rendered_clip is None
+    assert s2.actual_source == "neutral_backdrop" and s2.is_fake is False
+    assert s3.actual_source == "fake" and s3.is_fake is True
+
+    st = compute_project_step_status(p_dir)
+    vis = st["steps"]["visual"]
+    assert vis["total"] == 3
+    assert vis["built_shots"] == 2
+    assert vis["missing_visual_shots"] == 1
+    assert vis["legacy_fake_shots"] == 1
+    assert vis["unready_visual_shots"] == 2
+    assert vis["status"] == "terhenti"
+
+
+def test_d8_1_load_legacy_1_0_0_manifest_with_null_actual_source_pattern(tmp_path):
+    """D8.1: Exact bug pattern (schema 1.0.0 with actual_source=None on shots 7..23) loads without manual fixes."""
+    manifest, p_dir = create_project("d81_bugfix", "New York Bridge", "documentary_en", projects_root=tmp_path)
+    shots_dir = p_dir / "assets" / "visual" / "shots"
+    shots_dir.mkdir(parents=True, exist_ok=True)
+    raw = manifest.model_dump(mode="json")
+    raw["schema_version"] = "1.0.0"
+
+    raw_shots = []
+    for i in range(24):
+        sid = f"ch01_shot{i + 1:03d}"
+        if i < 7:
+            (shots_dir / f"{sid}_asset.mp4").write_bytes(b"asset" * 30)
+            (shots_dir / f"{sid}.mp4").write_bytes(b"ftypisom" + b"\x00" * 100)
+            raw_shots.append({
+                "shot_id": sid,
+                "chapter_index": 1,
+                "shot_index": i + 1,
+                "duration_seconds": 3.0,
+                "target_frames": 75,
+                "requested_source": "pixabay",
+                "actual_source": "pixabay",
+                "asset_path": f"assets/visual/shots/{sid}_asset.mp4",
+                "rendered_clip": f"assets/visual/shots/{sid}.mp4",
+                "status": "completed",
+            })
+        else:
+            raw_shots.append({
+                "shot_id": sid,
+                "chapter_index": 1,
+                "shot_index": i + 1,
+                "duration_seconds": 3.0,
+                "target_frames": 75,
+                "requested_source": "pixabay",
+                "actual_source": None,
+                "asset_path": None,
+                "rendered_clip": None,
+                "fallback_reason": "no_visual_found",
+                "visual_prompt": None,
+                "tags": None,
+                "is_fake": False,
+                "needs_review": True,
+                "status": "pending",
+            })
+    raw["chapters"] = [{"chapter_index": 1, "chapter_title": "Chapter 1", "shots": raw_shots}]
+    (p_dir / "manifest.json").write_text(json.dumps(raw, indent=2), encoding="utf-8")
+
+    loaded = load_manifest(p_dir)
+    assert loaded.schema_version == CURRENT_SCHEMA_VERSION
+    assert len(loaded.chapters[0].shots) == 24
+    assert loaded.chapters[0].shots[7].actual_source is None
+    assert loaded.chapters[0].shots[23].fallback_reason == "no_visual_found"
+
+    st = compute_project_step_status(p_dir)
+    assert st["steps"]["visual"]["built_shots"] == 7
+    assert st["steps"]["visual"]["missing_visual_shots"] == 17
+    assert st["steps"]["visual"]["status"] == "terhenti"
+
+
+def test_d8_1_save_manifest_atomic_validation_preserves_existing_file(tmp_path):
+    """D8.1: Failed model validation during save_manifest must abort before os.replace and preserve old manifest."""
+    manifest, p_dir = create_project("d81_atomic", "Atomic Valid Save", "automotive.muscle_car", projects_root=tmp_path)
+    original_bytes = (p_dir / "manifest.json").read_bytes()
+
+    # Corrupt model via direct assignment on non-validated attribute or construct bad object
+    object.__setattr__(manifest, "schema_version", "99.0.0")
+    with pytest.raises(ProjectStoreError) as exc_info:
+        save_manifest(manifest, p_dir)
+    assert "Manifest validation failed before saving" in str(exc_info.value)
+
+    # No orphaned temp files and existing manifest.json untouched
+    assert list(p_dir.glob("manifest.json.tmp.*")) == []
+    assert (p_dir / "manifest.json").read_bytes() == original_bytes
+
+
+@pytest.mark.parametrize("lang", ["id", "en"])
+def test_d8_1_ui_friendly_load_error_corrupt_manifest_bilingual(tmp_path, monkeypatch, lang):
+    """D8.1: Corrupt/incompatible manifest shows friendly message, suggestion, Copy button, and expander traceback."""
+    monkeypatch.setattr("app.services.longform.store.get_projects_root", lambda: tmp_path)
+    monkeypatch.setattr("app.services.longform.ui.components.get_projects_root", lambda: tmp_path)
+    monkeypatch.setitem(config.ui, "language", lang)
+
+    pid = f"d81_broken_{lang}"
+    manifest, p_dir = create_project(pid, "Broken Project", "automotive.muscle_car", projects_root=tmp_path)
+    data = manifest.model_dump(mode="json")
+    data["schema_version"] = "99.0.0"
+    (p_dir / "manifest.json").write_text(json.dumps(data), encoding="utf-8")
+
+    # Home page surfaces broken project warning without crashing
+    at_home = AppTest.from_file(_get_long_video_app_file(), default_timeout=25)
+    at_home.run()
+    assert not at_home.exception
+    home_warns = " ".join(w.value for w in at_home.warning)
+    if lang == "id":
+        assert "tidak bisa dibuka" in home_warns
+    else:
+        assert "could not be opened" in home_warns
+
+    # Direct project page renders friendly error + Copy details + technical expander
+    at_proj = AppTest.from_file(_get_long_video_app_file(), default_timeout=25)
+    at_proj.query_params["project"] = pid
+    at_proj.run()
+    assert not at_proj.exception
+
+    errs = " ".join(e.value for e in at_proj.error)
+    infos = " ".join(i.value for i in at_proj.info)
+    code_blocks = " ".join(c.value for c in at_proj.code)
+    assert "Unsupported manifest schema version" in code_blocks
+    if lang == "id":
+        assert "data rusak atau versi skema lama" in errs
+        assert "Saran:" in infos
+        copy_btn = [b for b in at_proj.button if b.key == f"btn_copy_load_err_{pid}"][0]
+        assert "Salin detail" in copy_btn.label
+    else:
+        assert "data is corrupted or uses an incompatible legacy schema" in errs
+        assert "Suggestion:" in infos
+        copy_btn = [b for b in at_proj.button if b.key == f"btn_copy_load_err_{pid}"][0]
+        assert "Copy details" in copy_btn.label
+
+    with patch("app.services.longform.ui.components._copy_text_to_clipboard_best_effort", return_value=True):
+        copy_btn.click().run()
+        assert at_proj.session_state[f"copy_load_err_{pid}"] is True
+

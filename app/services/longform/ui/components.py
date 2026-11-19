@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -347,6 +348,54 @@ def get_project_summaries() -> List[Dict[str, Any]]:
     # Sort newest first by last modified time (D5)
     projects.sort(key=lambda x: x.get("mtime", 0), reverse=True)
     return projects
+
+
+def get_failed_project_loads() -> List[Dict[str, Any]]:
+    """Return projects whose manifest.json failed validation/parsing so UI can surface them cleanly (D8.1)."""
+    root = get_projects_root()
+    failed: List[Dict[str, Any]] = []
+    if not root.is_dir():
+        return failed
+
+    for p in sorted(root.iterdir()):
+        if p.name.startswith("_"):
+            continue
+        if p.is_dir() and (p / "manifest.json").is_file():
+            try:
+                compute_project_step_status(p)
+            except Exception as exc:
+                failed.append({
+                    "project_id": p.name,
+                    "error": str(exc),
+                    "traceback": traceback.format_exc(),
+                })
+    return failed
+
+
+def _copy_text_to_clipboard_best_effort(text: str) -> bool:
+    """Copy text cleanly via platform_utils without scattered OS checks (D6, D8.1)."""
+    from app.services.longform.platform_utils import copy_text_to_clipboard
+
+    return copy_text_to_clipboard(text)
+
+
+def _render_project_load_error(project_id: str, exc: BaseException, tb_str: str = "") -> None:
+    """Display friendly load error message, suggestion, 'Salin detail' button, and traceback expander (D8.1)."""
+    st.error(t("err_project_load_corrupt_or_legacy", id=project_id))
+    st.info(t("err_project_load_suggestion"))
+
+    full_detail = "\n\n".join(part for part in (str(exc).strip(), tb_str.strip()) if part)
+    copy_flag_key = f"copy_load_err_{project_id}"
+    if st.button(t("btn_copy_error_details"), key=f"btn_copy_load_err_{project_id}"):
+        _copy_text_to_clipboard_best_effort(full_detail)
+        st.session_state[copy_flag_key] = True
+        st.toast(t("copied_error_details_toast"))
+
+    with st.expander(
+        t("error_details_expander"),
+        expanded=bool(st.session_state.get(copy_flag_key, False)),
+    ):
+        st.code(full_detail, language="text")
 
 
 # --- Job Monitor Widget with Fragment (D1) ---
@@ -1060,6 +1109,15 @@ def render_home_page():
 
     # 3. Project Filter Chips and Grid (Mockup 1)
     projects = get_project_summaries()
+    failed_loads = get_failed_project_loads()
+    if failed_loads:
+        with st.container(border=True):
+            st.warning(t("home_corrupt_projects_warn", count=len(failed_loads)))
+            for f_item in failed_loads[:5]:
+                f_pid = f_item["project_id"]
+                if st.button(t("btn_inspect_broken_project", id=f_pid), key=f"btn_open_broken_{f_pid}"):
+                    st.query_params["project"] = f_pid
+                    st.rerun()
 
     trashed_items = list_trashed_projects()
     total_cnt = len(projects)
@@ -1187,20 +1245,31 @@ def render_home_page():
 # --- Halaman Proyek (Project Detail Page) Components (C4.3, C4.4, C4.5) ---
 
 def render_project_page(project_id: str):
-    """Render Halaman Proyek with Stepper and Single Adaptive Action (C4.3)."""
+    """Render Halaman Proyek with Stepper and Single Adaptive Action (C4.3, D8.1)."""
+    from app.services.longform.ui.nav import render_mpt_entry
+
     p_dir = get_project_dir(project_id)
     if not p_dir.is_dir() or not (p_dir / "manifest.json").is_file():
+        render_mpt_entry(show_top_return=False)
         st.error(t("err_project_not_found", id=project_id))
-        if st.button("← " + t("btn_back_to_projects")):
+        if st.button("← " + t("btn_back_to_projects"), key=f"btn_notfound_back_{project_id}"):
             st.query_params.clear()
             st.rerun()
         return
 
-    st_info = compute_project_step_status(p_dir)
+    try:
+        st_info = compute_project_step_status(p_dir)
+    except Exception as exc:
+        render_mpt_entry(show_top_return=False)
+        if st.button("← " + t("btn_all_projects"), key=f"btn_err_back_{project_id}"):
+            st.query_params.clear()
+            st.rerun()
+        _render_project_load_error(project_id, exc, traceback.format_exc())
+        return
+
     manifest = st_info["manifest"]
 
     # C6: Studio sidebar navigation without redundant top back link
-    from app.services.longform.ui.nav import render_mpt_entry
     render_mpt_entry(show_top_return=False)
 
     # Navigation header & top meta row (Mockup 2)

@@ -460,3 +460,42 @@ def launch_desktop_app_detached(
 ) -> subprocess.Popen:
     """Launch desktop server process cleanly per OS (detached & hidden on Windows)."""
     return start_hidden_subprocess(cmd, cwd=cwd, log_file=log_file, env=env)
+
+
+def copy_text_to_clipboard(text: str) -> bool:
+    """Copy text to the OS clipboard cleanly with headless subprocess/tkinter fallback."""
+    if is_windows():
+        try:
+            subprocess.run(
+                ["clip"],
+                input=text.encode("utf-16-le"),
+                check=True,
+                creationflags=get_hidden_subprocess_flags(),
+            )
+            return True
+        except Exception:
+            pass
+    elif is_macos():
+        try:
+            subprocess.run(["pbcopy"], input=text.encode("utf-8"), check=True)
+            return True
+        except Exception:
+            pass
+    else:
+        for cmd in (["xclip", "-selection", "clipboard"], ["xsel", "--clipboard", "--input"]):
+            try:
+                subprocess.run(cmd, input=text.encode("utf-8"), check=True)
+                return True
+            except Exception:
+                pass
+    try:
+        import tkinter as tk
+        r = tk.Tk()
+        r.withdraw()
+        r.clipboard_clear()
+        r.clipboard_append(text)
+        r.update()
+        r.destroy()
+        return True
+    except Exception:
+        return False

@@ -893,6 +893,17 @@ ID_TRANSLATIONS: Dict[str, str] = {
     "shot_no_visual_notice": (
         "Belum ada visual untuk shot ini. Gunakan tab **Cari lagi** atau **Unggah** di bawah untuk memasang footage asli."
     ),
+    # --- D8.1: Project Load Error & Validation ---
+    "err_project_load_corrupt_or_legacy": (
+        "Proyek `{id}` tidak bisa dibuka: data rusak atau versi skema lama tidak kompatibel."
+    ),
+    "err_project_load_suggestion": (
+        "Saran: periksa detail validasi di bawah, salin detail untuk pelaporan, atau pulihkan cadangan `manifest.json` proyek bila ada."
+    ),
+    "btn_copy_error_details": "Salin detail",
+    "copied_error_details_toast": "Detail error siap disalin dari kotak di bawah.",
+    "home_corrupt_projects_warn": "⚠️ {count} proyek tidak bisa dibuka (data rusak/versi lama):",
+    "btn_inspect_broken_project": "Lihat detail: {id}",
 }
 
 
@@ -1778,6 +1789,17 @@ EN_TRANSLATIONS: Dict[str, str] = {
     "shot_no_visual_notice": (
         "No visual yet for this shot. Use the **Search again** or **Upload** tab below to attach real footage."
     ),
+    # --- D8.1: Project Load Error & Validation ---
+    "err_project_load_corrupt_or_legacy": (
+        "Project `{id}` cannot be opened: data is corrupted or uses an incompatible legacy schema version."
+    ),
+    "err_project_load_suggestion": (
+        "Suggestion: inspect the validation details below, copy the details for troubleshooting, or restore a backup of `manifest.json` if available."
+    ),
+    "btn_copy_error_details": "Copy details",
+    "copied_error_details_toast": "Error details are ready to copy from the box below.",
+    "home_corrupt_projects_warn": "⚠️ {count} project(s) could not be opened (corrupted/legacy data):",
+    "btn_inspect_broken_project": "View details: {id}",
 }
 
 
