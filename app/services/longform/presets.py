@@ -38,10 +38,11 @@ class PresetValidationError(PresetError):
 
 
 def get_preset_directories() -> Tuple[Path, Path]:
-    """Return the absolute paths for resource presets and storage presets."""
-    repo_root = Path(__file__).resolve().parent.parent.parent.parent
-    resource_dir = repo_root / "resource" / "presets"
-    storage_dir = repo_root / "storage" / "presets"
+    """Return the absolute paths for resource presets and writable user presets."""
+    from app.services.longform import app_paths
+
+    resource_dir = app_paths.get_install_root() / "resource" / "presets"
+    storage_dir = app_paths.get_custom_presets_dir()
     return resource_dir, storage_dir
 
 

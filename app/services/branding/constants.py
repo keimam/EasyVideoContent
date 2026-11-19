@@ -10,6 +10,10 @@ APP_NAME = "EasyFaceless Studio"
 APP_SHORT = "EasyFaceless"
 APP_TAGLINE = "STUDIO"
 APP_VERSION = "1.0.0"
+APP_OWNER = "Naseh Ngulik"
+APP_PUBLISHER = APP_OWNER
+APP_COPYRIGHT_YEAR = "2026"
+APP_SETUP_PREFIX = "EasyFacelessStudio-Setup"
 CORE_NAME = "MoneyPrinterTurbo"
 
 # Determine upstream core version dynamically

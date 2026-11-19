@@ -8,6 +8,11 @@ import streamlit as st
 def _inject_sidebar_css(is_main: bool = True):
     """Inject branding theme and sidebar toggle CSS (H3, H5, 8A.1)."""
     try:
+        from app.services.longform.launcher_runtime import ensure_app_mutex
+        ensure_app_mutex()
+    except Exception:
+        pass
+    try:
         from app.services.branding.theme import inject_brand_theme
         inject_brand_theme()
     except Exception:

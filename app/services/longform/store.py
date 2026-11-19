@@ -7,12 +7,10 @@ stale lock takeover (K5).
 
 from __future__ import annotations
 
-import ctypes
 import json
 import os
 import shutil
 import socket
-import sys
 import time
 import uuid
 from datetime import datetime, timezone
@@ -23,6 +21,7 @@ from loguru import logger
 
 from pydantic import ValidationError
 
+from app.services.longform import app_paths, platform_utils
 from app.services.longform.config import load_longform_config
 from app.services.longform.hashing import (
     compute_audio_group_hash,
@@ -32,7 +31,14 @@ from app.services.longform.hashing import (
     hash_file,
 )
 from app.services.longform.presets import get_preset, get_preset_inheritance_chain
-from app.services.longform.schema import Chapter, ItemStatus, ProjectManifest, Segment, TtsGroup
+from app.services.longform.schema import (
+    CURRENT_SCHEMA_VERSION,
+    Chapter,
+    ItemStatus,
+    ProjectManifest,
+    Segment,
+    TtsGroup,
+)
 
 
 class ProjectStoreError(Exception):
@@ -51,33 +57,8 @@ class ProjectNotFoundError(ProjectStoreError):
 
 
 def is_pid_alive(pid: int) -> bool:
-    """Check whether a given PID is still running.
-
-    Safe for Windows (uses Win32 OpenProcess/GetExitCodeProcess) and POSIX.
-    """
-    if pid <= 0:
-        return False
-
-    if sys.platform == "win32":
-        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-        STILL_ACTIVE = 259
-        kernel32 = ctypes.windll.kernel32
-        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
-        if not handle:
-            return False
-        try:
-            exit_code = ctypes.c_ulong()
-            if kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
-                return exit_code.value == STILL_ACTIVE
-            return False
-        finally:
-            kernel32.CloseHandle(handle)
-    else:
-        try:
-            os.kill(pid, 0)
-            return True
-        except OSError:
-            return False
+    """Check whether a given PID is still running (delegated to platform_utils)."""
+    return platform_utils.is_pid_alive(pid)
 
 
 class ProjectLock:
@@ -186,8 +167,7 @@ def clear_stop_request(project_dir: str | Path) -> None:
 
 def get_projects_root() -> Path:
     """Return the absolute path to storage/longform_projects/."""
-    repo_root = Path(__file__).resolve().parent.parent.parent.parent
-    return repo_root / "storage" / "longform_projects"
+    return app_paths.get_longform_projects_dir()
 
 
 def get_project_dir(project_id: str) -> Path:
@@ -195,13 +175,63 @@ def get_project_dir(project_id: str) -> Path:
     return get_projects_root() / project_id
 
 
+def _normalize_manifest_data(data: dict[str, Any]) -> dict[str, Any]:
+    """Normalize and migrate legacy/1.0.0 manifest dicts cleanly during load (D8.1)."""
+    out = dict(data)
+    ver = out.get("schema_version")
+    if ver in (None, "", "1.0.0"):
+        out["schema_version"] = CURRENT_SCHEMA_VERSION
+
+    raw_chapters = out.get("chapters")
+    if isinstance(raw_chapters, list):
+        norm_chapters = []
+        for ch in raw_chapters:
+            if not isinstance(ch, dict):
+                norm_chapters.append(ch)
+                continue
+            ch_copy = dict(ch)
+            raw_shots = ch_copy.get("shots")
+            if isinstance(raw_shots, list):
+                norm_shots = []
+                for sh in raw_shots:
+                    if not isinstance(sh, dict):
+                        norm_shots.append(sh)
+                        continue
+                    sh_copy = dict(sh)
+                    # D8.1: ensure nullable/optional fields load cleanly even if stored as null/empty in 1.0.0
+                    for list_key in ("segment_indices", "candidates", "tags", "search_queries_en"):
+                        if list_key in sh_copy and sh_copy[list_key] is None:
+                            sh_copy[list_key] = []
+                    for text_key in ("visual_prompt", "search_query"):
+                        if text_key in sh_copy and sh_copy[text_key] is None:
+                            sh_copy[text_key] = ""
+                    for path_key in ("asset_path", "rendered_clip"):
+                        if isinstance(sh_copy.get(path_key), str) and not sh_copy[path_key].strip():
+                            sh_copy[path_key] = None
+                    norm_shots.append(sh_copy)
+                ch_copy["shots"] = norm_shots
+            norm_chapters.append(ch_copy)
+        out["chapters"] = norm_chapters
+    return out
+
+
 def save_manifest(manifest: ProjectManifest, project_dir: str | Path) -> Path:
-    """Atomically save manifest.json with fsync and Windows retry logic (K5)."""
+    """Atomically save manifest.json with temp validation, fsync, and Windows retry logic (K5, D8.1).
+
+    Writes to a temp file, validates with ProjectManifest.model_validate_json() BEFORE
+    replacing target manifest.json so invalid writes never corrupt existing project files.
+    """
     p_dir = Path(project_dir).resolve()
     target_path = p_dir / "manifest.json"
     temp_path = p_dir / f"manifest.json.tmp.{uuid.uuid4().hex}"
 
-    payload = manifest.model_dump_json(indent=2).encode("utf-8")
+    if manifest.schema_version in ("", "1.0.0"):
+        manifest.schema_version = CURRENT_SCHEMA_VERSION
+
+    try:
+        payload = manifest.model_dump_json(indent=2).encode("utf-8")
+    except Exception as exc:
+        raise ProjectStoreError(f"Failed to serialize manifest before saving '{target_path}': {exc}") from exc
 
     # 1. Write to temporary file with flush & fsync
     try:
@@ -214,7 +244,27 @@ def save_manifest(manifest: ProjectManifest, project_dir: str | Path) -> Path:
             temp_path.unlink(missing_ok=True)
         raise ProjectStoreError(f"Failed to write temporary manifest '{temp_path}': {exc}") from exc
 
-    # 2. Atomic replacement with retries for Windows PermissionError
+    # 2. Validate written temp file with ProjectManifest before replacing existing manifest
+    try:
+        validated_text = temp_path.read_text(encoding="utf-8-sig")
+        ProjectManifest.model_validate_json(validated_text)
+    except ValidationError as exc:
+        temp_path.unlink(missing_ok=True)
+        errors = [
+            f"Field '{' -> '.join(str(p) for p in err.get('loc', []))}': {err.get('msg')}"
+            for err in exc.errors()
+        ]
+        details = "\n  - " + "\n  - ".join(errors)
+        raise ProjectStoreError(
+            f"Manifest validation failed before saving '{target_path}'; previous manifest kept intact:{details}"
+        ) from exc
+    except Exception as exc:
+        temp_path.unlink(missing_ok=True)
+        raise ProjectStoreError(
+            f"Manifest verification failed before saving '{target_path}'; previous manifest kept intact: {exc}"
+        ) from exc
+
+    # 3. Atomic replacement with retries for Windows PermissionError
     config = load_longform_config()
     retries = max(1, config.atomic_retry_count)
     delay = max(0.01, config.atomic_retry_delay_seconds)
@@ -269,7 +319,8 @@ def load_manifest(project_dir: str | Path) -> ProjectManifest:
         )
 
     try:
-        manifest = ProjectManifest.model_validate(data)
+        normalized_data = _normalize_manifest_data(data)
+        manifest = ProjectManifest.model_validate(normalized_data)
         # Synchronize paragraph_text with segments (A1) and clean chapter title prefixes (E1)
         from app.services.longform.script_import import clean_chapter_title
         for ch in manifest.chapters:

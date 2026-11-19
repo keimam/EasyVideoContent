@@ -143,8 +143,8 @@ class Shot(BaseModel):
     end_seconds: float = 0.0
     duration_seconds: float = 0.0
     target_frames: int = 0
-    requested_source: str = "ai_image"
-    actual_source: str = "ai_image"
+    requested_source: Optional[str] = None
+    actual_source: Optional[str] = None
     fallback_reason: Optional[str] = None
     visual_prompt: str = ""
     search_query: str = ""
@@ -171,9 +171,40 @@ class Shot(BaseModel):
     ai_relevance_asset_hash: Optional[str] = None
     ai_video_provider: Optional[str] = None
     ai_video_model: Optional[str] = None
+    search_attempts: List[dict[str, Any]] = Field(default_factory=list)  # Tiered search diagnostics (D9.1)
+    no_visual_reason_summary: Optional[str] = None
+    attribution_title: Optional[str] = None
+    attribution_author: Optional[str] = None
+    attribution_author_url: Optional[str] = None
+    attribution_license: Optional[str] = None
+    attribution_url: Optional[str] = None
+    requires_attribution: bool = False
     status: ItemStatus = ItemStatus.pending
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "forbid", "validate_assignment": True}
+
+    @field_validator("visual_prompt", "search_query", mode="before")
+    @classmethod
+    def coerce_none_text(cls, value: Any) -> str:
+        return "" if value is None else str(value)
+
+    @field_validator("segment_indices", "candidates", "tags", "search_queries_en", "search_attempts", mode="before")
+    @classmethod
+    def coerce_none_list(cls, value: Any) -> list:
+        return [] if value is None else value
+
+    @field_validator("locked", "is_fake", "needs_review", "is_low_res", "requires_attribution", mode="before")
+    @classmethod
+    def coerce_none_bool(cls, value: Any) -> bool:
+        return False if value is None else bool(value)
+
+    @field_validator("requested_source", "actual_source", "fallback_reason", mode="before")
+    @classmethod
+    def coerce_optional_source_str(cls, value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        txt = str(value).strip()
+        return txt or None
 
     @field_validator("asset_path", "rendered_clip")
     @classmethod
@@ -320,11 +351,15 @@ class ScriptOutline(BaseModel):
         return v
 
 
+CURRENT_SCHEMA_VERSION = "1.1.0"
+SUPPORTED_SCHEMA_VERSIONS = {"1.0.0", "1.1.0"}
+
+
 class ProjectManifest(BaseModel):
     """Single source of truth for longform video project data and execution progress."""
 
     pipeline_version: str = "1.0.0"
-    schema_version: str = "1.0.0"
+    schema_version: str = CURRENT_SCHEMA_VERSION
     project_id: str
     title: str
     topic: Optional[str] = None
@@ -354,10 +389,9 @@ class ProjectManifest(BaseModel):
     @field_validator("schema_version")
     @classmethod
     def validate_schema_version(cls, value: str) -> str:
-        SUPPORTED = {"1.0.0"}
-        if value not in SUPPORTED:
+        if value not in SUPPORTED_SCHEMA_VERSIONS:
             raise ValueError(
                 f"Unsupported manifest schema version: '{value}'. "
-                f"Supported versions: {sorted(SUPPORTED)}"
+                f"Supported versions: {sorted(SUPPORTED_SCHEMA_VERSIONS)}"
             )
         return value

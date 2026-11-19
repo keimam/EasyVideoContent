@@ -458,7 +458,7 @@ ID_TRANSLATIONS: Dict[str, str] = {
     "prov_pixabay_no_key": "Pixabay (Belum ada key)",
     "prov_coverr_key": "Coverr ({mask})",
     "prov_coverr_no_key": "Coverr (Belum ada key)",
-    "prov_pexels_no_key": "Pexels (Belum ada key di config)",
+    "prov_pexels_no_key": "Pexels (Key baru ditutup)",
     "prov_local_ready": "File lokal (siap)",
     "prov_ai_no_key": "Gambar AI (Belum ada key OpenAI)",
     "chapter_pill_format": "Bab {idx}",
@@ -854,6 +854,69 @@ ID_TRANSLATIONS: Dict[str, str] = {
     ),
     "openrouter_tag_reasoning": "reasoning",
     "openrouter_tag_random": "auto-acak",
+    # --- C8.2 / 8C.2 Installer, Owner & Shutdown ---
+    "about_dialog_owner_line": "**Pemilik & Pembuat Ekstensi:** {owner} (Copyright © {year})",
+    "nav_exit_app": "Tutup aplikasi",
+    "nav_exit_app_help": "Hentikan server EasyFaceless Studio dengan aman",
+    "exit_app_dialog_title": "Tutup EasyFaceless Studio?",
+    "exit_app_confirm_desc": "Server lokal EasyFaceless Studio akan dihentikan. Data proyek tetap tersimpan aman.",
+    "exit_app_running_jobs_warning": "⚠️ Masih ada **{count} tugas** yang sedang berjalan di latar belakang. Menutup aplikasi sekarang akan menghentikan proses tersebut:",
+    "exit_app_job_item": "• `{project_id}` ({step}, PID {pid})",
+    "exit_app_btn_cancel": "Batal",
+    "exit_app_btn_confirm": "Ya, tutup aplikasi",
+    "exit_app_goodbye": "Aplikasi sedang ditutup dengan aman. Anda dapat menutup tab browser ini.",
+    # --- D8: No Fake Placeholders in Production ---
+    "vis_no_source_warning": (
+        "Belum ada sumber visual yang siap. Isi API key Pexels/Pixabay di API & Penyedia AI "
+        "(atau tambahkan klip ke Pustaka Lokal) sebelum mencari visual."
+    ),
+    "btn_open_provider_settings": "Buka Pengaturan Penyedia",
+    "badge_no_visual": "🚫 Belum ada visual",
+    "badge_legacy_fake": "⚠️ Placeholder lama — klik Cari ulang",
+    "filter_no_visual": "Belum ada visual · {count}",
+    "vis_missing_summary_warn": (
+        "⚠️ {missing} shot belum memiliki visual. Gunakan tab 'Cari lagi' di panel detail atau klik tombol di bawah untuk mencari ulang."
+    ),
+    "vis_legacy_fake_summary_warn": (
+        "⚠️ {fake} shot dari proyek lama masih memakai placeholder ('fake'). Klik tombol di bawah untuk menggantinya dengan footage asli."
+    ),
+    "btn_refetch_unready": "🔄 Cari ulang shot tanpa visual/placeholder",
+    "vis_confirm_missing_title": "⚠️ Konfirmasi: {count} shot belum memiliki visual",
+    "vis_confirm_missing_body": (
+        "Sebanyak **{count} shot** belum memiliki visual asli:\n{list_text}\n\n"
+        "Pilih **Cari ulang dulu** untuk mencari footage di langkah Visual, atau **Lanjutkan** untuk memakai latar belakang gelap netral yang bersih:"
+    ),
+    "btn_search_again_first": "Cari ulang dulu",
+    "btn_continue_neutral": "Lanjutkan",
+    "btn_cancel_confirm": "Batal",
+    "source_neutral_backdrop": "Latar netral",
+    "shot_no_visual_notice": (
+        "Belum ada visual untuk shot ini. Gunakan tab **Cari lagi** atau **Unggah** di bawah untuk memasang footage asli."
+    ),
+    # --- D9: Free Visual Providers, Tiered Search, Attribution ---
+    "prov_wikimedia_free": "Wikimedia Commons (Gratis, tanpa key)",
+    "prov_nasa_free": "NASA Library (Gratis, tanpa key)",
+    "prov_openverse_free": "Openverse Foto (Gratis, Ken Burns)",
+    "prov_pexels_key": "Pexels ({mask})",
+    "prov_pexels_closed_note": "Pendaftaran key baru Pexels sedang ditutup; pengguna yang sudah punya key tetap didukung.",
+    "prov_source_order_caption": "Urutan otomatis default: **Pixabay → Coverr → Wikimedia → NASA → Openverse** (foto).",
+    "shot_no_visual_reason_label": "**Alasan belum ada visual:** {summary}",
+    "shot_search_attempts_expander": "Rincian pencarian bertingkat ({count} percobaan)",
+    "shot_attribution_heading": "**Atribusi Aset:** {title} · Pembuat: {author} · Lisensi: `{license}`",
+    "shot_attribution_link": "[Lihat sumber]({url})",
+    "badge_requires_attribution": "ℹ️ Perlu atribusi ({license}) — dicatat di credits.md",
+    "source_not_selected_yet": "Belum ditentukan",
+    # --- D8.1: Project Load Error & Validation ---
+    "err_project_load_corrupt_or_legacy": (
+        "Proyek `{id}` tidak bisa dibuka: data rusak atau versi skema lama tidak kompatibel."
+    ),
+    "err_project_load_suggestion": (
+        "Saran: periksa detail validasi di bawah, salin detail untuk pelaporan, atau pulihkan cadangan `manifest.json` proyek bila ada."
+    ),
+    "btn_copy_error_details": "Salin detail",
+    "copied_error_details_toast": "Detail error siap disalin dari kotak di bawah.",
+    "home_corrupt_projects_warn": "⚠️ {count} proyek tidak bisa dibuka (data rusak/versi lama):",
+    "btn_inspect_broken_project": "Lihat detail: {id}",
 }
 
 
@@ -1304,7 +1367,7 @@ EN_TRANSLATIONS: Dict[str, str] = {
     "prov_pixabay_no_key": "Pixabay (No key)",
     "prov_coverr_key": "Coverr ({mask})",
     "prov_coverr_no_key": "Coverr (No key)",
-    "prov_pexels_no_key": "Pexels (No key in config)",
+    "prov_pexels_no_key": "Pexels (New key reg. closed)",
     "prov_local_ready": "Local files (ready)",
     "prov_ai_no_key": "AI Images (No OpenAI key)",
     "chapter_pill_format": "Ch {idx}",
@@ -1700,6 +1763,69 @@ EN_TRANSLATIONS: Dict[str, str] = {
     ),
     "openrouter_tag_reasoning": "reasoning",
     "openrouter_tag_random": "auto-random",
+    # --- 8C.2 Installer, Owner & Shutdown ---
+    "about_dialog_owner_line": "**Owner & Extension Author:** {owner} (Copyright © {year})",
+    "nav_exit_app": "Exit App",
+    "nav_exit_app_help": "Safely stop the EasyFaceless Studio local server",
+    "exit_app_dialog_title": "Exit EasyFaceless Studio?",
+    "exit_app_confirm_desc": "The local EasyFaceless Studio server will stop. Your project files remain safely saved.",
+    "exit_app_running_jobs_warning": "⚠️ **{count} background job(s)** are still running. Closing the app now will stop them:",
+    "exit_app_job_item": "• `{project_id}` ({step}, PID {pid})",
+    "exit_app_btn_cancel": "Cancel",
+    "exit_app_btn_confirm": "Yes, close app",
+    "exit_app_goodbye": "Application is shutting down safely. You can close this browser tab.",
+    # --- D8: No Fake Placeholders in Production ---
+    "vis_no_source_warning": (
+        "No visual source is configured yet. Add a Pexels/Pixabay API key in AI & Provider Settings "
+        "(or add clips to Local Library) before searching visuals."
+    ),
+    "btn_open_provider_settings": "Open Provider Settings",
+    "badge_no_visual": "🚫 No visual yet",
+    "badge_legacy_fake": "⚠️ Legacy placeholder — click Refetch",
+    "filter_no_visual": "No visual yet · {count}",
+    "vis_missing_summary_warn": (
+        "⚠️ {missing} shot(s) have no visual yet. Use 'Search again' in the detail panel or click below to retry."
+    ),
+    "vis_legacy_fake_summary_warn": (
+        "⚠️ {fake} shot(s) from an older project still use legacy placeholders ('fake'). Click below to fetch real footage."
+    ),
+    "btn_refetch_unready": "🔄 Refetch missing/placeholder shots",
+    "vis_confirm_missing_title": "⚠️ Confirmation: {count} shot(s) have no visual",
+    "vis_confirm_missing_body": (
+        "**{count} shot(s)** still have no real visuals:\n{list_text}\n\n"
+        "Choose **Search again first** to fetch footage in the Visual step, or **Continue** to use clean neutral dark backdrop clips:"
+    ),
+    "btn_search_again_first": "Search again first",
+    "btn_continue_neutral": "Continue",
+    "btn_cancel_confirm": "Cancel",
+    "source_neutral_backdrop": "Neutral backdrop",
+    "shot_no_visual_notice": (
+        "No visual yet for this shot. Use the **Search again** or **Upload** tab below to attach real footage."
+    ),
+    # --- D9: Free Visual Providers, Tiered Search, Attribution ---
+    "prov_wikimedia_free": "Wikimedia Commons (Free, no key)",
+    "prov_nasa_free": "NASA Library (Free, no key)",
+    "prov_openverse_free": "Openverse Photos (Free, Ken Burns)",
+    "prov_pexels_key": "Pexels ({mask})",
+    "prov_pexels_closed_note": "New Pexels API key registration is closed; existing key holders remain supported.",
+    "prov_source_order_caption": "Default automatic priority order: **Pixabay → Coverr → Wikimedia → NASA → Openverse** (photos).",
+    "shot_no_visual_reason_label": "**Reason no visual found:** {summary}",
+    "shot_search_attempts_expander": "Tiered search diagnostics ({count} attempts)",
+    "shot_attribution_heading": "**Asset Attribution:** {title} · Creator: {author} · License: `{license}`",
+    "shot_attribution_link": "[View source]({url})",
+    "badge_requires_attribution": "ℹ️ Attribution required ({license}) — saved in credits.md",
+    "source_not_selected_yet": "Not assigned",
+    # --- D8.1: Project Load Error & Validation ---
+    "err_project_load_corrupt_or_legacy": (
+        "Project `{id}` cannot be opened: data is corrupted or uses an incompatible legacy schema version."
+    ),
+    "err_project_load_suggestion": (
+        "Suggestion: inspect the validation details below, copy the details for troubleshooting, or restore a backup of `manifest.json` if available."
+    ),
+    "btn_copy_error_details": "Copy details",
+    "copied_error_details_toast": "Error details are ready to copy from the box below.",
+    "home_corrupt_projects_warn": "⚠️ {count} project(s) could not be opened (corrupted/legacy data):",
+    "btn_inspect_broken_project": "View details: {id}",
 }
 
 

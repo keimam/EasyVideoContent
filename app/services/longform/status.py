@@ -254,6 +254,8 @@ def compute_project_step_status(project_dir: str | Path) -> Dict[str, Any]:
         voice_label = f"Belum disintesis ({total_groups} grup)"
 
     # --- Step 3: Visual ---
+    from app.services.longform.visual.base import inspect_project_missing_visuals
+
     total_shots = sum(len(ch.shots) for ch in manifest.chapters)
     built_shots = 0
     fetched_shots = 0
@@ -266,6 +268,11 @@ def compute_project_step_status(project_dir: str | Path) -> Dict[str, Any]:
                 built_shots += 1
             if sh.asset_path and (p_dir / sh.asset_path).is_file():
                 fetched_shots += 1
+    vis_diag = inspect_project_missing_visuals(p_dir, manifest) if total_shots > 0 else {
+        "missing_count": 0,
+        "legacy_fake_count": 0,
+        "unready_count": 0,
+    }
     visual_done = (built_shots == total_shots and total_shots > 0)
 
     if active_step in ("visual_generate", "visual_pipeline", "visual_fetch", "visual_build", "visual"):
@@ -427,6 +434,9 @@ def compute_project_step_status(project_dir: str | Path) -> Dict[str, Any]:
                 "completed": built_shots,
                 "built_shots": built_shots,
                 "fetched_shots": fetched_shots,
+                "missing_visual_shots": vis_diag["missing_count"],
+                "legacy_fake_shots": vis_diag["legacy_fake_count"],
+                "unready_visual_shots": vis_diag["unready_count"],
                 "total": total_shots,
             },
             "render": {

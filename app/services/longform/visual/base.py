@@ -10,6 +10,7 @@ Defines:
 from __future__ import annotations
 
 import hashlib
+import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -47,6 +48,7 @@ class VisualCandidate:
     relevance_score: float = 0.0
     rendition_name: Optional[str] = None
     is_low_res: bool = False
+    title: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -67,6 +69,7 @@ class VisualCandidate:
             "relevance_score": round(self.relevance_score, 3),
             "rendition_name": self.rendition_name,
             "is_low_res": self.is_low_res,
+            "title": self.title,
         }
 
     @classmethod
@@ -89,6 +92,7 @@ class VisualCandidate:
             relevance_score=float(data.get("relevance_score") or 0.0),
             rendition_name=data.get("rendition_name"),
             is_low_res=bool(data.get("is_low_res", False)),
+            title=data.get("title"),
         )
 
 
@@ -108,6 +112,7 @@ class VisualAsset:
     width: int = 1920
     height: int = 1080
     duration_seconds: float = 0.0
+    title: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -217,6 +222,15 @@ def resolve_shot_visual_source(project_dir: Path, shot: Any, fps: int = 25) -> D
         except Exception:
             source_hash = hashlib.sha256(f"{source_kind}|{manifest_sig}".encode("utf-8")).hexdigest()[:16]
 
+    is_legacy_fake = bool(
+        getattr(shot, "is_fake", False)
+        or str(getattr(shot, "actual_source", "") or "").lower() == "fake"
+    )
+    is_missing_visual = bool(
+        (not has_asset and not has_clip)
+        or (not has_asset and has_clip and str(getattr(shot, "fallback_reason", "") or "") == "no_visual_found" and str(getattr(shot, "actual_source", "") or "").lower() != "neutral_backdrop")
+    )
+
     return {
         "source_kind": source_kind,
         "source_path": source_path,
@@ -226,6 +240,221 @@ def resolve_shot_visual_source(project_dir: Path, shot: Any, fps: int = 25) -> D
         "not_built": not_built,
         "needs_rebuild": needs_rebuild,
         "is_needs_update": is_needs_update,
+        "is_missing_visual": is_missing_visual,
+        "is_legacy_fake": is_legacy_fake,
+    }
+
+
+def is_dev_or_test_mode() -> bool:
+    """Return True ONLY in explicit dev mode (EFS_DEV=1) or under pytest (D8).
+
+    In installed mode and normal source mode, the synthetic 'fake' provider
+    must never be selected automatically or used as fallback.
+    """
+    efs_dev = os.environ.get("EFS_DEV", "").strip().lower()
+    if efs_dev in ("1", "true", "yes", "on"):
+        return True
+    if os.environ.get("PYTEST_CURRENT_TEST", "").strip():
+        return True
+    return False
+
+
+KEYLESS_FREE_VISUAL_SOURCES = ("wikimedia", "nasa", "openverse")
+DEFAULT_VISUAL_SOURCE_ORDER = ("pixabay", "coverr", "wikimedia", "nasa", "openverse")
+
+
+def is_commercial_license_allowed(license_name: Optional[str]) -> tuple[bool, str]:
+    """Validate whether a media license permits commercial derivative video use (D9.2).
+
+    Allowed: Public Domain / PD-USGov / NASA / CC0 / CC-PDM / CC BY / CC BY-SA.
+    Rejected: NC (NonCommercial), ND (NoDerivatives), All Rights Reserved, Fair Use, Unknown.
+    """
+    raw = str(license_name or "").strip()
+    if not raw:
+        return False, "Missing license metadata"
+    low = raw.lower().replace("_", "-")
+
+    # Hard reject non-commercial / no-derivatives / restrictive licenses
+    for forbidden in ("nc", "-nd", " nd", "no-deriv", "noderiv", "noncommercial", "non-commercial", "all rights reserved", "fair use", "fair-use", "copyrighted"):
+        if forbidden in low:
+            # Guard against substring 'pd' / 'background' false hits: check whole tokens for short tokens
+            if forbidden in ("nc", " nd"):
+                import re
+                if re.search(rf"(?<![a-z]){forbidden.strip()}(?![a-z])", low):
+                    return False, f"Disallowed restrictive license clause '{forbidden.strip()}' in '{raw}'"
+            else:
+                return False, f"Disallowed restrictive license '{raw}'"
+
+    allowed_tokens = (
+        "public domain",
+        "pd-",
+        "pd/",
+        "pdm",
+        "usgov",
+        "gov-work",
+        "nasa",
+        "cc0",
+        "cc-0",
+        "cc zero",
+        "cc-zero",
+        "cc-by",
+        "cc by",
+        "attribution",
+    )
+    if low in ("pd", "cc0", "pdm", "by", "by-sa") or any(tok in low for tok in allowed_tokens):
+        return True, raw
+    return False, f"Unrecognized or non-commercial license '{raw}'"
+
+
+def license_requires_attribution(license_name: Optional[str]) -> bool:
+    """Return True for licenses requiring creator attribution (CC BY, CC BY-SA, NASA credit) (D9.3)."""
+    low = str(license_name or "").strip().lower().replace("_", "-")
+    if not low:
+        return False
+    if "cc-by" in low or "cc by" in low or low in ("by", "by-sa") or "by-sa" in low or "nasa" in low or "attribution" in low:
+        return True
+    if "cc0" in low or "public domain" in low or low == "pd" or "pdm" in low or "pixabay" in low or "pexels" in low or "coverr" in low:
+        return False
+    return False
+
+
+def has_real_visual_source(
+    project_dir: Path | str,
+    cfg_app: Optional[Dict[str, Any]] = None,
+    enabled_sources: Optional[List[str] | Tuple[str, ...]] = None,
+) -> bool:
+    """Return True if at least one active visual source is usable (D8, D9.2).
+
+    Keyless free providers ('wikimedia', 'nasa', 'openverse') count as valid real
+    sources whenever checked/enabled (including default configuration). If the caller
+    passes an explicit `enabled_sources` list (e.g. UI checkboxes), only checked
+    sources are evaluated; unchecking everything returns False.
+    """
+    p_dir = Path(project_dir)
+    lib_dir = p_dir / "assets" / "visual" / "library"
+    has_local_files = False
+    try:
+        has_local_files = bool(
+            lib_dir.is_dir() and any(f.is_file() and not f.name.startswith(".") for f in lib_dir.iterdir())
+        )
+    except OSError:
+        has_local_files = False
+
+    app_map = cfg_app
+    if app_map is None:
+        try:
+            from app.config import config as _cfg
+            app_map = _cfg.app
+        except Exception:
+            app_map = {}
+
+    def _has_val(key: str) -> bool:
+        val = (app_map or {}).get(key)
+        if isinstance(val, (list, tuple)):
+            return any(bool(str(x or "").strip()) for x in val)
+        return bool(str(val or "").strip())
+
+    # Determine enabled providers
+    if enabled_sources is not None:
+        norm = {str(s).strip().lower() for s in enabled_sources if str(s or "").strip()}
+        if not norm:
+            return False
+        if any(s in KEYLESS_FREE_VISUAL_SOURCES for s in norm):
+            return True
+        if "pixabay" in norm and _has_val("pixabay_api_keys"):
+            return True
+        if "pexels" in norm and _has_val("pexels_api_keys"):
+            return True
+        if "coverr" in norm and _has_val("coverr_api_keys"):
+            return True
+        if "local" in norm and has_local_files:
+            return True
+        if "ai_image" in norm and (_has_val("openai_image_api_key") or bool((app_map or {}).get("codex_image_enabled", False))):
+            return True
+        return False
+
+    # Default (no explicit filter passed): keyless sources in DEFAULT_FREE_VISUAL_SOURCES are enabled by default
+    # unless cfg_app explicitly disables all of them via `free_visual_sources_disabled`.
+    if not bool((app_map or {}).get("free_visual_sources_disabled", False)):
+        return True
+    if has_local_files:
+        return True
+    if _has_val("pixabay_api_keys") or _has_val("pexels_api_keys") or _has_val("coverr_api_keys"):
+        return True
+    if _has_val("openai_image_api_key") or bool((app_map or {}).get("codex_image_enabled", False)):
+        return True
+    return False
+
+
+def inspect_project_missing_visuals(
+    project_dir: Path | str,
+    manifest: Any,
+) -> Dict[str, Any]:
+    """Inspect all shots for missing visuals or legacy 'fake' placeholders (D8).
+
+    Returns counts and structured shot entries so Visual gallery, Render confirmation,
+    and CapCut confirmation share a single source of truth.
+    """
+    p_dir = Path(project_dir)
+    missing_shots: List[Dict[str, Any]] = []
+    legacy_fake_shots: List[Dict[str, Any]] = []
+    unready_shots: List[Dict[str, Any]] = []
+
+    global_idx = 0
+    for ch in getattr(manifest, "chapters", []) or []:
+        ch_idx = getattr(ch, "chapter_index", 1)
+        seg_text_map: Dict[int, str] = {}
+        for g in getattr(ch, "tts_groups", []) or []:
+            for seg in getattr(g, "segments", []) or []:
+                s_idx = getattr(seg, "segment_index", None)
+                s_txt = str(getattr(seg, "narration_text", "") or "").strip()
+                if s_idx is not None and s_txt:
+                    seg_text_map[s_idx] = s_txt
+
+        for sh in getattr(ch, "shots", []) or []:
+            global_idx += 1
+            res = resolve_shot_visual_source(p_dir, sh)
+            seg_idxs = getattr(sh, "segment_indices", None) or []
+            matched_narr = " ".join(seg_text_map[i] for i in seg_idxs if i in seg_text_map).strip()
+            narr = (
+                matched_narr
+                or str(getattr(sh, "visual_prompt", "") or "").strip()
+                or str(getattr(sh, "search_query", "") or "").strip()
+            )
+            snippet = (narr[:52] + "…") if len(narr) > 52 else narr
+            is_neutral = str(getattr(sh, "actual_source", "") or "").lower() == "neutral_backdrop"
+            is_fake_shot = bool(res.get("is_legacy_fake"))
+            # Shot lacks a real visual if neither built clip nor asset exists (or marked no_visual_found before neutral fallback)
+            no_real_visual = bool(
+                (not res["has_clip"] and not res["has_asset"])
+                or (
+                    not res["has_asset"]
+                    and str(getattr(sh, "fallback_reason", "") or "") == "no_visual_found"
+                    and not is_neutral
+                )
+            )
+            entry = {
+                "global_idx": global_idx,
+                "chapter_index": ch_idx,
+                "shot_id": getattr(sh, "shot_id", ""),
+                "snippet": snippet or getattr(sh, "shot_id", ""),
+                "is_legacy_fake": is_fake_shot,
+                "is_missing_visual": no_real_visual and not is_fake_shot,
+            }
+            if is_fake_shot:
+                legacy_fake_shots.append(entry)
+                unready_shots.append(entry)
+            elif no_real_visual:
+                missing_shots.append(entry)
+                unready_shots.append(entry)
+
+    return {
+        "missing_shots": missing_shots,
+        "legacy_fake_shots": legacy_fake_shots,
+        "unready_shots": unready_shots,
+        "missing_count": len(missing_shots),
+        "legacy_fake_count": len(legacy_fake_shots),
+        "unready_count": len(unready_shots),
     }
 
 

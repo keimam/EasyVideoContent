@@ -11,6 +11,7 @@ All API keys and active models are configured in one place inside the **Settings
 | **LLM** | Script writing, chapter summaries, concrete English visual keywords, project visual anchors, vision relevance checks | OpenRouter (`openrouter/free` or paid slugs), OpenAI, Google Gemini, DeepSeek, Groq, Ollama (local), Qwen, Moonshot | Free & paid options |
 | **TTS (Voice)** | Synthesizes narration WAV audio & subtitle timing | **Edge TTS** (free default), OpenAI TTS, Azure Speech, Gemini TTS, ElevenLabs, SiliconFlow | Edge TTS free; others follow provider billing |
 | **AI Images** | Optional static AI illustrations with Ken Burns motion | OpenAI Image & compatible image providers in Material Settings | Paid per provider rate |
+| **Stock & Open Media** | Supplies stock video & documentary photography per shot | Pixabay (free key), Coverr, **Wikimedia Commons** (no key), **NASA Library** (no key), **Openverse** (no key). *Note: New Pexels API key registration is closed.* | Free / subject to each source license |
 | **AI Video** | Generates bespoke video clips per shot via the **AI Video** tab in shot Detail | **WaveSpeed** (e.g. `Wan 2.2 Ultra Fast`, `Seedance 2.0 Fast`), Luma, Kling, Hailuo, Runway, Volcengine, etc. | **Paid** (shows USD cost estimate & requires budget cap + confirmation) |
 
 ---

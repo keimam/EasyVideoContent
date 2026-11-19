@@ -19,6 +19,19 @@ def is_source_checkout() -> bool:
 
 def runtime_root() -> Path:
     """源码沿用项目目录；安装版使用用户目录，也允许显式指定 MPT_HOME。"""
+    try:
+        from app.services.longform.app_paths import (
+            bootstrap_runtime_environment,
+            get_data_dir,
+            is_installed_mode,
+        )
+
+        if os.environ.get("EFS_DATA_DIR", "").strip() or is_installed_mode():
+            bootstrap_runtime_environment()
+            return get_data_dir()
+    except Exception:
+        pass
+
     override = os.environ.get("MPT_HOME", "").strip()
     if override:
         return Path(override).expanduser().resolve()
@@ -36,8 +49,9 @@ def runtime_root() -> Path:
 
 
 def config_template() -> Path:
-    base = SOURCE_ROOT if is_source_checkout() else BUNDLED_ROOT
-    return base / "config.example.toml"
+    if (SOURCE_ROOT / "config.example.toml").is_file():
+        return SOURCE_ROOT / "config.example.toml"
+    return BUNDLED_ROOT / "config.example.toml"
 
 
 def _copy_missing_resource(source: Path, target: Path) -> None:
@@ -69,7 +83,8 @@ def resource_directory(sub_dir: str = "") -> Path:
 
     # 字体和音乐仍可由用户扩充。放在运行目录，避免 WebUI 上传或后续升级写入
     # site-packages；只补齐缺失文件，保留用户编辑过的资源。
-    origin = (SOURCE_ROOT if is_source_checkout() else BUNDLED_ROOT) / "resource" / sub_dir
+    origin_base = SOURCE_ROOT if (SOURCE_ROOT / "resource" / sub_dir).is_dir() else BUNDLED_ROOT
+    origin = origin_base / "resource" / sub_dir
     if origin.is_dir():
         for source in origin.rglob("*"):
             if source.is_file() and not source.name.startswith("."):

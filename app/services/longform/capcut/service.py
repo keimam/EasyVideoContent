@@ -536,7 +536,7 @@ def export_full_project(
         default_text_size=capcut_text_size,
     )
 
-    # --- 8. BUILD BACKUP ASSET PACK (B5) ---
+    # --- 8. BUILD BACKUP ASSET PACK & CREDITS.MD (B5, D9.3) ---
     build_backup_asset_pack(
         project_dir=project_dir,
         manifest=manifest,
@@ -545,6 +545,14 @@ def export_full_project(
         ducked_bgm_path=ducked_bgm_path if (bgm_clip and ducked_bgm_path.is_file()) else None,
         subtitles_srt=subtitles_srt if subtitles_srt.is_file() else None,
     )
+    from app.services.longform.visual.credits import CreditsManager
+    cred_mgr = CreditsManager(project_dir)
+    try:
+        cred_mgr.write_credits_markdown(manifest)
+        cred_mgr.copy_credits_md_to(export_draft_dir)
+        cred_mgr.copy_credits_md_to(project_dir / "export" / "capcut_assets")
+    except Exception:
+        pass
 
     # --- 9. POST-WRITING VALIDATION (B3) ---
     validate_built_draft(export_draft_dir)
@@ -588,6 +596,10 @@ def export_full_project(
             )
 
         validate_built_draft(target_install_dir)
+        try:
+            cred_mgr.copy_credits_md_to(target_install_dir)
+        except Exception:
+            pass
         installed_path = str(target_install_dir)
         logger.info(f"Draft successfully installed into CapCut projects: {installed_path}")
 

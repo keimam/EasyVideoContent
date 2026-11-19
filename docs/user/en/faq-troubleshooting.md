@@ -16,4 +16,10 @@ As of version **1.0.0**, partial runs in Visual, Voice, and Render track only th
 Exit **CapCut Desktop** completely (including background tray/processes `CapCut.exe`), then run **Export & Install to CapCut** again.
 
 ### 6. `ffmpeg` or `ffprobe` not found
-Install FFmpeg and add it to your Windows `PATH`, or configure the explicit path to `ffmpeg.exe` in `config.toml` / Settings. Run `uv run python cli_longform.py doctor` to verify.
+Install FFmpeg and add it to your Windows `PATH`, or configure the explicit path to `ffmpeg.exe` in `config.toml` / Settings. Run `uv run python cli_longform.py doctor` to verify. (When installed via the Windows Setup installer, FFmpeg is already bundled automatically inside the installation directory.)
+
+### 7. Windows Defender SmartScreen shows *"Windows protected your PC"* when opening the installer
+The `EasyFacelessStudio-Setup-1.0.0.exe` installer is currently **not digitally signed with a commercial Authenticode certificate** (*unsigned*), so Windows SmartScreen may display a warning prompt on newly downloaded builds. If you obtained the installer from the official project release:
+1. Click **More info**.
+2. Click **Run anyway**.
+Setup installs per-user into `%LOCALAPPDATA%\Programs\EasyFaceless Studio` without requiring administrator privileges.

@@ -14,19 +14,26 @@ Dokumen ini dihasilkan secara otomatis untuk bagian dependensi Python oleh [`scr
 ## 2. Media, Font, & Integrasi Eksternal
 
 ### FFmpeg
-- **Build terdeteksi saat pembuatan:** `ffmpeg version 2025-11-17-git-e94439e49b-full_build-www.gyan.dev Copyright (c) 2000-2025 the FFmpeg developers`
-- **Lisensi:** GNU General Public License v3+ (GPLv3). EasyFaceless Studio memanggil biner eksternal `ffmpeg`/`ffprobe` sebagai subproses terpisah dan tidak mendistribusikan ulang kode sumber FFmpeg di repositori ini.
+- **Build dibundel pada paket Windows:** `ffmpeg version 2025-11-17-git-e94439e49b-full_build-www.gyan.dev Copyright (c) 2000-2025 the FFmpeg developers`
+- **Sumber build binary:** https://www.gyan.dev/ffmpeg/builds/
+- **Tautan source code resmi:** https://github.com/FFmpeg/FFmpeg/commit/e94439e49b (dan arsip resmi https://ffmpeg.org/download.html)
+- **Lisensi:** GNU General Public License v3 (GPLv3). Teks lengkap lisensi GPLv3 disertakan pada paket di [`licenses/FFMPEG-GPLv3-LICENSE.txt`](licenses/FFMPEG-GPLv3-LICENSE.txt) beserta rincian build di [`licenses/FFMPEG-BUILD-INFO.txt`](licenses/FFMPEG-BUILD-INFO.txt).
+- **Arsitektur pemanggilan:** EasyFaceless Studio memanggil biner eksternal `ffmpeg`/`ffprobe` sebagai subproses terpisah tanpa me-link ke kode Python aplikasi.
+- **Catatan opsi LGPL:** Build `win64-lgpl` (mis. `BtbN/FFmpeg-Builds`) mengecualikan `libx264`/`libx265` karena lisensi GPL; saat ini video pendek maupun video panjang masih memakai `-c:v libx264`, sehingga penggantian ke build LGPL membutuhkan perubahan codec default ke `libopenh264` atau encoder hardware (`h264_mf`/`h264_nvenc`).
 
 ### Tipografi: Plus Jakarta Sans
 - **Berkas:** `webui/static/fonts/PlusJakartaSans[wght].ttf`
 - **Lisensi:** **SIL Open Font License 1.1 (OFL-1.1)** — teks lengkap tersedia pada [`webui/static/fonts/OFL.txt`](webui/static/fonts/OFL.txt).
 
-### Sumber Footage Stok (Pixabay, Pexels, Coverr)
+### Sumber Footage Stok & Arsip Terbuka (Pixabay, Coverr, Pexels, Wikimedia Commons, NASA, Openverse)
 - Aset video/gambar yang diunduh oleh pengguna tunduk pada ketentuan lisensi dan syarat layanan masing-masing penyedia:
   - **Pixabay** — https://pixabay.com/service/license-summary/
-  - **Pexels** — https://www.pexels.com/license/
   - **Coverr** — https://coverr.co/license
-- Pengguna bertanggung jawab memeriksa atribusi, batasan komersial, serta kelayakan merek dagang aset sebelum menerbitkan video.
+  - **Pexels** — https://www.pexels.com/license/ *(catatan: pendaftaran API key baru Pexels sedang ditutup; didukung untuk pemilik key lama)*
+  - **Wikimedia Commons (MediaWiki API)** — https://commons.wikimedia.org/wiki/Commons:Licensing *(hanya menyaring domain publik, CC0, CC BY, CC BY-SA; aset CC BY/BY-SA memerlukan atribusi yang dirangkum di `credits.md` proyek)*
+  - **NASA Image and Video Library** — https://www.nasa.gov/multimedia/guidelines/index.html *(karya pemerintah AS / domain publik; cantumkan kredit NASA tanpa menyiratkan dukungan/endorsement)*
+  - **Openverse API** — https://openverse.org/ *(agregator media terbuka; hanya mengambil lisensi komersial seperti CC0, PDM, CC BY, CC BY-SA; ikuti kewajiban atribusi di `credits.md`)*
+- Pengguna bertanggung jawab memeriksa atribusi (tersedia pada `export/credits.md`), batasan komersial, serta kelayakan merek dagang aset sebelum menerbitkan video.
 
 ### Microsoft Edge TTS (`edge-tts`)
 - Fitur suara gratis default memanfaatkan layanan Read Aloud Microsoft Edge secara **tidak resmi** melalui pustaka `edge-tts`.

@@ -24,18 +24,16 @@ from pathlib import Path
 
 from loguru import logger
 
-# Reconfigure stdout/stderr for UTF-8 on Windows console
-if sys.platform == "win32":
-    try:
-        sys.stdout.reconfigure(encoding="utf-8")
-        sys.stderr.reconfigure(encoding="utf-8")
-    except Exception:
-        pass
-
-# Ensure repo root is on sys.path
+# Ensure repo root is on sys.path before importing local modules
 REPO_ROOT = Path(__file__).resolve().parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+from app.services.longform.app_paths import bootstrap_runtime_environment
+from app.services.longform.platform_utils import configure_console_utf8
+
+configure_console_utf8()
+bootstrap_runtime_environment()
 
 from app.services.longform.config import load_longform_config
 from app.services.longform.hashing import (
@@ -1025,10 +1023,17 @@ def cmd_visual_pipeline(args: argparse.Namespace) -> int:
         with ProjectLock(proj_dir):
             manifest = load_manifest(proj_dir)
             service = VisualService(proj_dir)
+            raw_providers = getattr(args, "providers", None)
+            providers_order = (
+                [p.strip().lower() for p in str(raw_providers).split(",") if p.strip()]
+                if raw_providers
+                else None
+            )
             manifest, stats = service.run_pipeline(
                 manifest=manifest,
                 provider_name=getattr(args, "provider", None),
-                allow_fallback=getattr(args, "allow_fallback", True),
+                providers_order=providers_order,
+                allow_fallback=bool(getattr(args, "allow_fallback", False)),
                 check_ai_relevance=bool(getattr(args, "check_ai_relevance", False)),
             )
             return 0
@@ -1082,9 +1087,16 @@ def cmd_visual_fetch(args: argparse.Namespace) -> int:
                 print(f"  (No --provider specified; resolved default: '{effective_prov_display}')")
             print("-" * 70)
 
+            raw_providers = getattr(args, "providers", None)
+            providers_order = (
+                [p.strip().lower() for p in str(raw_providers).split(",") if p.strip()]
+                if raw_providers
+                else (service.resolve_provider_waterfall(manifest) if not args.provider else None)
+            )
             manifest = service.fetch_all(
                 manifest=manifest,
                 provider_name=args.provider,
+                providers_order=providers_order,
                 allow_fallback=args.allow_fallback,
                 check_ai_relevance=bool(getattr(args, "check_ai_relevance", False)),
             )
@@ -1812,6 +1824,11 @@ def cmd_render_chapter(args: argparse.Namespace) -> int:
     try:
         with ProjectLock(proj_dir):
             manifest = load_manifest(proj_dir)
+            if getattr(args, "use_neutral_fallback", False):
+                from app.services.longform.visual.service import VisualService
+                manifest, nb_stats = VisualService(proj_dir).build_all(manifest, use_neutral_fallback=True)
+                save_manifest(manifest, proj_dir)
+                print(f"[Render All] Built {nb_stats.get('neutral_built_count', 0)} neutral backdrop clip(s) for missing visuals.")
             service = RenderService(proj_dir)
             print(f"\n[Render Chapter] Rendering Chapter {args.chapter} for project '{args.project_id}'...")
             print("-" * 75)
@@ -1857,6 +1874,11 @@ def cmd_render_all(args: argparse.Namespace) -> int:
     try:
         with ProjectLock(proj_dir):
             manifest = load_manifest(proj_dir)
+            if getattr(args, "use_neutral_fallback", False):
+                from app.services.longform.visual.service import VisualService
+                manifest, nb_stats = VisualService(proj_dir).build_all(manifest, use_neutral_fallback=True)
+                save_manifest(manifest, proj_dir)
+                print(f"[Render All] Built {nb_stats.get('neutral_built_count', 0)} neutral backdrop clip(s) for missing visuals.")
             service = RenderService(proj_dir)
             print(f"\n[Render All] Starting full rendering for project '{args.project_id}' (BGM: {'Disabled' if args.no_bgm else 'Enabled'})...")
             print("=" * 85)
@@ -1899,6 +1921,11 @@ def cmd_render_final(args: argparse.Namespace) -> int:
     try:
         with ProjectLock(proj_dir):
             manifest = load_manifest(proj_dir)
+            if getattr(args, "use_neutral_fallback", False):
+                from app.services.longform.visual.service import VisualService
+                manifest, nb_stats = VisualService(proj_dir).build_all(manifest, use_neutral_fallback=True)
+                save_manifest(manifest, proj_dir)
+                print(f"[Render All] Built {nb_stats.get('neutral_built_count', 0)} neutral backdrop clip(s) for missing visuals.")
             service = RenderService(proj_dir)
             print(f"\n[Render Final] Assembling final video for project '{args.project_id}' (BGM: {'Disabled' if args.no_bgm else 'Enabled'})...")
             print("-" * 75)
@@ -2092,6 +2119,13 @@ def cmd_capcut_export(args: argparse.Namespace) -> int:
         return 1
 
     try:
+        if getattr(args, "use_neutral_fallback", False):
+            from app.services.longform.visual.service import VisualService
+            with ProjectLock(proj_dir):
+                manifest = load_manifest(proj_dir)
+                manifest, nb_stats = VisualService(proj_dir).build_all(manifest, use_neutral_fallback=True)
+                save_manifest(manifest, proj_dir)
+                print(f"[CapCut Export] Built {nb_stats.get('neutral_built_count', 0)} neutral backdrop clip(s) for missing visuals.")
         print(f"\nExporting full CapCut project for '{args.project_id}'...")
         if args.install:
             print("Mode: Export and Install directly to CapCut draft folder")
@@ -2295,10 +2329,18 @@ def cmd_pipeline_auto(args: argparse.Namespace) -> int:
             _update_pipeline_auto_phase(proj_dir, f"[2/4 Visual] Mencari footage & menyusun klip ({built_shots}/{total_shots})...")
             print(f"\n>>> [2/4 Visual] Building visual assets & clips ({built_shots}/{total_shots} done)...")
             vis_svc = VisualService(proj_dir)
+            raw_auto_provs = getattr(args, "providers", None)
+            auto_providers_order = (
+                [p.strip().lower() for p in str(raw_auto_provs).split(",") if p.strip()]
+                if raw_auto_provs
+                else None
+            )
             manifest, _ = vis_svc.run_pipeline(
                 manifest=manifest,
                 provider_name=getattr(args, "provider", None),
-                allow_fallback=getattr(args, "allow_fallback", True),
+                providers_order=auto_providers_order,
+                allow_fallback=bool(getattr(args, "allow_fallback", False)),
+                check_ai_relevance=bool(getattr(args, "check_ai_relevance", False)),
             )
             save_manifest(manifest, proj_dir)
             if is_stop_requested(proj_dir):
@@ -2542,15 +2584,17 @@ def build_parser() -> argparse.ArgumentParser:
     # visual pipeline (7B.1)
     p_v_pipe = visual_subs.add_parser("pipeline", help="Fetch visual assets and build shot clips sequentially")
     p_v_pipe.add_argument("project_id", help="Project ID")
-    p_v_pipe.add_argument("--provider", default=None, help="Visual provider ('fake', 'pexels', 'pixabay', 'ai_image', 'local')")
-    p_v_pipe.add_argument("--allow-fallback", action="store_true", help="Allow fallback to fake provider if credentials missing")
+    p_v_pipe.add_argument("--provider", default=None, help="Single visual provider override")
+    p_v_pipe.add_argument("--providers", default=None, help="Comma-separated ordered visual providers waterfall (D9.2)")
+    p_v_pipe.add_argument("--allow-fallback", action="store_true", help="Allow fallback to fake provider in dev/test mode")
     p_v_pipe.add_argument("--check-ai-relevance", action="store_true", help="Verify fetched footage relevance with AI Vision (8B.2 F1)")
 
     # visual fetch
-    p_v_fetch = visual_subs.add_parser("fetch", help="Search and acquire visual assets (stock, AI, local, fake)")
+    p_v_fetch = visual_subs.add_parser("fetch", help="Search and acquire visual assets (stock, wikimedia, nasa, openverse, local, fake)")
     p_v_fetch.add_argument("project_id", help="Project ID")
-    p_v_fetch.add_argument("--provider", default=None, help="Visual provider ('fake', 'pexels', 'pixabay', 'ai_image', 'local')")
-    p_v_fetch.add_argument("--allow-fallback", action="store_true", help="Allow fallback to fake provider if credentials missing")
+    p_v_fetch.add_argument("--provider", default=None, help="Single visual provider override")
+    p_v_fetch.add_argument("--providers", default=None, help="Comma-separated ordered visual providers waterfall (D9.2)")
+    p_v_fetch.add_argument("--allow-fallback", action="store_true", help="Allow fallback to fake provider in dev/test mode")
     p_v_fetch.add_argument("--check-ai-relevance", action="store_true", help="Verify fetched footage relevance with AI Vision (8B.2 F1)")
 
     # visual build
@@ -2663,6 +2707,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_r_all.add_argument("project_id", help="Project ID")
     p_r_all.add_argument("--no-bgm", action="store_true", help="Disable background music mixing")
     p_r_all.add_argument("--force", action="store_true", help="Force re-render of all chapters")
+    p_r_all.add_argument("--use-neutral-fallback", action="store_true", help="Build clean neutral backdrop clips for shots missing visuals")
 
     # render status <id>
     p_r_status = render_subs.add_parser("status", help="Show render completion and hash status for chapters and final video")
@@ -2700,6 +2745,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_c_export.add_argument("--portable", action="store_true", help="Copy all media into draft folder (requires --yes to confirm disk copy)")
     p_c_export.add_argument("--yes", action="store_true", help="Confirm media copying when using --portable")
     p_c_export.add_argument("--name", help="Custom draft name override (default: EFS_<id>_<timestamp>)")
+    p_c_export.add_argument("--use-neutral-fallback", action="store_true", help="Build clean neutral backdrop clips for shots missing visuals")
 
     # capcut calibrate [id] [--no-install]
     p_c_calib = capcut_subs.add_parser("calibrate", help="Generate empirical subtitle calibration draft (sizes 5..10) (6B.1)")
@@ -2720,6 +2766,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_pipe_auto.add_argument("--stop-on-review", action="store_true", default=True, help="Pause if shots have needs_review=True")
     p_pipe_auto.add_argument("--skip-review-check", action="store_true", help="Do not pause on needs_review (resume past review)")
     p_pipe_auto.add_argument("--no-bgm", action="store_true", help="Disable BGM during render")
+    p_pipe_auto.add_argument("--providers", default=None, help="Comma-separated ordered visual providers waterfall (D9.7)")
+    p_pipe_auto.add_argument("--check-ai-relevance", action="store_true", help="Verify visual relevance with AI Vision and pre-filter low-score candidates (D9.7)")
 
     return parser
 

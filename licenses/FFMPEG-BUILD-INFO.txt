@@ -1,0 +1,27 @@
+FFmpeg Bundled Binary Attribution & License Information (Stage 8C.2, D7)
+========================================================================
+
+Component:         FFmpeg & FFprobe (64-bit Windows static build)
+Bundled Version:   2025-11-17-git-e94439e49b-full_build-www.gyan.dev
+Build Source:      https://www.gyan.dev/ffmpeg/builds/
+Official Source:   https://github.com/FFmpeg/FFmpeg/commit/e94439e49b
+Upstream Homepage: https://ffmpeg.org/download.html
+License:           GNU General Public License v3 (GPLv3)
+
+License Text:
+  The complete GNU General Public License v3 text is distributed alongside this file
+  at: licenses/FFMPEG-GPLv3-LICENSE.txt
+
+Invocation Architecture:
+  EasyFaceless Studio bundles unmodified ffmpeg.exe and ffprobe.exe binaries under
+  runtime/ffmpeg/bin/ and executes them strictly as separate external command-line
+  subprocesses (never statically or dynamically linked into Python code).
+
+LGPL Evaluation Note (D7):
+  Both upstream MoneyPrinterTurbo (app/services/video.py) and the Long Video modules
+  (visual/builder.py, render/chapter_render.py, audio_preview.py) currently invoke
+  software H.264 encoding via `-c:v libx264`. Because x264 is GPL-licensed, LGPL-only
+  Windows builds (such as BtbN FFmpeg-Builds win64-lgpl) exclude libx264/libx265 and
+  instead provide libopenh264 / hardware MediaFoundation (`h264_mf`), NVENC (`h264_nvenc`),
+  QSV (`h264_qsv`), or AMF (`h264_amf`). Switching to an LGPL build remains a documented
+  future option if encoder defaults/fallbacks are updated accordingly.

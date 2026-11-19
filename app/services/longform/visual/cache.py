@@ -37,16 +37,21 @@ from app.services.longform.visual.base import compute_file_content_hash
 
 
 def get_repo_root() -> Path:
-    """Return repository root path."""
-    return Path(__file__).resolve().parent.parent.parent.parent.parent
+    """Return application/repository root path."""
+    from app.services.longform import app_paths
+
+    return app_paths.get_install_root()
 
 
 def get_global_cache_dir(repo_root: Optional[Path] = None) -> Path:
     """Return the resolved path to storage/longform_cache/."""
-    root = repo_root or get_repo_root()
-    cache_dir = root / "storage" / "longform_cache"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    return cache_dir
+    from app.services.longform import app_paths
+
+    if repo_root is not None:
+        cache_dir = Path(repo_root) / "storage" / "longform_cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        return cache_dir
+    return app_paths.get_longform_cache_dir(create=True)
 
 
 @dataclass
@@ -315,6 +320,7 @@ class GlobalMediaCache:
         max_retries: int = 3,
         backoff_seconds: float = 1.5,
         timeout: int = 60,
+        headers: Optional[Dict[str, str]] = None,
     ) -> Path:
         """Fetch media file using global cache, downloading with exponential backoff on cache miss.
 
@@ -340,14 +346,19 @@ class GlobalMediaCache:
         tmp_cached = self.cache_dir / f"{cached.name}.tmp.{uuid.uuid4().hex}"
         last_error = ""
 
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                          "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        req_headers = {
+            "User-Agent": "EasyFacelessStudio/1.0.0 (Open-Source Longform Video Studio)"
         }
+        if headers:
+            req_headers.update(headers)
 
         for attempt in range(1, max_retries + 1):
             try:
-                with requests.get(url, headers=headers, stream=True, timeout=timeout) as resp:
+                with requests.get(url, headers=req_headers, stream=True, timeout=timeout) as resp:
+                    if resp.status_code == 429:
+                        retry_after = float(resp.headers.get("Retry-After") or (backoff_seconds * (2 ** attempt)))
+                        time.sleep(min(retry_after, 15.0))
+                        resp.raise_for_status()
                     resp.raise_for_status()
                     with open(tmp_cached, "wb") as f:
                         for chunk in resp.iter_content(chunk_size=65536):

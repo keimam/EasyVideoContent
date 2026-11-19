@@ -16,4 +16,10 @@ Mulai versi **1.0.0**, proses sebagian di Visual, Suara, dan Render hanya menghi
 Tutup aplikasi **CapCut Desktop** sepenuhnya (pastikan ikon baki sistem / Task Manager `CapCut.exe` tidak aktif), lalu ulangi klik **Ekspor & Pasang ke CapCut**.
 
 ### 6. `ffmpeg` atau `ffprobe` tidak ditemukan
-Pastikan FFmpeg terpasang dan tersedia di `PATH` Windows, atau isi jalur `ffmpeg.exe` secara eksplisit di `config.toml` / tab Pengaturan. Jalankan `uv run python cli_longform.py doctor` (atau `ffmpeg -version`) untuk memverifikasi.
+Pastikan FFmpeg terpasang dan tersedia di `PATH` Windows, atau isi jalur `ffmpeg.exe` secara eksplisit di `config.toml` / tab Pengaturan. Jalankan `uv run python cli_longform.py doctor` (atau `ffmpeg -version`) untuk memverifikasi. (Pada versi installer Windows, FFmpeg sudah dibundel otomatis di folder instalasi.)
+
+### 7. Windows Defender SmartScreen menampilkan peringatan *"Windows protected your PC"* saat menjalankan installer
+Installer `EasyFacelessStudio-Setup-1.0.0.exe` saat ini **belum ditandatangani dengan sertifikat Authenticode berbayar** (*unsigned*), sehingga Windows SmartScreen dapat menampilkan jendela peringatan pada unduhan baru. Bila Anda mengunduh dari rilis resmi proyek ini:
+1. Klik **More info** (atau **Info selengkapnya**).
+2. Klik tombol **Run anyway** (atau **Tetap jalankan**).
+Installer akan memasang ke `%LOCALAPPDATA%\Programs\EasyFaceless Studio` tanpa memerlukan hak administrator.

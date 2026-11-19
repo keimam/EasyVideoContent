@@ -34,10 +34,13 @@ _CONFIG_CACHE: LongformConfig | None = None
 
 
 def get_config_file_path() -> Path:
-    """Return the absolute path to config/longform.toml."""
-    # Base directory is repo root
-    repo_root = Path(__file__).resolve().parent.parent.parent.parent
-    return repo_root / "config" / "longform.toml"
+    """Return the absolute path to config/longform.toml in the app root (or user data override if present)."""
+    from app.services.longform import app_paths
+
+    user_override = app_paths.get_data_dir() / "config" / "longform.toml"
+    if user_override.is_file():
+        return user_override
+    return app_paths.get_install_root() / "config" / "longform.toml"
 
 
 def load_longform_config(reload: bool = False) -> LongformConfig:

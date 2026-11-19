@@ -331,6 +331,8 @@ def test_audio_duration_change_invalidates_shot_in_planner(tmp_path: Path):
         duration_seconds=3.0,
         target_frames=75,
         motion=MotionType.zoom_in,
+        requested_source="ai_image",
+        actual_source="ai_image",
         asset_path="assets/visual/shots/ch01_shot001_asset.jpg",
         asset_content_hash=asset_hash,
         rendered_clip="assets/visual/shots/ch01_shot001.mp4",

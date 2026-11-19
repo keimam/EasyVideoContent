@@ -10,14 +10,9 @@ of installed CapCut drafts (``EFS_<id>_*`` / ``MPT_<id>_*``).
 
 from __future__ import annotations
 
-import errno
-import gc
 import json
 import os
 import shutil
-import stat
-import subprocess
-import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -25,6 +20,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from loguru import logger
 
+from app.services.longform import platform_utils
 from app.services.longform.capcut.detector import detect_draft_folder
 from app.services.longform.store import (
     ProjectLockedError,
@@ -155,23 +151,8 @@ def _check_project_busy_or_locked(project_id: str, p_dir: Path) -> Optional[str]
 
 
 def _force_kill_pid(pid: Optional[int]) -> None:
-    """Terminate an external PID (and child tree on Windows) as last resort."""
-    if not pid or pid == os.getpid():
-        return
-    try:
-        if sys.platform == "win32":
-            subprocess.run(
-                ["taskkill", "/PID", str(pid), "/T", "/F"],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=5,
-            )
-        else:
-            import signal
-            os.kill(int(pid), signal.SIGTERM)
-    except Exception as exc:
-        logger.warning(f"Force-kill attempt for PID {pid} failed: {exc}")
+    """Terminate an external PID (and child tree) cleanly via platform_utils."""
+    platform_utils.terminate_process_tree(pid, force=True, timeout=5.0)
 
 
 def _mark_job_stopped_on_disk(p_dir: Path) -> None:
@@ -264,113 +245,23 @@ def _stop_running_job_and_release_lock(
 
 
 def _clear_readonly_tree(root: Path) -> None:
-    """Clear read-only attributes recursively so Windows moves/deletes succeed cleanly."""
-    for item in [root, *root.rglob("*")]:
-        try:
-            mode = item.stat().st_mode
-            if not (mode & stat.S_IWRITE):
-                os.chmod(item, mode | stat.S_IWRITE)
-        except OSError:
-            pass
+    """Clear read-only attributes recursively via platform_utils."""
+    platform_utils.clear_readonly_tree(root)
 
 
 def _remove_tree_with_retries(src_dir: Path, *, retries: int = 3) -> List[str]:
-    """Remove directory tree bottom-up, returning list of any still-locked relative paths."""
-    src_dir = Path(src_dir)
-    for attempt in range(retries):
-        gc.collect()
-        _clear_readonly_tree(src_dir)
-        locked: List[str] = []
-        # Remove files first
-        for f in sorted((p for p in src_dir.rglob("*") if p.is_file()), key=lambda p: len(p.parts), reverse=True):
-            try:
-                f.unlink()
-            except OSError:
-                locked.append(str(f.relative_to(src_dir)))
-        # Remove dirs bottom-up
-        for d in sorted((p for p in src_dir.rglob("*") if p.is_dir()), key=lambda p: len(p.parts), reverse=True):
-            try:
-                d.rmdir()
-            except OSError:
-                pass
-        if not src_dir.exists() or not any(src_dir.rglob("*")):
-            try:
-                if src_dir.exists():
-                    src_dir.rmdir()
-                return []
-            except OSError:
-                pass
-        if attempt < retries - 1:
-            time.sleep(0.25 * (attempt + 1))
-
-    # Collect final locked files
-    remaining = []
-    if src_dir.exists():
-        for f in src_dir.rglob("*"):
-            if f.is_file():
-                remaining.append(str(f.relative_to(src_dir)))
-        if not remaining:
-            try:
-                shutil.rmtree(src_dir)
-                return []
-            except OSError as exc:
-                remaining.append(f"<folder: {exc}>")
-    return remaining
+    """Remove directory tree bottom-up cleanly via platform_utils."""
+    return platform_utils.remove_tree_with_retries(src_dir, retries=retries)
 
 
 def _reliable_move_dir_to_trash(src_dir: Path, dest_dir: Path) -> None:
-    """Move project folder cleanly on Windows with retries & copy-then-remove fallback."""
-    src_dir = Path(src_dir)
-    dest_dir = Path(dest_dir)
-    dest_dir.parent.mkdir(parents=True, exist_ok=True)
-
-    last_exc: Optional[Exception] = None
-    backoff_steps = (0.1, 0.2, 0.35, 0.5, 0.7)
-    for delay in backoff_steps:
-        gc.collect()
-        _clear_readonly_tree(src_dir)
-        try:
-            shutil.move(str(src_dir), str(dest_dir))
-            return
-        except PermissionError as exc:
-            last_exc = exc
-            time.sleep(delay)
-        except OSError as exc:
-            last_exc = exc
-            if getattr(exc, "errno", None) == errno.EXDEV:
-                break
-            time.sleep(delay)
-
-    # Fallback: copy tree to trash destination, then remove source cleanly
-    logger.warning(f"Direct move of '{src_dir}' hit ({last_exc}); using copy-then-remove fallback.")
+    """Move project folder cleanly to Trash via platform_utils with ProjectTrashError wrapping."""
     try:
-        shutil.copytree(src_dir, dest_dir, dirs_exist_ok=True)
-    except Exception as copy_exc:
-        shutil.rmtree(dest_dir, ignore_errors=True)
-        raise ProjectTrashError(
-            f"Gagal menyalin berkas proyek ke Sampah: {copy_exc}",
-        ) from copy_exc
-
-    locked = _remove_tree_with_retries(src_dir, retries=3)
-    if locked:
-        # Restore any files that were already unlinked in src_dir before deleting dest_dir
-        try:
-            for item in dest_dir.rglob("*"):
-                rel = item.relative_to(dest_dir)
-                target = src_dir / rel
-                if item.is_dir():
-                    target.mkdir(parents=True, exist_ok=True)
-                elif not target.exists():
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(item, target)
-        except Exception as rb_exc:
-            logger.warning(f"Rollback restore from '{dest_dir}' to '{src_dir}' hit error: {rb_exc}")
-        shutil.rmtree(dest_dir, ignore_errors=True)
-        preview_list = ", ".join(locked[:5]) + (" ..." if len(locked) > 5 else "")
-        raise ProjectTrashError(
-            f"Tidak dapat memindahkan proyek karena berkas masih digunakan/terkunci oleh proses lain: {preview_list}",
-            locked_files=locked,
-        )
+        platform_utils.move_dir_to_trash_reliable(src_dir, dest_dir, move_fn=shutil.move)
+    except PermissionError as exc:
+        raise ProjectTrashError(str(exc), locked_files=getattr(exc, "locked_files", None)) from exc
+    except OSError as exc:
+        raise ProjectTrashError(f"Gagal memindahkan berkas proyek ke Sampah: {exc}") from exc
 
 
 def get_project_delete_preview(

@@ -163,8 +163,13 @@ def generate_chapter_contact_sheet(
             source_badge = "[FAKE]"
             badge_color = (255, 100, 100)
         else:
-            source_badge = f"[{shot.actual_source.upper()}]"
-            badge_color = (100, 220, 120) if "stock" in shot.actual_source or shot.actual_source in ("pixabay", "pexels") else (120, 180, 255)
+            src_label = (shot.actual_source or shot.requested_source or "unassigned").lower()
+            source_badge = f"[{src_label.upper()}]"
+            badge_color = (
+                (100, 220, 120)
+                if "stock" in src_label or src_label in ("pixabay", "pexels", "coverr", "wikimedia", "nasa", "openverse")
+                else (120, 180, 255)
+            )
 
         if shot.locked:
             source_badge += " [LOCKED]"
