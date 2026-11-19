@@ -238,12 +238,112 @@ def test_e3_capcut_version_parsing_tested_status_and_macos_stub(tmp_path: Path, 
 
 
 def test_e4_system_spec_thresholds_green_yellow_red():
-    """E4: System spec evaluator scores green/yellow/red consistently against SYSTEM_SPEC_THRESHOLDS."""
-    from app.services.longform.system_specs import rate_numeric_spec
+    """E4/E8: System spec evaluator scores green/yellow/red consistently against SYSTEM_SPEC_THRESHOLDS."""
+    from app.services.longform.system_specs import SYSTEM_SPEC_THRESHOLDS, rate_numeric_spec
 
     assert rate_numeric_spec(16.0, minimum=7.5, recommended=15.0) == "green"
     assert rate_numeric_spec(7.75, minimum=7.5, recommended=15.0) == "yellow"
     assert rate_numeric_spec(4.0, minimum=7.5, recommended=15.0) == "red"
+
+    disk_cfg = SYSTEM_SPEC_THRESHOLDS["disk_free_gb"]
+    assert disk_cfg["min"] == 15.0
+    assert disk_cfg["recommended"] == 20.0
+    assert rate_numeric_spec(25.0, **{"minimum": disk_cfg["min"], "recommended": disk_cfg["recommended"]}) == "green"
+    assert rate_numeric_spec(16.0, **{"minimum": disk_cfg["min"], "recommended": disk_cfg["recommended"]}) == "yellow"
+    assert rate_numeric_spec(12.88, **{"minimum": disk_cfg["min"], "recommended": disk_cfg["recommended"]}) == "red"
+
+
+# ---------------------------------------------------------------------------
+# E8: Short Video Onboarding Tour gating + i18n + empty EFS_DATA_DIR Main.py
+# ---------------------------------------------------------------------------
+
+def test_e8_onboarding_tour_gating_and_i18n(tmp_path: Path, monkeypatch):
+    """E8: Onboarding tour disabled during wizard & dialogs; uses i18n id & en after wizard completes."""
+    import streamlit as st
+    from app.services.branding import lifecycle_ui
+    from app.services.longform import first_run
+
+    data_dir = (tmp_path / "e8_tour_data").resolve()
+    monkeypatch.setenv("EFS_DATA_DIR", str(data_dir))
+    st.session_state.clear()
+
+    # 1. Disabled before wizard completes
+    assert first_run.is_setup_completed() is False
+    assert lifecycle_ui.should_show_short_video_tour() is False
+
+    # 2. Mark setup complete -> enabled only when no dialog or forced wizard is open
+    first_run.mark_setup_completed(skipped=False)
+    assert lifecycle_ui.should_show_short_video_tour() is True
+
+    st.session_state["settings_dialog_open"] = True
+    assert lifecycle_ui.should_show_short_video_tour() is False
+    st.session_state["settings_dialog_open"] = False
+
+    st.session_state["_efs_dialog_opened_this_run"] = True
+    assert lifecycle_ui.should_show_short_video_tour() is False
+    st.session_state["_efs_dialog_opened_this_run"] = False
+
+    st.session_state["efs_wizard_force_open"] = True
+    assert lifecycle_ui.should_show_short_video_tour() is False
+    st.session_state["efs_wizard_force_open"] = False
+
+    # 3. Uses localized i18n strings via t() in both id and en
+    captured = {}
+
+    class _FakeStep:
+        def __init__(self, element, popover):
+            self.element = element
+            self.popover = popover
+
+    class _FakeTour:
+        @staticmethod
+        def bind(element_id, **kwargs):
+            return _FakeStep(element_id, dict(kwargs))
+
+        def __init__(self, steps, **kwargs):
+            captured["steps"] = steps
+            captured["key"] = kwargs.get("key")
+
+        def start(self):
+            captured["started"] = True
+
+    try:
+        for lang_code, exp_done in (("id", "Selesai"), ("en", "Done")):
+            st.session_state.clear()
+            st.session_state["ui_language"] = lang_code
+            captured.clear()
+            ok = lifecycle_ui.run_short_video_onboarding_tour(_FakeTour)
+            assert ok is True
+            assert captured.get("started") is True
+            assert captured["steps"][-1].popover["doneBtnText"] == exp_done
+            for step in captured["steps"]:
+                assert "MoneyPrinterTurbo" not in step.popover.get("title", "")
+    finally:
+        st.session_state.clear()
+
+
+def test_e8_short_video_main_empty_efs_data_dir_renders_wizard_and_brand(tmp_path: Path, monkeypatch):
+    """E8: webui/Main.py with empty EFS_DATA_DIR renders branded sidebar + wizard cleanly with zero errors."""
+    from app.config import config as app_cfg
+
+    repo_root = Path(__file__).resolve().parents[2]
+    data_dir = (tmp_path / "e8_main_empty").resolve()
+    monkeypatch.setenv("EFS_DATA_DIR", str(data_dir))
+    monkeypatch.setattr("app.services.longform.update_checker.start_background_update_check", lambda *a, **kw: False)
+    saved_ui = dict(app_cfg.ui)
+    saved_app = dict(app_cfg.app)
+    try:
+        at = AppTest.from_file(str(repo_root / "webui" / "Main.py"))
+        at.run(timeout=30)
+        assert not at.exception, f"Main.py AppTest exception: {[e.value for e in at.exception]}"
+        md_all = " ".join(m.value for m in at.markdown)
+        assert "EasyFaceless" in md_all
+        assert ("Wizard Pengaturan Pertama Kali" in md_all) or ("First-Run Setup Wizard" in md_all)
+    finally:
+        app_cfg.ui.clear()
+        app_cfg.ui.update(saved_ui)
+        app_cfg.app.clear()
+        app_cfg.app.update(saved_app)
 
 
 # ---------------------------------------------------------------------------

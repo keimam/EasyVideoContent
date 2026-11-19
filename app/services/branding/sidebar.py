@@ -65,6 +65,7 @@ def _render_about_dialog_body():
 
 def show_about_dialog():
     """Open localized About dialog dynamically."""
+    st.session_state["_efs_dialog_opened_this_run"] = True
     st.dialog(t("about_dialog_title"))(_render_about_dialog_body)()
 
 
@@ -77,6 +78,7 @@ def _render_help_dialog_body():
 
 def show_help_dialog():
     """Open localized Help & Documentation dialog dynamically."""
+    st.session_state["_efs_dialog_opened_this_run"] = True
     st.dialog(t("help_dialog_title"), width="large")(_render_help_dialog_body)()
 
 
@@ -115,6 +117,7 @@ def _render_exit_app_dialog_body():
 
 def show_exit_app_dialog():
     """Open localized Exit App confirmation dialog dynamically (D3)."""
+    st.session_state["_efs_dialog_opened_this_run"] = True
     st.dialog(t("exit_app_dialog_title"))(_render_exit_app_dialog_body)()
 
 
@@ -187,6 +190,7 @@ def _render_niche_dialog_body():
 
 def show_niche_dialog():
     """Open localized Manage Niche dialog dynamically."""
+    st.session_state["_efs_dialog_opened_this_run"] = True
     st.dialog(t("niche_dialog_title"), width="large")(_render_niche_dialog_body)()
 
 

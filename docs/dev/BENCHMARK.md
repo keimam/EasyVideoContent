@@ -53,6 +53,6 @@ Berdasarkan pengukuran nyata di atas (proyek ±10 menit, puncak RAM ~683 MB, uku
 
 - **RAM:** Minimum **8 GB** (`>= 7.5 GiB` terukur) · Disarankan **16 GB** bila menyunting bersama CapCut Desktop.
 - **CPU:** Minimum **4 core / 4 thread** · Disarankan **6–8+ thread** (uji 4 core / 8 thread berjalan lancar).
-- **Ruang Disk Kosong (Data Dir):** Minimum **5 GB** (untuk 1–2 proyek & cache) · Disarankan **20 GB** untuk beberapa proyek + cache stok.
+- **Ruang Disk Kosong (Data Dir):** Minimum **15 GB** (1 proyek memakai ~2,3 GB + cache ~0,9 GB + file sementara) · Disarankan **20 GB+ SSD** untuk beberapa proyek + cache stok.
 
 > Ulangi benchmark kapan saja lewat `uv run python scripts/dev/benchmark.py`.

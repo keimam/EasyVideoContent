@@ -79,8 +79,12 @@ from app.utils.request_logging import trace_http_call
 try:
     from app.services.branding.hooks import init_main_page
     init_main_page(Path(__file__).with_name("styles.css"))
-except Exception:
-    st.set_page_config(page_title="EasyFaceless Studio", page_icon="🎬", layout="wide")
+except Exception as _brand_exc:
+    logger.exception(f"EasyFaceless branding init failed: {_brand_exc}")
+    try:
+        st.set_page_config(page_title="EasyFaceless Studio", page_icon="🎬", layout="wide")
+    except Exception:
+        pass
 # 定义资源目录
 font_dir = utils.font_dir()
 song_dir = utils.song_dir()
@@ -9013,7 +9017,11 @@ def _render_generation_controls(
         on_click=_prepare_generation_task,
         disabled=generation_busy,
     )
-    render_onboarding_tour()
+    try:
+        from app.services.branding.hooks import run_short_video_onboarding_tour
+        run_short_video_onboarding_tour(Tour)
+    except Exception as _tour_exc:
+        logger.debug(f"Short video onboarding tour skipped: {_tour_exc}")
     if start_button:
         _save_runtime_config()
         task_id = st.session_state.get("pending_generation_task_id") or str(uuid4())

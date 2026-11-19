@@ -19,8 +19,8 @@ SYSTEM_SPEC_THRESHOLDS: Dict[str, Dict[str, float]] = {
         "recommended": 8.0,  # 8+ logical threads / 6-8 cores recommended
     },
     "disk_free_gb": {
-        "min": 5.0,          # 5 GB minimum free disk space at data directory
-        "recommended": 20.0, # 20+ GB recommended for cache, WAV & renders
+        "min": 15.0,         # 15 GB minimum free disk space (~2.3 GB/project + ~0.9 GB cache)
+        "recommended": 20.0, # 20+ GB SSD recommended for multiple projects + stock cache
     },
 }
 

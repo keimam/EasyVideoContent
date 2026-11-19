@@ -18,6 +18,12 @@ if root_dir not in sys.path:
 
 import streamlit as st
 
+try:
+    from app.services.longform import app_paths
+    app_paths.bootstrap_runtime_environment()
+except Exception:
+    pass
+
 from app.services.longform.ui import components
 from app.services.longform.ui.i18n import t
 

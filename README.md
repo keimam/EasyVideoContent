@@ -35,7 +35,7 @@ Dikalibrasi berdasarkan hasil uji produksi proyek ~9–10 menit ([`docs/dev/BENC
 - **Sistem Operasi:** Windows 10 / Windows 11 (64-bit)
 - **Prosesor (CPU):** Minimal 4 thread / 4 core (disarankan 8+ thread; berjalan lancar pada Intel Core i3-12100 4C/8T)
 - **Memori (RAM):** Minimal 8 GB (puncak proses + FFmpeg terukur ~683 MB; disarankan 16 GB bila menjalankan CapCut Desktop bersamaan)
-- **Penyimpanan (Disk):** Minimal 5 GB ruang kosong pada drive data untuk 1–2 proyek (`~2.3 GB` per proyek + `~0.9 GB` cache; disarankan 20 GB untuk beberapa proyek dan cache stok)
+- **Penyimpanan (Disk):** Minimal 15 GB ruang kosong pada drive data (`~2.3 GB` per proyek + `~0.9 GB` cache + file sementara; disarankan 20 GB+ SSD untuk beberapa proyek)
 - **Koneksi Internet:** Diperlukan untuk mencari/mengunduh stok footage, sintesis Edge TTS, dan memanggil penyedia AI eksternal
 - **Ketergantungan:** Paket installer Windows sudah membundel Python 3.11 + `ffmpeg`/`ffprobe` offline; untuk mode source dibutuhkan Python 3.11+, [`uv`](https://docs.astral.sh/uv/), dan `ffmpeg`/`ffprobe` di `PATH`
 

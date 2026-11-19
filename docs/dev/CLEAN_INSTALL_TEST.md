@@ -17,7 +17,7 @@ Dokumen ini memandu pengujian end-to-end paket rilis **EasyFaceless Studio** pad
 ## Opsi B — Alternatif VM (VirtualBox / Hyper-V / VMware)
 
 Jika Windows Sandbox tidak tersedia pada mesin Anda:
-1. Buat VM Windows 10/11 (64-bit) bersih dengan **RAM minimal 8 GB**, **4 vCPU**, dan **disk kosong minimal 20 GB** (snapshot awal *before-install*).
+1. Buat VM Windows 10/11 (64-bit) bersih dengan **RAM minimal 8 GB**, **4 vCPU**, dan **disk kosong minimal 15 GB (disarankan 20 GB+ SSD)** (snapshot awal *before-install*).
 2. Pasang atau salin `EasyFacelessStudio-Setup-1.0.0.exe` (opsional verifikasi SHA-256 lewat `Get-FileHash .\EasyFacelessStudio-Setup-1.0.0.exe -Algorithm SHA256` terhadap berkas `.sha256`).
 3. Uji dengan kondisi **tanpa** Python/FFmpeg di `PATH` sistem.
 

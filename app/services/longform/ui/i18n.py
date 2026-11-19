@@ -941,7 +941,7 @@ ID_TRANSLATIONS: Dict[str, str] = {
     "wizard_sys_overall_red": "Ada komponen di bawah syarat minimum (tanda merah) yang perlu dilengkapi terlebih dahulu.",
     "wizard_spec_ram": "**RAM Fisik:** {val:.2f} GiB (min 8 GB · disarankan 16 GB)",
     "wizard_spec_cpu": "**CPU:** {model} — {phys} core / {val} thread (min 4 thread · disarankan 8+)",
-    "wizard_spec_disk": "**Disk Kosong (`{path}`):** {val:.2f} GiB (min 5 GB · disarankan 20 GB)",
+    "wizard_spec_disk": "**Disk Kosong (`{path}`):** {val:.2f} GiB (min 15 GB · disarankan 20 GB+ SSD)",
     "wizard_spec_ffmpeg_ok": "**FFmpeg:** Tersedia (`{ver}`)",
     "wizard_spec_ffmpeg_missing": "**FFmpeg:** Tidak ditemukan — instal atau pastikan FFmpeg tersedia di folder runtime.",
     "wizard_spec_net_ok": "**Koneksi Internet:** Terhubung",
@@ -1032,6 +1032,16 @@ ID_TRANSLATIONS: Dict[str, str] = {
         "Berkas `export/credits.md` belum dibuat untuk proyek ini. "
         "Jalankan **Render Final** atau perbarui ekspor agar `credits.md` terisi otomatis."
     ),
+    # --- E8: Short Video Onboarding Tour (post-wizard, i18n) ---
+    "tour_step1_title": "Langkah 1: Atur model AI",
+    "tour_step1_desc": "Setelah tur selesai, buka Pengaturan untuk memilih penyedia AI, mengisi kunci API, dan menguji koneksi.",
+    "tour_step2_title": "Langkah 2: Atur video",
+    "tour_step2_desc": "Masukkan topik atau naskah video pendek, lalu sesuaikan opsi visual, suara, dan subtitle.",
+    "tour_step3_title": "Langkah 3: Buat video",
+    "tour_step3_desc": "Mulai pembuatan setelah memeriksa pengaturan. Pantau progres dan hasil di Pengelola Tugas di atas.",
+    "tour_prev": "Sebelumnya",
+    "tour_next": "Berikutnya",
+    "tour_done": "Selesai",
 }
 
 
@@ -1965,7 +1975,7 @@ EN_TRANSLATIONS: Dict[str, str] = {
     "wizard_sys_overall_red": "One or more items are below minimum requirements (red) and need attention.",
     "wizard_spec_ram": "**Physical RAM:** {val:.2f} GiB (min 8 GB · recommended 16 GB)",
     "wizard_spec_cpu": "**CPU:** {model} — {phys} cores / {val} threads (min 4 threads · recommended 8+)",
-    "wizard_spec_disk": "**Free Disk Space (`{path}`):** {val:.2f} GiB (min 5 GB · recommended 20 GB)",
+    "wizard_spec_disk": "**Free Disk Space (`{path}`):** {val:.2f} GiB (min 15 GB · recommended 20 GB+ SSD)",
     "wizard_spec_ffmpeg_ok": "**FFmpeg:** Available (`{ver}`)",
     "wizard_spec_ffmpeg_missing": "**FFmpeg:** Not found — install FFmpeg or check bundled runtime.",
     "wizard_spec_net_ok": "**Internet Connection:** Connected",
@@ -2056,6 +2066,16 @@ EN_TRANSLATIONS: Dict[str, str] = {
         "`export/credits.md` has not been generated for this project yet. "
         "Run **Final Render** or re-export to generate `credits.md`."
     ),
+    # --- E8: Short Video Onboarding Tour (post-wizard, i18n) ---
+    "tour_step1_title": "Step 1: Configure AI model",
+    "tour_step1_desc": "After the tour, open Settings to choose an AI provider, enter your API key, and test the connection.",
+    "tour_step2_title": "Step 2: Configure video",
+    "tour_step2_desc": "Enter a short-video topic or script, then adjust visual, voiceover, and subtitle options as needed.",
+    "tour_step3_title": "Step 3: Generate video",
+    "tour_step3_desc": "Start generation once settings are ready. Track progress and results in Task Manager above.",
+    "tour_prev": "Previous",
+    "tour_next": "Next",
+    "tour_done": "Done",
 }
 
 

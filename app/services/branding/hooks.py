@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable, Dict
 
+from loguru import logger
 import streamlit as st
 
 from app.services.branding.constants import APP_NAME, FAVICON_PATH, MIT_THANKS, UPSTREAM_REPO_URL
@@ -15,10 +16,24 @@ def init_main_page(styles_css_path: Path) -> None:
     if st.session_state.get("_efs_settings_library_only", False):
         return
 
+    st.session_state["_efs_dialog_opened_this_run"] = False
+
+    try:
+        from app.services.longform import app_paths
+        app_paths.bootstrap_runtime_environment()
+    except Exception as exc:
+        logger.warning(f"Runtime environment bootstrap warning: {exc}")
+
+    try:
+        from app.services.longform.ui.i18n import t
+        short_title = t("nav_short_video")
+    except Exception:
+        short_title = "Video Pendek"
+
     page_icon = str(FAVICON_PATH) if FAVICON_PATH.is_file() else "🎬"
     about_content = f"# {APP_NAME}\n\n{MIT_THANKS}\n\n{UPSTREAM_REPO_URL}"
     st.set_page_config(
-        page_title=f"{APP_NAME} — Video Pendek",
+        page_title=f"{APP_NAME} — {short_title}",
         page_icon=page_icon,
         layout="wide",
         initial_sidebar_state="auto",
@@ -33,11 +48,19 @@ def init_main_page(styles_css_path: Path) -> None:
 
     from app.services.branding.theme import inject_brand_theme
     from app.services.branding.sidebar import render_brand_sidebar
-    from app.services.branding.lifecycle_ui import render_studio_lifecycle_ui
 
     inject_brand_theme()
-    render_brand_sidebar(current_page="main")
-    render_studio_lifecycle_ui(key_prefix="main")
+    try:
+        render_brand_sidebar(current_page="main")
+    except Exception as exc:
+        logger.exception(f"Brand sidebar rendering failed: {exc}")
+
+    try:
+        from app.services.branding.lifecycle_ui import render_studio_lifecycle_ui
+        render_studio_lifecycle_ui(key_prefix="main")
+    except Exception as exc:
+        logger.exception(f"Studio lifecycle/wizard UI failed: {exc}")
+        st.warning(f"Setup/update panel failed to load: {exc}")
 
 
 _EMBEDDED_SETTINGS_RUNNER: Callable[[], Any] | None = None
@@ -97,3 +120,10 @@ def render_settings_studio_controls() -> None:
     from app.services.branding.lifecycle_ui import render_settings_studio_controls as _render
 
     _render(key_prefix="general_settings")
+
+
+def run_short_video_onboarding_tour(tour_cls: Any) -> bool:
+    """Run localized Short Video onboarding tour only when wizard is finished and no dialog is open (E8)."""
+    from app.services.branding.lifecycle_ui import run_short_video_onboarding_tour as _run_tour
+
+    return _run_tour(tour_cls)

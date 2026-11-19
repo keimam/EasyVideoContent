@@ -205,6 +205,7 @@ def launch_or_focus_app(
     existing_pp = child_env.get("PYTHONPATH", "")
     child_env["PYTHONPATH"] = f"{install_root}{os.pathsep}{existing_pp}" if existing_pp else str(install_root)
     child_env["PYTHONIOENCODING"] = "utf-8"
+    child_env["PYTHONUNBUFFERED"] = "1"
 
     _append_launcher_log(f"Starting Streamlit server on {url} (data_dir={data_dir})")
     proc = platform_utils.launch_desktop_app_detached(

@@ -219,9 +219,9 @@ try {
         if (Test-Path $TmpVerifyData) { Remove-Item $TmpVerifyData -Recurse -Force }
     }
 
-    & $VenvPython (Join-Path $RepoRoot "scripts\build\verify_package.py") --staging $StagingDir
+    & $VenvPython (Join-Path $RepoRoot "scripts\build\verify_package.py") --staging $StagingDir --smoke
     if ($LASTEXITCODE -ne 0) {
-        throw "Package hygiene verification failed!"
+        throw "Package hygiene/smoke verification failed!"
     }
 
     # 10. Compile Inno Setup Installer

@@ -532,6 +532,76 @@ def _render_credits_dialog_body(project_dir: Path, project_id: str) -> None:
         st.markdown(content)
 
 
+def should_show_short_video_tour() -> bool:
+    """Return True only when setup wizard is finished and no dialog is active (E8)."""
+    if not first_run.is_setup_completed():
+        return False
+    if st.session_state.get("efs_wizard_force_open", False):
+        return False
+    if st.session_state.get("settings_dialog_open", False):
+        return False
+    if st.session_state.get("_efs_dialog_opened_this_run", False):
+        return False
+    if st.session_state.get("_efs_settings_library_only", False):
+        return False
+    return True
+
+
+def run_short_video_onboarding_tour(tour_cls: Any, *, key: str = "efs-onboarding-v1") -> bool:
+    """Render Short Video guided tour using i18n t() strings only after wizard & without dialog overlap (E8)."""
+    if not should_show_short_video_tour():
+        return False
+
+    steps = [
+        tour_cls.bind(
+            "open_settings_dialog_button",
+            title=t("tour_step1_title"),
+            desc=t("tour_step1_desc"),
+            side="bottom",
+            align="end",
+        ),
+        tour_cls.bind(
+            "main_settings_grid",
+            title=t("tour_step2_title"),
+            desc=t("tour_step2_desc"),
+            side="top",
+            align="center",
+        ),
+        tour_cls.bind(
+            "generate_video_button",
+            title=t("tour_step3_title"),
+            desc=t("tour_step3_desc"),
+            side="top",
+            align="center",
+        ),
+    ]
+
+    prev_txt = html.escape(t("tour_prev"))
+    next_txt = html.escape(t("tour_next"))
+    done_txt = html.escape(t("tour_done"))
+    for idx, step in enumerate(steps):
+        step.popover["prevBtnText"] = f"&larr; {prev_txt}"
+        step.popover["progressText"] = f"{idx + 1} / {len(steps)}"
+        step.popover["doneBtnText" if idx == len(steps) - 1 else "nextBtnText"] = (
+            done_txt if idx == len(steps) - 1 else f"{next_txt} &rarr;"
+        )
+
+    tour = tour_cls(
+        steps=steps,
+        key=key,
+        show_progress=True,
+        animate=True,
+        overlay_opacity=0.55,
+        one_time_tour=True,
+    )
+    auto_start_key = f"{key}-auto-started"
+    if not st.session_state.get(auto_start_key, False):
+        st.session_state[auto_start_key] = True
+        tour.start()
+    return True
+
+
 def show_credits_dialog(project_dir: Path, project_id: str) -> None:
     """Open localized in-app `credits.md` attribution viewer dialog (E5)."""
+    st.session_state["_efs_dialog_opened_this_run"] = True
     st.dialog(t("credits_dialog_title"), width="large")(_render_credits_dialog_body)(project_dir, project_id)

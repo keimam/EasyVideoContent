@@ -40,6 +40,6 @@ Panduan ini merangkum langkah cepat menggunakan **EasyFaceless Studio** untuk me
 - Pada kartu proyek yang sudah selesai di Beranda atau tab Render, Anda dapat langsung menekan **Buka folder output** dan **Buka credits.md** (dengan tombol salin).
 - *(Opsional)* Pada tab **CapCut**, tutup aplikasi CapCut Desktop terlebih dahulu lalu klik **Ekspor & Pasang ke CapCut** agar timeline multi-track langsung muncul di daftar proyek CapCut Anda.
 
-> **Kebutuhan Sistem (sesuai uji 10 menit):** Windows 10/11 64-bit, minimal CPU 4 thread (disarankan 8+), minimal RAM 8 GB (disarankan 16 GB dengan CapCut), dan ruang disk kosong minimal 5 GB (disarankan 20 GB).
+> **Kebutuhan Sistem (sesuai uji 10 menit):** Windows 10/11 64-bit, minimal CPU 4 thread (disarankan 8+), minimal RAM 8 GB (disarankan 16 GB dengan CapCut), dan ruang disk kosong minimal 15 GB (disarankan 20 GB+ SSD).
 
 > **Tips Otomatis:** Jika naskah sudah siap, Anda dapat menekan **Jalankan Otomatis** untuk memproses Suara → Visual → Render secara berurutan (berhenti otomatis bila ada shot bertanda *"Perlu dicek"*).
