@@ -143,8 +143,8 @@ class Shot(BaseModel):
     end_seconds: float = 0.0
     duration_seconds: float = 0.0
     target_frames: int = 0
-    requested_source: Optional[str] = "ai_image"
-    actual_source: Optional[str] = "ai_image"
+    requested_source: Optional[str] = None
+    actual_source: Optional[str] = None
     fallback_reason: Optional[str] = None
     visual_prompt: str = ""
     search_query: str = ""
@@ -171,6 +171,14 @@ class Shot(BaseModel):
     ai_relevance_asset_hash: Optional[str] = None
     ai_video_provider: Optional[str] = None
     ai_video_model: Optional[str] = None
+    search_attempts: List[dict[str, Any]] = Field(default_factory=list)  # Tiered search diagnostics (D9.1)
+    no_visual_reason_summary: Optional[str] = None
+    attribution_title: Optional[str] = None
+    attribution_author: Optional[str] = None
+    attribution_author_url: Optional[str] = None
+    attribution_license: Optional[str] = None
+    attribution_url: Optional[str] = None
+    requires_attribution: bool = False
     status: ItemStatus = ItemStatus.pending
 
     model_config = {"extra": "forbid", "validate_assignment": True}
@@ -180,12 +188,12 @@ class Shot(BaseModel):
     def coerce_none_text(cls, value: Any) -> str:
         return "" if value is None else str(value)
 
-    @field_validator("segment_indices", "candidates", "tags", "search_queries_en", mode="before")
+    @field_validator("segment_indices", "candidates", "tags", "search_queries_en", "search_attempts", mode="before")
     @classmethod
     def coerce_none_list(cls, value: Any) -> list:
         return [] if value is None else value
 
-    @field_validator("locked", "is_fake", "needs_review", "is_low_res", mode="before")
+    @field_validator("locked", "is_fake", "needs_review", "is_low_res", "requires_attribution", mode="before")
     @classmethod
     def coerce_none_bool(cls, value: Any) -> bool:
         return False if value is None else bool(value)

@@ -25,12 +25,15 @@ Dokumen ini dihasilkan secara otomatis untuk bagian dependensi Python oleh [`scr
 - **Berkas:** `webui/static/fonts/PlusJakartaSans[wght].ttf`
 - **Lisensi:** **SIL Open Font License 1.1 (OFL-1.1)** — teks lengkap tersedia pada [`webui/static/fonts/OFL.txt`](webui/static/fonts/OFL.txt).
 
-### Sumber Footage Stok (Pixabay, Pexels, Coverr)
+### Sumber Footage Stok & Arsip Terbuka (Pixabay, Coverr, Pexels, Wikimedia Commons, NASA, Openverse)
 - Aset video/gambar yang diunduh oleh pengguna tunduk pada ketentuan lisensi dan syarat layanan masing-masing penyedia:
   - **Pixabay** — https://pixabay.com/service/license-summary/
-  - **Pexels** — https://www.pexels.com/license/
   - **Coverr** — https://coverr.co/license
-- Pengguna bertanggung jawab memeriksa atribusi, batasan komersial, serta kelayakan merek dagang aset sebelum menerbitkan video.
+  - **Pexels** — https://www.pexels.com/license/ *(catatan: pendaftaran API key baru Pexels sedang ditutup; didukung untuk pemilik key lama)*
+  - **Wikimedia Commons (MediaWiki API)** — https://commons.wikimedia.org/wiki/Commons:Licensing *(hanya menyaring domain publik, CC0, CC BY, CC BY-SA; aset CC BY/BY-SA memerlukan atribusi yang dirangkum di `credits.md` proyek)*
+  - **NASA Image and Video Library** — https://www.nasa.gov/multimedia/guidelines/index.html *(karya pemerintah AS / domain publik; cantumkan kredit NASA tanpa menyiratkan dukungan/endorsement)*
+  - **Openverse API** — https://openverse.org/ *(agregator media terbuka; hanya mengambil lisensi komersial seperti CC0, PDM, CC BY, CC BY-SA; ikuti kewajiban atribusi di `credits.md`)*
+- Pengguna bertanggung jawab memeriksa atribusi (tersedia pada `export/credits.md`), batasan komersial, serta kelayakan merek dagang aset sebelum menerbitkan video.
 
 ### Microsoft Edge TTS (`edge-tts`)
 - Fitur suara gratis default memanfaatkan layanan Read Aloud Microsoft Edge secara **tidak resmi** melalui pustaka `edge-tts`.

@@ -499,3 +499,84 @@ def copy_text_to_clipboard(text: str) -> bool:
         return True
     except Exception:
         return False
+
+
+_NAMED_MUTEX_HANDLES: Dict[str, Any] = {}
+
+
+def acquire_named_mutex(mutex_name: str) -> Optional[int]:
+    """Create/hold a named OS mutex for installer AppMutex detection (Windows) (D9.6)."""
+    if not mutex_name:
+        return None
+    if mutex_name in _NAMED_MUTEX_HANDLES:
+        return _NAMED_MUTEX_HANDLES[mutex_name]
+    if is_windows():
+        try:
+            import ctypes
+            handle = ctypes.windll.kernel32.CreateMutexW(None, False, str(mutex_name))
+            if handle:
+                _NAMED_MUTEX_HANDLES[mutex_name] = int(handle)
+                return int(handle)
+        except Exception:
+            pass
+    return None
+
+
+def find_processes_in_directory(
+    root_dir: Path,
+    *,
+    exclude_pids: Optional[Sequence[int]] = None,
+) -> List[Dict[str, Any]]:
+    """Return running processes whose executable lives inside `root_dir` (D9.6)."""
+    root = Path(root_dir).resolve()
+    excluded = {int(p) for p in (exclude_pids or ())} | {os.getpid()}
+    found: List[Dict[str, Any]] = []
+
+    if is_windows():
+        ps_cmd = (
+            "Get-CimInstance Win32_Process | "
+            "Where-Object { $_.ExecutablePath } | "
+            "Select-Object ProcessId, Name, ExecutablePath | ConvertTo-Json -Compress"
+        )
+        try:
+            res = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
+                capture_output=True,
+                text=True,
+                timeout=8,
+                creationflags=get_hidden_subprocess_flags(),
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                import json as _json
+                raw = _json.loads(res.stdout.strip())
+                items = raw if isinstance(raw, list) else [raw]
+                root_low = str(root).rstrip("\\/").lower()
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    pid = int(item.get("ProcessId") or 0)
+                    exe = str(item.get("ExecutablePath") or "")
+                    if pid <= 0 or pid in excluded or not exe:
+                        continue
+                    exe_low = exe.lower()
+                    if exe_low.startswith(root_low + "\\") or exe_low.startswith(root_low + "/"):
+                        found.append({
+                            "pid": pid,
+                            "name": str(item.get("Name") or ""),
+                            "executable": exe,
+                        })
+        except Exception as exc:
+            logger.warning(f"Failed inspecting Windows processes under {root}: {exc}")
+    else:
+        try:
+            res = subprocess.run(["ps", "-eo", "pid,args"], capture_output=True, text=True, timeout=5)
+            root_str = str(root)
+            for line in res.stdout.splitlines()[1:]:
+                parts = line.strip().split(None, 1)
+                if len(parts) == 2 and root_str in parts[1]:
+                    pid = int(parts[0])
+                    if pid > 0 and pid not in excluded:
+                        found.append({"pid": pid, "name": parts[1].split()[0], "executable": parts[1]})
+        except Exception:
+            pass
+    return found

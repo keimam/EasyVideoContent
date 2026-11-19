@@ -234,9 +234,13 @@ class FinalConcatenator:
         # 9. Generate Subtitles Full Timeline (SRT + ASS) (5.2)
         full_srt, full_ass = generate_full_timeline_subtitles(manifest, self.project_dir)
 
-        # 10. Update credits.txt with BGM attribution (5.4)
+        # 10. Update credits.txt with BGM attribution (5.4) and generate credits.md in output dir (D9.3)
         if audio_stats.get("bgm_used") and audio_stats.get("bgm_file"):
             self._update_credits_with_bgm(audio_stats["bgm_file"])
+        try:
+            CreditsManager(self.project_dir).write_credits_markdown(manifest)
+        except Exception as cred_exc:
+            logger.warning(f"Failed to write credits.md alongside final video: {cred_exc}")
 
         # 11. Compute final canonical hash & update manifest
         bgm_hash = ""

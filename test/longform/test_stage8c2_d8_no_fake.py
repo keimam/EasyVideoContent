@@ -297,6 +297,11 @@ def test_d8_no_source_warning_and_block_in_visual_and_auto(tmp_path, monkeypatch
     at = AppTest.from_file(_get_long_video_app_file(), default_timeout=25)
     at.query_params["project"] = pid
     at.session_state[f"active_step_{pid}"] = "visual"
+    # D9.2: explicitly uncheck all free keyless providers so ZERO visual sources are enabled
+    at.session_state[f"cb_prov_wikimedia_{pid}"] = False
+    at.session_state[f"cb_prov_nasa_{pid}"] = False
+    at.session_state[f"cb_prov_openverse_{pid}"] = False
+    at.session_state[f"cb_prov_local_{pid}"] = False
     at.run()
     assert not at.exception
 

@@ -458,7 +458,7 @@ ID_TRANSLATIONS: Dict[str, str] = {
     "prov_pixabay_no_key": "Pixabay (Belum ada key)",
     "prov_coverr_key": "Coverr ({mask})",
     "prov_coverr_no_key": "Coverr (Belum ada key)",
-    "prov_pexels_no_key": "Pexels (Belum ada key di config)",
+    "prov_pexels_no_key": "Pexels (Key baru ditutup)",
     "prov_local_ready": "File lokal (siap)",
     "prov_ai_no_key": "Gambar AI (Belum ada key OpenAI)",
     "chapter_pill_format": "Bab {idx}",
@@ -893,6 +893,19 @@ ID_TRANSLATIONS: Dict[str, str] = {
     "shot_no_visual_notice": (
         "Belum ada visual untuk shot ini. Gunakan tab **Cari lagi** atau **Unggah** di bawah untuk memasang footage asli."
     ),
+    # --- D9: Free Visual Providers, Tiered Search, Attribution ---
+    "prov_wikimedia_free": "Wikimedia Commons (Gratis, tanpa key)",
+    "prov_nasa_free": "NASA Library (Gratis, tanpa key)",
+    "prov_openverse_free": "Openverse Foto (Gratis, Ken Burns)",
+    "prov_pexels_key": "Pexels ({mask})",
+    "prov_pexels_closed_note": "Pendaftaran key baru Pexels sedang ditutup; pengguna yang sudah punya key tetap didukung.",
+    "prov_source_order_caption": "Urutan otomatis default: **Pixabay → Coverr → Wikimedia → NASA → Openverse** (foto).",
+    "shot_no_visual_reason_label": "**Alasan belum ada visual:** {summary}",
+    "shot_search_attempts_expander": "Rincian pencarian bertingkat ({count} percobaan)",
+    "shot_attribution_heading": "**Atribusi Aset:** {title} · Pembuat: {author} · Lisensi: `{license}`",
+    "shot_attribution_link": "[Lihat sumber]({url})",
+    "badge_requires_attribution": "ℹ️ Perlu atribusi ({license}) — dicatat di credits.md",
+    "source_not_selected_yet": "Belum ditentukan",
     # --- D8.1: Project Load Error & Validation ---
     "err_project_load_corrupt_or_legacy": (
         "Proyek `{id}` tidak bisa dibuka: data rusak atau versi skema lama tidak kompatibel."
@@ -1354,7 +1367,7 @@ EN_TRANSLATIONS: Dict[str, str] = {
     "prov_pixabay_no_key": "Pixabay (No key)",
     "prov_coverr_key": "Coverr ({mask})",
     "prov_coverr_no_key": "Coverr (No key)",
-    "prov_pexels_no_key": "Pexels (No key in config)",
+    "prov_pexels_no_key": "Pexels (New key reg. closed)",
     "prov_local_ready": "Local files (ready)",
     "prov_ai_no_key": "AI Images (No OpenAI key)",
     "chapter_pill_format": "Ch {idx}",
@@ -1789,6 +1802,19 @@ EN_TRANSLATIONS: Dict[str, str] = {
     "shot_no_visual_notice": (
         "No visual yet for this shot. Use the **Search again** or **Upload** tab below to attach real footage."
     ),
+    # --- D9: Free Visual Providers, Tiered Search, Attribution ---
+    "prov_wikimedia_free": "Wikimedia Commons (Free, no key)",
+    "prov_nasa_free": "NASA Library (Free, no key)",
+    "prov_openverse_free": "Openverse Photos (Free, Ken Burns)",
+    "prov_pexels_key": "Pexels ({mask})",
+    "prov_pexels_closed_note": "New Pexels API key registration is closed; existing key holders remain supported.",
+    "prov_source_order_caption": "Default automatic priority order: **Pixabay → Coverr → Wikimedia → NASA → Openverse** (photos).",
+    "shot_no_visual_reason_label": "**Reason no visual found:** {summary}",
+    "shot_search_attempts_expander": "Tiered search diagnostics ({count} attempts)",
+    "shot_attribution_heading": "**Asset Attribution:** {title} · Creator: {author} · License: `{license}`",
+    "shot_attribution_link": "[View source]({url})",
+    "badge_requires_attribution": "ℹ️ Attribution required ({license}) — saved in credits.md",
+    "source_not_selected_yet": "Not assigned",
     # --- D8.1: Project Load Error & Validation ---
     "err_project_load_corrupt_or_legacy": (
         "Project `{id}` cannot be opened: data is corrupted or uses an incompatible legacy schema version."

@@ -24,6 +24,14 @@ from typing import Any, Callable, Dict, List, Optional
 from app.services.longform import app_paths, platform_utils
 
 
+APP_MUTEX_NAME = "EasyFacelessStudioRunningMutex"
+
+
+def ensure_app_mutex() -> Optional[int]:
+    """Acquire and hold single-instance OS mutex so installer detects running app (D9.6)."""
+    return platform_utils.acquire_named_mutex(APP_MUTEX_NAME)
+
+
 def _append_launcher_log(message: str) -> None:
     """Write timestamped launcher lifecycle line to `<data_dir>/logs/launcher.log`."""
     try:
@@ -289,10 +297,107 @@ def request_app_shutdown(
     }
 
 
+def get_running_app_status(install_root: Optional[Path] = None) -> Dict[str, Any]:
+    """Inspect active EasyFaceless Studio server lock, background jobs, and processes (D9.6)."""
+    root = Path(install_root).resolve() if install_root else app_paths.get_install_root()
+    lock_info = read_launcher_lock()
+    jobs_active = list_active_running_jobs()
+    dir_procs = platform_utils.find_processes_in_directory(root)
+
+    pids = set()
+    if lock_info and int(lock_info.get("pid") or 0) > 0 and platform_utils.is_pid_alive(int(lock_info["pid"])):
+        pids.add(int(lock_info["pid"]))
+    for j in jobs_active:
+        if int(j.get("pid") or 0) > 0:
+            pids.add(int(j["pid"]))
+    for p in dir_procs:
+        if int(p.get("pid") or 0) > 0:
+            pids.add(int(p["pid"]))
+
+    return {
+        "running": bool(pids),
+        "pids": sorted(pids),
+        "jobs": jobs_active,
+        "processes": dir_procs,
+        "server_pid": int(lock_info.get("pid") or 0) if lock_info else 0,
+    }
+
+
+def shutdown_running_app(
+    install_root: Optional[Path] = None,
+    *,
+    force: bool = True,
+    timeout: float = 10.0,
+) -> Dict[str, Any]:
+    """Cleanly stop running jobs, server, and launcher processes before install/upgrade/uninstall (D9.6)."""
+    from app.services.longform.store import get_projects_root, request_job_stop
+
+    root = Path(install_root).resolve() if install_root else app_paths.get_install_root()
+    status = get_running_app_status(root)
+    stopped: List[int] = []
+
+    # 1. Advise running jobs to stop cleanly before terminating their process trees
+    proj_root = get_projects_root()
+    for j in status.get("jobs") or []:
+        j_pid_name = str(j.get("project_id") or "")
+        if j_pid_name and (proj_root / j_pid_name).is_dir():
+            try:
+                request_job_stop(proj_root / j_pid_name)
+            except Exception:
+                pass
+
+    # 2. Terminate tracked server, job PIDs, and any other processes inside install_root
+    target_pids = [int(p) for p in status.get("pids") or [] if int(p) > 0 and int(p) != os.getpid()]
+    for pid in target_pids:
+        if platform_utils.terminate_process_tree(pid, force=force, timeout=min(3.0, timeout)):
+            stopped.append(pid)
+
+    clear_launcher_lock()
+
+    # 3. Wait briefly until no directory-locking processes remain
+    deadline = time.monotonic() + max(1.0, float(timeout))
+    remaining = platform_utils.find_processes_in_directory(root)
+    while remaining and time.monotonic() < deadline:
+        for proc in remaining:
+            p_id = int(proc.get("pid") or 0)
+            if p_id > 0 and p_id != os.getpid():
+                platform_utils.terminate_process_tree(p_id, force=True, timeout=2.0)
+        time.sleep(0.25)
+        remaining = platform_utils.find_processes_in_directory(root)
+
+    _append_launcher_log(
+        f"Pre-setup shutdown finished (stopped={stopped}, remaining={len(remaining)})"
+    )
+    return {
+        "stopped_pids": stopped,
+        "remaining": remaining,
+        "clean": len(remaining) == 0,
+    }
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     """CLI/Desktop entrypoint for EasyFaceless Studio Windows launcher."""
+    import argparse
+
     platform_utils.configure_console_utf8()
+    parser = argparse.ArgumentParser(description="EasyFaceless Studio Desktop Launcher Runtime")
+    parser.add_argument("--status-json", action="store_true", help="Print running app/job status JSON and exit")
+    parser.add_argument("--shutdown", action="store_true", help="Cleanly stop running app, server, and jobs")
+    parser.add_argument("--install-root", default=None, help="Override install root directory")
+    args, _ = parser.parse_known_args(argv)
+
+    if args.status_json:
+        info = get_running_app_status(Path(args.install_root) if args.install_root else None)
+        print(json.dumps(info, ensure_ascii=False))
+        return 0
+
+    if args.shutdown:
+        res = shutdown_running_app(Path(args.install_root) if args.install_root else None)
+        print(json.dumps(res, ensure_ascii=False))
+        return 0 if res["clean"] else 1
+
     try:
+        ensure_app_mutex()
         info = launch_or_focus_app(open_browser=True)
         print(f"EasyFaceless Studio ready at {info['url']} (reused={info['reused']})")
         return 0

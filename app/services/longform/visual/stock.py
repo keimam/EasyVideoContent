@@ -409,6 +409,51 @@ def build_short_core_queries(
     return [q for q in out if q.lower() != clean_q]
 
 
+def build_generalized_visual_queries(
+    query: str,
+    anchor_terms: Optional[List[str]] = None,
+    topic_keywords: Optional[List[str]] = None,
+    visual_keywords: Optional[List[str]] = None,
+) -> List[str]:
+    """Build broader Tier-2/Tier-3 noun & visual concept queries when concrete query hits 0 (D9.1)."""
+    clean_q = re.sub(r"[^\w\s-]", " ", (query or "").lower()).strip()
+    tokens = [t for t in clean_q.split() if t and len(t) >= 3 and t not in STOP_WORDS]
+
+    non_generic = [t for t in tokens if t not in GENERIC_WORDS and t not in ABSTRACT_WORDS]
+    nouns = [t for t in non_generic if t in PRIORITY_NOUNS] + [t for t in non_generic if t not in PRIORITY_NOUNS]
+
+    out: List[str] = []
+    seen: set[str] = {clean_q}
+
+    def _add(val: str) -> None:
+        v = re.sub(r"\s+", " ", str(val or "").strip().lower())
+        if v and v not in seen and len(v) >= 3:
+            seen.add(v)
+            out.append(v)
+
+    # Pairs of core nouns, then single strongest nouns
+    if len(nouns) >= 2:
+        _add(f"{nouns[0]} {nouns[1]}")
+        _add(f"{nouns[-2]} {nouns[-1]}")
+    for n in nouns[:4]:
+        _add(n)
+
+    # Anchor + primary noun combinations, then standalone anchors/visual_keywords/topic_keywords
+    anchors = [str(a).strip().lower() for a in (anchor_terms or []) if str(a or "").strip()]
+    if anchors and nouns:
+        for anc in anchors[:2]:
+            if nouns[0] not in anc:
+                _add(f"{anc} {nouns[0]}")
+    for anc in anchors[:4]:
+        _add(anc)
+    for vk in (visual_keywords or [])[:3]:
+        _add(str(vk))
+    for tk in (topic_keywords or [])[:3]:
+        _add(str(tk))
+
+    return out
+
+
 def filter_candidates_by_anchors_and_avoids(
     candidates: List[Dict[str, Any]],
     *,
@@ -461,6 +506,21 @@ class StockVisualProvider(BaseVisualProvider):
             raise ValueError(f"Unsupported stock provider: {provider_name}")
         self.cache = cache or GlobalMediaCache()
         self.credits_manager = credits_manager
+        self._last_raw_count: int = 0
+        self._last_rejected_reasons: List[str] = []
+
+    def search_with_diagnostics(
+        self,
+        query: str,
+        target_duration: float,
+        limit: int = 3,
+        **kwargs: Any,
+    ) -> Tuple[List[VisualCandidate], int, List[str]]:
+        """Run search_candidates and return (accepted_candidates, raw_hit_count, rejected_reasons) (D9.1)."""
+        self._last_raw_count = 0
+        self._last_rejected_reasons = []
+        cands = self.search_candidates(query=query, target_duration=target_duration, limit=limit, **kwargs)
+        return cands, int(self._last_raw_count), list(self._last_rejected_reasons)
 
     @property
     def name(self) -> str:
@@ -623,6 +683,8 @@ class StockVisualProvider(BaseVisualProvider):
         self.validate_credentials()
         excluded = excluded_ids or set()
         candidates: List[VisualCandidate] = []
+        raw_total_count = 0
+        rejected_reasons_log: List[str] = []
         min_sec = max(int(target_duration), 2)
 
         has_pixabay = _has_non_empty_key("pixabay_api_keys")
@@ -639,6 +701,7 @@ class StockVisualProvider(BaseVisualProvider):
                     raw_items = self._search_pixabay_enhanced(query, min_sec, category=None)
 
                 if raw_items:
+                    raw_total_count += len(raw_items)
                     for raw in raw_items:
                         asset_id = raw["asset_id"]
                         cand_id = f"pixabay_{asset_id}"
@@ -660,6 +723,7 @@ class StockVisualProvider(BaseVisualProvider):
                             is_low_res=raw.get("is_low_res", False),
                         )
                         if not is_valid:
+                            rejected_reasons_log.append(reason)
                             logger.debug(f"Candidate {cand_id} rejected: {reason}")
                             continue
 
@@ -691,6 +755,7 @@ class StockVisualProvider(BaseVisualProvider):
                         minimum_duration=min_sec,
                         video_aspect=VideoAspect.landscape,
                     )
+                    raw_total_count += len(results or [])
                     for item in results:
                         s_info = getattr(item, "source_info", {}) or {}
                         asset_id = s_info.get("asset_id") or str(abs(hash(item.url)))
@@ -706,7 +771,7 @@ class StockVisualProvider(BaseVisualProvider):
 
                         # Extract tags from source metadata / query words if upstream didn't preserve
                         tags = _extract_fallback_tags(query, s_info)
-                        is_valid, score, _ = score_candidate_relevance(
+                        is_valid, score, reason = score_candidate_relevance(
                             candidate_tags=tags,
                             search_query=query,
                             visual_keywords=visual_keywords,
@@ -718,6 +783,7 @@ class StockVisualProvider(BaseVisualProvider):
                             min_relevance_score=min_relevance_score,
                         )
                         if not is_valid:
+                            rejected_reasons_log.append(reason)
                             continue
 
                         candidates.append(
@@ -867,6 +933,8 @@ class StockVisualProvider(BaseVisualProvider):
 
         # S1: Sort candidates by relevance score descending so highest match is chosen first
         candidates.sort(key=lambda c: c.relevance_score, reverse=True)
+        self._last_raw_count = raw_total_count
+        self._last_rejected_reasons = rejected_reasons_log
         return candidates[:limit]
 
     def fetch_asset(

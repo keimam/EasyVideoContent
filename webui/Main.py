@@ -3609,6 +3609,12 @@ def _render_material_provider_settings(provider):
             args=(config_key, f"{config_key}_input"),
         )
         _save_material_api_keys(config_key, value)
+        if provider == "pexels":
+            try:
+                from app.services.longform.ui.i18n import t as _lf_t
+                st.caption(_lf_t("prov_pexels_closed_note"))
+            except Exception:
+                pass
     elif provider == "metaso_minimax":
         st.markdown(f"**{tr('Metaso MiniMax H3')}**")
         metaso_api_key = st.text_input(

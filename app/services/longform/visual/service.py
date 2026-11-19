@@ -28,6 +28,8 @@ from app.services.longform.shot import (
 )
 # Base classes and utilities imported eagerly (lightweight, no upstream deps)
 from app.services.longform.visual.base import (
+    DEFAULT_VISUAL_SOURCE_ORDER,
+    KEYLESS_FREE_VISUAL_SOURCES,
     BaseVisualProvider,
     VisualAsset,
     VisualCandidate,
@@ -36,6 +38,7 @@ from app.services.longform.visual.base import (
     compute_file_content_hash,
     invalidate_shot_thumbnail_cache,
     is_dev_or_test_mode,
+    license_requires_attribution,
 )
 # Builder imported eagerly (pure FFmpeg subprocess, no upstream deps)
 from app.services.longform.visual.builder import (
@@ -122,6 +125,18 @@ class VisualService:
                 cache=self.cache,
                 credits_manager=self.credits_manager,
             )
+        elif p_name in ("wikimedia", "nasa", "openverse"):
+            from app.services.longform.visual.free_providers import (
+                NasaVisualProvider,
+                OpenverseVisualProvider,
+                WikimediaVisualProvider,
+            )
+            if p_name == "wikimedia":
+                return WikimediaVisualProvider(cache=self.cache, credits_manager=self.credits_manager)
+            elif p_name == "nasa":
+                return NasaVisualProvider(cache=self.cache, credits_manager=self.credits_manager)
+            else:
+                return OpenverseVisualProvider(cache=self.cache, credits_manager=self.credits_manager)
         elif p_name in ("ai_image", "openai", "ai", "openai_image", "codex_image"):
             # V5: lazy import of AIImageProvider (pulls in material.py openai/codex path)
             from app.services.longform.visual.ai_image import AIImageProvider  # noqa: F811
@@ -140,7 +155,7 @@ class VisualService:
         self,
         manifest: ProjectManifest,
         fps: Optional[int] = None,
-        default_source: str = "ai_image",
+        default_source: Optional[str] = None,
     ) -> ProjectManifest:
         """Form shots for all chapters in the project."""
         effective_fps = fps or getattr(getattr(manifest, "encoder_settings", None), "fps", 25) or 25
@@ -189,6 +204,89 @@ class VisualService:
         # with clear guidance mentioning Pixabay, Pexels, and Coverr.
         return "stock"
 
+    def resolve_provider_waterfall(
+        self,
+        manifest: ProjectManifest,
+        provider_name: Optional[str] = None,
+        providers_order: Optional[List[str]] = None,
+    ) -> List[str]:
+        """Resolve ordered list of usable visual providers for D9.2 tiered fallback."""
+        from app.config import config as _cfg
+
+        def _has_key(k: str) -> bool:
+            val = _cfg.app.get(k)
+            if isinstance(val, (list, tuple)):
+                return any(bool(str(x or "").strip()) for x in val)
+            return bool(str(val or "").strip())
+
+        def _is_provider_usable(name: str) -> bool:
+            low = name.lower().strip()
+            if low in KEYLESS_FREE_VISUAL_SOURCES:
+                return True
+            if low == "pixabay":
+                return _has_key("pixabay_api_keys")
+            if low == "pexels":
+                return _has_key("pexels_api_keys")
+            if low == "coverr":
+                return _has_key("coverr_api_keys")
+            if low == "local":
+                lib_dir = self.project_dir / "assets" / "visual" / "library"
+                return bool(lib_dir.is_dir() and any(f.is_file() and not f.name.startswith(".") for f in lib_dir.iterdir()))
+            if low == "ai_image":
+                return _has_key("openai_image_api_key") or bool(_cfg.app.get("codex_image_enabled", False))
+            if low == "fake":
+                return is_dev_or_test_mode()
+            return False
+
+        if providers_order:
+            usable = [p.lower().strip() for p in providers_order if _is_provider_usable(p)]
+            return usable
+
+        if provider_name and provider_name.lower().strip() not in ("auto",):
+            return [provider_name.lower().strip()]
+
+        # Default D9.2 order: Pixabay -> Coverr -> Wikimedia -> NASA -> Openverse (+ local if files exist, pexels if key exists)
+        candidates_order: List[str] = ["local", "pixabay", "coverr", "pexels", "wikimedia", "nasa", "openverse"]
+        usable_default = [p for p in candidates_order if _is_provider_usable(p)]
+        return usable_default
+
+    def _summarize_search_failures(self, attempts_log: List[Dict[str, Any]]) -> str:
+        """Build concise human summary of why no visual was found per provider (D9.1)."""
+        if not attempts_log:
+            return "Semua sumber aktif tidak menghasilkan kandidat yang sesuai."
+
+        by_prov: Dict[str, Dict[str, Any]] = {}
+        order: List[str] = []
+        for att in attempts_log:
+            p = str(att.get("provider") or "unknown")
+            if p not in by_prov:
+                by_prov[p] = {"raw": 0, "accepted": 0, "reasons": [], "errors": []}
+                order.append(p)
+            by_prov[p]["raw"] += int(att.get("raw_count") or 0)
+            by_prov[p]["accepted"] += int(att.get("accepted_count") or 0)
+            for r in att.get("rejected_reasons") or []:
+                if r and r not in by_prov[p]["reasons"]:
+                    by_prov[p]["reasons"].append(r)
+            if att.get("error"):
+                by_prov[p]["errors"].append(str(att["error"])[:80])
+
+        parts: List[str] = []
+        for p in order:
+            info = by_prov[p]
+            disp = p.capitalize()
+            if info["errors"] and info["raw"] == 0:
+                parts.append(f"{disp}: error ({info['errors'][0]})")
+            elif info["raw"] == 0:
+                parts.append(f"{disp}: 0 kandidat")
+            else:
+                rejs = info["reasons"]
+                has_lic = any("license" in r.lower() or "lisensi" in r.lower() for r in rejs)
+                if has_lic and info["accepted"] == 0:
+                    parts.append(f"{disp}: {info['raw']} kandidat (ditolak lisensi/relevansi)")
+                else:
+                    parts.append(f"{disp}: {info['raw']} kandidat (semua ditolak relevansi)")
+        return "; ".join(parts)
+
     def _is_shot_asset_valid_for_provider(
         self,
         shot: Shot,
@@ -236,6 +334,7 @@ class VisualService:
             return False
 
         # V1: If the shot was fetched from a different real provider, re-fetch
+        # (When target_provider_name is "auto", any valid non-fake real source is acceptable)
         if (
             not shot.is_fake
             and shot.actual_source
@@ -293,6 +392,9 @@ class VisualService:
             "pixabay",
             "pexels",
             "coverr",
+            "wikimedia",
+            "nasa",
+            "openverse",
         )
         has_anchor_check = bool((anchor_terms or avoid_terms) and is_stock_asset)
         if required_subject_terms or blocked_terms or negative_terms or has_anchor_check:
@@ -325,24 +427,39 @@ class VisualService:
         self,
         manifest: ProjectManifest,
         provider_name: Optional[str] = None,
+        providers_order: Optional[List[str]] = None,
         allow_fallback: bool = False,
         check_ai_relevance: bool = False,
         translate_keywords: bool = True,
         _pct_start: float = 0.0,
         _pct_end: float = 99.0,
     ) -> ProjectManifest:
-        """Search and download/generate visual assets for all pending shots (4.1, V1).
+        """Search and download/generate visual assets for all pending shots (4.1, V1, D9).
 
-        V1 fix:
-        - provider_name=None resolves to real default (pixabay→pexels→ai_image), never fake.
-        - Fake assets are stale whenever a real provider is requested.
-        - Fail-fast with clear error message if provider lacks credentials.
-        - allow_fallback must be explicit; fallback is recorded per shot.
+        D9.1/D9.2:
+        - Supports ordered multi-source waterfall (`providers_order` or `provider_name="auto"`),
+          defaulting to Pixabay -> Coverr -> Wikimedia -> NASA -> Openverse when waterfall requested.
+        - Tiered search per shot: AI/concrete queries -> generalized noun/concept queries -> next source.
+        - Records detailed `search_attempts` diagnostics and `no_visual_reason_summary`.
         """
-        # Resolve the effective provider name (V1: never implicit fake)
-        effective_provider_name = provider_name
-        if not effective_provider_name:
-            effective_provider_name = self._resolve_default_provider(manifest)
+        use_waterfall = bool(providers_order) or (str(provider_name or "").lower().strip() == "auto")
+        if use_waterfall:
+            waterfall_providers = self.resolve_provider_waterfall(
+                manifest,
+                provider_name=provider_name,
+                providers_order=providers_order,
+            )
+            if not waterfall_providers and not (bool(allow_fallback) and is_dev_or_test_mode()):
+                raise VisualConfigurationError(
+                    "Tidak ada sumber visual aktif. Centang minimal satu sumber gratis (Wikimedia/NASA/Openverse) "
+                    "atau isi API key Pixabay/Coverr di API & Penyedia AI."
+                )
+            effective_provider_name = "auto"
+        else:
+            waterfall_providers = []
+            effective_provider_name = provider_name
+            if not effective_provider_name:
+                effective_provider_name = self._resolve_default_provider(manifest)
 
         # Ensure shots exist
         has_shots = any(len(ch.shots) > 0 for ch in manifest.chapters)
@@ -350,26 +467,25 @@ class VisualService:
             effective_fps = getattr(getattr(manifest, "encoder_settings", None), "fps", 25) or 25
             self.prepare_shots(manifest, fps=effective_fps)
 
-        # Early credentials validation for the effective provider (V1/D8 fail-fast)
-        # In normal/installed mode, 'fake' fallback is strictly forbidden.
+        # Early credentials validation for explicit single-provider calls (V1/D8 fail-fast)
         allow_fake_fallback = bool(allow_fallback) and is_dev_or_test_mode()
         global_fallback_reason: Optional[str] = None
         if effective_provider_name == "fake" and not is_dev_or_test_mode():
             raise VisualConfigurationError(
                 "Penyedia visual 'fake' tidak diperbolehkan pada mode normal/terpasang. "
-                "Isi API key Pexels/Pixabay di API & Penyedia AI atau tambahkan media ke Pustaka Lokal."
+                "Isi API key Pexels/Pixabay di API & Penyedia AI atau gunakan sumber gratis (Wikimedia/NASA/Openverse)."
             )
-        if effective_provider_name not in ("fake", "local"):
+        if not use_waterfall and effective_provider_name not in ("fake", "local", "auto"):
             try:
                 probe_provider = self.get_provider(effective_provider_name, manifest)
                 probe_provider.validate_credentials()
             except VisualConfigurationError as conf_err:
                 if not allow_fake_fallback:
                     provider_guidance = (
-                        "Isi API key Pexels/Pixabay di menu API & Penyedia AI (atau tambahkan klip ke Pustaka Lokal).\n"
+                        "Isi API key Pexels/Pixabay di menu API & Penyedia AI (atau aktifkan sumber gratis Wikimedia/NASA/Openverse).\n"
                         "To configure stock video credentials:\n"
                         "  1. Obtain a free API key from Pixabay: https://pixabay.com/api/docs/\n"
-                        "  2. Or from Pexels: https://www.pexels.com/api/\n"
+                        "  2. Or from Pexels: https://www.pexels.com/api/ (new key registration paused)\n"
                         "  3. Open API & Penyedia AI in the sidebar or use '--provider local'."
                     )
                     raise VisualConfigurationError(
@@ -585,34 +701,20 @@ class VisualService:
                     logger.debug(f"Shot {shot.shot_id} asset valid for provider '{effective_provider_name}', skipping fetch")
                     continue
 
-                # Determine target provider for this shot
-                target_provider_name = effective_provider_name
-                active_provider: BaseVisualProvider
-                fallback_reason: Optional[str] = global_fallback_reason
-
-                try:
-                    active_provider = self.get_provider(target_provider_name, manifest)
-                    if target_provider_name in ("fake", "local"):
-                        active_provider.validate_credentials()
-                except VisualConfigurationError as conf_err:
-                    if not allow_fake_fallback:
-                        raise
-                    fallback_reason = f"Provider '{target_provider_name}' credentials missing ({conf_err}); fell back to fake provider"
-                    logger.warning(f"Shot {shot.shot_id}: {fallback_reason}")
-                    active_provider = FakeVisualProvider(mode=target_provider_name)
-                except Exception as exc:
-                    if not allow_fake_fallback:
-                        raise
-                    fallback_reason = f"Provider '{target_provider_name}' error ({exc}); fell back to fake provider"
-                    logger.warning(f"Shot {shot.shot_id}: {fallback_reason}")
-                    active_provider = FakeVisualProvider(mode=target_provider_name)
+                # Determine candidate provider list for this shot (waterfall in D9.2 vs single provider)
+                shot_providers = list(waterfall_providers) if use_waterfall else [effective_provider_name]
+                if not shot_providers and allow_fake_fallback:
+                    shot_providers = ["fake"]
 
                 # F13: Clear stale candidate list/tags on unlocked shots being re-fetched
                 shot.candidates = []
                 shot.tags = []
+                shot.search_attempts = []
+                shot.no_visual_reason_summary = None
 
-                # S5 / F12 / F13 Multi-tier escalation search
+                # S5 / F12 / F13 / D9.1 Multi-tier escalation search
                 from app.services.longform.visual.stock import (
+                    build_generalized_visual_queries,
                     build_short_core_queries,
                     extract_narrower_query,
                     restructure_stock_query,
@@ -632,13 +734,13 @@ class VisualService:
                         ordered_base_queries.append(qc)
 
                 candidates: List[VisualCandidate] = []
-                best_candidates: List[VisualCandidate] = []
-                cand_origin_query: Dict[str, str] = {}
-                seen_best_ids: Set[str] = set()
+                chosen_provider: Optional[BaseVisualProvider] = None
+                fallback_reason: Optional[str] = global_fallback_reason
                 chosen_query = raw_query
+                attempts_log: List[Dict[str, Any]] = []
 
                 query_tiers: List[Tuple[str, Optional[str]]] = []
-                # Tier 1 & 2: Primary query + alternative concrete queries
+                # Tier 1 & 2: Primary query + alternative concrete AI queries
                 for bq in ordered_base_queries:
                     if req_terms:
                         restruct_q = restructure_stock_query(bq, req_terms, topic_kws)
@@ -647,10 +749,17 @@ class VisualService:
                     query_tiers.append((bq, stock_cat))
                     query_tiers.append((bq, None))
 
-                # Tier 3: Shortened 2-3 core word queries (helps Pixabay when 5-word queries yield < 3 hits)
+                # Tier 3: Shortened core & generalized broader visual noun/concept queries (D9.1)
                 for bq in ordered_base_queries:
                     for short_q in build_short_core_queries(bq, proj_anchors):
                         query_tiers.append((short_q, None))
+                    for gen_q in build_generalized_visual_queries(
+                        bq,
+                        anchor_terms=proj_anchors,
+                        topic_keywords=topic_kws,
+                        visual_keywords=visual_kws,
+                    ):
+                        query_tiers.append((gen_q, None))
                 narrow_q = extract_narrower_query(raw_query, req_terms)
                 if narrow_q:
                     query_tiers.append((narrow_q, None))
@@ -675,60 +784,224 @@ class VisualService:
                         seen_tiers.add(k_pair)
                         dedup_tiers.append(qt_pair)
 
-                for q_text, q_cat in dedup_tiers:
-                    search_kwargs = {
-                        "query": q_text,
-                        "target_duration": shot.duration_seconds,
-                        "limit": 3,
-                        "excluded_ids": used_candidate_ids,
-                    }
+                for prov_name in shot_providers:
+                    if is_stop_requested(self.project_dir):
+                        break
                     try:
-                        tier_cands = active_provider.search_candidates(
-                            required_subject_terms=req_terms,
-                            blocked_terms=block_terms,
-                            negative_terms=neg_terms,
-                            anchor_terms=proj_anchors,
-                            avoid_terms=proj_avoids,
-                            min_relevance_score=min_rel_score,
-                            visual_keywords=visual_kws,
-                            category=q_cat,
-                            **search_kwargs,
-                        )
-                    except TypeError:
+                        active_provider = self.get_provider(prov_name, manifest)
+                        if prov_name in ("fake", "local"):
+                            active_provider.validate_credentials()
+                    except VisualConfigurationError as conf_err:
+                        if not use_waterfall and allow_fake_fallback:
+                            fallback_reason = f"Provider '{prov_name}' credentials missing ({conf_err}); fell back to fake provider"
+                            active_provider = FakeVisualProvider(mode=prov_name)
+                        elif use_waterfall:
+                            attempts_log.append({
+                                "provider": prov_name,
+                                "query": raw_query,
+                                "raw_count": 0,
+                                "accepted_count": 0,
+                                "rejected_reasons": [],
+                                "error": str(conf_err)[:120],
+                            })
+                            continue
+                        else:
+                            raise
+                    except Exception as exc:
+                        if use_waterfall:
+                            attempts_log.append({
+                                "provider": prov_name,
+                                "query": raw_query,
+                                "raw_count": 0,
+                                "accepted_count": 0,
+                                "rejected_reasons": [],
+                                "error": str(exc)[:120],
+                            })
+                            continue
+                        if not allow_fake_fallback:
+                            raise
+                        fallback_reason = f"Provider '{prov_name}' error ({exc}); fell back to fake provider"
+                        active_provider = FakeVisualProvider(mode=prov_name)
+
+                    best_candidates: List[VisualCandidate] = []
+                    cand_origin_query: Dict[str, str] = {}
+                    seen_best_ids: Set[str] = set()
+
+                    # Cap category-free duplicates cleanly when moving beyond stock category providers
+                    if prov_name in ("pixabay", "pexels", "coverr", "stock"):
+                        prov_tiers = dedup_tiers[:6]
+                    else:
+                        # Rebuild unique query sequence for non-category providers
+                        seen_q_only: set[str] = set()
+                        prov_tiers = []
+                        for q_t, _c in dedup_tiers:
+                            ql = q_t.lower()
+                            if ql not in seen_q_only:
+                                seen_q_only.add(ql)
+                                prov_tiers.append((q_t, None))
+                        # Free public APIs: keep top 3-4 distinct queries per shot to respect rate limits
+                        prov_tiers = prov_tiers[:3] if prov_name == "openverse" else prov_tiers[:4]
+
+                    zero_raw_streak = 0
+                    for q_text, q_cat in prov_tiers:
+                        search_kwargs = {
+                            "query": q_text,
+                            "target_duration": shot.duration_seconds,
+                            "limit": 3,
+                            "excluded_ids": used_candidate_ids,
+                        }
+                        raw_cnt = 0
+                        rej_reasons: List[str] = []
+                        err_txt: Optional[str] = None
+                        tier_cands: List[VisualCandidate] = []
                         try:
-                            tier_cands = active_provider.search_candidates(
-                                required_subject_terms=req_terms,
-                                blocked_terms=block_terms,
-                                visual_keywords=visual_kws,
-                                **search_kwargs,
-                            )
-                        except TypeError:
-                            tier_cands = active_provider.search_candidates(**search_kwargs)
+                            if hasattr(active_provider, "search_with_diagnostics"):
+                                tier_cands, raw_cnt, rej_reasons = active_provider.search_with_diagnostics(
+                                    required_subject_terms=req_terms,
+                                    blocked_terms=block_terms,
+                                    negative_terms=neg_terms,
+                                    anchor_terms=proj_anchors,
+                                    avoid_terms=proj_avoids,
+                                    min_relevance_score=min_rel_score,
+                                    visual_keywords=visual_kws,
+                                    category=q_cat,
+                                    **search_kwargs,
+                                )
+                            else:
+                                try:
+                                    tier_cands = active_provider.search_candidates(
+                                        required_subject_terms=req_terms,
+                                        blocked_terms=block_terms,
+                                        negative_terms=neg_terms,
+                                        anchor_terms=proj_anchors,
+                                        avoid_terms=proj_avoids,
+                                        min_relevance_score=min_rel_score,
+                                        visual_keywords=visual_kws,
+                                        category=q_cat,
+                                        **search_kwargs,
+                                    )
+                                except TypeError:
+                                    try:
+                                        tier_cands = active_provider.search_candidates(
+                                            required_subject_terms=req_terms,
+                                            blocked_terms=block_terms,
+                                            visual_keywords=visual_kws,
+                                            **search_kwargs,
+                                        )
+                                    except TypeError:
+                                        tier_cands = active_provider.search_candidates(**search_kwargs)
+                                raw_cnt = len(tier_cands or [])
+                        except Exception as search_exc:
+                            err_txt = str(search_exc)[:120]
+                            logger.warning(f"Shot {shot.shot_id}: {prov_name} query '{q_text}' error: {err_txt}")
 
-                    added_cnt = 0
-                    for tc in tier_cands or []:
-                        if tc.candidate_id not in seen_best_ids:
-                            seen_best_ids.add(tc.candidate_id)
-                            best_candidates.append(tc)
-                            cand_origin_query[tc.candidate_id] = q_text
-                            added_cnt += 1
+                        attempts_log.append({
+                            "provider": prov_name,
+                            "query": q_text,
+                            "raw_count": raw_cnt,
+                            "accepted_count": len(tier_cands or []),
+                            "rejected_reasons": rej_reasons[:3],
+                            "error": err_txt,
+                        })
 
-                    logger.info(
-                        f"Shot {shot.shot_id}: stock query '{q_text}' (cat={q_cat}) -> "
-                        f"{len(tier_cands or [])} valid hit(s), added={added_cnt}, accumulated={len(best_candidates)}"
-                    )
-                    if len(best_candidates) >= 3:
+                        added_cnt = 0
+                        for tc in tier_cands or []:
+                            if tc.candidate_id not in seen_best_ids:
+                                seen_best_ids.add(tc.candidate_id)
+                                best_candidates.append(tc)
+                                cand_origin_query[tc.candidate_id] = q_text
+                                added_cnt += 1
+
+                        logger.info(
+                            f"Shot {shot.shot_id}: [{prov_name}] query '{q_text}' (cat={q_cat}) -> "
+                            f"raw={raw_cnt}, valid={len(tier_cands or [])}, added={added_cnt}, accumulated={len(best_candidates)}"
+                        )
+                        if err_txt and ("429" in err_txt or "rate" in err_txt.lower() or "403" in err_txt):
+                            break
+                        if raw_cnt == 0 and not err_txt:
+                            zero_raw_streak += 1
+                            if prov_name == "coverr" and zero_raw_streak >= 2:
+                                break
+                        else:
+                            zero_raw_streak = 0
+                        if len(best_candidates) >= 3:
+                            break
+
+                    if best_candidates:
+                        best_candidates.sort(key=lambda c: c.relevance_score, reverse=True)
+                        candidates = best_candidates[:3]
+                        chosen_provider = active_provider
+                        chosen_query = cand_origin_query.get(candidates[0].candidate_id, chosen_query)
+                        logger.info(
+                            f"Shot {shot.shot_id}: selected '{candidates[0].candidate_id}' from {prov_name} "
+                            f"(score={candidates[0].relevance_score:.3f}) via query '{chosen_query}'"
+                        )
                         break
 
-                if best_candidates:
-                    best_candidates.sort(key=lambda c: c.relevance_score, reverse=True)
-                    candidates = best_candidates[:3]
-                    chosen_query = cand_origin_query.get(candidates[0].candidate_id, chosen_query)
-                    logger.info(
-                        f"Shot {shot.shot_id}: selected top candidate '{candidates[0].candidate_id}' "
-                        f"(score={candidates[0].relevance_score:.3f}) via query '{chosen_query}' "
-                        f"from {len(candidates)} candidate(s)"
-                    )
+                # Tiered Pass 2: If strict project anchor_terms blocked every candidate on all providers,
+                # retry the shot's top concrete queries without project-level anchor lock (preserving
+                # avoid_terms, blocked_terms, required_subject_terms, and a stricter relevance bar).
+                if not candidates and proj_anchors and any(
+                    "anchor_terms" in str(r)
+                    for att in attempts_log
+                    for r in (att.get("rejected_reasons") or [])
+                ):
+                    relaxed_queries = list(dict.fromkeys([q for q, _c in dedup_tiers[:3] if q]))
+                    relaxed_min = max(float(min_rel_score or 0.35), 0.42)
+                    for prov_name in shot_providers:
+                        try:
+                            rel_prov = self.get_provider(prov_name, manifest)
+                            rel_prov.validate_credentials()
+                        except Exception:
+                            continue
+                        if not hasattr(rel_prov, "search_with_diagnostics"):
+                            continue
+                        rel_best: List[VisualCandidate] = []
+                        rel_origin: Dict[str, str] = {}
+                        for rq in relaxed_queries:
+                            try:
+                                r_cands, r_raw, r_rej = rel_prov.search_with_diagnostics(
+                                    query=rq,
+                                    target_duration=shot.duration_seconds,
+                                    limit=3,
+                                    excluded_ids=used_candidate_ids,
+                                    required_subject_terms=req_terms,
+                                    blocked_terms=block_terms,
+                                    negative_terms=neg_terms,
+                                    anchor_terms=None,
+                                    avoid_terms=proj_avoids,
+                                    min_relevance_score=relaxed_min,
+                                    visual_keywords=visual_kws,
+                                    category=None,
+                                )
+                            except Exception:
+                                continue
+                            attempts_log.append({
+                                "provider": prov_name,
+                                "query": rq,
+                                "raw_count": r_raw,
+                                "accepted_count": len(r_cands or []),
+                                "rejected_reasons": r_rej[:2],
+                                "error": None,
+                            })
+                            for tc in r_cands or []:
+                                rel_best.append(tc)
+                                rel_origin[tc.candidate_id] = rq
+                            if rel_best:
+                                break
+                        if rel_best:
+                            rel_best.sort(key=lambda c: c.relevance_score, reverse=True)
+                            candidates = rel_best[:3]
+                            chosen_provider = rel_prov
+                            chosen_query = rel_origin.get(candidates[0].candidate_id, chosen_query)
+                            logger.info(
+                                f"Shot {shot.shot_id}: relaxed-anchor selected '{candidates[0].candidate_id}' "
+                                f"from {prov_name} (score={candidates[0].relevance_score:.3f}) via query '{chosen_query}'"
+                            )
+                            break
+
+                active_provider = chosen_provider or self.get_provider(shot_providers[0], manifest)
+                shot.search_attempts = attempts_log[-25:]
 
                 # Step 4: Fallback to fake ONLY in dev/test mode; otherwise mark no visual cleanly (D8)
                 if not candidates:
@@ -752,8 +1025,9 @@ class VisualService:
                             )
 
                     if not candidates:
-                        # D8: Mark shot cleanly as 'Belum ada visual' (never generate fake placeholder)
-                        logger.warning(f"Shot {shot.shot_id}: no acceptable candidates found. Marked 'no_visual_found'.")
+                        # D8 / D9.1: Mark shot cleanly as 'Belum ada visual' with structured failure reason
+                        reason_summary = self._summarize_search_failures(attempts_log)
+                        logger.warning(f"Shot {shot.shot_id}: no acceptable candidates found ({reason_summary}). Marked 'no_visual_found'.")
                         shot.asset_path = None
                         shot.rendered_clip = None
                         shot.shot_hash = None
@@ -766,6 +1040,13 @@ class VisualService:
                         shot.tags = []
                         shot.candidates = []
                         shot.fallback_reason = "no_visual_found"
+                        shot.no_visual_reason_summary = reason_summary
+                        shot.attribution_title = None
+                        shot.attribution_author = None
+                        shot.attribution_author_url = None
+                        shot.attribution_license = None
+                        shot.attribution_url = None
+                        shot.requires_attribution = False
                         invalidate_shot_thumbnail_cache(self.project_dir, shot.shot_id)
                         if shot.shot_id in target_fetch_ids and target_fetch_total > 0:
                             done_fetch_count += 1
@@ -797,23 +1078,36 @@ class VisualService:
 
                 logger.info(f"Fetching asset for {shot.shot_id} via {active_provider.name} (score: {selected_candidate.relevance_score:.2f}, {selected_candidate.rendition_name or 'std'})...")
                 asset = active_provider.fetch_asset(selected_candidate, dest_file)
+                asset_local = Path(getattr(asset, "local_path", None) or dest)
+                try:
+                    rel_dest = asset_local.resolve().relative_to(self.project_dir.resolve()).as_posix()
+                except Exception:
+                    rel_dest = f"assets/visual/shots/{asset_local.name}"
                 invalidate_shot_thumbnail_cache(self.project_dir, shot.shot_id)
 
-                # Update shot metadata
+                # Update shot metadata & D9.3 attribution info
                 shot.asset_path = rel_dest
                 shot.asset_content_hash = asset.content_hash
-                shot.requested_source = effective_provider_name
+                shot.requested_source = active_provider.name if use_waterfall else effective_provider_name
                 shot.actual_source = active_provider.name
                 shot.is_fake = active_provider.is_fake
                 shot.fallback_reason = fallback_reason
+                shot.no_visual_reason_summary = None
                 shot.tags = selected_candidate.tags
                 shot.relevance_score = selected_candidate.relevance_score
                 shot.chosen_rendition = selected_candidate.rendition_name
                 shot.is_low_res = getattr(selected_candidate, "is_low_res", False)
                 shot.effective_query = chosen_query
+                shot.attribution_title = getattr(selected_candidate, "title", None) or getattr(asset, "title", None)
+                shot.attribution_author = getattr(selected_candidate, "author", None) or getattr(asset, "author", None)
+                shot.attribution_author_url = getattr(selected_candidate, "author_url", None) or getattr(asset, "author_url", None)
+                shot.attribution_license = getattr(selected_candidate, "license", None) or getattr(asset, "license", None)
+                shot.attribution_url = getattr(selected_candidate, "source_url", None) or getattr(asset, "source_url", None)
+                shot.requires_attribution = license_requires_attribution(shot.attribution_license)
                 shot.ai_relevance_status = None
                 shot.ai_relevance_reason = None
                 shot.ai_relevance_asset_hash = None
+                self.credits_manager.record_asset_credit(selected_candidate, shot_id=shot.shot_id)
                 if req_terms:
                     from app.services.longform.visual.stock import term_matches_tags
                     has_subj = any(term_matches_tags(req, shot.tags or []) for req in req_terms)
@@ -876,6 +1170,11 @@ class VisualService:
                 f"ya={rel_stats.get('ya')}, tidak={rel_stats.get('tidak')}, ragu={rel_stats.get('ragu')}"
             )
             save_manifest(manifest, self.project_dir)
+
+        try:
+            self.credits_manager.write_credits_markdown(manifest)
+        except Exception as cred_exc:
+            logger.warning(f"Failed to write credits.md for '{manifest.project_id}': {cred_exc}")
 
         return manifest
 
@@ -1375,6 +1674,14 @@ class VisualService:
             target_shot.asset_path = rel_dest
             target_shot.asset_content_hash = compute_file_content_hash(dest)
             target_shot.actual_source = "local"
+            target_shot.is_fake = False
+            target_shot.fallback_reason = None
+            target_shot.no_visual_reason_summary = None
+            target_shot.attribution_title = src.name
+            target_shot.attribution_author = None
+            target_shot.attribution_license = "Local Library"
+            target_shot.attribution_url = None
+            target_shot.requires_attribution = False
             target_shot.locked = True  # T4 auto-lock
             target_shot.needs_review = False
 
@@ -1416,10 +1723,28 @@ class VisualService:
             rel_dest = f"assets/visual/shots/{shot_id}_asset{ext}"
             dest = self.project_dir / rel_dest
             asset = provider.fetch_asset(candidate, dest)
+            asset_local = Path(getattr(asset, "local_path", None) or dest)
+            try:
+                rel_dest = asset_local.resolve().relative_to(self.project_dir.resolve()).as_posix()
+            except Exception:
+                rel_dest = f"assets/visual/shots/{asset_local.name}"
+            dest = (self.project_dir / rel_dest).resolve()
 
             target_shot.asset_path = rel_dest
             target_shot.asset_content_hash = asset.content_hash
             target_shot.actual_source = candidate.provider
+            target_shot.is_fake = False
+            target_shot.fallback_reason = None
+            target_shot.no_visual_reason_summary = None
+            target_shot.attribution_title = getattr(candidate, "title", None) or getattr(asset, "title", None)
+            target_shot.attribution_author = getattr(candidate, "author", None) or getattr(asset, "author", None)
+            target_shot.attribution_author_url = getattr(candidate, "author_url", None) or getattr(asset, "author_url", None)
+            target_shot.attribution_license = getattr(candidate, "license", None) or getattr(asset, "license", None)
+            target_shot.attribution_url = getattr(candidate, "source_url", None) or getattr(asset, "source_url", None)
+            target_shot.requires_attribution = license_requires_attribution(target_shot.attribution_license)
+            if hasattr(self.credits_manager, "record_asset_credit"):
+                self.credits_manager.record_asset_credit(candidate, shot_id=target_shot.shot_id)
+            self.credits_manager.write_credits_markdown(manifest)
             target_shot.tags = candidate.tags
             target_shot.relevance_score = candidate.relevance_score
             target_shot.is_low_res = candidate.is_low_res
@@ -1474,11 +1799,28 @@ class VisualService:
             rel_dest = f"assets/visual/shots/{shot_id}_asset{ext}"
             dest = self.project_dir / rel_dest
             asset = prov.fetch_asset(sel, dest)
+            asset_local = Path(getattr(asset, "local_path", None) or dest)
+            try:
+                rel_dest = asset_local.resolve().relative_to(self.project_dir.resolve()).as_posix()
+            except Exception:
+                rel_dest = f"assets/visual/shots/{asset_local.name}"
+            dest = (self.project_dir / rel_dest).resolve()
 
             target_shot.asset_path = rel_dest
             target_shot.asset_content_hash = asset.content_hash
             target_shot.actual_source = prov_name
             target_shot.is_fake = prov.is_fake
+            target_shot.fallback_reason = None
+            target_shot.no_visual_reason_summary = None
+            target_shot.attribution_title = getattr(sel, "title", None) or getattr(asset, "title", None)
+            target_shot.attribution_author = getattr(sel, "author", None) or getattr(asset, "author", None)
+            target_shot.attribution_author_url = getattr(sel, "author_url", None) or getattr(asset, "author_url", None)
+            target_shot.attribution_license = getattr(sel, "license", None) or getattr(asset, "license", None)
+            target_shot.attribution_url = getattr(sel, "source_url", None) or getattr(asset, "source_url", None)
+            target_shot.requires_attribution = license_requires_attribution(target_shot.attribution_license)
+            if hasattr(self.credits_manager, "record_asset_credit"):
+                self.credits_manager.record_asset_credit(sel, shot_id=target_shot.shot_id)
+            self.credits_manager.write_credits_markdown(manifest)
             target_shot.tags = sel.tags
             target_shot.relevance_score = sel.relevance_score
             target_shot.is_low_res = sel.is_low_res
@@ -1595,6 +1937,7 @@ class VisualService:
         self,
         manifest: Optional[ProjectManifest] = None,
         provider_name: Optional[str] = None,
+        providers_order: Optional[List[str]] = None,
         allow_fallback: bool = False,
         check_ai_relevance: bool = False,
     ) -> Tuple[ProjectManifest, Dict[str, Any]]:
@@ -1644,9 +1987,13 @@ class VisualService:
 
         # Phase 2: Mencari footage (Fetch Assets)
         print(f"\n[Visual Pipeline] Phase 2/3: Mencari footage untuk proyek '{manifest.project_id}'...")
+        effective_order = providers_order
+        if effective_order is None and not provider_name:
+            effective_order = self.resolve_provider_waterfall(manifest)
         manifest = self.fetch_all(
             manifest=manifest,
             provider_name=provider_name,
+            providers_order=effective_order,
             allow_fallback=allow_fallback,
             check_ai_relevance=check_ai_relevance,
             _pct_start=0.0,

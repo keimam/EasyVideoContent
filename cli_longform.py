@@ -1023,9 +1023,16 @@ def cmd_visual_pipeline(args: argparse.Namespace) -> int:
         with ProjectLock(proj_dir):
             manifest = load_manifest(proj_dir)
             service = VisualService(proj_dir)
+            raw_providers = getattr(args, "providers", None)
+            providers_order = (
+                [p.strip().lower() for p in str(raw_providers).split(",") if p.strip()]
+                if raw_providers
+                else None
+            )
             manifest, stats = service.run_pipeline(
                 manifest=manifest,
                 provider_name=getattr(args, "provider", None),
+                providers_order=providers_order,
                 allow_fallback=bool(getattr(args, "allow_fallback", False)),
                 check_ai_relevance=bool(getattr(args, "check_ai_relevance", False)),
             )
@@ -1080,9 +1087,16 @@ def cmd_visual_fetch(args: argparse.Namespace) -> int:
                 print(f"  (No --provider specified; resolved default: '{effective_prov_display}')")
             print("-" * 70)
 
+            raw_providers = getattr(args, "providers", None)
+            providers_order = (
+                [p.strip().lower() for p in str(raw_providers).split(",") if p.strip()]
+                if raw_providers
+                else (service.resolve_provider_waterfall(manifest) if not args.provider else None)
+            )
             manifest = service.fetch_all(
                 manifest=manifest,
                 provider_name=args.provider,
+                providers_order=providers_order,
                 allow_fallback=args.allow_fallback,
                 check_ai_relevance=bool(getattr(args, "check_ai_relevance", False)),
             )
@@ -2562,15 +2576,17 @@ def build_parser() -> argparse.ArgumentParser:
     # visual pipeline (7B.1)
     p_v_pipe = visual_subs.add_parser("pipeline", help="Fetch visual assets and build shot clips sequentially")
     p_v_pipe.add_argument("project_id", help="Project ID")
-    p_v_pipe.add_argument("--provider", default=None, help="Visual provider ('fake', 'pexels', 'pixabay', 'ai_image', 'local')")
-    p_v_pipe.add_argument("--allow-fallback", action="store_true", help="Allow fallback to fake provider if credentials missing")
+    p_v_pipe.add_argument("--provider", default=None, help="Single visual provider override")
+    p_v_pipe.add_argument("--providers", default=None, help="Comma-separated ordered visual providers waterfall (D9.2)")
+    p_v_pipe.add_argument("--allow-fallback", action="store_true", help="Allow fallback to fake provider in dev/test mode")
     p_v_pipe.add_argument("--check-ai-relevance", action="store_true", help="Verify fetched footage relevance with AI Vision (8B.2 F1)")
 
     # visual fetch
-    p_v_fetch = visual_subs.add_parser("fetch", help="Search and acquire visual assets (stock, AI, local, fake)")
+    p_v_fetch = visual_subs.add_parser("fetch", help="Search and acquire visual assets (stock, wikimedia, nasa, openverse, local, fake)")
     p_v_fetch.add_argument("project_id", help="Project ID")
-    p_v_fetch.add_argument("--provider", default=None, help="Visual provider ('fake', 'pexels', 'pixabay', 'ai_image', 'local')")
-    p_v_fetch.add_argument("--allow-fallback", action="store_true", help="Allow fallback to fake provider if credentials missing")
+    p_v_fetch.add_argument("--provider", default=None, help="Single visual provider override")
+    p_v_fetch.add_argument("--providers", default=None, help="Comma-separated ordered visual providers waterfall (D9.2)")
+    p_v_fetch.add_argument("--allow-fallback", action="store_true", help="Allow fallback to fake provider in dev/test mode")
     p_v_fetch.add_argument("--check-ai-relevance", action="store_true", help="Verify fetched footage relevance with AI Vision (8B.2 F1)")
 
     # visual build

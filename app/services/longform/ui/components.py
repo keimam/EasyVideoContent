@@ -1324,7 +1324,21 @@ def render_project_page(project_id: str):
 
                 from app.services.longform.visual.base import has_real_visual_source
                 visual_done_auto = (st_info["steps"]["visual"]["status"] == "selesai")
-                has_vis_src_auto = has_real_visual_source(p_dir)
+                auto_enabled_sources = [
+                    p_k
+                    for p_k, dflt in (
+                        ("pixabay", True),
+                        ("coverr", True),
+                        ("pexels", True),
+                        ("wikimedia", True),
+                        ("nasa", True),
+                        ("openverse", True),
+                        ("local", True),
+                        ("ai_image", False),
+                    )
+                    if st.session_state.get(f"cb_prov_{'ai' if p_k == 'ai_image' else p_k}_{project_id}", dflt)
+                ]
+                has_vis_src_auto = has_real_visual_source(p_dir, enabled_sources=auto_enabled_sources)
                 auto_missing_vis_src = (not visual_done_auto) and (not has_vis_src_auto)
                 if auto_missing_vis_src:
                     st.warning(t("vis_no_source_warning"))
@@ -2331,7 +2345,7 @@ def render_visual_step_flow(
     job_state = jobs.get_job_state(project_id)
     is_job_running = is_job_running or bool(job_state and job_state.get("status") == "running")
 
-    # --- V1: Source Selection Configuration (checked first to pass target_prov to action button) ---
+    # --- V1 / D9.2: Source Selection Configuration (Pixabay -> Coverr -> Wikimedia -> NASA -> Openverse) ---
     from app.config import config
     pixabay_keys = config.app.get("pixabay_api_keys", []) or []
     has_pixabay = bool((isinstance(pixabay_keys, list) and any(k.strip() for k in pixabay_keys)) or (isinstance(pixabay_keys, str) and pixabay_keys.strip()))
@@ -2342,6 +2356,11 @@ def render_visual_step_flow(
     has_coverr = bool((isinstance(coverr_keys, list) and any(k.strip() for k in coverr_keys)) or (isinstance(coverr_keys, str) and coverr_keys.strip()))
     raw_ck = coverr_keys[0] if (isinstance(coverr_keys, list) and coverr_keys) else str(coverr_keys)
     mask_coverr = mask_api_key(raw_ck) if has_coverr else ""
+
+    pexels_keys = config.app.get("pexels_api_keys", []) or []
+    has_pexels = bool((isinstance(pexels_keys, list) and any(k.strip() for k in pexels_keys)) or (isinstance(pexels_keys, str) and pexels_keys.strip()))
+    raw_pxk = pexels_keys[0] if (isinstance(pexels_keys, list) and pexels_keys) else str(pexels_keys)
+    mask_pexels = mask_api_key(raw_pxk) if has_pexels else ""
 
     from app.services.longform.visual.ai_image import estimate_ai_image_usage, get_ai_image_readiness
     from app.services.longform.visual.ai_relevance import (
@@ -2381,17 +2400,41 @@ def render_visual_step_flow(
     has_ai_image = bool(ai_readiness.get("ready", False))
     vision_info = get_vision_readiness()
     ai_vid_providers = list_configured_ai_video_providers()
-    has_vis_source = has_real_visual_source(p_dir)
-    start_vis_blocked = (not has_vis_source) and (not is_dev_or_test_mode())
 
     _cb_pix = st.session_state.get(f"cb_prov_pixabay_{project_id}", has_pixabay) if has_pixabay else False
     _cb_cov = st.session_state.get(f"cb_prov_coverr_{project_id}", has_coverr) if has_coverr else False
+    _cb_pxl = st.session_state.get(f"cb_prov_pexels_{project_id}", has_pexels) if has_pexels else False
+    _cb_wiki = bool(st.session_state.get(f"cb_prov_wikimedia_{project_id}", True))
+    _cb_nasa = bool(st.session_state.get(f"cb_prov_nasa_{project_id}", True))
+    _cb_ov = bool(st.session_state.get(f"cb_prov_openverse_{project_id}", True))
     _cb_ai = st.session_state.get(f"cb_prov_ai_{project_id}", False) if has_ai_image else False
-    _cb_loc = st.session_state.get(f"cb_prov_local_{project_id}", True)
+    _cb_loc = bool(st.session_state.get(f"cb_prov_local_{project_id}", True))
     _cb_ai_rel = bool(st.session_state.get(f"cb_ai_rel_{project_id}", False)) if vision_info.get("vision_supported") else False
-    target_prov = "ai_image" if _cb_ai and not (_cb_pix or _cb_cov) else (
-        "pixabay" if _cb_pix else ("coverr" if _cb_cov else ("ai_image" if _cb_ai else ("local" if _cb_loc else None)))
-    )
+
+    selected_sources: List[str] = []
+    if _cb_pix:
+        selected_sources.append("pixabay")
+    if _cb_cov:
+        selected_sources.append("coverr")
+    if _cb_pxl:
+        selected_sources.append("pexels")
+    if _cb_wiki:
+        selected_sources.append("wikimedia")
+    if _cb_nasa:
+        selected_sources.append("nasa")
+    if _cb_ov:
+        selected_sources.append("openverse")
+    if _cb_loc:
+        selected_sources.append("local")
+    if _cb_ai:
+        selected_sources.append("ai_image")
+
+    has_vis_source = has_real_visual_source(p_dir, enabled_sources=selected_sources)
+    start_vis_blocked = (not has_vis_source) and (not is_dev_or_test_mode())
+
+    only_ai_selected = bool(_cb_ai and not (_cb_pix or _cb_cov or _cb_pxl or _cb_wiki or _cb_nasa or _cb_ov))
+    target_prov = "ai_image" if only_ai_selected else None
+    providers_csv = ",".join(selected_sources) if selected_sources else ""
 
     # --- Clean Header (Mockup 2 V3) ---
     col_hdr, col_act = st.columns([3, 1])
@@ -2413,6 +2456,8 @@ def render_visual_step_flow(
                     vis_args = ["visual", "pipeline", project_id]
                     if target_prov:
                         vis_args.extend(["--provider", target_prov])
+                    elif providers_csv:
+                        vis_args.extend(["--providers", providers_csv])
                     if _cb_ai_rel:
                         vis_args.append("--check-ai-relevance")
                     _start_job_safe(project_id, "visual_pipeline", jobs.build_longform_cli_command(*vis_args))
@@ -2421,6 +2466,8 @@ def render_visual_step_flow(
                     vis_args = ["visual", "pipeline", project_id]
                     if target_prov:
                         vis_args.extend(["--provider", target_prov])
+                    elif providers_csv:
+                        vis_args.extend(["--providers", providers_csv])
                     if _cb_ai_rel:
                         vis_args.append("--check-ai-relevance")
                     _start_job_safe(project_id, "visual_pipeline", jobs.build_longform_cli_command(*vis_args))
@@ -2444,6 +2491,8 @@ def render_visual_step_flow(
                     vis_args = ["visual", "pipeline", project_id]
                     if target_prov:
                         vis_args.extend(["--provider", target_prov])
+                    elif providers_csv:
+                        vis_args.extend(["--providers", providers_csv])
                     if _cb_ai_rel:
                         vis_args.append("--check-ai-relevance")
                     _start_job_safe(project_id, "visual_pipeline", jobs.build_longform_cli_command(*vis_args))
@@ -2525,11 +2574,13 @@ def render_visual_step_flow(
             ref_args = ["visual", "pipeline", project_id]
             if target_prov:
                 ref_args.extend(["--provider", target_prov])
+            elif providers_csv:
+                ref_args.extend(["--providers", providers_csv])
             if _cb_ai_rel:
                 ref_args.append("--check-ai-relevance")
             _start_job_safe(project_id, "visual_pipeline", jobs.build_longform_cli_command(*ref_args))
 
-    # --- Footage Sources Expander (V3: Collapsible, saves vertical space) ---
+    # --- Footage Sources Expander (V3 + D9.2 Free Sources) ---
     with st.expander(t("expander_footage_sources"), expanded=False):
         col_s1, col_s2, col_s3, col_s4, col_s5 = st.columns(5)
         cb_pixabay = col_s1.checkbox(
@@ -2545,9 +2596,10 @@ def render_visual_step_flow(
             key=f"cb_prov_coverr_{project_id}",
         )
         col_s3.checkbox(
-            t("prov_pexels_no_key"),
-            value=False,
-            disabled=True,
+            t("prov_pexels_key", mask=mask_pexels) if has_pexels else t("prov_pexels_no_key"),
+            value=has_pexels,
+            disabled=not has_pexels,
+            help=t("prov_pexels_closed_note"),
             key=f"cb_prov_pexels_{project_id}",
         )
         cb_local = col_s4.checkbox(
@@ -2563,6 +2615,27 @@ def render_visual_step_flow(
             help=None if has_ai_image else t("prov_ai_no_mpt_key_help"),
             key=f"cb_prov_ai_{project_id}",
         )
+        col_f1, col_f2, col_f3 = st.columns(3)
+        col_f1.checkbox(
+            t("prov_wikimedia_free"),
+            value=True,
+            disabled=False,
+            key=f"cb_prov_wikimedia_{project_id}",
+        )
+        col_f2.checkbox(
+            t("prov_nasa_free"),
+            value=True,
+            disabled=False,
+            key=f"cb_prov_nasa_{project_id}",
+        )
+        col_f3.checkbox(
+            t("prov_openverse_free"),
+            value=True,
+            disabled=False,
+            key=f"cb_prov_openverse_{project_id}",
+        )
+        st.caption(t("prov_source_order_caption"))
+        st.caption(t("prov_pexels_closed_note"))
         if has_ai_image and cb_ai:
             ai_est = estimate_ai_image_usage(manifest, p_dir)
             st.info(
@@ -2824,7 +2897,7 @@ def render_visual_step_flow(
                                 elif shot.actual_source == "neutral_backdrop":
                                     src = t("source_neutral_backdrop")
                                 else:
-                                    src = shot.actual_source or shot.requested_source or ("fake" if shot.is_fake else "stock")
+                                    src = shot.actual_source or shot.requested_source or ("fake" if shot.is_fake else t("source_not_selected_yet"))
                                 st.caption(f"**#{shot.shot_index}** ({dur_s}) • `{src}`{badge_str}")
 
                                 narr = get_shot_narration(ch, shot)
@@ -2944,6 +3017,46 @@ def render_visual_step_flow(
                     eff_q_disp = getattr(target_shot, "effective_query", None)
                     if eff_q_disp:
                         st.markdown(t("shot_found_with_query", q=html.escape(eff_q_disp)))
+
+                    # D9.1: Show concise no-visual reason & searchable tier diagnostics
+                    no_vis_reason = getattr(target_shot, "no_visual_reason_summary", None)
+                    search_attempts = getattr(target_shot, "search_attempts", None) or []
+                    if det_vst.get("is_missing_visual") and no_vis_reason:
+                        st.markdown(t("shot_no_visual_reason_label", summary=html.escape(no_vis_reason)))
+                    if search_attempts:
+                        with st.expander(t("shot_search_attempts_expander", count=len(search_attempts)), expanded=False):
+                            attempt_lines = []
+                            for att in search_attempts[:12]:
+                                ap = str(att.get("provider") or "-")
+                                aq = str(att.get("query") or "-")
+                                ar = int(att.get("raw_count") or 0)
+                                aa = int(att.get("accepted_count") or 0)
+                                a_err = str(att.get("error") or "").strip()
+                                a_rej = ", ".join(str(x) for x in (att.get("rejected_reasons") or [])[:2])
+                                extra = a_err or a_rej
+                                line = f"- [{ap}] \"{aq}\" -> raw={ar}, ok={aa}" + (f" ({extra})" if extra else "")
+                                attempt_lines.append(line)
+                            st.code("\n".join(attempt_lines), language="text")
+
+                    # D9.3: Show asset attribution & mandatory attribution badge (CC BY / BY-SA / NASA)
+                    attr_title = getattr(target_shot, "attribution_title", None)
+                    attr_author = getattr(target_shot, "attribution_author", None)
+                    attr_lic = getattr(target_shot, "attribution_license", None)
+                    attr_url = getattr(target_shot, "attribution_url", None)
+                    req_attr = bool(getattr(target_shot, "requires_attribution", False))
+                    if attr_lic or attr_author or attr_title:
+                        st.markdown(
+                            t(
+                                "shot_attribution_heading",
+                                title=html.escape(str(attr_title or target_shot.shot_id)),
+                                author=html.escape(str(attr_author or "-")),
+                                license=html.escape(str(attr_lic or "-")),
+                            )
+                        )
+                        if attr_url and str(attr_url).startswith("http"):
+                            st.markdown(t("shot_attribution_link", url=attr_url))
+                        if req_attr:
+                            st.info(t("badge_requires_attribution", license=html.escape(str(attr_lic or "CC BY"))))
 
                     # F1: AI Relevance verdict & single-shot re-check button
                     rel_status = getattr(target_shot, "ai_relevance_status", None)
@@ -3106,7 +3219,9 @@ def render_visual_step_flow(
                             value=search_prefill,
                             key=f"txt_srch_{project_id}_{target_shot.shot_id}",
                         )
-                        p_opts = ["pixabay", "coverr"] if has_coverr else ["pixabay"]
+                        p_opts = [p for p in ("pixabay", "coverr", "pexels", "wikimedia", "nasa", "openverse") if (p == "pixabay" and has_pixabay) or (p == "coverr" and has_coverr) or (p == "pexels" and has_pexels) or p in ("wikimedia", "nasa", "openverse")]
+                        if not p_opts:
+                            p_opts = ["wikimedia", "nasa", "openverse"]
                         sel_p = st.selectbox(t("field_provider"), p_opts, key=f"sel_p_{project_id}_{target_shot.shot_id}")
                         if st.button(t("btn_search_apply_footage"), key=f"btn_srch_apply_{project_id}_{target_shot.shot_id}", use_container_width=True):
                             with st.spinner(t("spinner_searching_footage")):

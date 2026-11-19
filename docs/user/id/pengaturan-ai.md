@@ -11,6 +11,7 @@ Seluruh konfigurasi API dan model AI dikelola terpusat lewat jendela **Pengatura
 | **LLM (Model Bahasa)** | Menulis naskah, ringkasan, menerjemahkan & membuat kata kunci visual konkret, jangkar topik, serta cek relevansi (*vision*) | OpenRouter (`openrouter/free` atau model berbayar), OpenAI, Google Gemini, DeepSeek, Groq, Ollama (lokal), Qwen, Moonshot | Ada pilihan gratis & berbayar |
 | **TTS (Penyedia Suara)** | Mengubah naskah tiap segmen menjadi audio narasi WAV & sinkronisasi subtitle | **Edge TTS** (default gratis), OpenAI TTS, Azure Speech, Gemini TTS, ElevenLabs, SiliconFlow | Edge TTS gratis; lainnya mengikuti API penyedia |
 | **Gambar AI** | Membuat ilustrasi statis bergaya *Ken Burns* (opsional saat visual stok kurang cocok) | OpenAI Image, penyedia kompatibel gambar di tab Materi | Berbayar sesuai tarif penyedia |
+| **Footage Stok & Terbuka** | Menyediakan klip video & foto dokumenter per shot | Pixabay (key gratis), Coverr, **Wikimedia Commons** (tanpa key), **NASA Library** (tanpa key), **Openverse** (tanpa key). *Catatan: Pendaftaran key baru Pexels sedang ditutup.* | Gratis / berdasar ketentuan lisensi masing-masing |
 | **Video AI** | Menghasilkan klip video pendek per shot lewat tab **AI Video** di panel Detail shot | **WaveSpeed** (mis. `Wan 2.2 Ultra Fast`, `Seedance 2.0 Fast`), Luma, Kling, Hailuo, Runway, Volcengine, dll. | **Berbayar** (selalu menampilkan perkiraan harga USD & konfirmasi sebelum dikirim) |
 
 ---

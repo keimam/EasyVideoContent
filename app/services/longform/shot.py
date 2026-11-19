@@ -74,7 +74,7 @@ def form_chapter_shots(
     min_shot_seconds: float = DEFAULT_MIN_SHOT_SECONDS,
     max_shot_seconds: float = DEFAULT_MAX_SHOT_SECONDS,
     fps: int = 25,
-    default_source: str = "ai_image",
+    default_source: Optional[str] = None,
 ) -> List[Shot]:
     """Form, merge, and split segments in a chapter into Shot units with frame carry-over."""
     # Collect all segments across all groups in chronological order
@@ -200,13 +200,13 @@ def form_chapter_shots(
             duration_seconds=round(grp["duration_seconds"], 3),
             target_frames=shot_frames,
             requested_source=grp["requested_source"],
-            actual_source=grp["requested_source"],
+            actual_source=None,
             visual_prompt=grp["visual_prompt"],
             search_query=grp["search_query"],
             search_query_source=grp.get("search_query_source", "extraction"),
             motion=motion,
-            asset_path=f"assets/visual/shots/{shot_id}_asset.mp4" if "stock" in grp["requested_source"] else f"assets/visual/shots/{shot_id}_asset.jpg",
-            rendered_clip=f"assets/visual/shots/{shot_id}.mp4",
+            asset_path=None,
+            rendered_clip=None,
             status=ItemStatus.pending,
         )
         shots.append(shot)
