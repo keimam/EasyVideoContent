@@ -1,40 +1,23 @@
-# Panduan Uji Instalasi Bersih Windows (Stage 8C.3, E6)
+# Panduan Uji Instalasi Bersih Windows (Final R1.6)
 
-Dokumen ini memandu pengujian end-to-end paket rilis **EasyFaceless Studio** pada sistem Windows bersih (tanpa Python, `uv`, Git, atau FFmpeg terpasang sebelumnya).
+Gunakan daftar periksa **12 langkah** ini di PC Windows 10/11 lain yang **belum memiliki Python, `uv`, Git, maupun FFmpeg terpasang** (atau di Windows Sandbox via [`packaging/sandbox/efs-test.wsb`](../../packaging/sandbox/efs-test.wsb)).
 
----
+## Daftar Periksa Pengujian (<= 15 Langkah)
 
-## Opsi A — Menggunakan Windows Sandbox (`.wsb`)
+1. **Unduh installer dari Google Drive:** Buka link rilis → bila tampil halaman peringatan ukuran besar (*"can't scan this file for viruses"*), klik **Tetap download / Download anyway**.
+2. **Verifikasi SHA-256:** Di PowerShell folder unduhan, jalankan `Get-FileHash .\EasyFacelessStudio-Setup-1.0.0.exe -Algorithm SHA256` dan cocokkan dengan berkas `.sha256` atau catatan rilis.
+3. **Jalankan installer (non-Admin):** Bila SmartScreen muncul, klik **More info → Run anyway**; pasang ke `%LOCALAPPDATA%\Programs\EasyFaceless Studio` tanpa UAC Admin.
+4. **Buka aplikasi:** Jalankan lewat Start Menu / Desktop; pastikan **tidak ada jendela konsol CMD/PowerShell** muncul.
+5. **Selesaikan Wizard Pertama Kali:** Pilih bahasa, pastikan cek spek sistem tampil (hijau/kuning/merah), isi OpenRouter/API opsional (atau lewati), pastikan Wikimedia/NASA/Openverse aktif bawaan, cek folder & versi CapCut, lalu buat proyek contoh.
+6. **Jalankan proyek kecil mode Otomatis:** Buat/gunakan proyek pendek (~1–2 menit) memakai **Edge TTS** (tanpa key) dan sumber visual gratis tanpa key hingga seluruh langkah visual selesai.
+7. **Verifikasi Render Final (MP4):** Jalankan **Render Final** dan pastikan berkas video MP4 final muncul serta bisa diputar di folder proyek.
+8. **Ekspor ke CapCut Desktop:** Pastikan **CapCut Desktop** tidak aktif (jika terpasang), klik **Ekspor & Pasang ke CapCut**, dan cek draft terbuka normal dengan klip & subtitle.
+9. **Cek atribusi & hasil output:** Klik **Buka credits.md** dan **Buka folder output**; pastikan keduanya terbuka dengan daftar atribusi footage lengkap.
+10. **Tutup bersih lewat sidebar:** Klik **Tutup aplikasi** dan pastikan server berhenti (ikon/port `:8501` tidak lagi aktif di Task Manager).
+11. **Uji Uninstall aman:** Uninstall aplikasi dari *Apps & Features* → pilih **No / Tidak** pada prompt penghapusan folder data → pastikan folder `%LOCALAPPDATA%\EasyFaceless Studio` masih menyimpan proyek Anda.
+12. **Instal ulang (Upgrade/Reinstall):** Pasang kembali installer → buka aplikasi → proyek & `config.toml` lama termuat utuh tanpa Wizard berulang, dan dialog **Tentang** menampilkan versi + hash build yang benar.
 
-> Membutuhkan **Windows 10/11 Pro, Enterprise, atau Education** dengan fitur *Windows Sandbox* aktif. (Di Windows Home atau PC tanpa virtualisasi aktif, gunakan **Opsi B: VM** di bawah.)
-
-1. Pastikan folder `dist\` sudah berisi hasil build terbaru (`EasyFacelessStudio-Setup-1.0.0.exe`).
-2. Pastikan path `<HostFolder>` di [`packaging/sandbox/efs-test.wsb`](../../packaging/sandbox/efs-test.wsb) menunjuk ke folder `dist\` Anda (`ReadOnly=true` agar aman).
-3. Klik dua kali berkas `packaging/sandbox/efs-test.wsb`. Windows Sandbox terbuka otomatis dan menampilkan folder `efs-dist` di Desktop.
-
----
-
-## Opsi B — Alternatif VM (VirtualBox / Hyper-V / VMware)
-
-Jika Windows Sandbox tidak tersedia pada mesin Anda:
-1. Buat VM Windows 10/11 (64-bit) bersih dengan **RAM minimal 8 GB**, **4 vCPU**, dan **disk kosong minimal 15 GB (disarankan 20 GB+ SSD)** (snapshot awal *before-install*).
-2. Pasang atau salin `EasyFacelessStudio-Setup-1.0.0.exe` (opsional verifikasi SHA-256 lewat `Get-FileHash .\EasyFacelessStudio-Setup-1.0.0.exe -Algorithm SHA256` terhadap berkas `.sha256`).
-3. Uji dengan kondisi **tanpa** Python/FFmpeg di `PATH` sistem.
-
----
-
-## Daftar Periksa Pengujian End-to-End
-
-1. **Verifikasi Installer & Instalasi Non-Admin:**
-   - Jalankan `EasyFacelessStudio-Setup-1.0.0.exe` → bila SmartScreen muncul (*More info → Run anyway*), pastikan instalasi selesai ke `%LOCALAPPDATA%\Programs\EasyFaceless Studio` tanpa meminta hak Administrator.
-2. **Peluncuran Tanpa Jendela Konsol & Wizard Pertama Kali (E1):**
-   - Buka lewat Start Menu / ikon Desktop. Pastikan **tidak ada** jendela hitam PowerShell/CMD yang terbuka.
-   - Verifikasi **Wizard Pertama Kali** muncul otomatis (Bahasa, Cek Sistem hijau/kuning/merah, OpenRouter, Sumber Footage, Folder CapCut, Selesai).
-   - Uji membuat **Proyek Contoh** di langkah akhir wizard.
-3. **Alur Produksi Video Panjang & Akses Hasil (E5):**
-   - Uji menghasilkan suara (**Edge TTS** gratis tanpa API key), mengambil visual gratis (**Wikimedia/NASA/Openverse** + **Pixabay** bila diisi), lalu **Render Final**.
-   - Verifikasi hasil muncul di folder proyek, tombol **Buka folder output**, dan dialog **Buka credits.md** (termasuk tombol **Salin**).
-4. **Deteksi & Ekspor CapCut Desktop (E3):**
-   - *(Opsional jika CapCut Desktop terpasang di lingkungan uji)* Verifikasi status versi (`CapCut 8.9.0 — teruji ✓` atau peringatan versi belum teruji yang tetap memperbolehkan ekspor), tutup CapCut, lalu uji **Ekspor & Pasang ke CapCut**.
-5. **Uji Upgrade Tidak Menghapus Data:**
-   - Tutup aplikasi via tombol **Tutup aplikasi** di sidebar, jalankan ulang installer, dan pastikan proyek + `config.toml` di `%LOCALAPPDATA%\EasyFaceless Studio\` tetap utuh.
+## Apa yang Harus Dicatat / Difoto Bila Gagal
+- **Screenshot penuh** layar error / halaman browser (termasuk baris footer versi/build di dialog **Tentang** atau pesan banner).
+- **Nomor langkah** yang gagal (mis. Langkah 6 atau Langkah 8) serta spesifikasi ringkas PC (RAM, CPU, drive kosong, versi CapCut).
+- **Kumpulan log wajib** dari folder `%LOCALAPPDATA%\EasyFaceless Studio\logs\` (`launcher.log` dan `server.log`) beserta isi manifest proyek bila gagal di render/CapCut.

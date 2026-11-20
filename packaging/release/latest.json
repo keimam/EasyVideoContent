@@ -1,0 +1,8 @@
+{
+  "version": "1.0.0",
+  "released": "2026-11-20",
+  "notes_id": "Rilis EasyFaceless Studio v1.0.0: Tahap R1 (Persiapan Rilis v1.0.0, Google Drive, Kebersihan Proses & Panduan Uji); URL Produksi & Pesan 404 Ramah (R1.1); Generator Manifest Rilis (R1.2); Panduan Unduhan & Uji Bersih (R1.3, R1.5, R1.6); Kebersihan Proses Build & Smoke (R1.4).",
+  "notes_en": "EasyFaceless Studio v1.0.0 release: first-run setup wizard, update checker, CapCut version detection, keyless stock footage sources, and Windows desktop installer.",
+  "download_url": "GANTI_DENGAN_LINK_GOOGLE_DRIVE",
+  "min_supported": "1.0.0"
+}

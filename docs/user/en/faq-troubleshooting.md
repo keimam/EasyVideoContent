@@ -23,3 +23,12 @@ The `EasyFacelessStudio-Setup-1.0.0.exe` installer is currently **not digitally 
 1. Click **More info**.
 2. Click **Run anyway**.
 Setup installs per-user into `%LOCALAPPDATA%\Programs\EasyFaceless Studio` without requiring administrator privileges.
+
+### 8. How to download large installers from Google Drive & verify SHA-256
+1. **Google Drive virus-scan warning page:** Because the installer is ~570 MB, Google Drive displays *"Google Drive can't scan this file for viruses"*. This is normal for large executable files — click **Download anyway** to start the download in your browser.
+2. **Verify file integrity (SHA-256):** Open PowerShell in your Downloads folder and run:
+   ```powershell
+   Get-FileHash .\EasyFacelessStudio-Setup-1.0.0.exe -Algorithm SHA256
+   ```
+   Compare the printed `Hash` against the `.sha256` file or release notes before installing.
+3. **App updates:** Clicking **Download Update** in the update banner or **About** dialog always opens the official release link in your default browser rather than downloading in the background.

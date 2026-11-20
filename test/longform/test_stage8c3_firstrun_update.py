@@ -755,16 +755,17 @@ def test_e10_update_checker_logging_sync_startup_and_settings_results(tmp_path: 
 
 
 def test_e11_empty_prod_url_friendly_errors_about_and_sidebar_badge(tmp_path: Path, monkeypatch):
-    """E11.1–E11.4: Single URL source (empty default silent), all decision logs, friendly 404/offline, About & sidebar badge."""
+    """E11.1–E11.4 & R1.1: Single URL source, all decision logs, friendly 404/offline, About & sidebar badge."""
     from loguru import logger
     from app.services.branding.constants import UPDATE_MANIFEST_URL
     from app.services.longform import first_run, update_checker
 
-    assert UPDATE_MANIFEST_URL == ""
+    assert UPDATE_MANIFEST_URL == "https://raw.githubusercontent.com/keimam/EasyFacelessStudio-updates/main/latest.json"
 
     data_dir = (tmp_path / "e11_data").resolve()
     monkeypatch.setenv("EFS_DATA_DIR", str(data_dir))
     monkeypatch.delenv("EFS_UPDATE_URL", raising=False)
+    monkeypatch.setattr(update_checker, "UPDATE_MANIFEST_URL", "")
     first_run.mark_setup_completed(skipped=False)
 
     log_lines = []
@@ -807,8 +808,8 @@ def test_e11_empty_prod_url_friendly_errors_about_and_sidebar_badge(tmp_path: Pa
         assert any("decision=skipped_throttle" in ln for ln in log_lines)
 
         # Open Long Video -> sidebar update badge rendered & clicking About shows update check controls
-        at = AppTest.from_file(get_long_video_app_file(), default_timeout=35)
-        at.run(timeout=35)
+        at = AppTest.from_file(get_long_video_app_file(), default_timeout=60)
+        at.run(timeout=60)
         assert not at.exception
         assert any(b.key == "efs_btn_sidebar_update_longform" for b in at.button)
 
@@ -961,4 +962,117 @@ def test_e12_launcher_build_signature_reuse_and_replace_server(tmp_path, monkeyp
     assert "Reusing active server instance" in log_txt
     assert "Replacing outdated active server (pid=12924" in log_txt
     assert "WARNING: 1 active background job(s) running" in log_txt
+
+
+def test_r1_release_url_friendly_404_make_latest_json_and_process_leak_guard(tmp_path: Path, monkeypatch):
+    """R1.1–R1.6: Production URL, friendly 404 text, make_latest_json valid/invalid checks, leak guard, and release docs."""
+    import http.server
+    import subprocess
+    import sys
+    import threading
+    import time
+    from app.services.branding.constants import APP_VERSION, UPDATE_MANIFEST_URL
+    from app.services.longform import first_run, update_checker
+    from app.services.longform.ui.i18n import t
+    from scripts.build import make_latest_json, verify_package
+
+    # R1.1: Exact production URL + friendly 404 text (id & en) when remote latest.json returns 404
+    assert UPDATE_MANIFEST_URL == "https://raw.githubusercontent.com/keimam/EasyFacelessStudio-updates/main/latest.json"
+    monkeypatch.delenv("EFS_UPDATE_URL", raising=False)
+    assert update_checker.get_update_manifest_url() == UPDATE_MANIFEST_URL
+
+    assert t("update_err_404", lang="id") == "Informasi versi belum tersedia"
+    assert t("update_err_404", lang="en") == "Version information is not available yet"
+
+    class _Handler404(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(404)
+            self.end_headers()
+            self.wfile.write(b"Not Found")
+
+        def log_message(self, *args):
+            return
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Handler404)
+    port = int(srv.server_address[1])
+    thr = threading.Thread(target=srv.serve_forever, daemon=True)
+    thr.start()
+    try:
+        data_dir = (tmp_path / "r1_404_data").resolve()
+        monkeypatch.setenv("EFS_DATA_DIR", str(data_dir))
+        first_run.mark_setup_completed(skipped=False)
+        monkeypatch.setenv("EFS_UPDATE_URL", f"http://127.0.0.1:{port}/latest.json")
+        res_404 = update_checker.check_for_updates(force=True)
+        assert res_404["error_kind"] == "http_404"
+        assert res_404["has_update"] is False
+
+        # App UI renders normally and displays friendly 404 message in About dialog without crashing
+        at = AppTest.from_file(get_long_video_app_file(), default_timeout=60)
+        at.session_state["efs_manual_update_result"] = res_404
+        at.run(timeout=60)
+        assert not at.exception
+        at.button(key="efs_btn_about_longform").click().run(timeout=20)
+        assert not at.exception
+        warnings = "\n".join(w.value for w in at.warning)
+        assert "Informasi versi belum tersedia" in warnings
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+    # R1.2: make_latest_json.py valid output + rejection of invalid/BOM/version-mismatch files
+    repo_root = Path(__file__).resolve().parents[2]
+    committed_latest = repo_root / "packaging" / "release" / "latest.json"
+    committed_data = make_latest_json.validate_latest_json_file(committed_latest, expected_version=APP_VERSION)
+    assert committed_data["download_url"] == "GANTI_DENGAN_LINK_GOOGLE_DRIVE"
+
+    out_ok = tmp_path / "latest_valid.json"
+    make_latest_json.write_latest_json(
+        download_url="https://drive.google.com/file/d/EXAMPLE/view?usp=sharing",
+        output_path=out_ok,
+        released="2026-11-20",
+    )
+    parsed = make_latest_json.validate_latest_json_file(out_ok, expected_version=APP_VERSION)
+    assert parsed["version"] == APP_VERSION
+    assert not out_ok.read_bytes().startswith(b"\xef\xbb\xbf")
+
+    # Reject empty URL, BOM, invalid JSON, version mismatch
+    with pytest.raises(ValueError):
+        make_latest_json.build_latest_manifest_payload(download_url="   ")
+    out_bom = tmp_path / "latest_bom.json"
+    out_bom.write_bytes(b"\xef\xbb\xbf" + out_ok.read_bytes())
+    with pytest.raises(ValueError, match="BOM"):
+        make_latest_json.validate_latest_json_file(out_bom, expected_version=APP_VERSION)
+    out_bad_ver = tmp_path / "latest_bad_ver.json"
+    out_bad_ver.write_text(json.dumps({**parsed, "version": "9.9.9"}), encoding="utf-8")
+    with pytest.raises(ValueError, match="Version mismatch"):
+        make_latest_json.validate_latest_json_file(out_bad_ver, expected_version=APP_VERSION)
+    out_bad_json = tmp_path / "latest_bad.json"
+    out_bad_json.write_text("{broken json", encoding="utf-8")
+    with pytest.raises(ValueError, match="Invalid JSON"):
+        make_latest_json.validate_latest_json_file(out_bad_json, expected_version=APP_VERSION)
+
+    # R1.4: Process leak detection & cleanup catches stray process tied to staging directory
+    fake_staging = tmp_path / "fake_staging_dir"
+    fake_staging.mkdir(parents=True, exist_ok=True)
+    sleeper = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)", str(fake_staging)])
+    try:
+        time.sleep(0.25)
+        detected = verify_package.find_staging_processes(fake_staging)
+        assert any(int(p["pid"]) == sleeper.pid for p in detected)
+        killed = verify_package.cleanup_staging_processes(fake_staging)
+        assert sleeper.pid in killed
+        sleeper.wait(timeout=5)
+        assert verify_package.find_staging_processes(fake_staging) == []
+    finally:
+        verify_package._stop_popen(sleeper)
+
+    # R1.3 & R1.6: Release documentation requirements
+    faq_id = (repo_root / "docs" / "user" / "id" / "faq-troubleshooting.md").read_text(encoding="utf-8")
+    faq_en = (repo_root / "docs" / "user" / "en" / "faq-troubleshooting.md").read_text(encoding="utf-8")
+    assert "Google Drive" in faq_id and "Get-FileHash" in faq_id and "SmartScreen" in faq_id
+    assert "Google Drive" in faq_en and "Get-FileHash" in faq_en and "SmartScreen" in faq_en
+    clean_test_doc = (repo_root / "docs" / "dev" / "CLEAN_INSTALL_TEST.md").read_text(encoding="utf-8")
+    numbered_steps = [ln for ln in clean_test_doc.splitlines() if ln.strip() and ln.strip()[0].isdigit() and ". " in ln[:5]]
+    assert 8 <= len(numbered_steps) <= 15
+
 

@@ -23,3 +23,12 @@ Installer `EasyFacelessStudio-Setup-1.0.0.exe` saat ini **belum ditandatangani d
 1. Klik **More info** (atau **Info selengkapnya**).
 2. Klik tombol **Run anyway** (atau **Tetap jalankan**).
 Installer akan memasang ke `%LOCALAPPDATA%\Programs\EasyFaceless Studio` tanpa memerlukan hak administrator.
+
+### 8. Cara mengunduh installer ukuran besar dari Google Drive & memverifikasi SHA-256
+1. **Layar peringatan virus Google Drive:** Untuk berkas installer ~570 MB, Google Drive menampilkan halaman *"Google Drive can't scan this file for viruses"* / *"Google Drive tidak dapat memindai file ini untuk mencari virus"*. Hal ini normal untuk berkas biner berukuran besar — klik **Download anyway** / **Tetap download** untuk melanjutkan unduhan di browser.
+2. **Verifikasi keutuhan berkas (SHA-256):** Buka PowerShell di folder unduhan, lalu jalankan:
+   ```powershell
+   Get-FileHash .\EasyFacelessStudio-Setup-1.0.0.exe -Algorithm SHA256
+   ```
+   Cocokkan hasil `Hash` dengan nilai pada berkas `.sha256` atau deskripsi video/catatan rilis sebelum memasang.
+3. **Pembaruan aplikasi:** Tombol **Unduh Pembaruan** pada banner atau dialog **Tentang** selalu membuka tautan unduhan resmi di browser default (bukan mengunduh diam-diam di latar belakang).

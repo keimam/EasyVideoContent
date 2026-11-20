@@ -245,6 +245,95 @@ def _find_free_port() -> int:
         return int(s.getsockname()[1])
 
 
+def _terminate_pid_tree(pid: Optional[int]) -> None:
+    """Terminate `pid` and all descendant processes cleanly (R1.4)."""
+    if not pid or int(pid) <= 0:
+        return
+    p = int(pid)
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(p)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+        )
+    else:
+        import signal
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.kill(p, sig)
+            except ProcessLookupError:
+                break
+            except Exception:
+                pass
+            time.sleep(0.2)
+
+
+def _stop_popen(proc: Optional[subprocess.Popen]) -> None:
+    """Terminate a Popen process tree cleanly in `finally` blocks (R1.4)."""
+    if proc is None:
+        return
+    try:
+        if proc.poll() is None:
+            _terminate_pid_tree(proc.pid)
+        proc.wait(timeout=5)
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
+def find_staging_processes(staging: Path) -> List[dict]:
+    """Return active processes whose executable or command line belongs to `staging` (R1.4)."""
+    root = Path(staging).resolve()
+    root_low = str(root).rstrip("\\/").lower()
+    found: List[dict] = []
+    if os.name == "nt":
+        ps_cmd = (
+            "Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | "
+            "Where-Object { $_.ExecutablePath -or $_.CommandLine } | "
+            "Select-Object ProcessId, Name, ExecutablePath, CommandLine | ConvertTo-Json -Compress"
+        )
+        try:
+            res = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                raw = json.loads(res.stdout.strip())
+                items = raw if isinstance(raw, list) else [raw]
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    pid = int(item.get("ProcessId") or 0)
+                    exe = str(item.get("ExecutablePath") or "")
+                    cmd = str(item.get("CommandLine") or "")
+                    if pid <= 0 or pid == os.getpid():
+                        continue
+                    exe_low = exe.lower()
+                    cmd_low = cmd.lower()
+                    if exe_low.startswith(root_low + "\\") or exe_low.startswith(root_low + "/") or root_low in cmd_low:
+                        found.append({"pid": pid, "name": str(item.get("Name") or ""), "executable": exe})
+        except Exception:
+            pass
+    return found
+
+
+def cleanup_staging_processes(staging: Path, *, exclude_pids: Optional[set[int]] = None) -> List[int]:
+    """Kill any processes still running inside `staging` after tests (R1.4)."""
+    excluded = set(exclude_pids or ()) | {os.getpid()}
+    killed: List[int] = []
+    for proc_info in find_staging_processes(staging):
+        pid = int(proc_info["pid"])
+        if pid not in excluded:
+            _terminate_pid_tree(pid)
+            killed.append(pid)
+    return killed
+
+
 def _find_headless_browser() -> Optional[str]:
     candidates = [
         r"C:\Program Files\Google\Chrome\Application\chrome.exe",
@@ -449,7 +538,7 @@ def _run_cdp_dom_check(
 
         ws.close()
     finally:
-        chrome.terminate()
+        _stop_popen(chrome)
         shutil.rmtree(chr_dir, ignore_errors=True)
     return errs
 
@@ -666,11 +755,7 @@ def _run_native_exe_smoke(staging: Path, browser_exe: Optional[str]) -> List[str
                                     errs.append("[E12.3 native exe] About dialog missing '· build <hash>' badge")
                         ws.close()
                 finally:
-                    chrome.terminate()
-                    try:
-                        chrome.wait(timeout=5)
-                    except Exception:
-                        chrome.kill()
+                    _stop_popen(chrome)
                     shutil.rmtree(chr_dir, ignore_errors=True)
 
         # Wait briefly for log flush & inspect server.log
@@ -685,22 +770,12 @@ def _run_native_exe_smoke(staging: Path, browser_exe: Optional[str]) -> List[str
             if "decision=update_available" not in log_txt:
                 errs.append("[E11.5 native exe] server.log missing decision=update_available")
     finally:
-        if srv_pid and os.name == "nt":
-            subprocess.run(["taskkill", "/F", "/T", "/PID", str(srv_pid)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        elif srv_pid:
-            try:
-                os.kill(srv_pid, 15)
-            except Exception:
-                pass
-        if proc is not None:
-            try:
-                proc.terminate()
-                proc.wait(timeout=4)
-            except Exception:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
+        _terminate_pid_tree(srv_pid)
+        _stop_popen(proc)
+        try:
+            (u_dir / ".efs_launcher.lock.json").unlink(missing_ok=True)
+        except Exception:
+            pass
         time.sleep(0.5)
         shutil.rmtree(u_dir, ignore_errors=True)
     return errs
@@ -716,6 +791,7 @@ def run_staged_smoke_test(staging: Path) -> List[str]:
 
     errors: List[str] = []
     browser_exe = _find_headless_browser()
+    pre_pids = {int(p["pid"]) for p in find_staging_processes(staging)}
 
     # Scenario 1: Empty EFS_DATA_DIR -> Wizard + branded sidebar + zero Streamlit exceptions
     # Scenario 2: Populated EFS_DATA_DIR -> Project visible + no Wizard + zero exceptions
@@ -792,11 +868,11 @@ def run_staged_smoke_test(staging: Path) -> List[str]:
                         )
                     )
         finally:
-            srv.terminate()
+            _stop_popen(srv)
             try:
-                srv.wait(timeout=8)
+                (data_dir / ".efs_launcher.lock.json").unlink(missing_ok=True)
             except Exception:
-                srv.kill()
+                pass
             if not log_path.is_file() or log_path.stat().st_size == 0:
                 errors.append(f"[{scenario_name}] Staged server.log stayed empty (0 bytes)")
             shutil.rmtree(data_dir, ignore_errors=True)
@@ -862,14 +938,19 @@ def run_staged_smoke_test(staging: Path) -> List[str]:
                         )
                     )
             finally:
-                u_srv.terminate()
+                _stop_popen(u_srv)
                 try:
-                    u_srv.wait(timeout=8)
+                    (u_dir / ".efs_launcher.lock.json").unlink(missing_ok=True)
                 except Exception:
-                    u_srv.kill()
+                    pass
                 shutil.rmtree(u_dir, ignore_errors=True)
 
-    errors.extend(_run_native_exe_smoke(staging, browser_exe))
+    try:
+        errors.extend(_run_native_exe_smoke(staging, browser_exe))
+    finally:
+        leaked = cleanup_staging_processes(staging, exclude_pids=pre_pids)
+        if leaked:
+            errors.append(f"[R1.4] Smoke test left lingering staging process PID(s): {leaked}")
 
     return errors
 

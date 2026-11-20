@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
 One-command reproducible build script for EasyFaceless Studio Windows Installer (Stage 8C.2, D1-D7).
 
@@ -21,6 +21,29 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+function Get-EfsStagingProcesses {
+    param([string]$TargetDir)
+    if ([string]::IsNullOrWhiteSpace($TargetDir)) { return @() }
+    $norm = [System.IO.Path]::GetFullPath($TargetDir).TrimEnd('\', '/').ToLowerInvariant()
+    $hits = @()
+    try {
+        $all = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue
+        foreach ($p in $all) {
+            $ep = if ($p.ExecutablePath) { $p.ExecutablePath.ToLowerInvariant() } else { "" }
+            $cmd = if ($p.CommandLine) { $p.CommandLine.ToLowerInvariant() } else { "" }
+            $inStaging = ($ep.StartsWith("$norm\") -or $ep.StartsWith("$norm/") -or $cmd.Contains($norm))
+            if ($inStaging -and ($p.Name -like "python*" -or $p.Name -like "EasyFaceless*")) {
+                $hits += [PSCustomObject]@{
+                    ProcessId = [int]$p.ProcessId
+                    Name = [string]$p.Name
+                    ExecutablePath = [string]$p.ExecutablePath
+                }
+            }
+        }
+    } catch {}
+    return $hits
+}
 
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 Push-Location $RepoRoot
@@ -259,8 +282,16 @@ try {
         if (Test-Path $TmpVerifyData) { Remove-Item $TmpVerifyData -Recurse -Force }
     }
 
+    $PreVerifyPids = @(Get-EfsStagingProcesses -TargetDir $StagingDir | ForEach-Object { $_.ProcessId })
     & $VenvPython (Join-Path $RepoRoot "scripts\build\verify_package.py") --staging $StagingDir --smoke
-    if ($LASTEXITCODE -ne 0) {
+    $VerifyExit = $LASTEXITCODE
+    $PostVerifyProcs = @(Get-EfsStagingProcesses -TargetDir $StagingDir | Where-Object { $PreVerifyPids -notcontains $_.ProcessId })
+    if ($PostVerifyProcs.Count -gt 0) {
+        $LeakSummary = ($PostVerifyProcs | ForEach-Object { "$($_.Name) (PID=$($_.ProcessId)): $($_.ExecutablePath)" }) -join "; "
+        throw "[PROCESS LEAK DETECTED] Build/smoke meninggalkan proses berjalan dari build/staging: $LeakSummary"
+    }
+    Write-Host "[PROCESS CHECK PASSED] Zero leftover build/smoke processes under $StagingDir" -ForegroundColor Green
+    if ($VerifyExit -ne 0) {
         throw "Package hygiene/smoke verification failed!"
     }
 
@@ -303,37 +334,87 @@ try {
     $ShaFile = "$InstallerExe.sha256"
     "$ShaHash  $SetupBaseName.exe" | Out-File -FilePath $ShaFile -Encoding ascii -Force
 
-    $ChangelogPath = Join-Path $RepoRoot "CHANGELOG.md"
+    # R1.5: Member-friendly release notes (Bahasa Indonesia first, then English, with SHA256 & build hash)
     $ReleaseNotesOut = Join-Path $DistDir "RELEASE-NOTES-$AppVersion.md"
-    if (Test-Path $ChangelogPath) {
-        $ChangelogLines = Get-Content $ChangelogPath -Encoding UTF8
-        $Captured = New-Object System.Collections.Generic.List[string]
-        $InSection = $false
-        $HeaderEsc = [regex]::Escape("[$AppVersion]")
-        foreach ($ln in $ChangelogLines) {
-            if ($ln -match "^##\s+$HeaderEsc") {
-                $InSection = $true
-                $Captured.Add($ln)
-                continue
-            }
-            if ($InSection) {
-                if ($ln -match "^##\s+") { break }
-                $Captured.Add($ln)
-            }
-        }
-        if ($Captured.Count -gt 0) {
-            @(
-                "# EasyFaceless Studio v$AppVersion Release Notes",
-                "",
-                "Installer: ``$SetupBaseName.exe``",
-                "Build Commit: ``$CommitShort`` (``$CommitFull``)",
-                "Build Time: ``$BuildTime``",
-                "Build ID: ``$BuildId``",
-                "SHA-256: ``$ShaHash``",
-                ""
-            ) + $Captured | Out-File -FilePath $ReleaseNotesOut -Encoding utf8 -Force
-        }
-    }
+    $ReleaseNotesTemplate = @'
+# EasyFaceless Studio v__APP_VERSION__ — Catatan Rilis & Panduan Member
+
+Halo member! Berikut rilis resmi **EasyFaceless Studio v__APP_VERSION__** untuk Windows 64-bit.
+
+- **Berkas Installer:** `__SETUP_BASE__.exe`
+- **Build Commit (`HEAD`):** `__COMMIT_SHORT__` (`__COMMIT_FULL__`)
+- **Waktu Build:** `__BUILD_TIME__` (`Build ID: __BUILD_ID__`)
+- **SHA-256:** `__SHA256__`
+
+---
+
+## Bahasa Indonesia
+
+### Fitur Utama v__APP_VERSION__
+- **Studio Video Panjang Dokumenter (10–20 menit):** Pengaturan proyek terisolasi, pembuatan/impor naskah, sintesis suara (**Edge TTS gratis** atau penyedia lain), visual otomatis, render MP4 1080p, hingga ekspor draft langsung ke **CapCut Desktop**.
+- **Sumber Footage Gratis Tanpa API Key:** Dukungan bawaan **Wikimedia Commons**, **NASA Images**, dan **Openverse Photos** (filter lisensi komersial aman + catatan atribusi otomatis di `export/credits.md`), serta opsi Pixabay/Coverr dan AI Visual.
+- **Wizard Pertama Kali & Diagnostik PC:** Menyiapkan bahasa, mengecek kesiapan RAM/CPU/disk/FFmpeg/CapCut, konfigurasi OpenRouter/API, dan membuat proyek contoh.
+- **Cek Pembaruan & Pengalaman Desktop:** Peluncur tanpa jendela konsol, banner/badge pembaruan, penggantian server otomatis saat upgrade, serta data proyek tetap aman saat instal ulang.
+
+### Kebutuhan Sistem (Terukur Benchmark)
+- **OS:** Windows 10 / Windows 11 (64-bit)
+- **RAM:** Minimum **8 GB** (disarankan **16 GB** bila menyunting bersama CapCut Desktop)
+- **CPU:** Minimum **4 core / 4 thread** (disarankan **6–8+ thread**)
+- **Ruang Disk Kosong:** Minimum **15 GB** (disarankan **20 GB+ SSD** untuk folder proyek & cache visual)
+- **FFmpeg:** Sudah dibundel otomatis di dalam installer (tidak perlu instal terpisah)
+- **CapCut Desktop:** Teruji pada versi **8.9.0**
+
+### Langkah Unduh & Instalasi
+1. Unduh `__SETUP_BASE__.exe` lewat tautan **Google Drive** pada deskripsi video ini. Jika Google Drive menampilkan layar *"tidak dapat memindai file untuk mencari virus"*, klik **Tetap download / Download anyway**.
+2. *(Disarankan)* Verifikasi keutuhan installer di PowerShell:
+   ```powershell
+   Get-FileHash .\__SETUP_BASE__.exe -Algorithm SHA256
+   ```
+   Pastikan nilainya sama persis dengan SHA-256 di atas (`__SHA256__`).
+3. Jalankan installer (tidak perlu Administrator). Jika muncul Windows SmartScreen (*Windows protected your PC*), klik **More info → Run anyway**.
+4. Buka **EasyFaceless Studio** dari Start Menu atau Desktop dan ikuti **Wizard Pertama Kali**.
+
+### Panduan & Bantuan
+- Panduan lengkap berbahasa Indonesia tersedia di menu **Bantuan** di dalam aplikasi (`docs/user/id/`).
+
+### Cara Melapor Masalah
+- Sertakan screenshot error, versi & build di menu **Tentang** (`v__APP_VERSION__ · build __COMMIT_SHORT__`), serta berkas log di `%LOCALAPPDATA%\EasyFaceless Studio\logs\` (`launcher.log` dan `server.log`).
+
+---
+
+## English
+
+### Key Highlights in v__APP_VERSION__
+- **Longform Documentary Studio (10–20 min):** Structured project workflow with script generation/import, free **Edge TTS** or optional cloud voices, tiered stock visual matching, 1080p MP4 render, and direct **CapCut Desktop** timeline export.
+- **Keyless Free Footage Sources:** Built-in **Wikimedia Commons**, **NASA Images**, and **Openverse Photos** with strict commercial-license filtering and automatic attribution export (`export/credits.md`), plus optional Pixabay/Coverr and AI visuals.
+- **First-Run Setup Wizard & Desktop Polish:** Console-free launcher, automatic system check, update alerts, seamless server replacement on upgrade, and safe data preservation across upgrades.
+
+### System Requirements (Benchmark-Verified)
+- **OS:** Windows 10 / Windows 11 (64-bit)
+- **RAM:** Minimum **8 GB** (**16 GB** recommended when editing alongside CapCut Desktop)
+- **CPU:** Minimum **4 cores / 4 threads** (**6–8+ threads** recommended)
+- **Free Disk Space:** Minimum **15 GB** (**20 GB+ SSD** recommended for project assets & cache)
+- **FFmpeg:** Bundled automatically inside the installer
+- **CapCut Desktop:** Verified on **v8.9.0**
+
+### Installation Steps
+1. Download `__SETUP_BASE__.exe` from the **Google Drive** link in this members-only post (click **Download anyway** if Google Drive warns about file size).
+2. Verify SHA-256 in PowerShell (`Get-FileHash .\__SETUP_BASE__.exe -Algorithm SHA256`) against `__SHA256__`.
+3. Run Setup (no admin needed; click **More info → Run anyway** on Windows SmartScreen) and complete the **First-Run Setup Wizard**.
+
+### Documentation & Issue Reporting
+- Open the **Help** menu inside the app (`docs/user/en/`) for quick start and troubleshooting guides.
+- Report issues with screenshots, build badge (`v__APP_VERSION__ · build __COMMIT_SHORT__`), and log files from `%LOCALAPPDATA%\EasyFaceless Studio\logs\` (`launcher.log`, `server.log`).
+'@
+    $ReleaseNotesRendered = $ReleaseNotesTemplate.
+        Replace("__APP_VERSION__", $AppVersion).
+        Replace("__SETUP_BASE__", $SetupBaseName).
+        Replace("__COMMIT_SHORT__", $CommitShort).
+        Replace("__COMMIT_FULL__", $CommitFull).
+        Replace("__BUILD_TIME__", $BuildTime).
+        Replace("__BUILD_ID__", $BuildId).
+        Replace("__SHA256__", $ShaHash)
+    [System.IO.File]::WriteAllText($ReleaseNotesOut, $ReleaseNotesRendered + "`r`n", [System.Text.UTF8Encoding]::new($false))
 
     Write-Host ""
     Write-Host "=== BUILD SUCCEEDED ===" -ForegroundColor Green

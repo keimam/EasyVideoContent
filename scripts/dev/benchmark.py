@@ -426,6 +426,25 @@ def run_benchmark(*, use_llm: bool = True, keep_temp: bool = False) -> Path:
         print(f"  Total time: {total_dur_s:.1f}s | Peak RAM: {max_ram_mb:.1f} MB | Project disk: {total_proj_mb:.1f} MB | Video duration: {final_dur_s:.1f}s")
         return out_md
     finally:
+        # Ensure any child job/server processes spawned under temporary EFS_DATA_DIR are terminated cleanly (R1.4)
+        try:
+            from app.services.longform import launcher_runtime, platform_utils
+
+            for jf in (temp_root / "storage" / "longform_projects").glob("*/job_state.json"):
+                try:
+                    import json as _json
+                    jd = _json.loads(jf.read_text(encoding="utf-8"))
+                    jpid = int(jd.get("pid") or 0)
+                    if jpid > 0:
+                        platform_utils.terminate_process_tree(jpid, force=True, timeout=3.0)
+                except Exception:
+                    pass
+            lock = launcher_runtime.read_launcher_lock()
+            if lock and int(lock.get("pid") or 0) > 0:
+                platform_utils.terminate_process_tree(int(lock["pid"]), force=True, timeout=3.0)
+            launcher_runtime.clear_launcher_lock()
+        except Exception:
+            pass
         if not keep_temp:
             shutil.rmtree(temp_root, ignore_errors=True)
 

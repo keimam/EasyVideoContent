@@ -30,9 +30,9 @@ except Exception:
 VERSION_STRING = f"v{APP_VERSION} · inti v{CORE_VERSION}"
 UPSTREAM_UPDATE_PREFIX = "Pembaruan inti tersedia: "
 
-# E1 / E2 / E3 External URLs & Release Update Manifest (Single Source)
-# Empty placeholder by default: silent no-op for auto-check until production URL is set (E11.4); override via EFS_UPDATE_URL.
-UPDATE_MANIFEST_URL = ""
+# E1 / E2 / E3 / R1.1 External URLs & Release Update Manifest (Single Source)
+# Production update manifest URL; override via EFS_UPDATE_URL for local/QA testing.
+UPDATE_MANIFEST_URL = "https://raw.githubusercontent.com/keimam/EasyFacelessStudio-updates/main/latest.json"
 OPENROUTER_KEYS_URL = "https://openrouter.ai/keys"
 PIXABAY_API_DOCS_URL = "https://pixabay.com/api/docs/"
 COVERR_API_URL = "https://coverr.co/api"

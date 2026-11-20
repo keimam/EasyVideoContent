@@ -2,7 +2,13 @@
 
 Seluruh rilisan versi inti EasyFaceless Studio berakar dari satu konstanta `APP_VERSION` pada `app/services/branding/constants.py`.
 
-## [1.0.0] — Rilis Studio 1.0.0 (Tahap 8C.1 – 8C.3)
+## [1.0.0] — Rilis Studio 1.0.0 (Tahap 8C.1 – 8C.3 & R1)
+
+### Tahap R1 (Persiapan Rilis v1.0.0, Google Drive, Kebersihan Proses & Panduan Uji)
+- **URL Produksi & Pesan 404 Ramah (`R1.1`):** Mengisi `UPDATE_MANIFEST_URL` di `constants.py` ke `https://raw.githubusercontent.com/keimam/EasyFacelessStudio-updates/main/latest.json` tanpa peringatan build dan pesan ramah `"Informasi versi belum tersedia"` saat manifest belum diterbitkan.
+- **Generator Manifest Rilis (`R1.2`):** Menambahkan `scripts/build/make_latest_json.py` (UTF-8 tanpa BOM, validasi skema & versi `APP_VERSION`), `packaging/release/latest.json` untuk v1.0.0, serta urutan rilis Google Drive lebih dulu sebelum `latest.json` di `docs/dev/RELEASE.md`.
+- **Panduan Unduhan & Uji Bersih (`R1.3`, `R1.5`, `R1.6`):** Melengkapi FAQ (`id` & `en`) untuk unduhan installer besar Google Drive, verifikasi `Get-FileHash` SHA-256, dan SmartScreen; memformat `dist\RELEASE-NOTES-1.0.0.md` ramah member (Bahasa Indonesia lebih dulu + English + SHA-256 + build hash); serta menyusun checklist uji bersih <= 15 langkah di `docs/dev/CLEAN_INSTALL_TEST.md`.
+- **Kebersihan Proses Build & Smoke (`R1.4`):** Menutup seluruh pohon proses & lock uji di `verify_package.py --smoke` dan `benchmark.py` lewat `try/finally`, serta memblokir build di `build_installer.ps1` jika ada proses `python*`/`EasyFaceless` yang tersisa dari `build\staging`.
 
 ### Tahap 8C.3 (Wizard Pertama Kali, Cek Pembaruan & CapCut, Benchmark, Rilis)
 - **Wizard Pengaturan Pertama Kali (`E1`):** Muncul otomatis bila folder data belum memiliki penanda selesai (`.efs_setup_complete.json`), dapat dilewati atau dibuka kembali dari **Pengaturan → Jalankan wizard lagi**; terdiri dari 6 langkah (Bahasa tampilan, Cek sistem hijau/kuning/merah, AI OpenRouter dengan tes koneksi & cek kuota, Sumber footage gratis + opsional key, Folder & versi CapCut, serta pembuatan proyek contoh kecil); launcher dan aplikasi menghormati `EFS_DATA_DIR`.
