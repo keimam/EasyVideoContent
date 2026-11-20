@@ -121,11 +121,6 @@ begin
   Result := False;
   ProcsFound := 0;
   JobsRunning := 0;
-  if not DirExists(TargetDir) then
-  begin
-    Result := True;
-    Exit;
-  end;
 
   ScriptPath := ExpandConstant('{tmp}\efs_proc_mgr.ps1');
   LockPath := ExpandConstant('{localappdata}\{#MyUserDataFolderName}\.efs_launcher.lock.json');
@@ -138,8 +133,8 @@ begin
   ScriptLines[2]  := '$projectsPath = ''' + EscapePsSingleQuote(ProjectsPath) + '''';
   ScriptLines[3]  := '$outFile = ''' + EscapePsSingleQuote(OutStatusFile) + '''';
   ScriptLines[4]  := '$doStop = ''' + ShutdownFlag + ''' -eq ''1''';
-  ScriptLines[5]  := '$normTarget = $targetDir.TrimEnd(''\'', ''/'').ToLowerInvariant()';
-  ScriptLines[6]  := 'try { $fullTarget = [System.IO.Path]::GetFullPath($targetDir).TrimEnd(''\'', ''/'').ToLowerInvariant() } catch { $fullTarget = $normTarget }';
+  ScriptLines[5]  := '$normTarget = if ($targetDir) { $targetDir.TrimEnd(''\'', ''/'').ToLowerInvariant() } else { '''' }';
+  ScriptLines[6]  := 'try { $fullTarget = if ($targetDir) { [System.IO.Path]::GetFullPath($targetDir).TrimEnd(''\'', ''/'').ToLowerInvariant() } else { '''' } } catch { $fullTarget = $normTarget }';
   ScriptLines[7]  := 'function Get-EfsProcs {';
   ScriptLines[8]  := '  $list = @()';
   ScriptLines[9]  := '  try {';
@@ -149,7 +144,7 @@ begin
   ScriptLines[13] := '      $ep = if ($p.ExecutablePath) { $p.ExecutablePath.ToLowerInvariant() } else { '''' }';
   ScriptLines[14] := '      $cmd = if ($p.CommandLine) { $p.CommandLine.ToLowerInvariant() } else { '''' }';
   ScriptLines[15] := '      $nm = if ($p.Name) { $p.Name.ToLowerInvariant() } else { '''' }';
-  ScriptLines[16] := '      $inDir = ($ep -and ($ep.StartsWith($normTarget + ''\'') -or $ep.StartsWith($normTarget + ''/'') -or $ep.StartsWith($fullTarget + ''\'') -or $ep.StartsWith($fullTarget + ''/'')))';
+  ScriptLines[16] := '      $inDir = ($normTarget -and $ep -and ($ep.StartsWith($normTarget + ''\'') -or $ep.StartsWith($normTarget + ''/'') -or ($fullTarget -and ($ep.StartsWith($fullTarget + ''\'') -or $ep.StartsWith($fullTarget + ''/'')))))';
   ScriptLines[17] := '      $isEfsPy = ($nm -like ''python*'') -and ($cmd -like ''*app.services.longform.launcher_runtime*'' -or ($cmd -like ''*streamlit*'' -and ($cmd -like ''*webui*main.py*'' -or $cmd -like ''*easyfaceless*'')))';
   ScriptLines[18] := '      if ($inDir -or $isEfsPy) { $list += $p }';
   ScriptLines[19] := '    }';
@@ -234,8 +229,6 @@ var
   ConfirmRes: Integer;
 begin
   Result := True;
-  if not DirExists(TargetDir) then
-    Exit;
 
   StatusFile := ExpandConstant('{tmp}\efs_proc_status.txt');
   if not RunProcessHelper(TargetDir, StatusFile, False, ProcsFound, JobsRunning) then
@@ -259,10 +252,13 @@ begin
     end;
   end;
 
-  // Attempt graceful launcher_runtime --shutdown from TargetDir so PYTHONPATH imports app cleanly (D9.6, E12.2)
-  PyExe := AddBackslash(TargetDir) + 'runtime\python\python.exe';
-  if FileExists(PyExe) then
-    Exec(PyExe, '-m app.services.longform.launcher_runtime --shutdown --install-root "' + TargetDir + '"', TargetDir, SW_HIDE, ewWaitUntilTerminated, DummyRes);
+  // Attempt graceful launcher_runtime --shutdown from TargetDir when present (D9.6, E12.2)
+  if TargetDir <> '' then
+  begin
+    PyExe := AddBackslash(TargetDir) + 'runtime\python\python.exe';
+    if FileExists(PyExe) then
+      Exec(PyExe, '-m app.services.longform.launcher_runtime --shutdown --install-root "' + TargetDir + '"', TargetDir, SW_HIDE, ewWaitUntilTerminated, DummyRes);
+  end;
 
   RunProcessHelper(TargetDir, StatusFile, True, ProcsFound, JobsRunning);
   if ProcsFound > 0 then
@@ -271,6 +267,24 @@ begin
       MsgBox(CustomMessage('AppCloseFailedMsg'), mbError, MB_OK);
     Result := False;
   end;
+end;
+
+function GetPreviousInstallDir(): string;
+var
+  UninstKey, Loc: string;
+begin
+  Result := '';
+  UninstKey := 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{8C2E6F4D-9B1A-4E83-A412-EA54F0CE1E55}_is1';
+  if RegQueryStringValue(HKCU, UninstKey, 'InstallLocation', Loc) and (Loc <> '') then
+    Result := Loc
+  else
+    Result := ExpandConstant('{localappdata}\Programs\{#MyAppName}');
+end;
+
+function InitializeSetup(): Boolean;
+begin
+  // Run BEFORE Inno AppMutex check so active server/mutex can be closed cleanly (E12.2)
+  Result := HandleRunningAppBeforeFileOp(GetPreviousInstallDir(), WizardSilent());
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
