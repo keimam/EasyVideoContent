@@ -1019,11 +1019,32 @@ def test_r1_release_url_friendly_404_make_latest_json_and_process_leak_guard(tmp
         srv.shutdown()
         srv.server_close()
 
-    # R1.2: make_latest_json.py valid output + rejection of invalid/BOM/version-mismatch files
+    # R1.2 & R1.7: Member notes separation + valid latest.json + rejection of invalid/BOM/internal patterns
     repo_root = Path(__file__).resolve().parents[2]
     committed_latest = repo_root / "packaging" / "release" / "latest.json"
     committed_data = make_latest_json.validate_latest_json_file(committed_latest, expected_version=APP_VERSION)
     assert committed_data["download_url"] == "GANTI_DENGAN_LINK_GOOGLE_DRIVE"
+    assert (repo_root / "packaging" / "release" / "notes" / f"{APP_VERSION}.id.md").is_file()
+    assert (repo_root / "packaging" / "release" / "notes" / f"{APP_VERSION}.en.md").is_file()
+    assert "Rilis pertama EasyFaceless Studio:" in committed_data["notes_id"]
+
+    # Missing notes files for a version must fail cleanly
+    with pytest.raises(FileNotFoundError):
+        make_latest_json.load_member_release_notes("9.9.9", notes_dir=tmp_path)
+
+    # Internal stage/task codes ("Tahap", R1.1, E12, D9) must be rejected at generation AND validation
+    for bad_note in (
+        "Perbaikan Tahap R1 untuk user",
+        "Pembaruan URL (R1.1)",
+        "Upgrade otomatis E12",
+        "Sumber stok D9.7",
+    ):
+        with pytest.raises(ValueError, match="internal reference"):
+            make_latest_json.validate_member_release_note(bad_note, label="notes_id")
+        out_bad_internal = tmp_path / "latest_internal.json"
+        out_bad_internal.write_text(json.dumps({**committed_data, "notes_id": bad_note}), encoding="utf-8")
+        with pytest.raises(ValueError, match="internal reference"):
+            make_latest_json.validate_latest_json_file(out_bad_internal, expected_version=APP_VERSION)
 
     out_ok = tmp_path / "latest_valid.json"
     make_latest_json.write_latest_json(
@@ -1071,6 +1092,8 @@ def test_r1_release_url_friendly_404_make_latest_json_and_process_leak_guard(tmp
     faq_en = (repo_root / "docs" / "user" / "en" / "faq-troubleshooting.md").read_text(encoding="utf-8")
     assert "Google Drive" in faq_id and "Get-FileHash" in faq_id and "SmartScreen" in faq_id
     assert "Google Drive" in faq_en and "Get-FileHash" in faq_en and "SmartScreen" in faq_en
+    release_doc = (repo_root / "docs" / "dev" / "RELEASE.md").read_text(encoding="utf-8")
+    assert "packaging/release/notes/" in release_doc
     clean_test_doc = (repo_root / "docs" / "dev" / "CLEAN_INSTALL_TEST.md").read_text(encoding="utf-8")
     numbered_steps = [ln for ln in clean_test_doc.splitlines() if ln.strip() and ln.strip()[0].isdigit() and ". " in ln[:5]]
     assert 8 <= len(numbered_steps) <= 15

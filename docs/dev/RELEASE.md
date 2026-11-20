@@ -39,18 +39,20 @@ Contoh dan berkas rilis:
    ```powershell
    git tag -a v<versi> -m "Release EasyFaceless Studio v<versi>"
    ```
-4. **Unggah installer ke Google Drive (DULU):**
+4. **Siapkan catatan rilis ramah member untuk banner pembaruan (`packaging/release/notes/`):**
+   - Tulis `packaging/release/notes/<versi>.id.md` dan `packaging/release/notes/<versi>.en.md` (1–3 kalimat ringkas dengan bahasa pengguna, sejalan antara `id` dan `en`, **tanpa** kode tahap/butir internal seperti *Tahap*, `R1.1`, `E12`, atau `D9`).
+5. **Unggah installer ke Google Drive (DULU):**
    - Unggah `dist\EasyFacelessStudio-Setup-<versi>.exe` dan `.sha256` ke folder Google Drive khusus rilis.
    - Atur berbagi akses ke **Siapa saja yang memiliki link → Pelihat (*Anyone with the link: Viewer*)**.
    - Salin tautan Google Drive dan uji buka dari jendela Incognito.
-5. **Buat & validasi `latest.json` memakai link Google Drive:**
+6. **Buat & validasi `latest.json` memakai link Google Drive:**
    ```powershell
    uv run python scripts/build/make_latest_json.py --download-url "<LINK_GOOGLE_DRIVE>"
    ```
-   Skrip ini menghasilkan [`packaging/release/latest.json`](../../packaging/release/latest.json) dengan encoding UTF-8 tanpa BOM, membaca `APP_VERSION` dari `constants.py` dan ringkasan `CHANGELOG.md`, lalu memvalidasi format JSON serta kecocokan versi.
-6. **Unggah `latest.json` ke repo publik `keimam/EasyFacelessStudio-updates` (TERAKHIR):**
-   - Push `latest.json` hasil langkah 5 ke branch `main` di repo `https://github.com/keimam/EasyFacelessStudio-updates`.
-7. **Verifikasi langsung di aplikasi:**
+   Skrip ini membaca [`packaging/release/notes/<versi>.id.md`](../../packaging/release/notes/1.0.0.id.md) & `.en.md` serta `APP_VERSION` dari `constants.py`, menolak pola internal bila ada, lalu menghasilkan [`packaging/release/latest.json`](../../packaging/release/latest.json) dengan encoding UTF-8 tanpa BOM.
+7. **Unggah `latest.json` ke repo publik `keimam/EasyFacelessStudio-updates` (TERAKHIR):**
+   - Push `latest.json` hasil langkah 6 ke branch `main` di repo `https://github.com/keimam/EasyFacelessStudio-updates`.
+8. **Verifikasi langsung di aplikasi:**
    - Buka aplikasi terpasang → menu **Tentang / About** → klik **Cek pembaruan sekarang**. Pastikan hasil menampilkan informasi versi/pembaruan tanpa error jaringan atau 404.
 
 ---

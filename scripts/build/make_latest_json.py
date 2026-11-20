@@ -1,4 +1,4 @@
-"""Generate and validate `packaging/release/latest.json` for EasyFaceless Studio releases (R1.2)."""
+"""Generate and validate `packaging/release/latest.json` for EasyFaceless Studio releases (R1.2, R1.7)."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import re
 import sys
 from datetime import date
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
@@ -17,38 +17,48 @@ if str(REPO_ROOT) not in sys.path:
 from app.services.branding.constants import APP_VERSION
 
 DEFAULT_OUTPUT_PATH = REPO_ROOT / "packaging" / "release" / "latest.json"
-DEFAULT_CHANGELOG_PATH = REPO_ROOT / "CHANGELOG.md"
+DEFAULT_NOTES_DIR = REPO_ROOT / "packaging" / "release" / "notes"
 REQUIRED_FIELDS = ("version", "released", "notes_id", "notes_en", "download_url")
 
+# R1.7: Member-facing update banner notes must never contain internal milestone/task codes.
+INTERNAL_NOTE_PATTERN = re.compile(
+    r"(?:\b(?:tahap|stage|addendum)\b|\bR\d+(?:\.\d+)?\b|\b[ED]\d+(?:\.\d+)?\b)",
+    re.IGNORECASE,
+)
 
-def extract_changelog_bullets(changelog_path: Path, version: str, *, max_items: int = 5) -> List[str]:
-    """Extract concise release summary lines for `## [<version>]` from `CHANGELOG.md`."""
-    if not changelog_path.is_file():
-        return []
-    text = changelog_path.read_text(encoding="utf-8")
-    header_pat = re.compile(rf"^##\s+\[{re.escape(version)}\]", re.MULTILINE)
-    m = header_pat.search(text)
-    if not m:
-        return []
 
-    rest = text[m.end() :]
-    next_h2 = re.search(r"^##\s+", rest, re.MULTILINE)
-    section = rest[: next_h2.start()] if next_h2 else rest
+def validate_member_release_note(text: str, *, label: str) -> str:
+    """Validate member-facing release note text is non-empty and free of internal IDs/stages (R1.7)."""
+    cleaned = " ".join(line.strip() for line in str(text or "").splitlines() if line.strip()).strip()
+    if not cleaned:
+        raise ValueError(f"Release note '{label}' must not be empty.")
+    match = INTERNAL_NOTE_PATTERN.search(cleaned)
+    if match:
+        raise ValueError(
+            f"Release note '{label}' contains internal reference '{match.group(0)}'; "
+            "use plain member-friendly language only."
+        )
+    return cleaned
 
-    bullets: List[str] = []
-    for raw_ln in section.splitlines():
-        ln = raw_ln.strip()
-        if ln.startswith("### "):
-            heading = ln[4:].strip()
-            if heading:
-                bullets.append(heading)
-        elif ln.startswith("- **") and ":**" in ln:
-            title_part = ln[2:].split(":**", 1)[0].replace("**", "").replace("`", "").strip()
-            if title_part:
-                bullets.append(title_part)
-        if len(bullets) >= max_items:
-            break
-    return bullets
+
+def load_member_release_notes(
+    version: str,
+    *,
+    notes_dir: Path = DEFAULT_NOTES_DIR,
+) -> Tuple[str, str]:
+    """Load and validate `<version>.id.md` and `<version>.en.md` from `notes_dir` (R1.7)."""
+    ver = str(version or "").strip()
+    base = Path(notes_dir)
+    id_file = base / f"{ver}.id.md"
+    en_file = base / f"{ver}.en.md"
+    if not id_file.is_file():
+        raise FileNotFoundError(f"Missing Indonesian member release notes file for v{ver}: {id_file}")
+    if not en_file.is_file():
+        raise FileNotFoundError(f"Missing English member release notes file for v{ver}: {en_file}")
+
+    notes_id = validate_member_release_note(id_file.read_text(encoding="utf-8"), label=id_file.name)
+    notes_en = validate_member_release_note(en_file.read_text(encoding="utf-8"), label=en_file.name)
+    return notes_id, notes_en
 
 
 def build_latest_manifest_payload(
@@ -59,9 +69,9 @@ def build_latest_manifest_payload(
     notes_id: Optional[str] = None,
     notes_en: Optional[str] = None,
     min_supported: Optional[str] = None,
-    changelog_path: Optional[Path] = None,
+    notes_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    """Construct release manifest payload from `constants.py`, `CHANGELOG.md`, and `--download-url`."""
+    """Construct release manifest payload from `constants.py`, member notes files, and `--download-url`."""
     ver = str(version or APP_VERSION).strip()
     if not ver:
         raise ValueError("Application version must not be empty.")
@@ -72,25 +82,20 @@ def build_latest_manifest_payload(
     if not re.match(r"^\d{4}-\d{2}-\d{2}$", rel_date):
         raise ValueError(f"Invalid release date '{rel_date}' (expected YYYY-MM-DD).")
 
-    cl_path = Path(changelog_path) if changelog_path else DEFAULT_CHANGELOG_PATH
-    bullets = extract_changelog_bullets(cl_path, ver)
-
-    if not notes_id:
-        if bullets:
-            notes_id = f"Rilis EasyFaceless Studio v{ver}: " + "; ".join(bullets) + "."
-        else:
-            notes_id = f"Rilis resmi EasyFaceless Studio v{ver}."
-    if not notes_en:
-        notes_en = (
-            f"EasyFaceless Studio v{ver} release: first-run setup wizard, update checker, "
-            "CapCut version detection, keyless stock footage sources, and Windows desktop installer."
-        )
+    resolved_notes_dir = Path(notes_dir) if notes_dir else DEFAULT_NOTES_DIR
+    if notes_id is None or notes_en is None:
+        loaded_id, loaded_en = load_member_release_notes(ver, notes_dir=resolved_notes_dir)
+        final_id = validate_member_release_note(notes_id, label="notes_id") if notes_id is not None else loaded_id
+        final_en = validate_member_release_note(notes_en, label="notes_en") if notes_en is not None else loaded_en
+    else:
+        final_id = validate_member_release_note(notes_id, label="notes_id")
+        final_en = validate_member_release_note(notes_en, label="notes_en")
 
     payload: Dict[str, Any] = {
         "version": ver,
         "released": rel_date,
-        "notes_id": str(notes_id).strip(),
-        "notes_en": str(notes_en).strip(),
+        "notes_id": final_id,
+        "notes_en": final_en,
         "download_url": dl,
     }
     if min_supported and str(min_supported).strip():
@@ -99,7 +104,7 @@ def build_latest_manifest_payload(
 
 
 def validate_latest_json_file(path: Path, expected_version: str = APP_VERSION) -> Dict[str, Any]:
-    """Validate that `path` is UTF-8 without BOM, valid JSON dict, has required fields, and matches `expected_version`."""
+    """Validate that `path` is UTF-8 without BOM, valid JSON dict, free of internal jargon, and matches `expected_version`."""
     target = Path(path)
     if not target.is_file():
         raise FileNotFoundError(f"latest.json file does not exist: {target}")
@@ -115,6 +120,8 @@ def validate_latest_json_file(path: Path, expected_version: str = APP_VERSION) -
     for field in REQUIRED_FIELDS:
         if not str(data.get(field) or "").strip():
             raise ValueError(f"Missing or empty required field '{field}' in {target}.")
+    validate_member_release_note(str(data["notes_id"]), label="notes_id")
+    validate_member_release_note(str(data["notes_en"]), label="notes_en")
     if str(data["version"]).strip() != str(expected_version).strip():
         raise ValueError(
             f"Version mismatch in {target}: got '{data['version']}', expected '{expected_version}'."
@@ -130,7 +137,7 @@ def write_latest_json(
     notes_id: Optional[str] = None,
     notes_en: Optional[str] = None,
     min_supported: Optional[str] = None,
-    changelog_path: Path = DEFAULT_CHANGELOG_PATH,
+    notes_dir: Path = DEFAULT_NOTES_DIR,
 ) -> Path:
     """Write and validate `latest.json` as UTF-8 (without BOM)."""
     payload = build_latest_manifest_payload(
@@ -140,7 +147,7 @@ def write_latest_json(
         notes_id=notes_id,
         notes_en=notes_en,
         min_supported=min_supported,
-        changelog_path=changelog_path,
+        notes_dir=notes_dir,
     )
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -154,6 +161,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Generate and validate EasyFaceless Studio latest.json manifest.")
     parser.add_argument("--download-url", required=False, help="Public Google Drive or installer download URL")
     parser.add_argument("--output", default=str(DEFAULT_OUTPUT_PATH), help="Output JSON file path")
+    parser.add_argument("--notes-dir", default=str(DEFAULT_NOTES_DIR), help="Directory containing <version>.id.md and <version>.en.md")
     parser.add_argument("--released", default=None, help="Release date YYYY-MM-DD (default: today)")
     parser.add_argument("--notes-id", default=None, help="Optional Indonesian notes override")
     parser.add_argument("--notes-en", default=None, help="Optional English notes override")
@@ -176,6 +184,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             notes_id=args.notes_id,
             notes_en=args.notes_en,
             min_supported=args.min_supported,
+            notes_dir=Path(args.notes_dir),
         )
         print(f"[LATEST.JSON WRITTEN & VALIDATED] {written} (version={APP_VERSION})")
         return 0
