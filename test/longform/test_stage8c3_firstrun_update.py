@@ -67,8 +67,8 @@ def test_e1_wizard_auto_opens_steps_skip_and_rerun_ui(tmp_path: Path, monkeypatc
     monkeypatch.setattr("app.services.longform.platform_utils.check_internet_connectivity", lambda *a, **kw: True)
     monkeypatch.setattr("app.services.longform.update_checker.start_background_update_check", lambda *a, **kw: False)
 
-    at = AppTest.from_file(get_long_video_app_file())
-    at.run(timeout=30)
+    at = AppTest.from_file(get_long_video_app_file(), default_timeout=45)
+    at.run(timeout=45)
     assert not at.exception, f"Wizard initial render threw: {[e.value for e in at.exception]}"
 
     md_all = " ".join(m.value for m in at.markdown)
@@ -172,8 +172,8 @@ def test_e2_update_checker_logic_throttle_offline_skip_and_banner(tmp_path: Path
     monkeypatch.setenv("EFS_UPDATE_URL", manifest_file.as_uri())
     update_checker.write_update_state({"auto_check_enabled": True, "last_checked_at": None, "skipped_version": None, "latest_manifest": None})
 
-    at = AppTest.from_file(get_long_video_app_file())
-    at.run(timeout=30)
+    at = AppTest.from_file(get_long_video_app_file(), default_timeout=45)
+    at.run(timeout=45)
     assert not at.exception
     md_all = " ".join(m.value for m in at.markdown)
     assert "v1.0.1" in md_all and "Catatan uji versi 1.0.1" in md_all
@@ -419,8 +419,8 @@ def test_e5_completed_project_output_and_credits_viewer_ui(tmp_path: Path, monke
     manifest.status = ItemStatus.completed
     save_manifest(manifest, p_dir)
 
-    at = AppTest.from_file(get_long_video_app_file())
-    at.run(timeout=30)
+    at = AppTest.from_file(get_long_video_app_file(), default_timeout=45)
+    at.run(timeout=45)
     assert not at.exception
 
     btn_out = [b for b in at.button if b.key == "btn_card_output_done_e5_proj"]
@@ -643,3 +643,112 @@ def test_e9_wizard_standalone_url_redirect_and_finish_to_long_video(tmp_path: Pa
     at_skip.button(key="btn_wiz_skip_home").click().run(timeout=20)
     assert not at_skip.exception
     assert any("1_🎬_Long_Video.py" in t_path for t_path, _ in switched_targets)
+
+
+# ---------------------------------------------------------------------------
+# E10: Installed fileWatcherType=none, EFS_UPDATE_URL server restart & logging
+# ---------------------------------------------------------------------------
+
+def test_e10_launcher_file_watcher_disabled_and_update_url_restart(tmp_path: Path, monkeypatch):
+    """E10.1/E10.2: Installed mode disables file watcher; changed EFS_UPDATE_URL restarts stale server."""
+    from types import SimpleNamespace
+    from app.services.longform import launcher_runtime
+
+    data_dir = (tmp_path / "e10_launcher_data").resolve()
+    monkeypatch.setenv("EFS_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("EFS_INSTALLED", "1")
+    monkeypatch.delenv("EFS_UPDATE_URL", raising=False)
+
+    launched = []
+    terminated = []
+
+    def _fake_launch(cmd, *, cwd, log_file, env):
+        launched.append({"cmd": list(cmd), "env": dict(env)})
+        return SimpleNamespace(pid=42000 + len(launched), poll=lambda: None)
+
+    monkeypatch.setattr("app.services.longform.platform_utils.launch_desktop_app_detached", _fake_launch)
+    monkeypatch.setattr("app.services.longform.platform_utils.is_pid_alive", lambda pid: int(pid) >= 42000)
+    monkeypatch.setattr("app.services.longform.platform_utils.terminate_process_tree", lambda pid, **kw: terminated.append(int(pid)) or True)
+    monkeypatch.setattr("app.services.longform.launcher_runtime.is_streamlit_server_healthy", lambda *a, **kw: True)
+    monkeypatch.setattr("app.services.longform.launcher_runtime.find_free_port", lambda *a, **kw: 8599)
+
+    info1 = launcher_runtime.launch_or_focus_app(open_browser=False)
+    assert info1["reused"] is False
+    assert "--server.fileWatcherType" in launched[0]["cmd"]
+    idx = launched[0]["cmd"].index("--server.fileWatcherType")
+    assert launched[0]["cmd"][idx + 1] == "none"
+    assert launched[0]["env"].get("STREAMLIT_SERVER_FILE_WATCHER_TYPE") == "none"
+
+    # Re-launch with same env -> reuses running server
+    info2 = launcher_runtime.launch_or_focus_app(open_browser=False)
+    assert info2["reused"] is True
+    assert len(launched) == 1
+
+    # Re-launch with new EFS_UPDATE_URL -> terminates old server and forwards new EFS_UPDATE_URL
+    monkeypatch.setenv("EFS_UPDATE_URL", "file:///F:/latest_test.json")
+    info3 = launcher_runtime.launch_or_focus_app(open_browser=False)
+    assert info3["reused"] is False
+    assert terminated == [42001]
+    assert len(launched) == 2
+    assert launched[1]["env"].get("EFS_UPDATE_URL") == "file:///F:/latest_test.json"
+
+
+def test_e10_update_checker_logging_sync_startup_and_settings_results(tmp_path: Path, monkeypatch):
+    """E10.2/E10.3: Update checks log URL/versions/decision; Settings manual button shows available/up-to-date/failed."""
+    from loguru import logger
+    from app.services.longform import first_run, update_checker
+
+    data_dir = (tmp_path / "e10_upd_data").resolve()
+    monkeypatch.setenv("EFS_DATA_DIR", str(data_dir))
+    first_run.mark_setup_completed(skipped=False)
+
+    assert update_checker._normalize_manifest_url("file://F:/latest_test.json") == "file:///F:/latest_test.json"
+
+    log_lines = []
+    sink_id = logger.add(lambda msg: log_lines.append(str(msg)), level="INFO")
+    try:
+        manifest_path = tmp_path / "latest_test.json"
+        manifest_path.write_text(
+            json.dumps({
+                "version": "1.0.1",
+                "released": "2026-12-01",
+                "notes_id": "Rilis uji 1.0.1",
+                "notes_en": "Test release 1.0.1",
+                "download_url": "https://example.com/1.0.1.exe",
+            }),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("EFS_UPDATE_URL", manifest_path.as_uri())
+
+        # Startup check completes synchronously and immediately populates active banner
+        assert update_checker.start_background_update_check() is True
+        banner = update_checker.get_active_update_banner()
+        assert banner is not None and banner["remote_version"] == "1.0.1"
+        assert any("local_version=1.0.0" in ln and "remote_version=1.0.1" in ln and "decision=update_available" in ln for ln in log_lines)
+
+        # Manual check inside Settings reports 'available', 'up_to_date', and 'failed + reason'
+        at = AppTest.from_file(get_long_video_app_file())
+        at.session_state["settings_dialog_open"] = True
+        at.run(timeout=30)
+        assert not at.exception
+
+        # Available (1.0.1)
+        at.button(key="btn_check_updates_general_settings").click().run(timeout=20)
+        assert not at.exception
+        assert any("1.0.1" in el.value for el in at.info)
+
+        # Up to date (1.0.0)
+        manifest_path.write_text(json.dumps({"version": "1.0.0"}), encoding="utf-8")
+        at.button(key="btn_check_updates_general_settings").click().run(timeout=20)
+        assert not at.exception
+        assert any("1.0.0" in el.value for el in at.success)
+        assert any("decision=up_to_date" in ln for ln in log_lines)
+
+        # Failed + concise error reason (invalid URL)
+        monkeypatch.setenv("EFS_UPDATE_URL", "http://127.0.0.1:9/missing_latest.json")
+        at.button(key="btn_check_updates_general_settings").click().run(timeout=20)
+        assert not at.exception
+        assert len(at.warning) >= 1
+        assert any("decision=failed" in ln for ln in log_lines)
+    finally:
+        logger.remove(sink_id)

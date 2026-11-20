@@ -140,6 +140,17 @@ try {
     # Write installed-mode marker cleanly
     "EasyFaceless Studio v$AppVersion installed package marker" | Out-File (Join-Path $StagingDir ".efs_installed") -Encoding utf8 -Force
 
+    # Ensure packaged Streamlit never watches bundled stdlib/code modules in installed mode (E10.1)
+    # Write strictly UTF-8 WITHOUT BOM so Python tomllib parses .streamlit/config.toml cleanly.
+    $StagedStCfg = Join-Path $StagingDir "webui\.streamlit\config.toml"
+    if (Test-Path $StagedStCfg) {
+        $stContent = Get-Content $StagedStCfg -Raw -Encoding UTF8
+        if ($stContent -notmatch "fileWatcherType") {
+            $stContent = $stContent -replace '(\[server\]\r?\n)', "`$1fileWatcherType = `"none`"`r`n"
+        }
+        [System.IO.File]::WriteAllText($StagedStCfg, $stContent, [System.Text.UTF8Encoding]::new($false))
+    }
+
     # 6. Bundle relocatable Python runtime + uv.lock dependencies
     Write-Host "[2/6] Bundling relocatable Python runtime & uv.lock dependencies..."
     $BasePrefix = (& $VenvPython -c "import sys; print(sys.base_prefix)").Trim()

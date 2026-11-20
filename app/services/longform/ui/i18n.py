@@ -1006,6 +1006,7 @@ ID_TRANSLATIONS: Dict[str, str] = {
     "update_up_to_date": "Aplikasi Anda sudah versi terbaru (v{ver}).",
     "update_available_msg": "Versi baru v{ver} tersedia! Tutup dialog Pengaturan untuk melihat banner unduhan.",
     "update_check_offline_note": "Tidak dapat menghubungi server pembaruan (offline atau URL tidak terjangkau).",
+    "update_check_failed_reason": "Gagal mengecek pembaruan: {reason}",
     "update_opening_url": "Membuka halaman unduhan: {url}",
     # --- E3: CapCut Version Detection ---
     "capcut_status_tested_badge": "CapCut {ver} — teruji ✓",
@@ -2043,6 +2044,7 @@ EN_TRANSLATIONS: Dict[str, str] = {
     "update_up_to_date": "You are running the latest version (v{ver}).",
     "update_available_msg": "New version v{ver} is available! Close Settings to view the download banner.",
     "update_check_offline_note": "Could not reach the update server (offline or unreachable URL).",
+    "update_check_failed_reason": "Update check failed: {reason}",
     "update_opening_url": "Opening download page: {url}",
     # --- E3: CapCut Version Detection ---
     "capcut_status_tested_badge": "CapCut {ver} — tested ✓",

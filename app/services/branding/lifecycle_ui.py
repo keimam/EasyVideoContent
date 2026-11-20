@@ -135,6 +135,8 @@ def render_settings_studio_controls(*, key_prefix: str = "settings") -> None:
             use_container_width=True,
         ):
             res = update_checker.check_for_updates(force=True)
+            if res.get("has_update"):
+                st.session_state.pop("efs_update_dismissed_session", None)
             st.session_state["efs_manual_update_result"] = res
     with col_wiz:
         if st.button(
@@ -155,7 +157,7 @@ def render_settings_studio_controls(*, key_prefix: str = "settings") -> None:
     manual_res = st.session_state.get("efs_manual_update_result")
     if isinstance(manual_res, dict) and manual_res.get("checked_now"):
         if manual_res.get("error"):
-            st.warning(t("update_check_offline_note"))
+            st.warning(t("update_check_failed_reason", reason=manual_res.get("error")))
         elif manual_res.get("has_update"):
             st.info(t("update_available_msg", ver=manual_res.get("remote_version")))
         else:

@@ -150,6 +150,20 @@ def verify_staging_dir(staging_dir: Path, *, check_required: bool = True) -> Lis
             if not (root / rel).is_file():
                 errors.append(f"Missing required bundled file: {rel}")
 
+        # Verify staged .streamlit/config.toml is valid BOM-free TOML with fileWatcherType = "none" (E10.1)
+        st_cfg = root / "webui" / ".streamlit" / "config.toml"
+        if st_cfg.is_file():
+            raw_bytes = st_cfg.read_bytes()
+            if raw_bytes.startswith(b"\xef\xbb\xbf"):
+                errors.append("webui/.streamlit/config.toml has a UTF-8 BOM (breaks Python tomllib)")
+            else:
+                try:
+                    parsed = tomllib.loads(raw_bytes.decode("utf-8"))
+                    if parsed.get("server", {}).get("fileWatcherType") != "none":
+                        errors.append("webui/.streamlit/config.toml [server] must set fileWatcherType = 'none' in packaged build")
+                except Exception as exc:
+                    errors.append(f"webui/.streamlit/config.toml invalid TOML: {exc}")
+
     for sub in FORBIDDEN_SUBPATHS:
         if (root / sub).exists():
             errors.append(f"Forbidden path present in staging: {sub}")
@@ -201,6 +215,8 @@ def verify_staging_dir(staging_dir: Path, *, check_required: bool = True) -> Lis
 _ERR_NEEDLES = (
     "StreamlitMissingRequiredParameterError",
     "StreamlitAPIException",
+    "Internal Server Error",
+    "NoEventLoopError",
     "Traceback (most recent call last)",
     "TypeError:",
     "AttributeError:",
@@ -247,6 +263,7 @@ def _build_staged_env(staging: Path, data_dir: Path) -> dict[str, str]:
         "PYTHONIOENCODING": "utf-8",
         "PYTHONUNBUFFERED": "1",
         "PYTHONDONTWRITEBYTECODE": "1",
+        "STREAMLIT_SERVER_FILE_WATCHER_TYPE": "none",
         "PATH": base_path,
     }
 
@@ -266,7 +283,14 @@ def _check_http_endpoint(url: str, timeout: float = 5.0) -> Optional[str]:
         return f"HTTP request failed for {url}: {exc}"
 
 
-def _run_cdp_dom_check(browser_exe: str, base_url: str, *, expect_wizard: bool, expect_project_title: Optional[str] = None) -> List[str]:
+def _run_cdp_dom_check(
+    browser_exe: str,
+    base_url: str,
+    *,
+    expect_wizard: bool,
+    expect_project_title: Optional[str] = None,
+    expect_update_banner: Optional[bool] = None,
+) -> List[str]:
     errs: List[str] = []
     try:
         import websocket  # type: ignore
@@ -315,39 +339,66 @@ def _run_cdp_dom_check(browser_exe: str, base_url: str, *, expect_wizard: bool, 
         ws.send(json.dumps({"id": 1, "method": "Page.enable"})); ws.recv()
         ws.send(json.dumps({"id": 2, "method": "Runtime.enable"})); ws.recv()
 
-        for route_idx, route in enumerate(["", "/Long_Video"], start=1):
-            target = f"{base_url}{route}"
-            ws.send(json.dumps({"id": 10 + route_idx, "method": "Page.navigate", "params": {"url": target}})); ws.recv()
+        def _check_loaded_dom(label: str, route: str, mid_base: int) -> str:
             body = ""
-            for _ in range(30):
-                time.sleep(0.8)
-                body = _eval(100 + route_idx, "document.body ? document.body.innerText : ''") or ""
+            for _ in range(60):
+                time.sleep(0.75)
+                body = _eval(mid_base, "document.body ? document.body.innerText : ''") or ""
                 if ("EasyFaceless" in body and len(body.strip()) > 120) or any(n in body for n in _ERR_NEEDLES):
                     break
-            time.sleep(1.0)
-            body = _eval(200 + route_idx, "document.body ? document.body.innerText : ''") or ""
-            exc_cnt = _eval(300 + route_idx, "document.querySelectorAll('[data-testid=\"stException\"]').length") or 0
-            nav_vis = _eval(400 + route_idx, "(() => { const n = document.querySelector('[data-testid=\"stSidebarNav\"]'); return n ? getComputedStyle(n).display : 'none'; })()")
+            time.sleep(0.8)
+            body = _eval(mid_base + 1, "document.body ? document.body.innerText : ''") or ""
+            exc_cnt = _eval(mid_base + 2, "document.querySelectorAll('[data-testid=\"stException\"]').length") or 0
+            nav_vis = _eval(mid_base + 3, "(() => { const n = document.querySelector('[data-testid=\"stSidebarNav\"]'); return n ? getComputedStyle(n).display : 'none'; })()")
 
             if exc_cnt > 0:
-                errs.append(f"[{target}] Found {exc_cnt} stException block(s) in DOM")
+                errs.append(f"[{label}] Found {exc_cnt} stException block(s) in DOM")
             for needle in _ERR_NEEDLES:
                 if needle in body:
-                    errs.append(f"[{target}] Found error text '{needle}' in rendered DOM")
+                    errs.append(f"[{label}] Found error text '{needle}' in rendered DOM")
             if "EasyFaceless" not in body:
-                errs.append(f"[{target}] Branded sidebar header 'EasyFaceless' missing in DOM")
+                errs.append(f"[{label}] Branded sidebar header 'EasyFaceless' missing in DOM")
             if nav_vis != "none":
-                errs.append(f"[{target}] Default Streamlit stSidebarNav is visible (display={nav_vis})")
+                errs.append(f"[{label}] Default Streamlit stSidebarNav is visible (display={nav_vis})")
 
+            is_help_route = "dialog=help" in route
+            has_help = any(k in body for k in ("Bantuan & Panduan Pengguna", "Help & User Guide", "Mulai Cepat", "Quick Start"))
             has_wizard = ("Wizard Pengaturan Pertama Kali" in body) or ("First-Run Setup Wizard" in body)
-            if expect_wizard and not has_wizard:
-                errs.append(f"[{target}] First-run wizard did not render on empty EFS_DATA_DIR")
-            if not expect_wizard and has_wizard:
-                errs.append(f"[{target}] First-run wizard unexpectedly appeared on populated EFS_DATA_DIR")
+            if is_help_route:
+                if not (has_help or has_wizard):
+                    errs.append(f"[{label}] Help route did not render Help dialog or Wizard cleanly")
+            else:
+                if expect_wizard and not has_wizard:
+                    errs.append(f"[{label}] First-run wizard did not render on empty EFS_DATA_DIR")
+                if (not expect_wizard) and has_wizard:
+                    errs.append(f"[{label}] First-run wizard unexpectedly appeared on populated EFS_DATA_DIR")
             if expect_wizard and ("Step 2: Configure the video" in body or "Langkah 2: Atur video" in body):
-                errs.append(f"[{target}] Onboarding tour appeared while wizard is active")
+                errs.append(f"[{label}] Onboarding tour appeared while wizard is active")
             if expect_wizard and any(k in body for k in ("Pengaturan Skrip Video", "Video Script Settings", "Mulai video baru", "Start new video")):
-                errs.append(f"[{target}] Page content appeared underneath standalone wizard")
+                errs.append(f"[{label}] Page content appeared underneath standalone wizard")
+            if route == "/Long_Video" and (not expect_wizard) and expect_project_title and expect_project_title not in body:
+                errs.append(f"[{label}] Existing project '{expect_project_title}' missing on populated EFS_DATA_DIR")
+            if expect_update_banner is True and ("v1.0.1" not in body or ("Pembaruan Tersedia" not in body and "Update Available" not in body)):
+                errs.append(f"[{label}] Expected v1.0.1 update banner did not appear automatically")
+            if expect_update_banner is False and ("Pembaruan Tersedia" in body or "Update Available" in body):
+                errs.append(f"[{label}] Unexpected update banner appeared")
+            return body
+
+        # E10.3: Check Help/route navigation + direct sub-page + F5 reload on each route
+        routes = ["", "/Long_Video", "/?dialog=help"]
+        if expect_update_banner is not None:
+            routes = [""]
+
+        for route_idx, route in enumerate(routes, start=1):
+            target = f"{base_url}{route}"
+            ws.send(json.dumps({"id": 10 * route_idx, "method": "Page.navigate", "params": {"url": target}})); ws.recv()
+            body = _check_loaded_dom(target, route, 100 * route_idx)
+
+            if expect_update_banner is None and route in ("", "/Long_Video"):
+                # E10.3: Full browser refresh (F5 equivalent) on direct routes must stay healthy & branded
+                ws.send(json.dumps({"id": 10 * route_idx + 5, "method": "Page.reload", "params": {"ignoreCache": True}})); ws.recv()
+                _check_loaded_dom(f"{target} (F5 reload)", route, 100 * route_idx + 50)
+
             if expect_wizard and route == "":
                 # E9.3: Choose English (en) in wizard and verify 5-second language & layout stability (zero flip-flop)
                 clicked_en = _eval(
@@ -372,7 +423,6 @@ def _run_cdp_dom_check(browser_exe: str, base_url: str, *, expect_wizard: bool, 
                     if not switched_ok:
                         errs.append(f"[{target}] Wizard did not switch cleanly to English after clicking English (en)")
                     else:
-                        # Poll for 5 full seconds to catch any id<->en flicker/loop
                         for sec_i in range(10):
                             time.sleep(0.5)
                             txt = _eval(470 + sec_i, "document.body ? document.body.innerText : ''") or ""
@@ -382,8 +432,6 @@ def _run_cdp_dom_check(browser_exe: str, base_url: str, *, expect_wizard: bool, 
                             if any(k in txt for k in ("Video Script Settings", "Pengaturan Skrip Video", "Generate Video")):
                                 errs.append(f"[{target}] Short Video content leaked underneath English wizard")
                                 break
-            if route == "/Long_Video" and (not expect_wizard) and expect_project_title and expect_project_title not in body:
-                errs.append(f"[{target}] Existing project '{expect_project_title}' missing on populated EFS_DATA_DIR")
 
         ws.close()
     finally:
@@ -469,6 +517,7 @@ def run_staged_smoke_test(staging: Path) -> List[str]:
                     "--server.headless", "true",
                     "--browser.gatherUsageStats", "false",
                     "--global.developmentMode", "false",
+                    "--server.fileWatcherType", "none",
                 ],
                 cwd=str(staging),
                 env=env,
@@ -514,6 +563,74 @@ def run_staged_smoke_test(staging: Path) -> List[str]:
             if not log_path.is_file() or log_path.stat().st_size == 0:
                 errors.append(f"[{scenario_name}] Staged server.log stayed empty (0 bytes)")
             shutil.rmtree(data_dir, ignore_errors=True)
+
+    # E10.3: Live staged update-banner smoke checks (1.0.1 banner, 1.0.0 no banner, invalid URL graceful)
+    if browser_exe:
+        for upd_label, manifest_payload, expect_banner in (
+            ("update_1_0_1", {"version": "1.0.1", "released": "2026-12-01", "notes_id": "Catatan smoke 1.0.1", "notes_en": "Smoke release 1.0.1", "download_url": "https://example.com/1.0.1.exe"}, True),
+            ("same_1_0_0", {"version": "1.0.0", "released": "2026-11-19"}, False),
+            ("invalid_url", None, False),
+        ):
+            u_dir = Path(tempfile.mkdtemp(prefix=f"efs_smoke_upd_{upd_label}_"))
+            u_env = _build_staged_env(staging, u_dir)
+            if manifest_payload is not None:
+                m_path = u_dir / "latest.json"
+                m_path.write_text(json.dumps(manifest_payload), encoding="utf-8")
+                u_env["EFS_UPDATE_URL"] = m_path.as_uri()
+            else:
+                u_env["EFS_UPDATE_URL"] = "http://127.0.0.1:9/nonexistent.json"
+            # Seed setup complete so we test post-wizard Home banner state directly
+            (u_dir / ".efs_setup_complete.json").write_text('{"completed": true}\n', encoding="utf-8")
+            u_port = _find_free_port()
+            u_log = u_dir / "logs" / "server.log"
+            u_log.parent.mkdir(parents=True, exist_ok=True)
+            with open(u_log, "w", encoding="utf-8") as u_fp:
+                u_srv = subprocess.Popen(
+                    [
+                        str(py_exe), "-m", "streamlit", "run", str(main_py),
+                        "--server.port", str(u_port),
+                        "--server.address", "127.0.0.1",
+                        "--server.headless", "true",
+                        "--browser.gatherUsageStats", "false",
+                        "--global.developmentMode", "false",
+                        "--server.fileWatcherType", "none",
+                    ],
+                    cwd=str(staging),
+                    env=u_env,
+                    stdout=u_fp,
+                    stderr=subprocess.STDOUT,
+                )
+            try:
+                u_url = f"http://127.0.0.1:{u_port}"
+                u_ready = False
+                for _ in range(45):
+                    if u_srv.poll() is not None:
+                        break
+                    try:
+                        with urllib.request.urlopen(f"{u_url}/_stcore/health", timeout=1) as r:
+                            if int(getattr(r, "status", 0)) == 200:
+                                u_ready = True
+                                break
+                    except Exception:
+                        time.sleep(0.5)
+                if not u_ready:
+                    errors.append(f"[{upd_label}] Staged server failed to become ready")
+                else:
+                    errors.extend(
+                        _run_cdp_dom_check(
+                            browser_exe,
+                            u_url,
+                            expect_wizard=False,
+                            expect_update_banner=expect_banner,
+                        )
+                    )
+            finally:
+                u_srv.terminate()
+                try:
+                    u_srv.wait(timeout=8)
+                except Exception:
+                    u_srv.kill()
+                shutil.rmtree(u_dir, ignore_errors=True)
 
     return errors
 

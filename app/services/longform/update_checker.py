@@ -142,10 +142,28 @@ def _normalize_manifest_url(url: str) -> str:
     cleaned = str(url or "").strip()
     if not cleaned:
         return UPDATE_MANIFEST_URL
-    # Allow bare local file path in EFS_UPDATE_URL if someone passes F:\...\latest.json
+    # Allow bare local file path in EFS_UPDATE_URL (e.g. F:\...\latest.json)
     if "://" not in cleaned and Path(cleaned).exists():
         return Path(cleaned).resolve().as_uri()
+    # Normalize Windows two-slash file://F:/path URIs into canonical file:///F:/path
+    if cleaned.lower().startswith("file://") and not cleaned.lower().startswith("file:///"):
+        tail = cleaned[7:]
+        if len(tail) >= 2 and tail[1] == ":":
+            return f"file:///{tail.lstrip('/')}"
     return cleaned
+
+
+def _format_short_error(exc: Exception) -> str:
+    """Return concise human-readable error reason for Settings UI & logs (E10.2)."""
+    reason = str(exc or "").strip()
+    if hasattr(exc, "reason") and getattr(exc, "reason"):
+        reason = str(getattr(exc, "reason"))
+    elif isinstance(exc, OSError) and getattr(exc, "strerror", None):
+        reason = str(exc.strerror)
+    reason = " ".join(reason.split())
+    if len(reason) > 120:
+        reason = reason[:117] + "..."
+    return reason or type(exc).__name__
 
 
 def fetch_update_manifest(url: str, *, timeout: float = DEFAULT_REQUEST_TIMEOUT_SECONDS) -> Dict[str, Any]:
@@ -203,27 +221,48 @@ def check_for_updates(
     """Check for a newer EasyFaceless Studio release, obeying 24-hour throttle unless `force=True`."""
     state = read_update_state()
     if not force and not should_run_auto_check(now=now):
-        return build_update_result(state, checked_now=False, error=None)
+        res = build_update_result(state, checked_now=False, error=None)
+        logger.debug(
+            f"App update check: url={_normalize_manifest_url(manifest_url or get_update_manifest_url())} "
+            f"local_version={APP_VERSION} remote_version={res.get('remote_version') or 'N/A'} "
+            f"decision=cached_within_24h"
+        )
+        return res
 
     current_dt = now or datetime.now(timezone.utc)
     if current_dt.tzinfo is None:
         current_dt = current_dt.replace(tzinfo=timezone.utc)
 
-    target_url = manifest_url or get_update_manifest_url()
+    raw_target_url = manifest_url or get_update_manifest_url()
+    target_url = _normalize_manifest_url(raw_target_url)
     try:
         manifest = fetch_update_manifest(target_url, timeout=timeout)
         state["latest_manifest"] = manifest
         state["last_checked_at"] = current_dt.isoformat()
         state["last_error"] = None
         write_update_state(state)
-        return build_update_result(state, checked_now=True, error=None)
+        res = build_update_result(state, checked_now=True, error=None)
+        decision = (
+            "skipped_version"
+            if res["is_skipped"]
+            else ("update_available" if res["has_update"] else "up_to_date")
+        )
+        logger.info(
+            f"App update check: url={target_url} local_version={APP_VERSION} "
+            f"remote_version={res.get('remote_version') or 'N/A'} decision={decision}"
+        )
+        return res
     except Exception as exc:
-        logger.debug(f"App update check skipped/offline ({target_url}): {exc}")
+        short_err = _format_short_error(exc)
+        logger.info(
+            f"App update check: url={target_url} local_version={APP_VERSION} "
+            f"remote_version=N/A decision=failed ({short_err})"
+        )
         # Update last_checked_at even on failure when running auto-check to prevent tight retry loops
         state["last_checked_at"] = current_dt.isoformat()
-        state["last_error"] = str(exc)
+        state["last_error"] = short_err
         write_update_state(state)
-        return build_update_result(state, checked_now=True, error=str(exc))
+        return build_update_result(state, checked_now=True, error=short_err)
 
 
 def skip_update_version(version: str) -> Dict[str, Any]:
@@ -252,7 +291,7 @@ def get_active_update_banner() -> Optional[Dict[str, Any]]:
 
 
 def start_background_update_check(*, timeout: float = DEFAULT_REQUEST_TIMEOUT_SECONDS) -> bool:
-    """Trigger one-time non-blocking background update check per 24h throttle."""
+    """Run bounded 1-time startup update check per 24h throttle so banner appears on initial render (E2, E10.2)."""
     global _BG_CHECK_STARTED
     if os.environ.get("PYTEST_CURRENT_TEST", "").strip() and not os.environ.get("EFS_UPDATE_URL", "").strip():
         return False
@@ -264,24 +303,10 @@ def start_background_update_check(*, timeout: float = DEFAULT_REQUEST_TIMEOUT_SE
         _BG_CHECK_STARTED = True
 
     manifest_url = get_update_manifest_url()
-    normalized = _normalize_manifest_url(manifest_url)
-    # Local file:/// test manifests resolve in <5ms; run inline so banner shows immediately
-    if normalized.lower().startswith("file:"):
-        try:
-            check_for_updates(force=False, timeout=timeout, manifest_url=manifest_url)
-        finally:
-            with _BG_CHECK_LOCK:
-                _BG_CHECK_STARTED = False
-        return True
-
-    def _worker() -> None:
-        try:
-            check_for_updates(force=False, timeout=timeout, manifest_url=manifest_url)
-        except Exception as exc:
-            logger.debug(f"Background update worker ignored error: {exc}")
-        finally:
-            with _BG_CHECK_LOCK:
-                _BG_CHECK_STARTED = False
-
-    threading.Thread(target=_worker, name="efs-update-check", daemon=True).start()
+    bounded_timeout = min(max(0.5, float(timeout)), 2.0)
+    try:
+        check_for_updates(force=False, timeout=bounded_timeout, manifest_url=manifest_url)
+    finally:
+        with _BG_CHECK_LOCK:
+            _BG_CHECK_STARTED = False
     return True

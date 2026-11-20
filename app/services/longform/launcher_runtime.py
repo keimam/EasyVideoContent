@@ -154,24 +154,34 @@ def launch_or_focus_app(
     logs_dir = app_paths.get_logs_dir(create=True)
     server_log = logs_dir / "server.log"
 
+    desired_update_url = os.environ.get("EFS_UPDATE_URL", "").strip()
     existing = read_launcher_lock()
     if existing:
         old_pid = int(existing.get("pid") or 0)
         old_port = int(existing.get("port") or start_port)
         old_url = str(existing.get("url") or f"http://{host}:{old_port}")
+        old_update_url = str(existing.get("update_url") or "").strip()
         if old_pid > 0 and platform_utils.is_pid_alive(old_pid) and is_streamlit_server_healthy(old_port, host=host):
-            _append_launcher_log(f"Reusing active server instance (pid={old_pid}, port={old_port})")
-            if open_browser:
-                platform_utils.open_url_in_browser(old_url)
-            return {
-                "reused": True,
-                "pid": old_pid,
-                "port": old_port,
-                "url": old_url,
-                "data_dir": str(data_dir),
-            }
-        _append_launcher_log(f"Clearing stale launcher lock (pid={old_pid}, port={old_port})")
-        clear_launcher_lock()
+            if desired_update_url != old_update_url and not list_active_running_jobs():
+                _append_launcher_log(
+                    f"Restarting active server (pid={old_pid}) because EFS_UPDATE_URL changed ({old_update_url!r} -> {desired_update_url!r})"
+                )
+                platform_utils.terminate_process_tree(old_pid, force=True, timeout=5.0)
+                clear_launcher_lock()
+            else:
+                _append_launcher_log(f"Reusing active server instance (pid={old_pid}, port={old_port})")
+                if open_browser:
+                    platform_utils.open_url_in_browser(old_url)
+                return {
+                    "reused": True,
+                    "pid": old_pid,
+                    "port": old_port,
+                    "url": old_url,
+                    "data_dir": str(data_dir),
+                }
+        else:
+            _append_launcher_log(f"Clearing stale launcher lock (pid={old_pid}, port={old_port})")
+            clear_launcher_lock()
 
     port = find_free_port(start_port=start_port, host=host)
     url = f"http://{host}:{port}"
@@ -180,6 +190,7 @@ def launch_or_focus_app(
     if not main_script.is_file():
         raise FileNotFoundError(f"Main WebUI entrypoint not found: {main_script}")
 
+    installed_mode = app_paths.is_installed_mode()
     cmd = [
         python_exe,
         "-m",
@@ -197,17 +208,25 @@ def launch_or_focus_app(
         "--global.developmentMode",
         "false",
     ]
+    if installed_mode:
+        cmd.extend(["--server.fileWatcherType", "none"])
+
     child_env = os.environ.copy()
     child_env["EFS_DATA_DIR"] = str(data_dir)
-    if app_paths.is_installed_mode():
+    if installed_mode:
         child_env["EFS_INSTALLED"] = "1"
+        child_env["STREAMLIT_SERVER_FILE_WATCHER_TYPE"] = "none"
+    if desired_update_url:
+        child_env["EFS_UPDATE_URL"] = desired_update_url
     child_env["EFS_SERVER_PORT"] = str(port)
     existing_pp = child_env.get("PYTHONPATH", "")
     child_env["PYTHONPATH"] = f"{install_root}{os.pathsep}{existing_pp}" if existing_pp else str(install_root)
     child_env["PYTHONIOENCODING"] = "utf-8"
     child_env["PYTHONUNBUFFERED"] = "1"
 
-    _append_launcher_log(f"Starting Streamlit server on {url} (data_dir={data_dir})")
+    _append_launcher_log(
+        f"Starting Streamlit server on {url} (data_dir={data_dir}, installed={installed_mode}, update_url={desired_update_url or '<default>'})"
+    )
     proc = platform_utils.launch_desktop_app_detached(
         cmd,
         cwd=install_root,
@@ -221,6 +240,7 @@ def launch_or_focus_app(
         "started_at": datetime.now().isoformat(),
         "data_dir": str(data_dir),
         "install_root": str(install_root),
+        "update_url": desired_update_url,
     }
     write_launcher_lock(lock_payload)
 
