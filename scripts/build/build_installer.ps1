@@ -16,7 +16,8 @@ One-command reproducible build script for EasyFaceless Studio Windows Installer 
 param(
     [string]$FFmpegDir = "",
     [string]$InnoCompiler = "",
-    [switch]$SkipClean
+    [switch]$SkipClean,
+    [switch]$AllowDirty
 )
 
 $ErrorActionPreference = "Stop"
@@ -78,7 +79,22 @@ try {
         throw "FFmpeg/FFprobe binaries tidak ditemukan. Tentukan -FFmpegDir atau tambahkan ke PATH."
     }
 
-    # 3. Read single-source metadata from constants.py
+    # 3. Verify git clean state (E12.3) and read commit + single-source metadata
+    $GitDirty = (& git status --porcelain 2>$null)
+    if ($GitDirty -and -not $AllowDirty) {
+        throw "Working tree git tidak bersih (commit perubahan lebih dulu, atau gunakan -AllowDirty untuk uji sementara). Perubahan:`n$($GitDirty -join "`n")"
+    }
+    if ($GitDirty -and $AllowDirty) {
+        Write-Warning "Build berjalan pada working tree tidak bersih karena flag -AllowDirty diaktifkan."
+    }
+    $CommitShort = (& git rev-parse --short HEAD 2>$null).Trim()
+    $CommitFull = (& git rev-parse HEAD 2>$null).Trim()
+    if (-not $CommitShort) { $CommitShort = "dev" }
+    if (-not $CommitFull) { $CommitFull = $CommitShort }
+    $BuildTime = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+    $BuildStamp = (Get-Date).ToString("yyyyMMdd-HHmmss")
+    $BuildId = "$CommitShort-$BuildStamp"
+
     $MetaJson = & $VenvPython -c "import json; from app.services.branding.constants import APP_NAME, APP_VERSION, APP_OWNER, APP_SETUP_PREFIX, UPDATE_MANIFEST_URL; print(json.dumps({'name': APP_NAME, 'version': APP_VERSION, 'owner': APP_OWNER, 'prefix': APP_SETUP_PREFIX, 'update_url': UPDATE_MANIFEST_URL}))"
     $Meta = $MetaJson | ConvertFrom-Json
     $AppName = $Meta.name
@@ -90,6 +106,7 @@ try {
     }
 
     Write-Host "App       : $AppName v$AppVersion"
+    Write-Host "Build     : $BuildId (commit $CommitShort)"
     Write-Host "Publisher : $AppOwner"
     Write-Host "InnoSetup : $InnoCompiler"
     Write-Host "FFmpeg    : $FFmpegDir"
@@ -104,8 +121,8 @@ try {
     New-Item -ItemType Directory -Path $StagingDir -Force | Out-Null
     New-Item -ItemType Directory -Path $DistDir -Force | Out-Null
 
-    # Generate multi-res .ico
-    $IconPath = Join-Path $RepoRoot "resource\branding\app.ico"
+    # Generate multi-res .ico inside build\ so tracked repo stays clean (E12.3)
+    $IconPath = Join-Path $BuildRoot "app.ico"
     & $VenvPython (Join-Path $RepoRoot "packaging\launcher\generate_icon.py") --dst $IconPath | Out-Null
 
     # 5. Copy clean app files into staging (strictly exclude storage, config.toml, .git, test, screens, backups)
@@ -140,8 +157,17 @@ try {
         }
     }
 
-    # Write installed-mode marker cleanly
-    "EasyFaceless Studio v$AppVersion installed package marker" | Out-File (Join-Path $StagingDir ".efs_installed") -Encoding utf8 -Force
+    # Write installed-mode marker & embedded build metadata cleanly inside staging (E12.1, E12.3)
+    "EasyFaceless Studio v$AppVersion installed package marker (build $BuildId)" | Out-File (Join-Path $StagingDir ".efs_installed") -Encoding utf8 -Force
+    $BuildMetaFile = Join-Path $StagingDir "app\services\branding\_build_meta.json"
+    $BuildMetaObj = @{
+        git_commit = $CommitShort
+        git_commit_full = $CommitFull
+        build_time = $BuildTime
+        build_id = $BuildId
+        dirty = [bool]$GitDirty
+    } | ConvertTo-Json -Depth 3
+    [System.IO.File]::WriteAllText($BuildMetaFile, $BuildMetaObj + "`n", [System.Text.UTF8Encoding]::new($false))
 
     # Ensure packaged Streamlit never watches bundled stdlib/code modules in installed mode (E10.1)
     # Write strictly UTF-8 WITHOUT BOM so Python tomllib parses .streamlit/config.toml cleanly.
@@ -300,6 +326,9 @@ try {
                 "# EasyFaceless Studio v$AppVersion Release Notes",
                 "",
                 "Installer: ``$SetupBaseName.exe``",
+                "Build Commit: ``$CommitShort`` (``$CommitFull``)",
+                "Build Time: ``$BuildTime``",
+                "Build ID: ``$BuildId``",
                 "SHA-256: ``$ShaHash``",
                 ""
             ) + $Captured | Out-File -FilePath $ReleaseNotesOut -Encoding utf8 -Force
@@ -309,6 +338,8 @@ try {
     Write-Host ""
     Write-Host "=== BUILD SUCCEEDED ===" -ForegroundColor Green
     Write-Host "Installer   : $InstallerExe ($InstallerMB MB / $InstallerBytes bytes)"
+    Write-Host "BuildCommit : $CommitShort ($CommitFull)"
+    Write-Host "Build ID    : $BuildId ($BuildTime)"
     Write-Host "SHA256      : $ShaFile ($ShaHash)"
     if (Test-Path $ReleaseNotesOut) {
         Write-Host "ReleaseNote : $ReleaseNotesOut"

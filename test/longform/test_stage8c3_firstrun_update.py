@@ -812,10 +812,18 @@ def test_e11_empty_prod_url_friendly_errors_about_and_sidebar_badge(tmp_path: Pa
         assert not at.exception
         assert any(b.key == "efs_btn_sidebar_update_longform" for b in at.button)
 
+        at.session_state["efs_manual_update_result"] = res_upd
         at.button(key="efs_btn_about_longform").click().run(timeout=20)
         assert not at.exception
         assert any(b.key == "btn_check_updates_about_dialog" for b in at.button)
         assert any(c.key == "chk_auto_update_about_dialog" for c in at.checkbox)
+        assert any(b.key == "btn_upd_manual_dl_about_dialog" for b in at.button)
+        about_md = "\n".join(m.value for m in at.markdown)
+        after_info = "\n".join(i.value for i in at.info)
+        assert "· build " in about_md
+        assert "Catatan uji E11" in about_md
+        assert "v1.0.1" in after_info
+        assert "Pengaturan" not in after_info and "Settings" not in after_info
 
         # Skipped version logs decision=skipped_version on force=True
         update_checker.skip_update_version("1.0.1")
@@ -823,3 +831,134 @@ def test_e11_empty_prod_url_friendly_errors_about_and_sidebar_badge(tmp_path: Pa
         assert any("decision=skipped_version" in ln for ln in log_lines)
     finally:
         logger.remove(sink_id)
+
+
+def test_e12_launcher_build_signature_reuse_and_replace_server(tmp_path, monkeypatch):
+    """E12.1/E12.3/E12.4: Same version+build reuses active server; mismatched version/build replaces it (warns on active jobs)."""
+    from types import SimpleNamespace
+    from app.services.branding import constants
+    from app.services.longform import app_paths, launcher_runtime, platform_utils
+
+    data_dir = tmp_path / "data"
+    install_dir = tmp_path / "app_root"
+    (install_dir / "webui").mkdir(parents=True, exist_ok=True)
+    (install_dir / "webui" / "Main.py").write_text("# stub main\n", encoding="utf-8")
+    data_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("EFS_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("EFS_INSTALL_ROOT", str(install_dir))
+    monkeypatch.setattr(app_paths, "get_data_dir", lambda create=False: data_dir)
+    monkeypatch.setattr(app_paths, "get_install_root", lambda: install_dir)
+    monkeypatch.setattr(app_paths, "is_installed_mode", lambda: True)
+
+    # Embedded _build_meta.json reading (E12.3)
+    meta_file = tmp_path / "_build_meta.json"
+    meta_file.write_text(
+        json.dumps(
+            {
+                "git_commit": "abc1234",
+                "git_commit_full": "abc1234deadbeef",
+                "build_time": "2026-11-20 17:30:00",
+                "build_id": "abc1234-20261120-173000",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(constants, "BUILD_META_PATH", meta_file)
+    sig = constants.get_app_build_signature()
+    assert sig["app_version"] == constants.APP_VERSION
+    assert sig["git_commit"] == "abc1234"
+    assert sig["build_id"] == "abc1234-20261120-173000"
+
+    opened_urls = []
+    terminated_pids = []
+    launched_envs = []
+
+    monkeypatch.setattr(platform_utils, "is_pid_alive", lambda pid: True)
+    monkeypatch.setattr(launcher_runtime, "is_streamlit_server_healthy", lambda port, host="127.0.0.1", timeout=1.0: True)
+    monkeypatch.setattr(platform_utils, "open_url_in_browser", lambda u: opened_urls.append(u) or True)
+    monkeypatch.setattr(
+        platform_utils,
+        "terminate_process_tree",
+        lambda pid, force=True, timeout=5.0: terminated_pids.append(pid) or True,
+    )
+    monkeypatch.setattr(launcher_runtime, "find_free_port", lambda start_port=8501, host="127.0.0.1": 8519)
+
+    def fake_detached(cmd, cwd=None, log_file=None, env=None):
+        launched_envs.append(dict(env or {}))
+        return SimpleNamespace(pid=99002, poll=lambda: None, returncode=0)
+
+    monkeypatch.setattr(platform_utils, "launch_desktop_app_detached", fake_detached)
+    monkeypatch.setattr(launcher_runtime, "list_active_running_jobs", lambda: [])
+
+    # 1. Matching version + build_id -> reuse existing server
+    launcher_runtime.write_launcher_lock(
+        {
+            "pid": 12924,
+            "port": 8501,
+            "url": "http://127.0.0.1:8501",
+            "update_url": "",
+            "app_version": sig["app_version"],
+            "build_id": sig["build_id"],
+        }
+    )
+    res_reuse = launcher_runtime.launch_or_focus_app(open_browser=False)
+    assert res_reuse["reused"] is True
+    assert res_reuse["pid"] == 12924
+    assert terminated_pids == []
+
+    # 2. Outdated/mismatched build_id -> replace old server cleanly
+    launcher_runtime.write_launcher_lock(
+        {
+            "pid": 12924,
+            "port": 8501,
+            "url": "http://127.0.0.1:8501",
+            "update_url": "",
+            "app_version": "1.0.0",
+            "build_id": "old0000-20261120-125400",
+        }
+    )
+    res_replace = launcher_runtime.launch_or_focus_app(open_browser=False)
+    assert res_replace["reused"] is False
+    assert res_replace["pid"] == 99002
+    assert 12924 in terminated_pids
+    assert launched_envs[-1]["EFS_SERVER_BUILD_ID"] == "abc1234-20261120-173000"
+    assert launched_envs[-1]["EFS_SERVER_APP_VERSION"] == sig["app_version"]
+    new_lock = launcher_runtime.read_launcher_lock()
+    assert new_lock and new_lock["pid"] == 99002 and new_lock["build_id"] == "abc1234-20261120-173000"
+
+    # 3. Mismatched build_id WITH active running job: decline keeps old, accept stops job & replaces
+    terminated_pids.clear()
+    monkeypatch.setattr(
+        launcher_runtime,
+        "list_active_running_jobs",
+        lambda: [{"project_id": "proj_1", "step": "tts", "pid": 77777}],
+    )
+    launcher_runtime.write_launcher_lock(
+        {
+            "pid": 55555,
+            "port": 8501,
+            "url": "http://127.0.0.1:8501",
+            "update_url": "",
+            "app_version": "1.0.0",
+            "build_id": "older-build",
+        }
+    )
+    res_declined = launcher_runtime.launch_or_focus_app(
+        open_browser=False,
+        confirm_jobs_callback=lambda jobs: False,
+    )
+    assert res_declined["reused"] is True and res_declined.get("restart_cancelled") is True
+    assert terminated_pids == []
+
+    res_confirmed = launcher_runtime.launch_or_focus_app(
+        open_browser=False,
+        confirm_jobs_callback=lambda jobs: True,
+    )
+    assert res_confirmed["reused"] is False and res_confirmed["pid"] == 99002
+    assert 77777 in terminated_pids and 55555 in terminated_pids
+
+    log_txt = (data_dir / "logs" / "launcher.log").read_text(encoding="utf-8")
+    assert "Reusing active server instance" in log_txt
+    assert "Replacing outdated active server (pid=12924" in log_txt
+    assert "WARNING: 1 active background job(s) running" in log_txt
+

@@ -41,6 +41,7 @@ ID_TRANSLATIONS: Dict[str, str] = {
         "dan integrasi pengeditan timeline CapCut Desktop."
     ),
     "about_dialog_app_version": "**Versi aplikasi:** v{app_ver}",
+    "about_dialog_build_line": "**Build:** `{build_commit}` ({build_time})",
     "about_dialog_core_version": "**Versi inti MPT:** v{core_ver}",
     "about_dialog_built_on": "Dibangun di atas [MoneyPrinterTurbo]({url}) oleh harry0703 (MIT License).",
     "about_dialog_third_party_line": "Catatan pihak ketiga: [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)",
@@ -1004,7 +1005,7 @@ ID_TRANSLATIONS: Dict[str, str] = {
     "btn_check_updates_now": "Cek pembaruan sekarang",
     "btn_run_wizard_again": "Jalankan wizard lagi",
     "update_up_to_date": "Aplikasi Anda sudah versi terbaru (v{ver}).",
-    "update_available_msg": "Versi baru v{ver} tersedia! Tutup dialog Pengaturan untuk melihat banner unduhan.",
+    "update_available_msg": "Versi baru **v{ver}** tersedia!",
     "update_check_offline_note": "Tidak dapat menghubungi server pembaruan (offline atau URL tidak terjangkau).",
     "update_check_failed_reason": "Gagal mengecek pembaruan: {reason}",
     "update_err_404": "Informasi versi tidak ditemukan di server pembaruan",
@@ -1017,6 +1018,7 @@ ID_TRANSLATIONS: Dict[str, str] = {
     "update_dialog_title": "Pembaruan EasyFaceless Studio v{ver}",
     "about_update_section_title": "Pembaruan Aplikasi",
     "update_opening_url": "Membuka halaman unduhan: {url}",
+    "launcher_upgrade_jobs_warning": "PERINGATAN: Ada {count} tugas produksi yang sedang berjalan di server versi lama.\n\nMengganti ke versi terpasang baru akan menghentikan tugas tersebut. Lanjutkan?",
     # --- E3: CapCut Version Detection ---
     "capcut_status_tested_badge": "CapCut {ver} — teruji ✓",
     "capcut_status_untested_badge": "CapCut {ver} — belum diuji, cek hasil draft",
@@ -1088,6 +1090,7 @@ EN_TRANSLATIONS: Dict[str, str] = {
         "and CapCut Desktop timeline export."
     ),
     "about_dialog_app_version": "**App version:** v{app_ver}",
+    "about_dialog_build_line": "**Build:** `{build_commit}` ({build_time})",
     "about_dialog_core_version": "**MPT core version:** v{core_ver}",
     "about_dialog_built_on": "Built on [MoneyPrinterTurbo]({url}) by harry0703 (MIT License).",
     "about_dialog_third_party_line": "Third-party notices: [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)",
@@ -2051,7 +2054,7 @@ EN_TRANSLATIONS: Dict[str, str] = {
     "btn_check_updates_now": "Check for updates now",
     "btn_run_wizard_again": "Run wizard again",
     "update_up_to_date": "You are running the latest version (v{ver}).",
-    "update_available_msg": "New version v{ver} is available! Close Settings to view the download banner.",
+    "update_available_msg": "New version **v{ver}** is available!",
     "update_check_offline_note": "Could not reach the update server (offline or unreachable URL).",
     "update_check_failed_reason": "Update check failed: {reason}",
     "update_err_404": "Version information was not found on the update server",
@@ -2064,6 +2067,7 @@ EN_TRANSLATIONS: Dict[str, str] = {
     "update_dialog_title": "EasyFaceless Studio Update v{ver}",
     "about_update_section_title": "Application Updates",
     "update_opening_url": "Opening download page: {url}",
+    "launcher_upgrade_jobs_warning": "WARNING: {count} background production job(s) are currently running in the older server instance.\n\nSwitching to the newly installed version will stop those jobs. Continue?",
     # --- E3: CapCut Version Detection ---
     "capcut_status_tested_badge": "CapCut {ver} — tested ✓",
     "capcut_status_untested_badge": "CapCut {ver} — untested, verify exported draft",

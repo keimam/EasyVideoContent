@@ -132,60 +132,73 @@ begin
   ProjectsPath := ExpandConstant('{localappdata}\{#MyUserDataFolderName}\storage\longform_projects');
   if DoShutdown then ShutdownFlag := '1' else ShutdownFlag := '0';
 
-  SetArrayLength(ScriptLines, 53);
+  SetArrayLength(ScriptLines, 66);
   ScriptLines[0]  := '$targetDir = ''' + EscapePsSingleQuote(TargetDir) + '''';
   ScriptLines[1]  := '$lockPath = ''' + EscapePsSingleQuote(LockPath) + '''';
   ScriptLines[2]  := '$projectsPath = ''' + EscapePsSingleQuote(ProjectsPath) + '''';
   ScriptLines[3]  := '$outFile = ''' + EscapePsSingleQuote(OutStatusFile) + '''';
   ScriptLines[4]  := '$doStop = ''' + ShutdownFlag + ''' -eq ''1''';
   ScriptLines[5]  := '$normTarget = $targetDir.TrimEnd(''\'', ''/'').ToLowerInvariant()';
-  ScriptLines[6]  := 'function Get-EfsProcs {';
-  ScriptLines[7]  := '  $list = @()';
-  ScriptLines[8]  := '  try {';
-  ScriptLines[9]  := '    $all = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue';
-  ScriptLines[10] := '    foreach ($p in $all) {';
-  ScriptLines[11] := '      if (-not $p.ExecutablePath) { continue }';
-  ScriptLines[12] := '      $ep = $p.ExecutablePath.ToLowerInvariant()';
-  ScriptLines[13] := '      if ($ep.StartsWith($normTarget + ''\'') -or $ep.StartsWith($normTarget + ''/'')) { $list += $p }';
-  ScriptLines[14] := '    }';
-  ScriptLines[15] := '  } catch {}';
-  ScriptLines[16] := '  return ,$list';
-  ScriptLines[17] := '}';
-  ScriptLines[18] := 'function Get-RunningJobsCount {';
-  ScriptLines[19] := '  $cnt = 0';
-  ScriptLines[20] := '  if (Test-Path $projectsPath) {';
-  ScriptLines[21] := '    Get-ChildItem -Path $projectsPath -Directory -ErrorAction SilentlyContinue | ForEach-Object {';
-  ScriptLines[22] := '      $jf = Join-Path $_.FullName ''job_state.json''';
-  ScriptLines[23] := '      if (Test-Path $jf) {';
-  ScriptLines[24] := '        try {';
-  ScriptLines[25] := '          $jd = Get-Content -Path $jf -Raw -Encoding UTF8 | ConvertFrom-Json';
-  ScriptLines[26] := '          if ($jd.status -eq ''running'' -and $jd.pid) {';
-  ScriptLines[27] := '            $alive = Get-Process -Id ([int]$jd.pid) -ErrorAction SilentlyContinue';
-  ScriptLines[28] := '            if ($alive) { $cnt++ }';
-  ScriptLines[29] := '          }';
-  ScriptLines[30] := '        } catch {}';
-  ScriptLines[31] := '      }';
-  ScriptLines[32] := '    }';
-  ScriptLines[33] := '  }';
-  ScriptLines[34] := '  return $cnt';
-  ScriptLines[35] := '}';
-  ScriptLines[36] := '$procs = Get-EfsProcs';
-  ScriptLines[37] := '$jobs = Get-RunningJobsCount';
-  ScriptLines[38] := 'if ($doStop) {';
-  ScriptLines[39] := '  $deadline = (Get-Date).AddSeconds(10)';
-  ScriptLines[40] := '  while ($procs.Count -gt 0 -and (Get-Date) -lt $deadline) {';
-  ScriptLines[41] := '    foreach ($p in $procs) {';
-  ScriptLines[42] := '      try { Stop-Process -Id ([int]$p.ProcessId) -Force -ErrorAction SilentlyContinue } catch {}';
-  ScriptLines[43] := '    }';
-  ScriptLines[44] := '    Start-Sleep -Milliseconds 300';
-  ScriptLines[45] := '    $procs = Get-EfsProcs';
-  ScriptLines[46] := '  }';
-  ScriptLines[47] := '  if (Test-Path $lockPath) { Remove-Item -Path $lockPath -Force -ErrorAction SilentlyContinue }';
-  ScriptLines[48] := '  $jobs = Get-RunningJobsCount';
-  ScriptLines[49] := '}';
-  ScriptLines[50] := '$lines = @("PROCS=$($procs.Count)", "JOBS=$jobs")';
-  ScriptLines[51] := 'Set-Content -Path $outFile -Value $lines -Encoding Ascii';
-  ScriptLines[52] := 'exit 0';
+  ScriptLines[6]  := 'try { $fullTarget = [System.IO.Path]::GetFullPath($targetDir).TrimEnd(''\'', ''/'').ToLowerInvariant() } catch { $fullTarget = $normTarget }';
+  ScriptLines[7]  := 'function Get-EfsProcs {';
+  ScriptLines[8]  := '  $list = @()';
+  ScriptLines[9]  := '  try {';
+  ScriptLines[10] := '    $all = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue';
+  ScriptLines[11] := '    foreach ($p in $all) {';
+  ScriptLines[12] := '      if ([int]$p.ProcessId -eq $PID) { continue }';
+  ScriptLines[13] := '      $ep = if ($p.ExecutablePath) { $p.ExecutablePath.ToLowerInvariant() } else { '''' }';
+  ScriptLines[14] := '      $cmd = if ($p.CommandLine) { $p.CommandLine.ToLowerInvariant() } else { '''' }';
+  ScriptLines[15] := '      $nm = if ($p.Name) { $p.Name.ToLowerInvariant() } else { '''' }';
+  ScriptLines[16] := '      $inDir = ($ep -and ($ep.StartsWith($normTarget + ''\'') -or $ep.StartsWith($normTarget + ''/'') -or $ep.StartsWith($fullTarget + ''\'') -or $ep.StartsWith($fullTarget + ''/'')))';
+  ScriptLines[17] := '      $isEfsPy = ($nm -like ''python*'') -and ($cmd -like ''*app.services.longform.launcher_runtime*'' -or ($cmd -like ''*streamlit*'' -and ($cmd -like ''*webui*main.py*'' -or $cmd -like ''*easyfaceless*'')))';
+  ScriptLines[18] := '      if ($inDir -or $isEfsPy) { $list += $p }';
+  ScriptLines[19] := '    }';
+  ScriptLines[20] := '  } catch {}';
+  ScriptLines[21] := '  return ,$list';
+  ScriptLines[22] := '}';
+  ScriptLines[23] := 'function Get-RunningJobsCount {';
+  ScriptLines[24] := '  $cnt = 0';
+  ScriptLines[25] := '  if (Test-Path $projectsPath) {';
+  ScriptLines[26] := '    Get-ChildItem -Path $projectsPath -Directory -ErrorAction SilentlyContinue | ForEach-Object {';
+  ScriptLines[27] := '      $jf = Join-Path $_.FullName ''job_state.json''';
+  ScriptLines[28] := '      if (Test-Path $jf) {';
+  ScriptLines[29] := '        try {';
+  ScriptLines[30] := '          $jd = Get-Content -Path $jf -Raw -Encoding UTF8 | ConvertFrom-Json';
+  ScriptLines[31] := '          if ($jd.status -eq ''running'' -and $jd.pid) {';
+  ScriptLines[32] := '            $alive = Get-Process -Id ([int]$jd.pid) -ErrorAction SilentlyContinue';
+  ScriptLines[33] := '            if ($alive) { $cnt++ }';
+  ScriptLines[34] := '          }';
+  ScriptLines[35] := '        } catch {}';
+  ScriptLines[36] := '      }';
+  ScriptLines[37] := '    }';
+  ScriptLines[38] := '  }';
+  ScriptLines[39] := '  return $cnt';
+  ScriptLines[40] := '}';
+  ScriptLines[41] := '$procs = Get-EfsProcs';
+  ScriptLines[42] := '$jobs = Get-RunningJobsCount';
+  ScriptLines[43] := 'if ($doStop) {';
+  ScriptLines[44] := '  $deadline = (Get-Date).AddSeconds(12)';
+  ScriptLines[45] := '  while ($procs.Count -gt 0 -and (Get-Date) -lt $deadline) {';
+  ScriptLines[46] := '    foreach ($p in $procs) {';
+  ScriptLines[47] := '      $id = [int]$p.ProcessId';
+  ScriptLines[48] := '      try { Stop-Process -Id $id -Force -ErrorAction SilentlyContinue } catch {}';
+  ScriptLines[49] := '      try { & taskkill.exe /F /T /PID $id 2>$null | Out-Null } catch {}';
+  ScriptLines[50] := '    }';
+  ScriptLines[51] := '    Start-Sleep -Milliseconds 350';
+  ScriptLines[52] := '    $procs = Get-EfsProcs';
+  ScriptLines[53] := '  }';
+  ScriptLines[54] := '  if (Test-Path $lockPath) { Remove-Item -Path $lockPath -Force -ErrorAction SilentlyContinue }';
+  ScriptLines[55] := '  $envData = [Environment]::GetEnvironmentVariable(''EFS_DATA_DIR'')';
+  ScriptLines[56] := '  if ($envData) {';
+  ScriptLines[57] := '    $envLock = Join-Path $envData ''.efs_launcher.lock.json''';
+  ScriptLines[58] := '    if (Test-Path $envLock) { Remove-Item -Path $envLock -Force -ErrorAction SilentlyContinue }';
+  ScriptLines[59] := '  }';
+  ScriptLines[60] := '  $jobs = Get-RunningJobsCount';
+  ScriptLines[61] := '}';
+  ScriptLines[62] := '$lines = @("PROCS=$($procs.Count)", "JOBS=$jobs")';
+  ScriptLines[63] := 'Set-Content -Path $outFile -Value $lines -Encoding Ascii';
+  ScriptLines[64] := 'exit 0';
+  ScriptLines[65] := '# end EFS proc mgr';
 
   if not SaveStringsToUTF8File(ScriptPath, ScriptLines, False) then
     Exit;
@@ -246,10 +259,10 @@ begin
     end;
   end;
 
-  // Attempt graceful launcher_runtime --shutdown first, then wait/clean remaining locks outside TargetDir
+  // Attempt graceful launcher_runtime --shutdown from TargetDir so PYTHONPATH imports app cleanly (D9.6, E12.2)
   PyExe := AddBackslash(TargetDir) + 'runtime\python\python.exe';
   if FileExists(PyExe) then
-    Exec(PyExe, '-m app.services.longform.launcher_runtime --shutdown --install-root "' + TargetDir + '"', ExpandConstant('{tmp}'), SW_HIDE, ewWaitUntilTerminated, DummyRes);
+    Exec(PyExe, '-m app.services.longform.launcher_runtime --shutdown --install-root "' + TargetDir + '"', TargetDir, SW_HIDE, ewWaitUntilTerminated, DummyRes);
 
   RunProcessHelper(TargetDir, StatusFile, True, ProcsFound, JobsRunning);
   if ProcsFound > 0 then
@@ -270,8 +283,8 @@ end;
 function PrepareToInstall(var NeedsRestart: Boolean): string;
 begin
   Result := '';
-  if WizardSilent() then
-    HandleRunningAppBeforeFileOp(WizardDirValue(), True);
+  if not HandleRunningAppBeforeFileOp(WizardDirValue(), True) then
+    Result := CustomMessage('AppCloseFailedMsg');
 end;
 
 function InitializeUninstall(): Boolean;

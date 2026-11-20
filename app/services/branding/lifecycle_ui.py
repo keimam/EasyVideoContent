@@ -39,6 +39,31 @@ def format_capcut_status_text(doc_report: Dict[str, Any]) -> str:
     return t("capcut_status_not_installed")
 
 
+def _extract_manifest_display(manifest: Dict[str, Any]) -> tuple[str, str, str]:
+    """Return `(released, localized_notes, download_url)` from update manifest dict."""
+    lang = get_ui_language()
+    notes = (
+        (manifest.get("notes_id") or manifest.get("notes_en") or "")
+        if lang == "id"
+        else (manifest.get("notes_en") or manifest.get("notes_id") or "")
+    )
+    released = str(manifest.get("released") or "").strip()
+    download_url = str(manifest.get("download_url") or "").strip()
+    return released, notes, download_url
+
+
+def _render_download_update_button(*, download_url: str, key: str) -> None:
+    if st.button(
+        t("btn_update_download"),
+        type="primary",
+        key=key,
+        use_container_width=True,
+        disabled=not bool(download_url),
+    ):
+        platform_utils.open_url_in_browser(download_url)
+        st.toast(t("update_opening_url", url=download_url))
+
+
 def render_update_banner(*, key_prefix: str = "home") -> None:
     """Start background 24h update check and render actionable update banner when newer version exists (E2)."""
     update_checker.start_background_update_check()
@@ -53,14 +78,7 @@ def render_update_banner(*, key_prefix: str = "home") -> None:
     if st.session_state.get("efs_update_dismissed_session") == remote_ver:
         return
 
-    lang = get_ui_language()
-    notes = (
-        (manifest.get("notes_id") or manifest.get("notes_en") or "")
-        if lang == "id"
-        else (manifest.get("notes_en") or manifest.get("notes_id") or "")
-    )
-    released = str(manifest.get("released") or "").strip()
-    download_url = str(manifest.get("download_url") or "").strip()
+    released, notes, download_url = _extract_manifest_display(manifest)
 
     with st.container(border=True):
         st.markdown(f"#### {t('update_banner_title', version=remote_ver)}")
@@ -71,15 +89,7 @@ def render_update_banner(*, key_prefix: str = "home") -> None:
 
         col_dl, col_later, col_skip = st.columns([1.4, 1.0, 1.3])
         with col_dl:
-            if st.button(
-                t("btn_update_download"),
-                type="primary",
-                key=f"btn_upd_dl_{key_prefix}",
-                use_container_width=True,
-                disabled=not bool(download_url),
-            ):
-                platform_utils.open_url_in_browser(download_url)
-                st.toast(t("update_opening_url", url=download_url))
+            _render_download_update_button(download_url=download_url, key=f"btn_upd_dl_{key_prefix}")
         with col_later:
             if st.button(
                 t("btn_update_later"),
@@ -172,7 +182,18 @@ def render_update_check_controls(*, key_prefix: str = "settings", include_wizard
         if manual_res.get("error"):
             _render_friendly_update_error(manual_res)
         elif manual_res.get("has_update"):
-            st.info(t("update_available_msg", ver=manual_res.get("remote_version")))
+            remote_ver = str(manual_res.get("remote_version") or "").strip()
+            manifest = manual_res.get("manifest") or {}
+            released, notes, download_url = _extract_manifest_display(manifest)
+            st.info(t("update_available_msg", ver=remote_ver))
+            if released:
+                st.caption(t("update_banner_released", date=released))
+            if notes:
+                st.markdown(notes)
+            _render_download_update_button(
+                download_url=download_url,
+                key=f"btn_upd_manual_dl_{key_prefix}",
+            )
         else:
             st.success(t("update_up_to_date", ver=APP_VERSION))
 
@@ -181,14 +202,7 @@ def _render_update_release_dialog_body(banner: Dict[str, Any]) -> None:
     """Modal body showing release notes, Download, and Skip buttons from sidebar update badge (E11.3)."""
     manifest = banner.get("manifest") or {}
     remote_ver = str(banner.get("remote_version") or "").strip()
-    released = str(manifest.get("released") or "").strip()
-    download_url = str(manifest.get("download_url") or "").strip()
-    lang = get_ui_language()
-    notes = (
-        (manifest.get("notes_id") or manifest.get("notes_en") or "")
-        if lang == "id"
-        else (manifest.get("notes_en") or manifest.get("notes_id") or "")
-    )
+    released, notes, download_url = _extract_manifest_display(manifest)
     if released:
         st.caption(t("update_banner_released", date=released))
     if notes:
@@ -196,15 +210,7 @@ def _render_update_release_dialog_body(banner: Dict[str, Any]) -> None:
     st.divider()
     c_dl, c_skip, c_close = st.columns(3)
     with c_dl:
-        if st.button(
-            t("btn_update_download"),
-            type="primary",
-            key="btn_upd_dlg_download",
-            use_container_width=True,
-            disabled=not bool(download_url),
-        ):
-            platform_utils.open_url_in_browser(download_url)
-            st.toast(t("update_opening_url", url=download_url))
+        _render_download_update_button(download_url=download_url, key="btn_upd_dlg_download")
     with c_skip:
         if st.button(t("btn_update_skip"), key="btn_upd_dlg_skip", use_container_width=True):
             update_checker.skip_update_version(remote_ver)

@@ -21,6 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from app.services.branding.constants import get_app_build_signature
 from app.services.longform import app_paths, platform_utils
 
 
@@ -140,14 +141,70 @@ def list_active_running_jobs() -> List[Dict[str, Any]]:
     return active
 
 
+def _confirm_restart_with_active_jobs(
+    active_jobs: List[Dict[str, Any]],
+    *,
+    old_version: str,
+    new_version: str,
+    allow_ui_prompt: bool = True,
+    confirm_callback: Optional[Callable[[List[Dict[str, Any]]], bool]] = None,
+) -> bool:
+    """Warn user when replacing an active server that has running jobs (E12.1)."""
+    if not active_jobs:
+        return True
+    _append_launcher_log(
+        f"WARNING: {len(active_jobs)} active background job(s) running while upgrading server "
+        f"({old_version or '<none>'} -> {new_version})"
+    )
+    if confirm_callback is not None:
+        return bool(confirm_callback(active_jobs))
+    if not allow_ui_prompt or os.environ.get("PYTEST_CURRENT_TEST", "").strip():
+        return True
+    if platform_utils.is_windows():
+        try:
+            import ctypes
+            from app.services.longform.ui.i18n import t
+
+            msg = t("launcher_upgrade_jobs_warning", count=len(active_jobs))
+            title = "EasyFaceless Studio"
+            # MB_YESNO (0x4) | MB_ICONWARNING (0x30) | MB_DEFBUTTON2 (0x100)
+            res = ctypes.windll.user32.MessageBoxW(None, msg, title, 0x4 | 0x30 | 0x100)
+            return int(res) == 6  # IDYES
+        except Exception:
+            return True
+    return True
+
+
+def _stop_running_jobs_cleanly(active_jobs: List[Dict[str, Any]]) -> None:
+    if not active_jobs:
+        return
+    try:
+        from app.services.longform.store import get_projects_root, request_job_stop
+
+        proj_root = get_projects_root()
+        for j in active_jobs:
+            pid_name = str(j.get("project_id") or "")
+            if pid_name and (proj_root / pid_name).is_dir():
+                try:
+                    request_job_stop(proj_root / pid_name)
+                except Exception:
+                    pass
+            jpid = int(j.get("pid") or 0)
+            if jpid > 0:
+                platform_utils.terminate_process_tree(jpid, force=True, timeout=2.5)
+    except Exception:
+        pass
+
+
 def launch_or_focus_app(
     *,
     start_port: int = 8501,
     host: str = "127.0.0.1",
     ready_timeout: float = 45.0,
     open_browser: bool = True,
+    confirm_jobs_callback: Optional[Callable[[List[Dict[str, Any]]], bool]] = None,
 ) -> Dict[str, Any]:
-    """Start headless Streamlit server or open existing single-instance URL in browser (D3)."""
+    """Start headless Streamlit server or open existing single-instance URL in browser (D3, E12.1)."""
     app_paths.bootstrap_runtime_environment()
     install_root = app_paths.get_install_root()
     data_dir = app_paths.get_data_dir()
@@ -155,21 +212,68 @@ def launch_or_focus_app(
     server_log = logs_dir / "server.log"
 
     desired_update_url = os.environ.get("EFS_UPDATE_URL", "").strip()
+    cur_sig = get_app_build_signature()
+    cur_version = cur_sig["app_version"]
+    cur_build_id = cur_sig["build_id"]
+
     existing = read_launcher_lock()
     if existing:
         old_pid = int(existing.get("pid") or 0)
         old_port = int(existing.get("port") or start_port)
         old_url = str(existing.get("url") or f"http://{host}:{old_port}")
         old_update_url = str(existing.get("update_url") or "").strip()
+        old_version = str(existing.get("app_version") or "").strip()
+        old_build_id = str(existing.get("build_id") or "").strip()
+
         if old_pid > 0 and platform_utils.is_pid_alive(old_pid) and is_streamlit_server_healthy(old_port, host=host):
-            if desired_update_url != old_update_url and not list_active_running_jobs():
+            version_or_build_mismatch = (old_version != cur_version) or (old_build_id != cur_build_id)
+            update_url_mismatch = desired_update_url != old_update_url
+
+            if version_or_build_mismatch:
+                active_jobs = list_active_running_jobs()
+                if active_jobs and not _confirm_restart_with_active_jobs(
+                    active_jobs,
+                    old_version=old_version,
+                    new_version=cur_version,
+                    allow_ui_prompt=open_browser,
+                    confirm_callback=confirm_jobs_callback,
+                ):
+                    _append_launcher_log(
+                        f"Keeping active server (pid={old_pid}, old_version={old_version or '<none>'}, old_build_id={old_build_id or '<none>'}) "
+                        f"because user declined stopping {len(active_jobs)} running job(s)"
+                    )
+                    if open_browser:
+                        platform_utils.open_url_in_browser(old_url)
+                    return {
+                        "reused": True,
+                        "restart_cancelled": True,
+                        "pid": old_pid,
+                        "port": old_port,
+                        "url": old_url,
+                        "data_dir": str(data_dir),
+                        "app_version": old_version,
+                        "build_id": old_build_id,
+                    }
+
+                _append_launcher_log(
+                    f"Replacing outdated active server (pid={old_pid}, old_version={old_version or '<none>'}, "
+                    f"old_build_id={old_build_id or '<none>'} -> version={cur_version}, build_id={cur_build_id}, "
+                    f"active_jobs={len(active_jobs)})"
+                )
+                _stop_running_jobs_cleanly(active_jobs)
+                platform_utils.terminate_process_tree(old_pid, force=True, timeout=5.0)
+                clear_launcher_lock()
+            elif update_url_mismatch and not list_active_running_jobs():
                 _append_launcher_log(
                     f"Restarting active server (pid={old_pid}) because EFS_UPDATE_URL changed ({old_update_url!r} -> {desired_update_url!r})"
                 )
                 platform_utils.terminate_process_tree(old_pid, force=True, timeout=5.0)
                 clear_launcher_lock()
             else:
-                _append_launcher_log(f"Reusing active server instance (pid={old_pid}, port={old_port})")
+                _append_launcher_log(
+                    f"Reusing active server instance (pid={old_pid}, port={old_port}, "
+                    f"app_version={cur_version}, build_id={cur_build_id})"
+                )
                 if open_browser:
                     platform_utils.open_url_in_browser(old_url)
                 return {
@@ -178,6 +282,8 @@ def launch_or_focus_app(
                     "port": old_port,
                     "url": old_url,
                     "data_dir": str(data_dir),
+                    "app_version": cur_version,
+                    "build_id": cur_build_id,
                 }
         else:
             _append_launcher_log(f"Clearing stale launcher lock (pid={old_pid}, port={old_port})")
@@ -219,13 +325,18 @@ def launch_or_focus_app(
     if desired_update_url:
         child_env["EFS_UPDATE_URL"] = desired_update_url
     child_env["EFS_SERVER_PORT"] = str(port)
+    child_env["EFS_SERVER_APP_VERSION"] = cur_version
+    child_env["EFS_SERVER_BUILD_ID"] = cur_build_id
+    child_env["EFS_SERVER_BUILD_COMMIT"] = cur_sig["git_commit"]
+    child_env["EFS_SERVER_BUILD_TIME"] = cur_sig["build_time"]
     existing_pp = child_env.get("PYTHONPATH", "")
     child_env["PYTHONPATH"] = f"{install_root}{os.pathsep}{existing_pp}" if existing_pp else str(install_root)
     child_env["PYTHONIOENCODING"] = "utf-8"
     child_env["PYTHONUNBUFFERED"] = "1"
 
     _append_launcher_log(
-        f"Starting Streamlit server on {url} (data_dir={data_dir}, installed={installed_mode}, update_url={desired_update_url or '<default>'})"
+        f"Starting Streamlit server on {url} (data_dir={data_dir}, installed={installed_mode}, "
+        f"app_version={cur_version}, build_id={cur_build_id}, update_url={desired_update_url or '<default>'})"
     )
     proc = platform_utils.launch_desktop_app_detached(
         cmd,
@@ -241,6 +352,10 @@ def launch_or_focus_app(
         "data_dir": str(data_dir),
         "install_root": str(install_root),
         "update_url": desired_update_url,
+        "app_version": cur_version,
+        "build_id": cur_build_id,
+        "git_commit": cur_sig["git_commit"],
+        "build_time": cur_sig["build_time"],
     }
     write_launcher_lock(lock_payload)
 
@@ -262,7 +377,9 @@ def launch_or_focus_app(
         clear_launcher_lock()
         raise TimeoutError(f"EasyFaceless Studio server did not become ready within {ready_timeout}s.")
 
-    _append_launcher_log(f"Server ready on {url} (pid={proc.pid}); opening browser={open_browser}")
+    _append_launcher_log(
+        f"Server ready on {url} (pid={proc.pid}, app_version={cur_version}, build_id={cur_build_id}); opening browser={open_browser}"
+    )
     if open_browser:
         platform_utils.open_url_in_browser(url)
 
@@ -272,6 +389,8 @@ def launch_or_focus_app(
         "port": port,
         "url": url,
         "data_dir": str(data_dir),
+        "app_version": cur_version,
+        "build_id": cur_build_id,
         "log_file": str(server_log),
     }
 
@@ -319,11 +438,11 @@ def request_app_shutdown(
 
 
 def get_running_app_status(install_root: Optional[Path] = None) -> Dict[str, Any]:
-    """Inspect active EasyFaceless Studio server lock, background jobs, and processes (D9.6)."""
+    """Inspect active EasyFaceless Studio server lock, background jobs, and processes (D9.6, E12.2)."""
     root = Path(install_root).resolve() if install_root else app_paths.get_install_root()
     lock_info = read_launcher_lock()
     jobs_active = list_active_running_jobs()
-    dir_procs = platform_utils.find_processes_in_directory(root)
+    dir_procs = platform_utils.find_processes_in_directory(root, include_cmd_markers=True)
 
     pids = set()
     if lock_info and int(lock_info.get("pid") or 0) > 0 and platform_utils.is_pid_alive(int(lock_info["pid"])):
@@ -375,16 +494,16 @@ def shutdown_running_app(
 
     clear_launcher_lock()
 
-    # 3. Wait briefly until no directory-locking processes remain
+    # 3. Wait briefly until no directory-locking or EFS server processes remain
     deadline = time.monotonic() + max(1.0, float(timeout))
-    remaining = platform_utils.find_processes_in_directory(root)
+    remaining = platform_utils.find_processes_in_directory(root, include_cmd_markers=True)
     while remaining and time.monotonic() < deadline:
         for proc in remaining:
             p_id = int(proc.get("pid") or 0)
             if p_id > 0 and p_id != os.getpid():
                 platform_utils.terminate_process_tree(p_id, force=True, timeout=2.0)
         time.sleep(0.25)
-        remaining = platform_utils.find_processes_in_directory(root)
+        remaining = platform_utils.find_processes_in_directory(root, include_cmd_markers=True)
 
     _append_launcher_log(
         f"Pre-setup shutdown finished (stopped={stopped}, remaining={len(remaining)})"

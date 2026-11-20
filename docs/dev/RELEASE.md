@@ -59,11 +59,12 @@ uv run streamlit run webui/Main.py
 ## 4. Mempersiapkan Artefak Rilis Windows
 
 1. Perbarui `APP_VERSION` pada `app/services/branding/constants.py` dan tambahkan riwayat perubahan di [`CHANGELOG.md`](../../CHANGELOG.md) dengan judul `## [<versi>]`.
-2. Jalankan skrip build installer:
+2. Pastikan seluruh perubahan sudah di-`git commit` (skrip build menolak membangun bila *working tree* masih kotor, kecuali Anda menambahkan `-AllowDirty` khusus pengujian).
+3. Jalankan skrip build installer SETELAH commit terakhir:
    ```powershell
    powershell -ExecutionPolicy Bypass -File scripts/build/build_installer.ps1
    ```
-3. Skrip build otomatis menghasilkan tiga berkas di folder `dist\`:
+4. Skrip build otomatis menanamkan hash commit `HEAD` + waktu build ke `app/services/branding/_build_meta.json` di dalam paket staging (ditampilkan di dialog **Tentang** sebagai `v<versi> · build <hash>`), dan menghasilkan tiga berkas di folder `dist\`:
    - `EasyFacelessStudio-Setup-<versi>.exe` — Installer Inno Setup per-user (tidak menghapus/menimpa data pengguna di `%LOCALAPPDATA%\EasyFaceless Studio`).
    - `EasyFacelessStudio-Setup-<versi>.exe.sha256` — Checksum SHA-256 resmi installer.
-   - `RELEASE-NOTES-<versi>.md` — Catatan rilis yang diekstrak dari `CHANGELOG.md`.
+   - `RELEASE-NOTES-<versi>.md` — Catatan rilis yang diekstrak dari `CHANGELOG.md` beserta hash build commit.

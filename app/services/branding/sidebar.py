@@ -18,21 +18,26 @@ from app.services.branding.constants import (
     MIT_ATTRIBUTION,
     MIT_THANKS,
     UPSTREAM_REPO_URL,
+    get_app_build_signature,
     get_logo_data_uri,
 )
 from app.services.longform.ui.i18n import t
 
 
 def _render_about_dialog_body():
-    """Dialog body displaying app/core versions, MIT upstream attribution, notices link, and LICENSE text (C7)."""
+    """Dialog body displaying app/core versions, build metadata, update check, MIT attribution, and LICENSE text (C7, E12)."""
     logo_uri = get_logo_data_uri()
+    sig = get_app_build_signature()
+    build_commit = sig["git_commit"]
+    build_time = sig["build_time"]
+    version_badge = f"v{APP_VERSION} · build {html.escape(build_commit)}"
     st.markdown(
         f"""
         <div style="display: flex; align-items: center; gap: 14px; margin-bottom: 1rem;">
             <img src="{logo_uri}" style="width: 44px; height: 44px; border-radius: 10px;" alt="Logo" />
             <div>
                 <h3 style="margin: 0; font-size: 1.3rem; font-weight: 700; color: var(--efs-text);">{APP_NAME}</h3>
-                <span style="font-size: 0.82rem; color: var(--efs-accent); font-weight: 600;">v{APP_VERSION}</span>
+                <span style="font-size: 0.82rem; color: var(--efs-accent); font-weight: 600;">{version_badge}</span>
             </div>
         </div>
         """,
@@ -50,6 +55,7 @@ def _render_about_dialog_body():
     st.markdown(f"### {t('about_dialog_license')}")
     st.markdown(
         f"- {t('about_dialog_app_version', app_ver=APP_VERSION)}\n"
+        f"- {t('about_dialog_build_line', build_commit=build_commit, build_time=build_time)}\n"
         f"- {t('about_dialog_owner_line', owner=APP_OWNER, year=APP_COPYRIGHT_YEAR)}\n"
         f"- {t('about_dialog_core_version', core_ver=CORE_VERSION)}\n"
         f"- {t('about_dialog_built_on', url=UPSTREAM_REPO_URL)}\n"

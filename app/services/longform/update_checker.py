@@ -16,7 +16,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from loguru import logger
 
-from app.services.branding.constants import APP_VERSION, UPDATE_MANIFEST_URL
+from app.services.branding.constants import APP_VERSION, UPDATE_MANIFEST_URL, get_app_build_signature
 from app.services.longform import app_paths
 
 
@@ -75,9 +75,11 @@ def log_startup_update_env_once() -> None:
     _STARTUP_ENV_LOGGED = True
     raw_env = os.environ.get("EFS_UPDATE_URL", "").strip()
     resolved = get_update_manifest_url()
+    sig = get_app_build_signature()
     logger.info(
         f"Update env at startup: EFS_UPDATE_URL={raw_env or '<unset>'} "
-        f"resolved_url={resolved or '<disabled_placeholder>'}"
+        f"resolved_url={resolved or '<disabled_placeholder>'} "
+        f"app_version={sig['app_version']} build_id={sig['build_id']}"
     )
     _flush_log_streams()
 

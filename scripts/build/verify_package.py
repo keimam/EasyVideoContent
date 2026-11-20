@@ -150,6 +150,20 @@ def verify_staging_dir(staging_dir: Path, *, check_required: bool = True) -> Lis
             if not (root / rel).is_file():
                 errors.append(f"Missing required bundled file: {rel}")
 
+        # Verify embedded build metadata in real installed staging build (E12.3)
+        constants_py = root / "app" / "services" / "branding" / "constants.py"
+        if (root / ".efs_installed").is_file() and constants_py.is_file() and constants_py.stat().st_size > 100:
+            meta_file = root / "app" / "services" / "branding" / "_build_meta.json"
+            if not meta_file.is_file():
+                errors.append("Missing embedded build metadata: app/services/branding/_build_meta.json")
+            else:
+                try:
+                    meta_obj = json.loads(meta_file.read_text(encoding="utf-8"))
+                    if not str(meta_obj.get("git_commit") or "").strip() or not str(meta_obj.get("build_id") or "").strip():
+                        errors.append("Invalid _build_meta.json: missing git_commit or build_id")
+                except Exception as exc:
+                    errors.append(f"Invalid _build_meta.json: {exc}")
+
         # Verify staged .streamlit/config.toml is valid BOM-free TOML with fileWatcherType = "none" (E10.1)
         st_cfg = root / "webui" / ".streamlit" / "config.toml"
         if st_cfg.is_file():
@@ -488,8 +502,9 @@ def _run_native_exe_smoke(staging: Path, browser_exe: Optional[str]) -> List[str
                 {
                     "version": "1.0.1",
                     "download_url": "https://example.invalid/EasyFacelessStudio-Setup-1.0.1.exe",
-                    "release_notes": "Perbaikan pembaruan & stabilitas.",
-                    "published_at": "2026-11-20",
+                    "notes_id": "Perbaikan pembaruan & stabilitas.",
+                    "notes_en": "Update reliability & stability fixes.",
+                    "released": "2026-11-20",
                 }
             ),
             encoding="utf-8",
@@ -511,6 +526,7 @@ def _run_native_exe_smoke(staging: Path, browser_exe: Optional[str]) -> List[str
 
         lock_path = u_dir / ".efs_launcher.lock.json"
         base_url = ""
+        lock_data: dict = {}
         for _ in range(90):
             if lock_path.is_file():
                 try:
@@ -531,6 +547,8 @@ def _run_native_exe_smoke(staging: Path, browser_exe: Optional[str]) -> List[str
         if not base_url:
             errs.append("[E11.5 native exe] EasyFaceless Studio.exe server failed to become ready")
             return errs
+        if not str(lock_data.get("app_version") or "").strip() or not str(lock_data.get("build_id") or "").strip():
+            errs.append("[E12.1 native exe] Launcher lock file missing app_version or build_id")
 
         if browser_exe:
             try:
@@ -629,14 +647,23 @@ def _run_native_exe_smoke(staging: Path, browser_exe: Optional[str]) -> List[str
                                     })()""",
                                 )
                                 check_ok = False
+                                dlg_txt = ""
                                 for _ in range(30):
                                     time.sleep(0.5)
                                     dlg_txt = _eval(303, "document.body ? document.body.innerText : ''") or ""
-                                    if "v1.0.1" in dlg_txt and ("tersedia" in dlg_txt.lower() or "available" in dlg_txt.lower()):
+                                    if (
+                                        "v1.0.1" in dlg_txt
+                                        and ("tersedia" in dlg_txt.lower() or "available" in dlg_txt.lower())
+                                        and ("Unduh Pembaruan" in dlg_txt or "Download Update" in dlg_txt)
+                                    ):
                                         check_ok = True
                                         break
                                 if not check_ok:
-                                    errs.append("[E11.5 native exe] About update check button did not report v1.0.1 available")
+                                    errs.append("[E11.5/E12.5 native exe] About update check did not report v1.0.1 + Download button")
+                                if "Tutup dialog Pengaturan" in dlg_txt or "Close Settings" in dlg_txt:
+                                    errs.append("[E12.5 native exe] About update check result still mentions Settings/Pengaturan")
+                                if "· build " not in dlg_txt:
+                                    errs.append("[E12.3 native exe] About dialog missing '· build <hash>' badge")
                         ws.close()
                 finally:
                     chrome.terminate()

@@ -528,8 +528,9 @@ def find_processes_in_directory(
     root_dir: Path,
     *,
     exclude_pids: Optional[Sequence[int]] = None,
+    include_cmd_markers: bool = False,
 ) -> List[Dict[str, Any]]:
-    """Return running processes whose executable lives inside `root_dir` (D9.6)."""
+    """Return running processes whose executable lives inside `root_dir` (or matching EFS server cmdline) (D9.6, E12.2)."""
     root = Path(root_dir).resolve()
     excluded = {int(p) for p in (exclude_pids or ())} | {os.getpid()}
     found: List[Dict[str, Any]] = []
@@ -537,8 +538,8 @@ def find_processes_in_directory(
     if is_windows():
         ps_cmd = (
             "Get-CimInstance Win32_Process | "
-            "Where-Object { $_.ExecutablePath } | "
-            "Select-Object ProcessId, Name, ExecutablePath | ConvertTo-Json -Compress"
+            "Where-Object { $_.ExecutablePath -or $_.CommandLine } | "
+            "Select-Object ProcessId, Name, ExecutablePath, CommandLine | ConvertTo-Json -Compress"
         )
         try:
             res = subprocess.run(
@@ -553,19 +554,42 @@ def find_processes_in_directory(
                 raw = _json.loads(res.stdout.strip())
                 items = raw if isinstance(raw, list) else [raw]
                 root_low = str(root).rstrip("\\/").lower()
+                try:
+                    short_root_low = str(Path(os.path.realpath(root))).rstrip("\\/").lower()
+                except Exception:
+                    short_root_low = root_low
                 for item in items:
                     if not isinstance(item, dict):
                         continue
                     pid = int(item.get("ProcessId") or 0)
                     exe = str(item.get("ExecutablePath") or "")
-                    if pid <= 0 or pid in excluded or not exe:
+                    cmd = str(item.get("CommandLine") or "")
+                    name = str(item.get("Name") or "")
+                    if pid <= 0 or pid in excluded:
                         continue
                     exe_low = exe.lower()
-                    if exe_low.startswith(root_low + "\\") or exe_low.startswith(root_low + "/"):
+                    cmd_low = cmd.lower()
+                    matched = bool(
+                        exe_low
+                        and (
+                            exe_low.startswith(root_low + "\\")
+                            or exe_low.startswith(root_low + "/")
+                            or exe_low.startswith(short_root_low + "\\")
+                            or exe_low.startswith(short_root_low + "/")
+                        )
+                    )
+                    if not matched and include_cmd_markers and "python" in name.lower():
+                        if (
+                            "app.services.longform.launcher_runtime" in cmd_low
+                            or ("streamlit" in cmd_low and ("main.py" in cmd_low or "easyfaceless" in cmd_low))
+                        ):
+                            matched = True
+                    if matched:
                         found.append({
                             "pid": pid,
-                            "name": str(item.get("Name") or ""),
+                            "name": name,
                             "executable": exe,
+                            "command_line": cmd,
                         })
         except Exception as exc:
             logger.warning(f"Failed inspecting Windows processes under {root}: {exc}")
