@@ -36,8 +36,15 @@ def render_mpt_entry(show_top_return: bool = False):
     # 1. Inject brand theme & CSS
     _inject_sidebar_css(is_main=False)
 
-    # 2. Sidebar navigation in Long Video page (longform is active)
-    _render_studio_nav(current_page="longform")
+    # 2. Sidebar navigation in Long Video page (inactive when wizard owns viewport)
+    cur_page = "longform"
+    try:
+        from app.services.branding.lifecycle_ui import is_wizard_active
+        if is_wizard_active():
+            cur_page = "wizard"
+    except Exception:
+        pass
+    _render_studio_nav(current_page=cur_page)
 
     # 3. Top-of-page quick return link
     if show_top_return:

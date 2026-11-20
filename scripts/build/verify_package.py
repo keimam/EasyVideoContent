@@ -346,7 +346,43 @@ def _run_cdp_dom_check(browser_exe: str, base_url: str, *, expect_wizard: bool, 
                 errs.append(f"[{target}] First-run wizard unexpectedly appeared on populated EFS_DATA_DIR")
             if expect_wizard and ("Step 2: Configure the video" in body or "Langkah 2: Atur video" in body):
                 errs.append(f"[{target}] Onboarding tour appeared while wizard is active")
-            if route == "/Long_Video" and expect_project_title and expect_project_title not in body:
+            if expect_wizard and any(k in body for k in ("Pengaturan Skrip Video", "Video Script Settings", "Mulai video baru", "Start new video")):
+                errs.append(f"[{target}] Page content appeared underneath standalone wizard")
+            if expect_wizard and route == "":
+                # E9.3: Choose English (en) in wizard and verify 5-second language & layout stability (zero flip-flop)
+                clicked_en = _eval(
+                    450,
+                    """(() => {
+                        const labels = Array.from(document.querySelectorAll('label, [data-testid="stRadio"] p, span'));
+                        const hit = labels.find(el => (el.innerText || '').trim() === 'English (en)');
+                        if (hit) { hit.click(); return true; }
+                        return false;
+                    })()""",
+                )
+                if not clicked_en:
+                    errs.append(f"[{target}] Could not click 'English (en)' radio in wizard")
+                else:
+                    switched_ok = False
+                    for _ in range(25):
+                        time.sleep(0.4)
+                        txt = _eval(460, "document.body ? document.body.innerText : ''") or ""
+                        if "First-Run Setup Wizard" in txt and "Wizard Pengaturan Pertama Kali" not in txt:
+                            switched_ok = True
+                            break
+                    if not switched_ok:
+                        errs.append(f"[{target}] Wizard did not switch cleanly to English after clicking English (en)")
+                    else:
+                        # Poll for 5 full seconds to catch any id<->en flicker/loop
+                        for sec_i in range(10):
+                            time.sleep(0.5)
+                            txt = _eval(470 + sec_i, "document.body ? document.body.innerText : ''") or ""
+                            if "First-Run Setup Wizard" not in txt or "Wizard Pengaturan Pertama Kali" in txt:
+                                errs.append(f"[{target}] Language flickered during 5s stability check (sample #{sec_i})")
+                                break
+                            if any(k in txt for k in ("Video Script Settings", "Pengaturan Skrip Video", "Generate Video")):
+                                errs.append(f"[{target}] Short Video content leaked underneath English wizard")
+                                break
+            if route == "/Long_Video" and (not expect_wizard) and expect_project_title and expect_project_title not in body:
                 errs.append(f"[{target}] Existing project '{expect_project_title}' missing on populated EFS_DATA_DIR")
 
         ws.close()

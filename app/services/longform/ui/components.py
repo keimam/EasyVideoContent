@@ -865,8 +865,10 @@ def render_home_page():
     from app.services.longform.ui.nav import render_mpt_entry
     render_mpt_entry(show_top_return=False)
 
-    from app.services.branding.lifecycle_ui import render_studio_lifecycle_ui
+    from app.services.branding.lifecycle_ui import is_wizard_active, render_studio_lifecycle_ui
     render_studio_lifecycle_ui(key_prefix="home")
+    if is_wizard_active():
+        return
 
     notice_msg = st.session_state.pop("last_deleted_notice", None)
     if notice_msg:

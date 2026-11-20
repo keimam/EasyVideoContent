@@ -1042,6 +1042,9 @@ ID_TRANSLATIONS: Dict[str, str] = {
     "tour_prev": "Sebelumnya",
     "tour_next": "Berikutnya",
     "tour_done": "Selesai",
+    # --- E9: Language Selector in Settings ---
+    "settings_ui_language_label": "Bahasa antarmuka aplikasi",
+    "settings_ui_language_help": "Mengubah bahasa seluruh antarmuka EasyFaceless Studio (Video Panjang, Video Pendek, Pengaturan, dan Wizard).",
 }
 
 
@@ -2076,33 +2079,17 @@ EN_TRANSLATIONS: Dict[str, str] = {
     "tour_prev": "Previous",
     "tour_next": "Next",
     "tour_done": "Done",
+    # --- E9: Language Selector in Settings ---
+    "settings_ui_language_label": "Application display language",
+    "settings_ui_language_help": "Changes the display language across EasyFaceless Studio (Long Video, Short Video, Settings, and Wizard).",
 }
 
 
 def get_ui_language() -> str:
-    """Return effective language ('id' or 'en') for Long Video UI.
+    """Return effective canonical language ('id' or 'en') via single branding language module (E9.1)."""
+    from app.services.branding.language import get_canonical_language
 
-    Reads Streamlit session state, falls back to config.toml,
-    and defaults to 'id' if Indonesian, else 'en' for any other language.
-    """
-    try:
-        lang = st.query_params.get("lang") or st.session_state.get("ui_language")
-    except Exception:
-        lang = None
-
-    if not lang:
-        try:
-            from app.config import config
-            lang = config.ui.get("language", "")
-        except Exception:
-            lang = "id"
-
-    lang_str = str(lang or "").strip().lower()
-    if not lang_str:
-        return "id"
-    if lang_str.startswith("id"):
-        return "id"
-    return "en"
+    return get_canonical_language()
 
 
 def t(key: str, lang: Optional[str] = None, **kwargs: Any) -> str:

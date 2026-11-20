@@ -50,3 +50,12 @@ def isolate_host_config_toml(monkeypatch):
         config.app.update(orig_app)
         config.ui.clear()
         config.ui.update(orig_ui)
+
+
+@pytest.fixture(autouse=True)
+def default_setup_completed_for_legacy_tests(monkeypatch, request):
+    """Treat first-run setup as completed for legacy UI/branding tests that do not test the Wizard."""
+    name = request.node.name.lower()
+    if any(tok in name for tok in ("wizard", "first_run", "onboarding_tour", "_e1_", "_e2_", "_e5_", "_e8_", "_e9_")):
+        return
+    monkeypatch.setattr("app.services.longform.first_run.is_setup_completed", lambda: True)

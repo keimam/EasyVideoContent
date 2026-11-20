@@ -16,6 +16,13 @@ from app.services.branding.constants import (
     PIXABAY_API_DOCS_URL,
 )
 from app.services.longform import first_run, platform_utils, update_checker
+from app.services.branding.language import (
+    ensure_ui_language_initialized,
+    on_language_widget_change,
+    set_ui_language,
+    to_display_name,
+    to_wizard_label,
+)
 from app.services.longform.ui.i18n import get_ui_language, t
 
 
@@ -92,9 +99,23 @@ def render_update_banner(*, key_prefix: str = "home") -> None:
 
 
 def render_settings_studio_controls(*, key_prefix: str = "settings") -> None:
-    """Render Wizard re-run & App Update controls inside Settings General tab (E1, E2)."""
+    """Render Language selector, Wizard re-run & App Update controls inside Settings General tab (E1, E2, E9)."""
+    ensure_ui_language_initialized()
     st.divider()
     st.markdown(f"#### {t('settings_studio_heading')}")
+
+    cur_lang = get_ui_language()
+    if st.session_state.get("settings_ui_language_select") not in ("id", "en"):
+        st.session_state["settings_ui_language_select"] = cur_lang
+    st.selectbox(
+        t("settings_ui_language_label"),
+        options=["id", "en"],
+        format_func=to_wizard_label,
+        help=t("settings_ui_language_help"),
+        key="settings_ui_language_select",
+        on_change=on_language_widget_change,
+        args=("settings_ui_language_select",),
+    )
 
     state = update_checker.read_update_state()
     auto_enabled = bool(state.get("auto_check_enabled", True))
@@ -126,7 +147,10 @@ def render_settings_studio_controls(*, key_prefix: str = "settings") -> None:
             st.session_state["efs_wizard_force_open"] = True
             st.session_state["efs_wizard_step"] = 1
             st.session_state["settings_dialog_open"] = False
-            st.rerun()
+            try:
+                st.switch_page("Main.py")
+            except Exception:
+                st.rerun()
 
     manual_res = st.session_state.get("efs_manual_update_result")
     if isinstance(manual_res, dict) and manual_res.get("checked_now"):
@@ -139,20 +163,20 @@ def render_settings_studio_controls(*, key_prefix: str = "settings") -> None:
 
 
 def _apply_wizard_language(lang_code: str) -> None:
-    from app.config import config
-
-    norm = "en" if str(lang_code).lower().startswith("en") else "id"
-    st.session_state["ui_language"] = norm
-    config.ui["language"] = "en" if norm == "en" else "id"
-    config.save_config()
+    set_ui_language(lang_code, persist=True)
 
 
-def _should_show_wizard() -> bool:
+def is_wizard_active() -> bool:
+    """Return True when the First-Run Setup Wizard owns the viewport (E1, E9.2)."""
     if st.session_state.get("efs_wizard_force_open", False):
         return True
     if st.session_state.get("efs_wizard_skipped_session", False):
         return False
     return not first_run.is_setup_completed()
+
+
+def _should_show_wizard() -> bool:
+    return is_wizard_active()
 
 
 def _spec_badge_icon(status: str) -> str:
@@ -183,7 +207,10 @@ def render_first_run_wizard(*, key_prefix: str = "home") -> bool:
                 first_run.mark_setup_completed(skipped=True)
                 st.session_state["efs_wizard_skipped_session"] = True
                 st.session_state.pop("efs_wizard_force_open", None)
-                st.rerun()
+                try:
+                    st.switch_page("pages/1_🎬_Long_Video.py")
+                except Exception:
+                    st.rerun()
 
         st.progress(step / 6.0)
 
@@ -203,21 +230,22 @@ def render_first_run_wizard(*, key_prefix: str = "home") -> bool:
 
         # --- Step 1: Display Language ---
         if step == 1:
+            ensure_ui_language_initialized()
             st.markdown(f"#### {t('wizard_lang_heading')}")
             st.caption(t("wizard_lang_desc"))
             cur_lang = get_ui_language()
-            lang_opts = ["id", "en"]
-            chosen_lang = st.radio(
+            wiz_lang_key = f"wiz_lang_radio_{key_prefix}"
+            if st.session_state.get(wiz_lang_key) not in ("id", "en"):
+                st.session_state[wiz_lang_key] = cur_lang
+            st.radio(
                 t("wizard_lang_label"),
-                options=lang_opts,
-                index=0 if cur_lang == "id" else 1,
-                format_func=lambda x: "Bahasa Indonesia (id)" if x == "id" else "English (en)",
-                key=f"wiz_lang_radio_{key_prefix}",
+                options=["id", "en"],
+                format_func=to_wizard_label,
+                key=wiz_lang_key,
+                on_change=on_language_widget_change,
+                args=(wiz_lang_key,),
                 horizontal=True,
             )
-            if chosen_lang != cur_lang:
-                _apply_wizard_language(chosen_lang)
-                st.rerun()
 
         # --- Step 2: System Check ---
         elif step == 2:
@@ -437,7 +465,7 @@ def render_first_run_wizard(*, key_prefix: str = "home") -> bool:
 
             st.markdown(
                 "\n".join([
-                    t("wizard_finish_summary_lang", language_label="Bahasa Indonesia" if cur_lang == "id" else "English"),
+                    t("wizard_finish_summary_lang", language_label=to_display_name(cur_lang)),
                     t("wizard_finish_summary_or", status=t("wizard_configured") if has_or else t("wizard_skipped_optional")),
                     t("wizard_finish_summary_sources", extra=" + Pixabay" if has_pix else ""),
                     t("wizard_finish_summary_capcut", status=format_capcut_status_text(cc_rep)),
@@ -455,11 +483,11 @@ def render_first_run_wizard(*, key_prefix: str = "home") -> bool:
                     pid, _ = first_run.create_starter_sample_project(lang=cur_lang)
                     first_run.mark_setup_completed(skipped=False, extra={"created_sample_project": pid})
                     st.session_state.pop("efs_wizard_force_open", None)
-                    st.query_params["project"] = pid
                     st.success(t("wizard_sample_created", id=pid))
                     try:
-                        st.switch_page("pages/1_🎬_Long_Video.py")
+                        st.switch_page("pages/1_🎬_Long_Video.py", query_params={"project": pid})
                     except Exception:
+                        st.query_params["project"] = pid
                         st.rerun()
             with col_s2:
                 if st.button(
@@ -469,7 +497,10 @@ def render_first_run_wizard(*, key_prefix: str = "home") -> bool:
                 ):
                     first_run.mark_setup_completed(skipped=False)
                     st.session_state.pop("efs_wizard_force_open", None)
-                    st.rerun()
+                    try:
+                        st.switch_page("pages/1_🎬_Long_Video.py")
+                    except Exception:
+                        st.rerun()
 
         # --- Footer Step Navigation (Back / Next) ---
         st.divider()

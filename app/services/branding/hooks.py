@@ -25,15 +25,28 @@ def init_main_page(styles_css_path: Path) -> None:
         logger.warning(f"Runtime environment bootstrap warning: {exc}")
 
     try:
+        from app.services.branding.language import ensure_ui_language_initialized
+        ensure_ui_language_initialized()
+    except Exception as exc:
+        logger.debug(f"UI language init warning: {exc}")
+
+    try:
         from app.services.longform.ui.i18n import t
         short_title = t("nav_short_video")
     except Exception:
         short_title = "Video Pendek"
 
+    wizard_active = False
+    try:
+        from app.services.branding.lifecycle_ui import is_wizard_active
+        wizard_active = is_wizard_active()
+    except Exception:
+        wizard_active = False
+
     page_icon = str(FAVICON_PATH) if FAVICON_PATH.is_file() else "🎬"
     about_content = f"# {APP_NAME}\n\n{MIT_THANKS}\n\n{UPSTREAM_REPO_URL}"
     st.set_page_config(
-        page_title=f"{APP_NAME} — {short_title}",
+        page_title=APP_NAME if wizard_active else f"{APP_NAME} — {short_title}",
         page_icon=page_icon,
         layout="wide",
         initial_sidebar_state="auto",
@@ -47,11 +60,15 @@ def init_main_page(styles_css_path: Path) -> None:
         st.markdown(f"<style>{styles_css_path.read_text(encoding='utf-8')}</style>", unsafe_allow_html=True)
 
     from app.services.branding.theme import inject_brand_theme
-    from app.services.branding.sidebar import render_brand_sidebar
+    from app.services.branding.sidebar import (
+        maybe_open_sidebar_dialog_from_query_params,
+        render_brand_sidebar,
+    )
 
     inject_brand_theme()
     try:
-        render_brand_sidebar(current_page="main")
+        render_brand_sidebar(current_page="wizard" if wizard_active else "main")
+        maybe_open_sidebar_dialog_from_query_params()
     except Exception as exc:
         logger.exception(f"Brand sidebar rendering failed: {exc}")
 
@@ -73,16 +90,14 @@ def run_main_or_settings(
     locales: Dict[str, Any],
     save_runtime_config_fn: Callable[[], Any],
 ) -> None:
-    """Run either the full Short Video page or just the embedded Settings dialog for Long Video (B3, C1)."""
+    """Run either standalone Wizard, Short Video page, or embedded Settings dialog (B3, C1, E9)."""
     global _EMBEDDED_SETTINGS_RUNNER
+    from app.services.branding.language import ensure_ui_language_initialized
+    from app.services.branding.lifecycle_ui import is_wizard_active
 
     def _run_embedded() -> None:
+        ensure_ui_language_initialized(supported_codes=locales.keys())
         init_session_state_fn()
-        qp_lang = str(st.query_params.get("lang", "") or "").strip().lower()
-        if qp_lang.startswith("id") and "id" in locales:
-            st.session_state["ui_language"] = "id"
-        elif qp_lang.startswith("en") and "en" in locales:
-            st.session_state["ui_language"] = "en"
         render_settings_dialog_fn()
         save_runtime_config_fn()
 
@@ -92,12 +107,47 @@ def run_main_or_settings(
         _run_embedded()
         return
 
+    ensure_ui_language_initialized(supported_codes=locales.keys())
+    if is_wizard_active():
+        # E9.2: Wizard owns the viewport cleanly; do not render Short Video underneath it.
+        return
+
     if "open_settings" in st.query_params:
         target = st.query_params.pop("open_settings")
         st.session_state["settings_dialog_open"] = True
         st.session_state["settings_dialog_target_tab"] = target
 
     render_application_fn()
+
+
+def render_top_language_selector(locales: Dict[str, Any]) -> None:
+    """Render MPT top-right language selector backed by the single canonical E9.1 callback."""
+    from app.services.branding.language import (
+        ensure_ui_language_initialized,
+        on_language_widget_change,
+        resolve_mpt_locale_code,
+    )
+
+    language_codes = list(locales.keys())
+    ensure_ui_language_initialized(supported_codes=language_codes)
+    cur_code = resolve_mpt_locale_code(
+        st.session_state.get("ui_language", ""),
+        supported_codes=language_codes,
+        default="id",
+    )
+    if st.session_state.get("top_language_code_selector") not in language_codes:
+        st.session_state["top_language_code_selector"] = cur_code
+
+    st.selectbox(
+        "Language / 语言",
+        options=language_codes,
+        format_func=lambda code: locales[code].get("Language", code),
+        key="top_language_code_selector",
+        label_visibility="collapsed",
+        width=180,
+        on_change=on_language_widget_change,
+        args=("top_language_code_selector", language_codes),
+    )
 
 
 def open_embedded_settings_dialog() -> None:

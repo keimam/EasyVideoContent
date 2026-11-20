@@ -69,6 +69,42 @@ def show_about_dialog():
     st.dialog(t("about_dialog_title"))(_render_about_dialog_body)()
 
 
+def is_help_or_about_query_request() -> str:
+    """Return 'help' or 'about' when URL query params explicitly request Help or About dialogs (E9.2)."""
+    try:
+        qp = st.query_params
+    except Exception:
+        return ""
+    dlg = str(qp.get("dialog") or "").strip().lower()
+    if dlg in ("help", "about"):
+        return dlg
+    if str(qp.get("help") or "").strip().lower() in ("1", "true", "yes"):
+        return "help"
+    if str(qp.get("about") or "").strip().lower() in ("1", "true", "yes"):
+        return "about"
+    return ""
+
+
+def maybe_open_sidebar_dialog_from_query_params() -> bool:
+    """Open Help or About dialog once when explicitly requested via URL query parameters (E9.2)."""
+    req = is_help_or_about_query_request()
+    if not req:
+        return False
+    try:
+        st.query_params.pop("dialog", None)
+        st.query_params.pop("help", None)
+        st.query_params.pop("about", None)
+    except Exception:
+        pass
+    if req == "help":
+        show_help_dialog()
+        return True
+    if req == "about":
+        show_about_dialog()
+        return True
+    return False
+
+
 def _render_help_dialog_body():
     """Dialog body rendering the in-app Help document viewer (C8.1)."""
     from app.services.branding.help_viewer import render_help_dialog_body

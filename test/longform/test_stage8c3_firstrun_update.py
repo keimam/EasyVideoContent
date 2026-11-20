@@ -434,3 +434,212 @@ def test_e5_completed_project_output_and_credits_viewer_ui(tmp_path: Path, monke
     md_all = " ".join(m.value for m in at.markdown)
     assert "Apollo Archive" in md_all
     assert any(b.key == "btn_credits_copy_done_e5_proj" for b in at.button)
+
+
+# ---------------------------------------------------------------------------
+# E9: Single language source of truth, bounded reruns, standalone wizard routing
+# ---------------------------------------------------------------------------
+
+def test_e9_language_single_source_mapping_and_consistency(tmp_path: Path, monkeypatch):
+    """E9.1: Explicit language code mapping (id<->id-ID/Bahasa Indonesia, en<->en/English) & sync."""
+    import streamlit as st
+    from app.config import config as app_cfg
+    from app.services.branding import language
+    from app.services.longform.ui.i18n import get_ui_language, t
+
+    monkeypatch.setenv("EFS_DATA_DIR", str((tmp_path / "e9_lang_map").resolve()))
+    st.session_state.clear()
+    try:
+        # Canonical mapping checks
+        assert language.normalize_ui_language("id") == "id"
+        assert language.normalize_ui_language("id-ID") == "id"
+        assert language.normalize_ui_language("Bahasa Indonesia") == "id"
+        assert language.normalize_ui_language("en") == "en"
+        assert language.normalize_ui_language("en-US") == "en"
+        assert language.normalize_ui_language("English") == "en"
+
+        assert language.to_narration_code("id") == "id-ID"
+        assert language.to_narration_code("Bahasa Indonesia") == "id-ID"
+        assert language.to_narration_code("en") == "en"
+        assert language.to_narration_code("English") == "en"
+
+        assert language.to_display_name("id-ID") == "Bahasa Indonesia"
+        assert language.to_display_name("en") == "English"
+
+        # Single setter synchronizes session_state, config.ui.language, t(), and sibling widgets
+        language.set_ui_language("en-US", persist=True)
+        assert st.session_state["ui_language"] == "en"
+        assert app_cfg.ui["language"] == "en"
+        assert get_ui_language() == "en"
+        assert t("nav_long_video") == "Long Video"
+
+        language.set_ui_language("Bahasa Indonesia", persist=True)
+        assert st.session_state["ui_language"] == "id"
+        assert app_cfg.ui["language"] == "id"
+        assert get_ui_language() == "id"
+        assert t("nav_long_video") == "Video Panjang"
+    finally:
+        st.session_state.clear()
+
+
+def test_e9_language_switch_bounded_reruns_wizard_settings_mpt(tmp_path: Path, monkeypatch):
+    """E9.1/E9.3: id->en->id in Wizard, Settings, and MPT dropdown stay synced with <= 2 runs per switch."""
+    from app.config import config as app_cfg
+    from app.services.branding import hooks
+    from app.services.longform import first_run
+
+    repo_root = Path(__file__).resolve().parents[2]
+    main_file = str(repo_root / "webui" / "Main.py")
+    data_dir = (tmp_path / "e9_loop_data").resolve()
+    monkeypatch.setenv("EFS_DATA_DIR", str(data_dir))
+    monkeypatch.setattr("app.services.longform.update_checker.start_background_update_check", lambda *a, **kw: False)
+    monkeypatch.setattr("app.services.version_checker.get_available_update", lambda *a, **kw: None)
+
+    run_counter = {"count": 0}
+    orig_init = hooks.init_main_page
+
+    def _counting_init(*args, **kwargs):
+        run_counter["count"] += 1
+        return orig_init(*args, **kwargs)
+
+    monkeypatch.setattr("app.services.branding.hooks.init_main_page", _counting_init)
+
+    saved_ui = dict(app_cfg.ui)
+    saved_app = dict(app_cfg.app)
+    try:
+        # 1. Wizard Step 1 (empty EFS_DATA_DIR): id -> en -> id
+        at_wiz = AppTest.from_file(main_file, default_timeout=40)
+        at_wiz.run(timeout=40)
+        assert not at_wiz.exception
+        md0 = " ".join(m.value for m in at_wiz.markdown)
+        assert "Wizard Pengaturan Pertama Kali" in md0
+        # Standalone wizard: NO Short Video content & NO top MPT bar underneath
+        assert not any(sb.key == "top_language_code_selector" for sb in at_wiz.selectbox)
+        assert not any(b.key == "generate_video_button" for b in at_wiz.button)
+        # Sidebar must NOT highlight Video Panjang or Video Pendek as active
+        sb_pl_labels = [pl.label for pl in at_wiz.page_link]
+        assert "**Video Panjang**" not in sb_pl_labels and "**Video Pendek**" not in sb_pl_labels
+
+        run_counter["count"] = 0
+        wiz_radio = [r for r in at_wiz.radio if r.key == "wiz_lang_radio_main"][0]
+        wiz_radio.set_value("en").run(timeout=30)
+        assert not at_wiz.exception
+        assert run_counter["count"] == 1, f"Wizard id->en rerun loop detected: {run_counter['count']} runs"
+        md_en = " ".join(m.value for m in at_wiz.markdown)
+        assert "First-Run Setup Wizard" in md_en
+        assert "Wizard Pengaturan Pertama Kali" not in md_en
+        assert at_wiz.session_state["ui_language"] == "en"
+        assert app_cfg.ui["language"] == "en"
+
+        # Idle follow-up run stays cleanly English (zero flip-flop)
+        run_counter["count"] = 0
+        at_wiz.run(timeout=30)
+        assert at_wiz.session_state["ui_language"] == "en"
+        assert "First-Run Setup Wizard" in " ".join(m.value for m in at_wiz.markdown)
+
+        run_counter["count"] = 0
+        wiz_radio = [r for r in at_wiz.radio if r.key == "wiz_lang_radio_main"][0]
+        wiz_radio.set_value("id").run(timeout=30)
+        assert not at_wiz.exception
+        assert run_counter["count"] == 1, f"Wizard en->id rerun loop detected: {run_counter['count']} runs"
+        assert "Wizard Pengaturan Pertama Kali" in " ".join(m.value for m in at_wiz.markdown)
+        assert at_wiz.session_state["ui_language"] == "id"
+        assert app_cfg.ui["language"] == "id"
+
+        # 2. Post-wizard Main.py: MPT top dropdown id -> en -> id & Settings selector id -> en -> id
+        first_run.mark_setup_completed(skipped=False)
+        app_cfg.ui["language"] = "id"
+        at_main = AppTest.from_file(main_file, default_timeout=40)
+        at_main.run(timeout=40)
+        assert not at_main.exception
+        assert any(sb.key == "top_language_code_selector" for sb in at_main.selectbox)
+
+        # Open Settings General tab -> switch id -> en -> id inside Pengaturan
+        at_main.button(key="open_settings_dialog_button").click().run(timeout=30)
+        assert not at_main.exception
+        run_counter["count"] = 0
+        set_sel = [sb for sb in at_main.selectbox if sb.key == "settings_ui_language_select"][0]
+        set_sel.set_value("en").run(timeout=30)
+        assert not at_main.exception
+        assert run_counter["count"] <= 2, f"Settings id->en rerun loop detected: {run_counter['count']} runs"
+        assert at_main.session_state["ui_language"] == "en"
+        assert app_cfg.ui["language"] == "en"
+        assert [sb for sb in at_main.selectbox if sb.key == "top_language_code_selector"][0].value == "en"
+
+        run_counter["count"] = 0
+        set_sel = [sb for sb in at_main.selectbox if sb.key == "settings_ui_language_select"][0]
+        set_sel.set_value("id").run(timeout=30)
+        assert not at_main.exception
+        assert run_counter["count"] <= 2, f"Settings en->id rerun loop detected: {run_counter['count']} runs"
+        assert at_main.session_state["ui_language"] == "id"
+        assert app_cfg.ui["language"] == "id"
+        assert [sb for sb in at_main.selectbox if sb.key == "top_language_code_selector"][0].value == "id"
+
+        # MPT top-right dropdown id -> en -> id syncs everywhere cleanly
+        run_counter["count"] = 0
+        top_sel = [sb for sb in at_main.selectbox if sb.key == "top_language_code_selector"][0]
+        top_sel.set_value("en").run(timeout=30)
+        assert not at_main.exception
+        assert run_counter["count"] <= 2, f"MPT dropdown id->en rerun loop detected: {run_counter['count']} runs"
+        assert at_main.session_state["ui_language"] == "en"
+        assert app_cfg.ui["language"] == "en"
+        assert [sb for sb in at_main.selectbox if sb.key == "settings_ui_language_select"][0].value == "en"
+        assert "Long Video" in [pl.label for pl in at_main.page_link]
+
+        run_counter["count"] = 0
+        top_sel = [sb for sb in at_main.selectbox if sb.key == "top_language_code_selector"][0]
+        top_sel.set_value("id").run(timeout=30)
+        assert not at_main.exception
+        assert run_counter["count"] <= 2, f"MPT dropdown en->id rerun loop detected: {run_counter['count']} runs"
+        assert at_main.session_state["ui_language"] == "id"
+        assert app_cfg.ui["language"] == "id"
+        assert [sb for sb in at_main.selectbox if sb.key == "settings_ui_language_select"][0].value == "id"
+        assert "Video Panjang" in [pl.label for pl in at_main.page_link]
+    finally:
+        app_cfg.ui.clear()
+        app_cfg.ui.update(saved_ui)
+        app_cfg.app.clear()
+        app_cfg.app.update(saved_app)
+
+
+def test_e9_wizard_standalone_url_redirect_and_finish_to_long_video(tmp_path: Path, monkeypatch):
+    """E9.2: Direct /Long_Video while incomplete redirects to Wizard (except Help/About); Skip/Finish go to Long Video."""
+    data_dir = (tmp_path / "e9_routing_data").resolve()
+    monkeypatch.setenv("EFS_DATA_DIR", str(data_dir))
+    monkeypatch.setattr("app.services.longform.update_checker.start_background_update_check", lambda *a, **kw: False)
+
+    switched_targets = []
+
+    def _fake_switch_page(target, **kwargs):
+        switched_targets.append((str(target), kwargs))
+        raise RuntimeError("simulated switch_page halt check")
+
+    monkeypatch.setattr("streamlit.switch_page", _fake_switch_page)
+
+    # 1. Opening Long Video directly while wizard incomplete attempts redirect to Main.py and hides Long Video content
+    at_lv = AppTest.from_file(get_long_video_app_file())
+    at_lv.run(timeout=30)
+    assert not at_lv.exception
+    assert any(t_path == "Main.py" for t_path, _ in switched_targets)
+    md_lv = " ".join(m.value for m in at_lv.markdown)
+    assert "Wizard Pengaturan Pertama Kali" in md_lv
+    assert "Mulai video baru" not in md_lv
+
+    # 2. Help query exception (?dialog=help) opens Help without redirecting away
+    switched_targets.clear()
+    at_help = AppTest.from_file(get_long_video_app_file())
+    at_help.query_params["dialog"] = "help"
+    at_help.run(timeout=30)
+    assert not at_help.exception
+    assert switched_targets == []
+    assert any("Panduan" in m.value or "Guide" in m.value or "EasyFaceless" in m.value for m in at_help.markdown)
+    assert "Mulai video baru" not in " ".join(m.value for m in at_help.markdown)
+
+    # 3. Skip wizard routes to pages/1_🎬_Long_Video.py
+    switched_targets.clear()
+    at_skip = AppTest.from_file(get_long_video_app_file())
+    at_skip.run(timeout=30)
+    switched_targets.clear()
+    at_skip.button(key="btn_wiz_skip_home").click().run(timeout=20)
+    assert not at_skip.exception
+    assert any("1_🎬_Long_Video.py" in t_path for t_path, _ in switched_targets)
