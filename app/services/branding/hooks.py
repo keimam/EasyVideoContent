@@ -19,8 +19,9 @@ def init_main_page(styles_css_path: Path) -> None:
     st.session_state["_efs_dialog_opened_this_run"] = False
 
     try:
-        from app.services.longform import app_paths
+        from app.services.longform import app_paths, update_checker
         app_paths.bootstrap_runtime_environment()
+        update_checker.log_startup_update_env_once()
     except Exception as exc:
         logger.warning(f"Runtime environment bootstrap warning: {exc}")
 

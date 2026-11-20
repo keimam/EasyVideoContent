@@ -98,8 +98,131 @@ def render_update_banner(*, key_prefix: str = "home") -> None:
                 st.rerun()
 
 
+def _render_friendly_update_error(manual_res: Dict[str, Any]) -> None:
+    """Display friendly localized error message plus expandable technical details (E11.3)."""
+    err_kind = str(manual_res.get("error_kind") or "").strip()
+    raw_err = str(manual_res.get("error") or "").strip()
+    if err_kind == "http_404":
+        st.warning(t("update_err_404"))
+    elif err_kind == "offline":
+        st.warning(t("update_err_offline"))
+    elif err_kind == "no_url":
+        st.info(t("update_err_no_url"))
+    elif err_kind == "invalid_manifest":
+        st.warning(t("update_err_invalid"))
+    else:
+        st.warning(t("update_check_failed_reason", reason=raw_err))
+    if raw_err:
+        with st.expander(t("update_err_tech_details"), expanded=False):
+            st.code(raw_err, language="text")
+
+
+def render_update_check_controls(*, key_prefix: str = "settings", include_wizard_rerun: bool = False) -> None:
+    """Shared auto-check toggle + Check for updates now + optional Wizard re-run controls (E1, E2, E11.3)."""
+    state = update_checker.read_update_state()
+    auto_enabled = bool(state.get("auto_check_enabled", True))
+    new_auto = st.checkbox(
+        t("settings_auto_update_check"),
+        value=auto_enabled,
+        key=f"chk_auto_update_{key_prefix}",
+    )
+    if new_auto != auto_enabled:
+        update_checker.set_auto_check_enabled(new_auto)
+
+    if include_wizard_rerun:
+        col_chk, col_wiz = st.columns(2)
+        with col_chk:
+            if st.button(
+                t("btn_check_updates_now"),
+                key=f"btn_check_updates_{key_prefix}",
+                use_container_width=True,
+            ):
+                res = update_checker.check_for_updates(force=True)
+                if res.get("has_update"):
+                    st.session_state.pop("efs_update_dismissed_session", None)
+                st.session_state["efs_manual_update_result"] = res
+        with col_wiz:
+            if st.button(
+                t("btn_run_wizard_again"),
+                key=f"btn_rerun_wizard_{key_prefix}",
+                use_container_width=True,
+            ):
+                first_run.reset_setup_marker()
+                st.session_state["efs_wizard_skipped_session"] = False
+                st.session_state["efs_wizard_force_open"] = True
+                st.session_state["efs_wizard_step"] = 1
+                st.session_state["settings_dialog_open"] = False
+                try:
+                    st.switch_page("Main.py")
+                except Exception:
+                    st.rerun()
+    else:
+        if st.button(
+            t("btn_check_updates_now"),
+            key=f"btn_check_updates_{key_prefix}",
+            use_container_width=True,
+        ):
+            res = update_checker.check_for_updates(force=True)
+            if res.get("has_update"):
+                st.session_state.pop("efs_update_dismissed_session", None)
+            st.session_state["efs_manual_update_result"] = res
+
+    manual_res = st.session_state.get("efs_manual_update_result")
+    if isinstance(manual_res, dict) and manual_res.get("checked_now"):
+        if manual_res.get("error"):
+            _render_friendly_update_error(manual_res)
+        elif manual_res.get("has_update"):
+            st.info(t("update_available_msg", ver=manual_res.get("remote_version")))
+        else:
+            st.success(t("update_up_to_date", ver=APP_VERSION))
+
+
+def _render_update_release_dialog_body(banner: Dict[str, Any]) -> None:
+    """Modal body showing release notes, Download, and Skip buttons from sidebar update badge (E11.3)."""
+    manifest = banner.get("manifest") or {}
+    remote_ver = str(banner.get("remote_version") or "").strip()
+    released = str(manifest.get("released") or "").strip()
+    download_url = str(manifest.get("download_url") or "").strip()
+    lang = get_ui_language()
+    notes = (
+        (manifest.get("notes_id") or manifest.get("notes_en") or "")
+        if lang == "id"
+        else (manifest.get("notes_en") or manifest.get("notes_id") or "")
+    )
+    if released:
+        st.caption(t("update_banner_released", date=released))
+    if notes:
+        st.markdown(notes)
+    st.divider()
+    c_dl, c_skip, c_close = st.columns(3)
+    with c_dl:
+        if st.button(
+            t("btn_update_download"),
+            type="primary",
+            key="btn_upd_dlg_download",
+            use_container_width=True,
+            disabled=not bool(download_url),
+        ):
+            platform_utils.open_url_in_browser(download_url)
+            st.toast(t("update_opening_url", url=download_url))
+    with c_skip:
+        if st.button(t("btn_update_skip"), key="btn_upd_dlg_skip", use_container_width=True):
+            update_checker.skip_update_version(remote_ver)
+            st.rerun()
+    with c_close:
+        if st.button(t("dialog_close"), key="btn_upd_dlg_close", use_container_width=True):
+            st.rerun()
+
+
+def show_update_release_dialog(banner: Dict[str, Any]) -> None:
+    """Open release notes + download dialog when sidebar update badge is clicked (E11.3)."""
+    st.session_state["_efs_dialog_opened_this_run"] = True
+    remote_ver = str(banner.get("remote_version") or "").strip()
+    st.dialog(t("update_dialog_title", ver=remote_ver))(_render_update_release_dialog_body)(banner)
+
+
 def render_settings_studio_controls(*, key_prefix: str = "settings") -> None:
-    """Render Language selector, Wizard re-run & App Update controls inside Settings General tab (E1, E2, E9)."""
+    """Render Language selector, Wizard re-run & App Update controls inside Settings General tab (E1, E2, E9, E11)."""
     ensure_ui_language_initialized()
     st.divider()
     st.markdown(f"#### {t('settings_studio_heading')}")
@@ -117,51 +240,7 @@ def render_settings_studio_controls(*, key_prefix: str = "settings") -> None:
         args=("settings_ui_language_select",),
     )
 
-    state = update_checker.read_update_state()
-    auto_enabled = bool(state.get("auto_check_enabled", True))
-    new_auto = st.checkbox(
-        t("settings_auto_update_check"),
-        value=auto_enabled,
-        key=f"chk_auto_update_{key_prefix}",
-    )
-    if new_auto != auto_enabled:
-        update_checker.set_auto_check_enabled(new_auto)
-
-    col_chk, col_wiz = st.columns(2)
-    with col_chk:
-        if st.button(
-            t("btn_check_updates_now"),
-            key=f"btn_check_updates_{key_prefix}",
-            use_container_width=True,
-        ):
-            res = update_checker.check_for_updates(force=True)
-            if res.get("has_update"):
-                st.session_state.pop("efs_update_dismissed_session", None)
-            st.session_state["efs_manual_update_result"] = res
-    with col_wiz:
-        if st.button(
-            t("btn_run_wizard_again"),
-            key=f"btn_rerun_wizard_{key_prefix}",
-            use_container_width=True,
-        ):
-            first_run.reset_setup_marker()
-            st.session_state["efs_wizard_skipped_session"] = False
-            st.session_state["efs_wizard_force_open"] = True
-            st.session_state["efs_wizard_step"] = 1
-            st.session_state["settings_dialog_open"] = False
-            try:
-                st.switch_page("Main.py")
-            except Exception:
-                st.rerun()
-
-    manual_res = st.session_state.get("efs_manual_update_result")
-    if isinstance(manual_res, dict) and manual_res.get("checked_now"):
-        if manual_res.get("error"):
-            st.warning(t("update_check_failed_reason", reason=manual_res.get("error")))
-        elif manual_res.get("has_update"):
-            st.info(t("update_available_msg", ver=manual_res.get("remote_version")))
-        else:
-            st.success(t("update_up_to_date", ver=APP_VERSION))
+    render_update_check_controls(key_prefix=key_prefix, include_wizard_rerun=True)
 
 
 def _apply_wizard_language(lang_code: str) -> None:

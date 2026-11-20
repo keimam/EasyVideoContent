@@ -469,6 +469,216 @@ print("BUNDLED_APPTEST_OK")
     return errs
 
 
+def _run_native_exe_smoke(staging: Path, browser_exe: Optional[str]) -> List[str]:
+    """E11.5: Launch real EasyFaceless Studio.exe with EFS_UPDATE_URL and verify banner, badge, About check & server.log."""
+    errs: List[str] = []
+    exe_path = staging / "EasyFaceless Studio.exe"
+    if not exe_path.is_file():
+        return [f"Missing native launcher executable for E11.5 smoke: {exe_path}"]
+
+    u_dir = Path(tempfile.mkdtemp(prefix="efs_e11_exe_smoke_"))
+    srv_pid: Optional[int] = None
+    proc: Optional[subprocess.Popen] = None
+    try:
+        (u_dir / ".efs_setup_complete.json").write_text('{"completed": true, "version": "1.0.0"}\n', encoding="utf-8")
+        (u_dir / "config.toml").write_text('[ui]\nlanguage = "id"\n', encoding="utf-8")
+        manifest_path = u_dir / "latest_101.json"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "version": "1.0.1",
+                    "download_url": "https://example.invalid/EasyFacelessStudio-Setup-1.0.1.exe",
+                    "release_notes": "Perbaikan pembaruan & stabilitas.",
+                    "published_at": "2026-11-20",
+                }
+            ),
+            encoding="utf-8",
+        )
+        env = os.environ.copy()
+        env["EFS_DATA_DIR"] = str(u_dir)
+        env["EFS_UPDATE_URL"] = manifest_path.as_uri()
+        env["EFS_NO_BROWSER"] = "1"
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        env["STREAMLIT_BROWSER_GATHER_USAGE_STATS"] = "false"
+
+        proc = subprocess.Popen(
+            [str(exe_path)],
+            cwd=str(staging),
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+        lock_path = u_dir / ".efs_launcher.lock.json"
+        base_url = ""
+        for _ in range(90):
+            if lock_path.is_file():
+                try:
+                    lock_data = json.loads(lock_path.read_text(encoding="utf-8"))
+                    cand_url = str(lock_data.get("url") or "").strip().rstrip("/")
+                    cand_pid = lock_data.get("pid")
+                    if isinstance(cand_pid, int):
+                        srv_pid = cand_pid
+                    if cand_url:
+                        with urllib.request.urlopen(f"{cand_url}/_stcore/health", timeout=2) as resp:
+                            if int(getattr(resp, "status", 0)) == 200:
+                                base_url = cand_url
+                                break
+                except Exception:
+                    pass
+            time.sleep(0.5)
+
+        if not base_url:
+            errs.append("[E11.5 native exe] EasyFaceless Studio.exe server failed to become ready")
+            return errs
+
+        if browser_exe:
+            try:
+                import websocket  # type: ignore
+            except Exception:
+                websocket = None  # type: ignore
+
+            if websocket is not None:
+                cdp_port = _find_free_port()
+                chr_dir = Path(tempfile.mkdtemp(prefix="efs_e11_chr_"))
+                chrome = subprocess.Popen(
+                    [
+                        browser_exe,
+                        "--headless=new",
+                        f"--remote-debugging-port={cdp_port}",
+                        "--window-size=1440,1000",
+                        "--disable-gpu",
+                        "--no-sandbox",
+                        f"--user-data-dir={chr_dir}",
+                        "about:blank",
+                    ],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                try:
+                    ws_url = None
+                    for _ in range(30):
+                        try:
+                            tabs = json.loads(urllib.request.urlopen(f"http://127.0.0.1:{cdp_port}/json", timeout=2).read())
+                            if tabs:
+                                ws_url = tabs[0]["webSocketDebuggerUrl"]
+                                break
+                        except Exception:
+                            time.sleep(0.3)
+                    if not ws_url:
+                        errs.append("[E11.5 native exe] Headless browser CDP endpoint failed")
+                    else:
+                        ws = websocket.create_connection(ws_url, timeout=30)
+
+                        def _eval(mid: int, expr: str):
+                            ws.send(json.dumps({"id": mid, "method": "Runtime.evaluate", "params": {"expression": expr, "returnByValue": True}}))
+                            while True:
+                                d = json.loads(ws.recv())
+                                if d.get("id") == mid:
+                                    return d.get("result", {}).get("result", {}).get("value")
+
+                        ws.send(json.dumps({"id": 1, "method": "Page.enable"})); ws.recv()
+                        ws.send(json.dumps({"id": 2, "method": "Runtime.enable"})); ws.recv()
+
+                        for idx, route in enumerate(("/Long_Video", ""), start=1):
+                            ws.send(json.dumps({"id": 10 * idx, "method": "Page.navigate", "params": {"url": f"{base_url}{route}"}})); ws.recv()
+                            body = ""
+                            for _ in range(60):
+                                time.sleep(0.6)
+                                body = _eval(100 * idx, "document.body ? document.body.innerText : ''") or ""
+                                if "v1.0.1" in body and ("Pembaruan tersedia (v1.0.1)" in body or "Update available (v1.0.1)" in body):
+                                    break
+                            exc_cnt = _eval(100 * idx + 1, "document.querySelectorAll('[data-testid=\"stException\"]').length") or 0
+                            if exc_cnt > 0:
+                                errs.append(f"[E11.5 native exe {route or '/'}] Found {exc_cnt} stException(s)")
+                            if "v1.0.1" not in body or ("Pembaruan Tersedia" not in body and "Update Available" not in body):
+                                errs.append(f"[E11.5 native exe {route or '/'}] Missing v1.0.1 update banner")
+                            if "Pembaruan tersedia (v1.0.1)" not in body and "Update available (v1.0.1)" not in body:
+                                errs.append(f"[E11.5 native exe {route or '/'}] Missing sidebar update badge")
+
+                        # Open About dialog from sidebar & click "Cek pembaruan sekarang"
+                        opened_about = _eval(
+                            300,
+                            """(() => {
+                                const btns = Array.from(document.querySelectorAll('button'));
+                                const hit = btns.find(b => ['Tentang', 'About'].some(lbl => (b.innerText || '').includes(lbl)));
+                                if (hit) { hit.click(); return true; }
+                                return false;
+                            })()""",
+                        )
+                        if not opened_about:
+                            errs.append("[E11.5 native exe] Could not find About button in sidebar")
+                        else:
+                            dlg_ok = False
+                            for _ in range(25):
+                                time.sleep(0.4)
+                                dlg_txt = _eval(301, "document.body ? document.body.innerText : ''") or ""
+                                if "Cek pembaruan sekarang" in dlg_txt or "Check for updates now" in dlg_txt:
+                                    dlg_ok = True
+                                    break
+                            if not dlg_ok:
+                                errs.append("[E11.5 native exe] About dialog did not render update check button")
+                            else:
+                                _eval(
+                                    302,
+                                    """(() => {
+                                        const btns = Array.from(document.querySelectorAll('[role="dialog"] button, button'));
+                                        const hit = btns.find(b => ['Cek pembaruan sekarang', 'Check for updates now'].some(lbl => (b.innerText || '').includes(lbl)));
+                                        if (hit) { hit.click(); return true; }
+                                        return false;
+                                    })()""",
+                                )
+                                check_ok = False
+                                for _ in range(30):
+                                    time.sleep(0.5)
+                                    dlg_txt = _eval(303, "document.body ? document.body.innerText : ''") or ""
+                                    if "v1.0.1" in dlg_txt and ("tersedia" in dlg_txt.lower() or "available" in dlg_txt.lower()):
+                                        check_ok = True
+                                        break
+                                if not check_ok:
+                                    errs.append("[E11.5 native exe] About update check button did not report v1.0.1 available")
+                        ws.close()
+                finally:
+                    chrome.terminate()
+                    try:
+                        chrome.wait(timeout=5)
+                    except Exception:
+                        chrome.kill()
+                    shutil.rmtree(chr_dir, ignore_errors=True)
+
+        # Wait briefly for log flush & inspect server.log
+        time.sleep(1.0)
+        srv_log = u_dir / "logs" / "server.log"
+        if not srv_log.is_file():
+            errs.append(f"[E11.5 native exe] Missing server.log at {srv_log}")
+        else:
+            log_txt = srv_log.read_text(encoding="utf-8", errors="replace")
+            if "Update env at startup:" not in log_txt:
+                errs.append("[E11.5 native exe] server.log missing startup EFS_UPDATE_URL log")
+            if "decision=update_available" not in log_txt:
+                errs.append("[E11.5 native exe] server.log missing decision=update_available")
+    finally:
+        if srv_pid and os.name == "nt":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(srv_pid)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        elif srv_pid:
+            try:
+                os.kill(srv_pid, 15)
+            except Exception:
+                pass
+        if proc is not None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=4)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+        time.sleep(0.5)
+        shutil.rmtree(u_dir, ignore_errors=True)
+    return errs
+
+
 def run_staged_smoke_test(staging: Path) -> List[str]:
     """Run live installed-mode smoke tests on staging runtime with empty & populated EFS_DATA_DIR (E8)."""
     staging = Path(staging).resolve()
@@ -631,6 +841,8 @@ def run_staged_smoke_test(staging: Path) -> List[str]:
                 except Exception:
                     u_srv.kill()
                 shutil.rmtree(u_dir, ignore_errors=True)
+
+    errors.extend(_run_native_exe_smoke(staging, browser_exe))
 
     return errors
 

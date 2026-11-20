@@ -1296,6 +1296,12 @@ def render_project_page(project_id: str):
     # C6: Studio sidebar navigation without redundant top back link
     render_mpt_entry(show_top_return=False)
 
+    try:
+        from app.services.branding.lifecycle_ui import render_update_banner
+        render_update_banner(key_prefix=f"proj_{project_id}")
+    except Exception:
+        pass
+
     # Navigation header & top meta row (Mockup 2)
     col_back, col_title, col_actions = st.columns([1.2, 3.6, 2.2])
     with col_back:

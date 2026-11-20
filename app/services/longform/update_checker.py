@@ -1,12 +1,14 @@
-"""Application version update checker with 24-hour throttle and non-blocking background startup check (Stage 8C.3, E2)."""
+"""Application version update checker with 24-hour throttle, single URL source, and structured logging (E2, E10, E11)."""
 
 from __future__ import annotations
 
 import json
 import os
 import re
+import sys
 import tempfile
 import threading
+import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -24,12 +26,60 @@ DEFAULT_REQUEST_TIMEOUT_SECONDS = 3.5
 
 _BG_CHECK_LOCK = threading.Lock()
 _BG_CHECK_STARTED = False
+_STARTUP_ENV_LOGGED = False
+_THROTTLE_LOGGED = False
+
+
+def _flush_log_streams() -> None:
+    try:
+        sys.stdout.flush()
+    except Exception:
+        pass
+    try:
+        sys.stderr.flush()
+    except Exception:
+        pass
+
+
+def _normalize_manifest_url(url: str) -> str:
+    cleaned = str(url or "").strip()
+    if not cleaned:
+        return ""
+    if "://" not in cleaned and Path(cleaned).exists():
+        return Path(cleaned).resolve().as_uri()
+    if cleaned.lower().startswith("file://") and not cleaned.lower().startswith("file:///"):
+        tail = cleaned[7:]
+        if len(tail) >= 2 and tail[1] == ":":
+            return f"file:///{tail.lstrip('/')}"
+    return cleaned
 
 
 def get_update_manifest_url() -> str:
-    """Return update manifest URL, honoring `EFS_UPDATE_URL` override (including `file:///`)."""
+    """Single source of truth for update manifest URL (E11.1).
+
+    Reads `EFS_UPDATE_URL` dynamically on every call; falls back to `UPDATE_MANIFEST_URL`.
+    Returns empty string if neither is configured.
+    """
     override = os.environ.get("EFS_UPDATE_URL", "").strip()
-    return override or UPDATE_MANIFEST_URL
+    if override:
+        return _normalize_manifest_url(override)
+    prod = str(UPDATE_MANIFEST_URL or "").strip()
+    return _normalize_manifest_url(prod) if prod else ""
+
+
+def log_startup_update_env_once() -> None:
+    """Log non-sensitive update URL environment once at Streamlit process startup into server.log (E11.1)."""
+    global _STARTUP_ENV_LOGGED
+    if _STARTUP_ENV_LOGGED:
+        return
+    _STARTUP_ENV_LOGGED = True
+    raw_env = os.environ.get("EFS_UPDATE_URL", "").strip()
+    resolved = get_update_manifest_url()
+    logger.info(
+        f"Update env at startup: EFS_UPDATE_URL={raw_env or '<unset>'} "
+        f"resolved_url={resolved or '<disabled_placeholder>'}"
+    )
+    _flush_log_streams()
 
 
 def get_update_state_path() -> Path:
@@ -43,7 +93,9 @@ def _default_state() -> Dict[str, Any]:
         "last_checked_at": None,
         "skipped_version": None,
         "latest_manifest": None,
+        "manifest_url": None,
         "last_error": None,
+        "last_error_kind": None,
     }
 
 
@@ -102,7 +154,6 @@ def is_newer_version(remote_version: Optional[str], current_version: str = APP_V
     cur_padded = cur_nums + (0,) * (max_len - len(cur_nums))
     if rem_padded != cur_padded:
         return rem_padded > cur_padded
-    # Same numeric version: stable ('') > prerelease ('rc1')
     if cur_pre and not rem_pre:
         return True
     return False
@@ -125,10 +176,16 @@ def should_run_auto_check(
     *,
     interval_hours: float = DEFAULT_CHECK_INTERVAL_HOURS,
 ) -> bool:
-    """Return True if automatic checks are enabled and >= 24 hours elapsed since last check."""
+    """Return True if automatic checks are enabled and >= 24 hours elapsed (or manifest_url changed)."""
     state = read_update_state()
     if not state.get("auto_check_enabled", True):
         return False
+    active_url = get_update_manifest_url()
+    if not active_url:
+        return False
+    cached_url = str(state.get("manifest_url") or "").strip()
+    if cached_url and cached_url != active_url:
+        return True
     last_dt = _parse_iso_dt(state.get("last_checked_at"))
     if last_dt is None:
         return True
@@ -138,37 +195,40 @@ def should_run_auto_check(
     return (current_dt - last_dt) >= timedelta(hours=float(interval_hours))
 
 
-def _normalize_manifest_url(url: str) -> str:
-    cleaned = str(url or "").strip()
-    if not cleaned:
-        return UPDATE_MANIFEST_URL
-    # Allow bare local file path in EFS_UPDATE_URL (e.g. F:\...\latest.json)
-    if "://" not in cleaned and Path(cleaned).exists():
-        return Path(cleaned).resolve().as_uri()
-    # Normalize Windows two-slash file://F:/path URIs into canonical file:///F:/path
-    if cleaned.lower().startswith("file://") and not cleaned.lower().startswith("file:///"):
-        tail = cleaned[7:]
-        if len(tail) >= 2 and tail[1] == ":":
-            return f"file:///{tail.lstrip('/')}"
-    return cleaned
-
-
 def _format_short_error(exc: Exception) -> str:
-    """Return concise human-readable error reason for Settings UI & logs (E10.2)."""
     reason = str(exc or "").strip()
     if hasattr(exc, "reason") and getattr(exc, "reason"):
         reason = str(getattr(exc, "reason"))
     elif isinstance(exc, OSError) and getattr(exc, "strerror", None):
         reason = str(exc.strerror)
     reason = " ".join(reason.split())
-    if len(reason) > 120:
-        reason = reason[:117] + "..."
+    if len(reason) > 140:
+        reason = reason[:137] + "..."
     return reason or type(exc).__name__
+
+
+def classify_update_error(exc: Exception) -> Tuple[str, str]:
+    """Classify fetch error into ('http_404' | 'offline' | 'invalid_manifest' | 'other', short_reason)."""
+    short = _format_short_error(exc)
+    if isinstance(exc, urllib.error.HTTPError) and int(getattr(exc, "code", 0)) == 404:
+        return ("http_404", short)
+    if isinstance(exc, (json.JSONDecodeError, ValueError)):
+        return ("invalid_manifest", short)
+    if isinstance(exc, (urllib.error.URLError, TimeoutError, ConnectionError, OSError)):
+        low = short.lower()
+        if "no such file" in low or "cannot find the file" in low:
+            return ("http_404", short)
+        return ("offline", short)
+    if "404" in short or "not found" in short.lower():
+        return ("http_404", short)
+    return ("other", short)
 
 
 def fetch_update_manifest(url: str, *, timeout: float = DEFAULT_REQUEST_TIMEOUT_SECONDS) -> Dict[str, Any]:
     """Fetch and validate `latest.json` from HTTP(S) or `file:///` URI cleanly."""
     target_url = _normalize_manifest_url(url)
+    if not target_url:
+        raise ValueError("No update manifest URL configured.")
     req = urllib.request.Request(
         target_url,
         headers={"User-Agent": f"EasyFacelessStudio/{APP_VERSION}"},
@@ -188,7 +248,13 @@ def fetch_update_manifest(url: str, *, timeout: float = DEFAULT_REQUEST_TIMEOUT_
     }
 
 
-def build_update_result(state: Dict[str, Any], *, checked_now: bool = False, error: Optional[str] = None) -> Dict[str, Any]:
+def build_update_result(
+    state: Dict[str, Any],
+    *,
+    checked_now: bool = False,
+    error: Optional[str] = None,
+    error_kind: Optional[str] = None,
+) -> Dict[str, Any]:
     """Construct standardized update status payload from cached/live state."""
     manifest = state.get("latest_manifest") if isinstance(state.get("latest_manifest"), dict) else None
     remote_ver = str((manifest or {}).get("version") or "").strip() or None
@@ -203,12 +269,22 @@ def build_update_result(state: Dict[str, Any], *, checked_now: bool = False, err
         "is_skipped": is_skipped,
         "show_banner": bool(has_update and not is_skipped),
         "manifest": manifest,
+        "manifest_url": state.get("manifest_url"),
         "auto_check_enabled": bool(state.get("auto_check_enabled", True)),
         "last_checked_at": state.get("last_checked_at"),
         "skipped_version": skipped_ver,
         "checked_now": checked_now,
         "error": error,
+        "error_kind": error_kind,
     }
+
+
+def _log_update_check(url: str, remote_ver: Optional[str], decision: str) -> None:
+    logger.info(
+        f"App update check: url={url or '<none>'} local_version={APP_VERSION} "
+        f"remote_version={remote_ver or 'N/A'} decision={decision}"
+    )
+    _flush_log_streams()
 
 
 def check_for_updates(
@@ -220,26 +296,41 @@ def check_for_updates(
 ) -> Dict[str, Any]:
     """Check for a newer EasyFaceless Studio release, obeying 24-hour throttle unless `force=True`."""
     state = read_update_state()
+    target_url = _normalize_manifest_url(manifest_url) if manifest_url else get_update_manifest_url()
+
     if not force and not should_run_auto_check(now=now):
         res = build_update_result(state, checked_now=False, error=None)
-        logger.debug(
-            f"App update check: url={_normalize_manifest_url(manifest_url or get_update_manifest_url())} "
-            f"local_version={APP_VERSION} remote_version={res.get('remote_version') or 'N/A'} "
-            f"decision=cached_within_24h"
-        )
+        _log_update_check(target_url, res.get("remote_version"), "skipped_throttle")
         return res
 
     current_dt = now or datetime.now(timezone.utc)
     if current_dt.tzinfo is None:
         current_dt = current_dt.replace(tzinfo=timezone.utc)
 
-    raw_target_url = manifest_url or get_update_manifest_url()
-    target_url = _normalize_manifest_url(raw_target_url)
+    if not target_url:
+        decision = "failed:no_update_url"
+        _log_update_check("<none>", None, decision)
+        if not force:
+            return build_update_result(state, checked_now=False, error=None)
+        state["last_checked_at"] = current_dt.isoformat()
+        state["manifest_url"] = ""
+        state["last_error"] = "UPDATE_MANIFEST_URL is empty (not configured)"
+        state["last_error_kind"] = "no_url"
+        write_update_state(state)
+        return build_update_result(
+            state,
+            checked_now=True,
+            error=state["last_error"],
+            error_kind="no_url",
+        )
+
     try:
         manifest = fetch_update_manifest(target_url, timeout=timeout)
         state["latest_manifest"] = manifest
+        state["manifest_url"] = target_url
         state["last_checked_at"] = current_dt.isoformat()
         state["last_error"] = None
+        state["last_error_kind"] = None
         write_update_state(state)
         res = build_update_result(state, checked_now=True, error=None)
         decision = (
@@ -247,22 +338,17 @@ def check_for_updates(
             if res["is_skipped"]
             else ("update_available" if res["has_update"] else "up_to_date")
         )
-        logger.info(
-            f"App update check: url={target_url} local_version={APP_VERSION} "
-            f"remote_version={res.get('remote_version') or 'N/A'} decision={decision}"
-        )
+        _log_update_check(target_url, res.get("remote_version"), decision)
         return res
     except Exception as exc:
-        short_err = _format_short_error(exc)
-        logger.info(
-            f"App update check: url={target_url} local_version={APP_VERSION} "
-            f"remote_version=N/A decision=failed ({short_err})"
-        )
-        # Update last_checked_at even on failure when running auto-check to prevent tight retry loops
+        err_kind, short_err = classify_update_error(exc)
+        _log_update_check(target_url, None, f"failed:{short_err}")
+        state["manifest_url"] = target_url
         state["last_checked_at"] = current_dt.isoformat()
         state["last_error"] = short_err
+        state["last_error_kind"] = err_kind
         write_update_state(state)
-        return build_update_result(state, checked_now=True, error=short_err)
+        return build_update_result(state, checked_now=True, error=short_err, error_kind=err_kind)
 
 
 def skip_update_version(version: str) -> Dict[str, Any]:
@@ -281,28 +367,44 @@ def set_auto_check_enabled(enabled: bool) -> Dict[str, Any]:
     return build_update_result(state, checked_now=False)
 
 
-def get_active_update_banner() -> Optional[Dict[str, Any]]:
-    """Return update manifest dict if cached check shows a newer unskipped version."""
+def get_active_update_banner(*, ignore_session_dismiss: bool = False) -> Optional[Dict[str, Any]]:
+    """Return update manifest dict if cached check matches current URL and shows a newer unskipped version."""
     state = read_update_state()
+    cached_url = str(state.get("manifest_url") or "").strip()
+    active_url = get_update_manifest_url()
+    if cached_url and active_url and cached_url != active_url:
+        return None
+    if not active_url and not os.environ.get("PYTEST_CURRENT_TEST", "").strip():
+        # Production placeholder empty and no EFS_UPDATE_URL override -> no stale cached banner
+        if cached_url:
+            return None
     info = build_update_result(state, checked_now=False)
-    if info["show_banner"]:
+    if info["show_banner"] or (ignore_session_dismiss and info["has_update"] and not info["is_skipped"]):
         return info
     return None
 
 
 def start_background_update_check(*, timeout: float = DEFAULT_REQUEST_TIMEOUT_SECONDS) -> bool:
-    """Run bounded 1-time startup update check per 24h throttle so banner appears on initial render (E2, E10.2)."""
-    global _BG_CHECK_STARTED
+    """Run bounded 1-time startup update check per 24h throttle so banner appears immediately (E2, E10, E11)."""
+    global _BG_CHECK_STARTED, _THROTTLE_LOGGED
+    log_startup_update_env_once()
     if os.environ.get("PYTEST_CURRENT_TEST", "").strip() and not os.environ.get("EFS_UPDATE_URL", "").strip():
         return False
+    manifest_url = get_update_manifest_url()
+    if not manifest_url:
+        return False
     if not should_run_auto_check():
+        if not _THROTTLE_LOGGED:
+            _THROTTLE_LOGGED = True
+            state = read_update_state()
+            res = build_update_result(state, checked_now=False, error=None)
+            _log_update_check(manifest_url, res.get("remote_version"), "skipped_throttle")
         return False
     with _BG_CHECK_LOCK:
         if _BG_CHECK_STARTED:
             return False
         _BG_CHECK_STARTED = True
 
-    manifest_url = get_update_manifest_url()
     bounded_timeout = min(max(0.5, float(timeout)), 2.0)
     try:
         check_for_updates(force=False, timeout=bounded_timeout, manifest_url=manifest_url)

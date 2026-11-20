@@ -419,7 +419,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     try:
         ensure_app_mutex()
-        info = launch_or_focus_app(open_browser=True)
+        open_browser = os.environ.get("EFS_NO_BROWSER", "").strip().lower() not in ("1", "true", "yes")
+        info = launch_or_focus_app(open_browser=open_browser)
         print(f"EasyFaceless Studio ready at {info['url']} (reused={info['reused']})")
         return 0
     except Exception as exc:

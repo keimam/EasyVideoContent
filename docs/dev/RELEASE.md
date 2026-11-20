@@ -4,9 +4,14 @@ Dokumen ini menjelaskan cara menerbitkan rilis baru **EasyFaceless Studio**, mem
 
 ---
 
-## 1. Format Berkas `latest.json`
+## 1. Konfigurasi URL Produksi (`UPDATE_MANIFEST_URL`) & Format `latest.json`
 
-Salin contoh di [`packaging/release/latest.example.json`](../../packaging/release/latest.example.json) ke server statis/GitHub Release (sesuai `UPDATE_MANIFEST_URL` pada [`app/services/branding/constants.py`](../../app/services/branding/constants.py)):
+Pada [`app/services/branding/constants.py`](../../app/services/branding/constants.py), `UPDATE_MANIFEST_URL` dibiarkan **kosong (`""`) sebagai placeholder** agar rilis dev/fork tidak memanggil URL pihak ketiga dan tidak memunculkan error 404 saat cek otomatis:
+
+- Selama `UPDATE_MANIFEST_URL` kosong (dan `EFS_UPDATE_URL` tidak disetel), **cek pembaruan otomatis dinonaktifkan secara diam-diam**. Skrip [`build_installer.ps1`](../../scripts/build/build_installer.ps1) juga menampilkan **PERINGATAN** saat membangun installer jika `UPDATE_MANIFEST_URL` masih kosong.
+- Sebelum menerbitkan installer produksi resmi, isi `UPDATE_MANIFEST_URL` dengan URL HTTPS berkas `latest.json` milik Anda sendiri (mis. GitHub Releases / CDN statis).
+
+Salin contoh di [`packaging/release/latest.example.json`](../../packaging/release/latest.example.json) ke server statis/GitHub Release sesuai `UPDATE_MANIFEST_URL`:
 
 ```json
 {
@@ -30,10 +35,12 @@ Salin contoh di [`packaging/release/latest.example.json`](../../packaging/releas
 
 ## 2. Perilaku Cek Pembaruan di Aplikasi
 
-- Berjalan **otomatis sekali per 24 jam** saat aplikasi dibuka di thread latar belakang dengan timeout singkat (`3.5` detik).
-- Bila komputer sedang **offline** atau manifest gagal diakses, proses berhenti **diam-diam** (hanya dicatat ke log, tanpa pop-up galat mengganggu pengguna).
-- Bila ada versi lebih baru: muncul banner berisi versi baru, catatan perubahan, tombol **Unduh**, **Nanti** (tutup di sesi ini), dan **Lewati versi ini** (menyimpan `skipped_version` ke `<data_dir>/.efs_update_state.json`).
-- Di **Pengaturan**, pengguna dapat mematikan cek otomatis atau menekan **Cek pembaruan sekarang**.
+- Satu fungsi sumber kebenaran URL: `update_checker.get_update_manifest_url()` (`EFS_UPDATE_URL` bila disetel, selain itu `UPDATE_MANIFEST_URL`). Setiap pengecekan dicatat ke `logs/server.log` dengan `url`, `local_version`, `remote_version`, dan `decision`.
+- Berjalan **sinkron singkat saat startup** (`<= 2.0` detik, maks. 1× per 24 jam) bila URL terkonfigurasi sehingga banner langsung muncul tanpa perlu klik tambahan.
+- Bila ada versi lebih baru:
+  - Banner tampil di bagian atas semua halaman (**Video Panjang**, detail proyek, **Video Pendek**, serta dialog **Bantuan**) dengan tombol **Unduh Pembaruan**, **Nanti** (sembunyikan sesi ini), dan **Lewati versi ini** (permanen per versi).
+  - Penanda kecil **`Pembaruan tersedia (v<versi>)`** tampil di sidebar tepat di bawah `v1.0.0` dan membuka dialog catatan rilis.
+- Di **Pengaturan → Umum** dan **Tentang**, pengguna dapat menyalakan/mematikan cek otomatis serta menekan **Cek pembaruan sekarang** (menampilkan hasil tersedia, sudah terbaru, atau pesan gagal ramah + expander detail teknis).
 
 ---
 

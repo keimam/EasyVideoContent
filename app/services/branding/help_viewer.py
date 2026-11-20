@@ -184,7 +184,12 @@ def _on_help_jump(rel_target: str, current_doc_lang: str) -> None:
 
 
 def render_help_dialog_body() -> None:
-    """Render the in-app Help document viewer inside `st.dialog` (C8.1)."""
+    """Render shared update banner (E11.3) + in-app Help document viewer inside `st.dialog` (C8.1)."""
+    try:
+        from app.services.branding.lifecycle_ui import render_update_banner
+        render_update_banner(key_prefix="help_dlg")
+    except Exception:
+        pass
     ui_lang = get_ui_language()
     last_ui_lang = st.session_state.get("efs_help_last_ui_lang")
     if last_ui_lang != ui_lang:

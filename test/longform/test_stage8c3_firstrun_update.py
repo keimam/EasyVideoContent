@@ -749,6 +749,77 @@ def test_e10_update_checker_logging_sync_startup_and_settings_results(tmp_path: 
         at.button(key="btn_check_updates_general_settings").click().run(timeout=20)
         assert not at.exception
         assert len(at.warning) >= 1
-        assert any("decision=failed" in ln for ln in log_lines)
+        assert any("decision=failed:" in ln for ln in log_lines)
+    finally:
+        logger.remove(sink_id)
+
+
+def test_e11_empty_prod_url_friendly_errors_about_and_sidebar_badge(tmp_path: Path, monkeypatch):
+    """E11.1–E11.4: Single URL source (empty default silent), all decision logs, friendly 404/offline, About & sidebar badge."""
+    from loguru import logger
+    from app.services.branding.constants import UPDATE_MANIFEST_URL
+    from app.services.longform import first_run, update_checker
+
+    assert UPDATE_MANIFEST_URL == ""
+
+    data_dir = (tmp_path / "e11_data").resolve()
+    monkeypatch.setenv("EFS_DATA_DIR", str(data_dir))
+    monkeypatch.delenv("EFS_UPDATE_URL", raising=False)
+    first_run.mark_setup_completed(skipped=False)
+
+    log_lines = []
+    sink_id = logger.add(lambda msg: log_lines.append(str(msg)), level="INFO")
+    try:
+        # 1. Empty default placeholder: auto-check disabled without HTTP error
+        assert update_checker.get_update_manifest_url() == ""
+        assert update_checker.start_background_update_check() is False
+        res_no = update_checker.check_for_updates(force=True)
+        assert res_no["error_kind"] == "no_url"
+        assert any("decision=failed:no_update_url" in ln for ln in log_lines)
+
+        # 2. Override dynamically with EFS_UPDATE_URL -> 404/missing local file friendly msg & skipped_version / skipped_throttle logs
+        missing_uri = (tmp_path / "does_not_exist.json").as_uri()
+        monkeypatch.setenv("EFS_UPDATE_URL", missing_uri)
+        assert update_checker.get_update_manifest_url() == missing_uri
+        res_404 = update_checker.check_for_updates(force=True)
+        assert res_404["error_kind"] == "http_404"
+        assert any("decision=failed:" in ln for ln in log_lines)
+
+        # 3. Valid 1.0.1 manifest -> throttle & skipped_version logs + About dialog & sidebar badge UI
+        manifest_path = tmp_path / "latest_101.json"
+        manifest_path.write_text(
+            json.dumps({
+                "version": "1.0.1",
+                "released": "2026-12-01",
+                "notes_id": "Catatan uji E11",
+                "notes_en": "E11 test notes",
+                "download_url": "https://example.com/1.0.1.exe",
+            }),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("EFS_UPDATE_URL", manifest_path.as_uri())
+        res_upd = update_checker.check_for_updates(force=True)
+        assert res_upd["has_update"] is True
+        assert any("decision=update_available" in ln for ln in log_lines)
+
+        # Subsequent force=False within 24h logs skipped_throttle
+        update_checker.check_for_updates(force=False)
+        assert any("decision=skipped_throttle" in ln for ln in log_lines)
+
+        # Open Long Video -> sidebar update badge rendered & clicking About shows update check controls
+        at = AppTest.from_file(get_long_video_app_file(), default_timeout=35)
+        at.run(timeout=35)
+        assert not at.exception
+        assert any(b.key == "efs_btn_sidebar_update_longform" for b in at.button)
+
+        at.button(key="efs_btn_about_longform").click().run(timeout=20)
+        assert not at.exception
+        assert any(b.key == "btn_check_updates_about_dialog" for b in at.button)
+        assert any(c.key == "chk_auto_update_about_dialog" for c in at.checkbox)
+
+        # Skipped version logs decision=skipped_version on force=True
+        update_checker.skip_update_version("1.0.1")
+        update_checker.check_for_updates(force=True)
+        assert any("decision=skipped_version" in ln for ln in log_lines)
     finally:
         logger.remove(sink_id)

@@ -40,6 +40,13 @@ def _render_about_dialog_body():
     )
     st.markdown(t("about_dialog_desc"))
     st.divider()
+    st.markdown(f"### {t('about_update_section_title')}")
+    try:
+        from app.services.branding.lifecycle_ui import render_update_check_controls
+        render_update_check_controls(key_prefix="about_dialog", include_wizard_rerun=False)
+    except Exception:
+        pass
+    st.divider()
     st.markdown(f"### {t('about_dialog_license')}")
     st.markdown(
         f"- {t('about_dialog_app_version', app_ver=APP_VERSION)}\n"
@@ -475,6 +482,33 @@ def _inject_sidebar_styles():
         font-size: 0.78rem !important;
         margin: 0 !important;
     }
+
+    /* E11.3: Compact sidebar update badge directly under version line */
+    [data-testid="stSidebar"] div.stElementContainer[class*="efs_btn_sidebar_update"] div.stButton button,
+    [data-testid="stSidebar"] div[class*="efs_btn_sidebar_update"] button {
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+        padding: 2px 4px !important;
+        min-height: 22px !important;
+        height: auto !important;
+        margin-top: 0 !important;
+        margin-bottom: 4px !important;
+        justify-content: flex-start !important;
+        text-align: left !important;
+        color: var(--efs-accent) !important;
+        font-size: 0.76rem !important;
+        font-weight: 600 !important;
+        width: auto !important;
+    }
+    [data-testid="stSidebar"] div[class*="efs_btn_sidebar_update"] button > div,
+    [data-testid="stSidebar"] div[class*="efs_btn_sidebar_update"] button p {
+        justify-content: flex-start !important;
+        text-align: left !important;
+        font-size: 0.76rem !important;
+        color: var(--efs-accent) !important;
+        margin: 0 !important;
+    }
     </style>
     """
     st.markdown(css, unsafe_allow_html=True)
@@ -607,13 +641,29 @@ def render_brand_sidebar(current_page: str = "main"):
         ):
             show_help_dialog()
 
-        # 4. Compact footer: clickable dimmed version line + Tentang/About button (C7)
+        # 4. Compact footer: clickable dimmed version line + update badge + Tentang/About button (C7, E11.3)
         if st.button(
             f"v{APP_VERSION}",
             key=f"efs_btn_version_{current_page}",
             help=t("sidebar_version_help"),
         ):
             show_about_dialog()
+
+        try:
+            from app.services.longform import update_checker as _sb_uc
+            from app.services.branding.lifecycle_ui import show_update_release_dialog
+
+            _sb_uc.start_background_update_check()
+            _sb_upd = _sb_uc.get_active_update_banner(ignore_session_dismiss=True)
+            if _sb_upd and _sb_upd.get("remote_version"):
+                if st.button(
+                    t("sidebar_update_badge", ver=_sb_upd["remote_version"]),
+                    key=f"efs_btn_sidebar_update_{current_page}",
+                    help=t("sidebar_update_badge_help"),
+                ):
+                    show_update_release_dialog(_sb_upd)
+        except Exception:
+            pass
 
         if st.button(
             t("nav_about"),

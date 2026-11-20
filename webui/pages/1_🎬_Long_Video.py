@@ -19,8 +19,9 @@ if root_dir not in sys.path:
 import streamlit as st
 
 try:
-    from app.services.longform import app_paths
+    from app.services.longform import app_paths, update_checker
     app_paths.bootstrap_runtime_environment()
+    update_checker.log_startup_update_env_once()
 except Exception:
     pass
 

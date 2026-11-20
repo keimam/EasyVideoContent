@@ -79,12 +79,15 @@ try {
     }
 
     # 3. Read single-source metadata from constants.py
-    $MetaJson = & $VenvPython -c "import json; from app.services.branding.constants import APP_NAME, APP_VERSION, APP_OWNER, APP_SETUP_PREFIX; print(json.dumps({'name': APP_NAME, 'version': APP_VERSION, 'owner': APP_OWNER, 'prefix': APP_SETUP_PREFIX}))"
+    $MetaJson = & $VenvPython -c "import json; from app.services.branding.constants import APP_NAME, APP_VERSION, APP_OWNER, APP_SETUP_PREFIX, UPDATE_MANIFEST_URL; print(json.dumps({'name': APP_NAME, 'version': APP_VERSION, 'owner': APP_OWNER, 'prefix': APP_SETUP_PREFIX, 'update_url': UPDATE_MANIFEST_URL}))"
     $Meta = $MetaJson | ConvertFrom-Json
     $AppName = $Meta.name
     $AppVersion = $Meta.version
     $AppOwner = $Meta.owner
     $SetupBaseName = "$($Meta.prefix)-$AppVersion"
+    if ([string]::IsNullOrWhiteSpace($Meta.update_url)) {
+        Write-Warning "PERINGATAN (E11.4): UPDATE_MANIFEST_URL pada app\services\branding\constants.py masih kosong (placeholder). Cek pembaruan otomatis dinonaktifkan sampai URL rilis produksi diisi."
+    }
 
     Write-Host "App       : $AppName v$AppVersion"
     Write-Host "Publisher : $AppOwner"
@@ -235,22 +238,31 @@ try {
         throw "Package hygiene/smoke verification failed!"
     }
 
-    # 10. Compile Inno Setup Installer
+    # 10. Compile Inno Setup Installer (retry up to 3x for transient AV lock on EndUpdateResource)
     Write-Host "[6/6] Compiling Inno Setup installer -> dist\$SetupBaseName.exe..."
     $IssFile = Join-Path $RepoRoot "packaging\installer\efs.iss"
-    & $InnoCompiler `
-        "/DMyAppName=$AppName" `
-        "/DMyAppVersion=$AppVersion" `
-        "/DMyAppPublisher=$AppOwner" `
-        "/DMyAppExeName=$AppName.exe" `
-        "/DMyAppSetupBase=$SetupBaseName" `
-        "/DMyStagingDir=$StagingDir" `
-        "/DMyOutputDir=$DistDir" `
-        "/DMyIconFile=$IconPath" `
-        "/DMyLicenseFile=$LicensePath" `
-        $IssFile
-    if ($LASTEXITCODE -ne 0) {
-        throw "Inno Setup compiler failed (exit $LASTEXITCODE)!"
+    $IsccExit = 1
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        & $InnoCompiler `
+            "/DMyAppName=$AppName" `
+            "/DMyAppVersion=$AppVersion" `
+            "/DMyAppPublisher=$AppOwner" `
+            "/DMyAppExeName=$AppName.exe" `
+            "/DMyAppSetupBase=$SetupBaseName" `
+            "/DMyStagingDir=$StagingDir" `
+            "/DMyOutputDir=$DistDir" `
+            "/DMyIconFile=$IconPath" `
+            "/DMyLicenseFile=$LicensePath" `
+            $IssFile
+        $IsccExit = $LASTEXITCODE
+        if ($IsccExit -eq 0) { break }
+        if ($attempt -lt 3) {
+            Write-Warning "ISCC exited with $IsccExit (attempt $attempt/3); retrying after 3s..."
+            Start-Sleep -Seconds 3
+        }
+    }
+    if ($IsccExit -ne 0) {
+        throw "Inno Setup compiler failed (exit $IsccExit)!"
     }
 
     $InstallerExe = Join-Path $DistDir "$SetupBaseName.exe"
