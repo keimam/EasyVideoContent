@@ -15,6 +15,7 @@
 /**/.streamlit
 __pycache__
 logs/
+.efs_*.json
 
 node_modules
 # VuePress 默认临时文件目录
