@@ -7,6 +7,11 @@ max_size_gb = 10.0
 # Default age in days for cache pruning (default 30 days)
 max_age_days = 30
 
+[capcut]
+# Daftar versi CapCut Desktop teruji kompatibilitas draft-nya (E3)
+tested_versions = ["8.9.0"]
+download_url = "https://www.capcut.com/"
+
 [ai_video_pricing]
 # Tabel perkiraan biaya AI Video (USD per detik) yang dapat diedit pengguna.
 # Setiap baris menyertakan URL sumber & tanggal pengecekan.

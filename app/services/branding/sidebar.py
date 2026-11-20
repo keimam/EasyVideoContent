@@ -18,21 +18,26 @@ from app.services.branding.constants import (
     MIT_ATTRIBUTION,
     MIT_THANKS,
     UPSTREAM_REPO_URL,
+    get_app_build_signature,
     get_logo_data_uri,
 )
 from app.services.longform.ui.i18n import t
 
 
 def _render_about_dialog_body():
-    """Dialog body displaying app/core versions, MIT upstream attribution, notices link, and LICENSE text (C7)."""
+    """Dialog body displaying app/core versions, build metadata, update check, MIT attribution, and LICENSE text (C7, E12)."""
     logo_uri = get_logo_data_uri()
+    sig = get_app_build_signature()
+    build_commit = sig["git_commit"]
+    build_time = sig["build_time"]
+    version_badge = f"v{APP_VERSION} · build {html.escape(build_commit)}"
     st.markdown(
         f"""
         <div style="display: flex; align-items: center; gap: 14px; margin-bottom: 1rem;">
             <img src="{logo_uri}" style="width: 44px; height: 44px; border-radius: 10px;" alt="Logo" />
             <div>
                 <h3 style="margin: 0; font-size: 1.3rem; font-weight: 700; color: var(--efs-text);">{APP_NAME}</h3>
-                <span style="font-size: 0.82rem; color: var(--efs-accent); font-weight: 600;">v{APP_VERSION}</span>
+                <span style="font-size: 0.82rem; color: var(--efs-accent); font-weight: 600;">{version_badge}</span>
             </div>
         </div>
         """,
@@ -40,9 +45,17 @@ def _render_about_dialog_body():
     )
     st.markdown(t("about_dialog_desc"))
     st.divider()
+    st.markdown(f"### {t('about_update_section_title')}")
+    try:
+        from app.services.branding.lifecycle_ui import render_update_check_controls
+        render_update_check_controls(key_prefix="about_dialog", include_wizard_rerun=False)
+    except Exception:
+        pass
+    st.divider()
     st.markdown(f"### {t('about_dialog_license')}")
     st.markdown(
         f"- {t('about_dialog_app_version', app_ver=APP_VERSION)}\n"
+        f"- {t('about_dialog_build_line', build_commit=build_commit, build_time=build_time)}\n"
         f"- {t('about_dialog_owner_line', owner=APP_OWNER, year=APP_COPYRIGHT_YEAR)}\n"
         f"- {t('about_dialog_core_version', core_ver=CORE_VERSION)}\n"
         f"- {t('about_dialog_built_on', url=UPSTREAM_REPO_URL)}\n"
@@ -65,7 +78,44 @@ def _render_about_dialog_body():
 
 def show_about_dialog():
     """Open localized About dialog dynamically."""
+    st.session_state["_efs_dialog_opened_this_run"] = True
     st.dialog(t("about_dialog_title"))(_render_about_dialog_body)()
+
+
+def is_help_or_about_query_request() -> str:
+    """Return 'help' or 'about' when URL query params explicitly request Help or About dialogs (E9.2)."""
+    try:
+        qp = st.query_params
+    except Exception:
+        return ""
+    dlg = str(qp.get("dialog") or "").strip().lower()
+    if dlg in ("help", "about"):
+        return dlg
+    if str(qp.get("help") or "").strip().lower() in ("1", "true", "yes"):
+        return "help"
+    if str(qp.get("about") or "").strip().lower() in ("1", "true", "yes"):
+        return "about"
+    return ""
+
+
+def maybe_open_sidebar_dialog_from_query_params() -> bool:
+    """Open Help or About dialog once when explicitly requested via URL query parameters (E9.2)."""
+    req = is_help_or_about_query_request()
+    if not req:
+        return False
+    try:
+        st.query_params.pop("dialog", None)
+        st.query_params.pop("help", None)
+        st.query_params.pop("about", None)
+    except Exception:
+        pass
+    if req == "help":
+        show_help_dialog()
+        return True
+    if req == "about":
+        show_about_dialog()
+        return True
+    return False
 
 
 def _render_help_dialog_body():
@@ -77,6 +127,7 @@ def _render_help_dialog_body():
 
 def show_help_dialog():
     """Open localized Help & Documentation dialog dynamically."""
+    st.session_state["_efs_dialog_opened_this_run"] = True
     st.dialog(t("help_dialog_title"), width="large")(_render_help_dialog_body)()
 
 
@@ -115,6 +166,7 @@ def _render_exit_app_dialog_body():
 
 def show_exit_app_dialog():
     """Open localized Exit App confirmation dialog dynamically (D3)."""
+    st.session_state["_efs_dialog_opened_this_run"] = True
     st.dialog(t("exit_app_dialog_title"))(_render_exit_app_dialog_body)()
 
 
@@ -187,6 +239,7 @@ def _render_niche_dialog_body():
 
 def show_niche_dialog():
     """Open localized Manage Niche dialog dynamically."""
+    st.session_state["_efs_dialog_opened_this_run"] = True
     st.dialog(t("niche_dialog_title"), width="large")(_render_niche_dialog_body)()
 
 
@@ -435,6 +488,33 @@ def _inject_sidebar_styles():
         font-size: 0.78rem !important;
         margin: 0 !important;
     }
+
+    /* E11.3: Compact sidebar update badge directly under version line */
+    [data-testid="stSidebar"] div.stElementContainer[class*="efs_btn_sidebar_update"] div.stButton button,
+    [data-testid="stSidebar"] div[class*="efs_btn_sidebar_update"] button {
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+        padding: 2px 4px !important;
+        min-height: 22px !important;
+        height: auto !important;
+        margin-top: 0 !important;
+        margin-bottom: 4px !important;
+        justify-content: flex-start !important;
+        text-align: left !important;
+        color: var(--efs-accent) !important;
+        font-size: 0.76rem !important;
+        font-weight: 600 !important;
+        width: auto !important;
+    }
+    [data-testid="stSidebar"] div[class*="efs_btn_sidebar_update"] button > div,
+    [data-testid="stSidebar"] div[class*="efs_btn_sidebar_update"] button p {
+        justify-content: flex-start !important;
+        text-align: left !important;
+        font-size: 0.76rem !important;
+        color: var(--efs-accent) !important;
+        margin: 0 !important;
+    }
     </style>
     """
     st.markdown(css, unsafe_allow_html=True)
@@ -567,13 +647,29 @@ def render_brand_sidebar(current_page: str = "main"):
         ):
             show_help_dialog()
 
-        # 4. Compact footer: clickable dimmed version line + Tentang/About button (C7)
+        # 4. Compact footer: clickable dimmed version line + update badge + Tentang/About button (C7, E11.3)
         if st.button(
             f"v{APP_VERSION}",
             key=f"efs_btn_version_{current_page}",
             help=t("sidebar_version_help"),
         ):
             show_about_dialog()
+
+        try:
+            from app.services.longform import update_checker as _sb_uc
+            from app.services.branding.lifecycle_ui import show_update_release_dialog
+
+            _sb_uc.start_background_update_check()
+            _sb_upd = _sb_uc.get_active_update_banner(ignore_session_dismiss=True)
+            if _sb_upd and _sb_upd.get("remote_version"):
+                if st.button(
+                    t("sidebar_update_badge", ver=_sb_upd["remote_version"]),
+                    key=f"efs_btn_sidebar_update_{current_page}",
+                    help=t("sidebar_update_badge_help"),
+                ):
+                    show_update_release_dialog(_sb_upd)
+        except Exception:
+            pass
 
         if st.button(
             t("nav_about"),

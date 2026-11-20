@@ -1,0 +1,15 @@
+<Configuration>
+  <VGpu>Default</VGpu>
+  <Networking>Enable</Networking>
+  <MappedFolders>
+    <MappedFolder>
+      <!-- Sesuaikan HostFolder bila folder dist Anda berada di lokasi lain -->
+      <HostFolder>F:\MPTLong\dist</HostFolder>
+      <SandboxFolder>C:\Users\WDAGUtilityAccount\Desktop\efs-dist</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+  </MappedFolders>
+  <LogonCommand>
+    <Command>explorer.exe C:\Users\WDAGUtilityAccount\Desktop\efs-dist</Command>
+  </LogonCommand>
+</Configuration>

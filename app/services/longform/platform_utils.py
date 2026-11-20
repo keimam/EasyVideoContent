@@ -27,9 +27,11 @@ import stat
 import subprocess
 import sys
 import time
+import urllib.request
 import webbrowser
+import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from loguru import logger
 
@@ -526,8 +528,9 @@ def find_processes_in_directory(
     root_dir: Path,
     *,
     exclude_pids: Optional[Sequence[int]] = None,
+    include_cmd_markers: bool = False,
 ) -> List[Dict[str, Any]]:
-    """Return running processes whose executable lives inside `root_dir` (D9.6)."""
+    """Return running processes whose executable lives inside `root_dir` (or matching EFS server cmdline) (D9.6, E12.2)."""
     root = Path(root_dir).resolve()
     excluded = {int(p) for p in (exclude_pids or ())} | {os.getpid()}
     found: List[Dict[str, Any]] = []
@@ -535,8 +538,8 @@ def find_processes_in_directory(
     if is_windows():
         ps_cmd = (
             "Get-CimInstance Win32_Process | "
-            "Where-Object { $_.ExecutablePath } | "
-            "Select-Object ProcessId, Name, ExecutablePath | ConvertTo-Json -Compress"
+            "Where-Object { $_.ExecutablePath -or $_.CommandLine } | "
+            "Select-Object ProcessId, Name, ExecutablePath, CommandLine | ConvertTo-Json -Compress"
         )
         try:
             res = subprocess.run(
@@ -551,19 +554,42 @@ def find_processes_in_directory(
                 raw = _json.loads(res.stdout.strip())
                 items = raw if isinstance(raw, list) else [raw]
                 root_low = str(root).rstrip("\\/").lower()
+                try:
+                    short_root_low = str(Path(os.path.realpath(root))).rstrip("\\/").lower()
+                except Exception:
+                    short_root_low = root_low
                 for item in items:
                     if not isinstance(item, dict):
                         continue
                     pid = int(item.get("ProcessId") or 0)
                     exe = str(item.get("ExecutablePath") or "")
-                    if pid <= 0 or pid in excluded or not exe:
+                    cmd = str(item.get("CommandLine") or "")
+                    name = str(item.get("Name") or "")
+                    if pid <= 0 or pid in excluded:
                         continue
                     exe_low = exe.lower()
-                    if exe_low.startswith(root_low + "\\") or exe_low.startswith(root_low + "/"):
+                    cmd_low = cmd.lower()
+                    matched = bool(
+                        exe_low
+                        and (
+                            exe_low.startswith(root_low + "\\")
+                            or exe_low.startswith(root_low + "/")
+                            or exe_low.startswith(short_root_low + "\\")
+                            or exe_low.startswith(short_root_low + "/")
+                        )
+                    )
+                    if not matched and include_cmd_markers and "python" in name.lower():
+                        if (
+                            "app.services.longform.launcher_runtime" in cmd_low
+                            or ("streamlit" in cmd_low and ("main.py" in cmd_low or "easyfaceless" in cmd_low))
+                        ):
+                            matched = True
+                    if matched:
                         found.append({
                             "pid": pid,
-                            "name": str(item.get("Name") or ""),
+                            "name": name,
                             "executable": exe,
+                            "command_line": cmd,
                         })
         except Exception as exc:
             logger.warning(f"Failed inspecting Windows processes under {root}: {exc}")
@@ -580,3 +606,279 @@ def find_processes_in_directory(
         except Exception:
             pass
     return found
+
+
+def parse_capcut_product_info_xml(xml_path: Path) -> Dict[str, Any]:
+    """Parse Windows CapCut ``ProductInfo.xml`` into normalized version fields (E3)."""
+    p = Path(xml_path)
+    info: Dict[str, Any] = {
+        "installed": False,
+        "app_ver": None,
+        "full_ver": None,
+        "apps_dir": None,
+        "product_info_path": str(p),
+    }
+    if not p.is_file():
+        return info
+    tree = ET.parse(p)
+    root = tree.getroot()
+    appver_el = root.find("appver")
+    fullver_el = root.find("full_appver")
+    app_ver = (appver_el.attrib.get("value") or "").strip() if appver_el is not None else ""
+    full_ver = (fullver_el.attrib.get("value") or "").strip() if fullver_el is not None else ""
+    info["installed"] = True
+    info["app_ver"] = app_ver or None
+    info["full_ver"] = full_ver or None
+    info["apps_dir"] = str(p.parent)
+    return info
+
+
+def get_capcut_version_info(product_info_path: Optional[Path] = None) -> Dict[str, Any]:
+    """Read installed CapCut Desktop version per host OS (E3).
+
+    - Windows: reads ``ProductInfo.xml`` under ``%LOCALAPPDATA%\\CapCut\\Apps``.
+    - macOS: raises ``NotImplementedError`` until verified on physical macOS hardware.
+    - Linux: raises ``NotImplementedError`` (CapCut Desktop unavailable).
+    """
+    if is_macos():
+        raise NotImplementedError(
+            "Deteksi versi CapCut Desktop untuk macOS belum diimplementasikan "
+            "(verifikasi /Applications/CapCut.app/Contents/Info.plist CFBundleShortVersionString pada perangkat macOS fisik)."
+        )
+    if not is_windows():
+        raise NotImplementedError("Deteksi versi CapCut Desktop hanya tersedia pada Windows.")
+
+    target_xml = Path(product_info_path) if product_info_path else get_capcut_product_info_path()
+    if not target_xml:
+        return {
+            "installed": False,
+            "app_ver": None,
+            "full_ver": None,
+            "apps_dir": None,
+            "product_info_path": None,
+        }
+    return parse_capcut_product_info_xml(target_xml)
+
+
+def get_system_ram_gb() -> float:
+    """Return total physical system RAM in gibibytes cleanly across platforms."""
+    if is_windows():
+        class _MEMORYSTATUSEX(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("sullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+
+        mem = _MEMORYSTATUSEX()
+        mem.dwLength = ctypes.sizeof(_MEMORYSTATUSEX)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(mem)):
+            return round(mem.ullTotalPhys / (1024 ** 3), 2)
+    try:
+        page_size = os.sysconf("SC_PAGE_SIZE")
+        phys_pages = os.sysconf("SC_PHYS_PAGES")
+        if page_size > 0 and phys_pages > 0:
+            return round((page_size * phys_pages) / (1024 ** 3), 2)
+    except Exception:
+        pass
+    return 0.0
+
+
+def get_cpu_info() -> Dict[str, Any]:
+    """Return CPU logical/physical core counts and processor model string."""
+    logical = int(os.cpu_count() or 1)
+    physical: Optional[int] = None
+    model = ""
+    if is_windows():
+        try:
+            ps_cmd = (
+                "Get-CimInstance Win32_Processor | "
+                "Select-Object -First 1 Name, NumberOfCores, NumberOfLogicalProcessors | "
+                "ConvertTo-Json -Compress"
+            )
+            res = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
+                capture_output=True,
+                text=True,
+                timeout=4,
+                creationflags=get_hidden_subprocess_flags(),
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                import json as _json
+
+                data = _json.loads(res.stdout.strip())
+                if isinstance(data, dict):
+                    model = str(data.get("Name") or "").strip()
+                    if data.get("NumberOfCores"):
+                        physical = int(data["NumberOfCores"])
+                    if data.get("NumberOfLogicalProcessors"):
+                        logical = int(data["NumberOfLogicalProcessors"])
+        except Exception:
+            pass
+    else:
+        import platform as _plat
+
+        model = _plat.processor() or _plat.machine()
+    return {
+        "logical_cores": logical,
+        "physical_cores": physical or logical,
+        "model": model or "Unknown CPU",
+    }
+
+
+def get_free_disk_gb(target_path: Path) -> float:
+    """Return free disk space in gibibytes on the volume holding `target_path`."""
+    probe = Path(target_path).expanduser().resolve()
+    while not probe.exists() and probe.parent != probe:
+        probe = probe.parent
+    usage = shutil.disk_usage(probe)
+    return round(usage.free / (1024 ** 3), 2)
+
+
+def get_process_memory_snapshot_mb() -> Dict[str, Optional[float]]:
+    """Return current process RSS & OS memory load % cleanly without external dependencies."""
+    rss_mb: Optional[float] = None
+    peak_mb: Optional[float] = None
+    sys_load_pct: Optional[float] = None
+
+    if is_windows():
+        class _MEMORYSTATUSEX(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("sullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+
+        class _PROCESS_MEMORY_COUNTERS(ctypes.Structure):
+            _fields_ = [
+                ("cb", ctypes.c_ulong),
+                ("PageFaultCount", ctypes.c_ulong),
+                ("PeakWorkingSetSize", ctypes.c_size_t),
+                ("WorkingSetSize", ctypes.c_size_t),
+                ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                ("PagefileUsage", ctypes.c_size_t),
+                ("PeakPagefileUsage", ctypes.c_size_t),
+            ]
+
+        mem = _MEMORYSTATUSEX()
+        mem.dwLength = ctypes.sizeof(_MEMORYSTATUSEX)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(mem)):
+            sys_load_pct = float(mem.dwMemoryLoad)
+
+        try:
+            import ctypes.wintypes as _wintypes
+
+            k32 = ctypes.windll.kernel32
+            k32.GetCurrentProcess.restype = _wintypes.HANDLE
+            hproc = k32.GetCurrentProcess()
+            pmc = _PROCESS_MEMORY_COUNTERS()
+            pmc.cb = ctypes.sizeof(_PROCESS_MEMORY_COUNTERS)
+            fn = getattr(k32, "K32GetProcessMemoryInfo", None) or getattr(ctypes.windll.psapi, "GetProcessMemoryInfo", None)
+            if fn is not None:
+                fn.argtypes = [_wintypes.HANDLE, ctypes.POINTER(_PROCESS_MEMORY_COUNTERS), _wintypes.DWORD]
+                fn.restype = _wintypes.BOOL
+                if fn(hproc, ctypes.byref(pmc), pmc.cb):
+                    rss_mb = round(pmc.WorkingSetSize / (1024 * 1024), 2)
+                    peak_mb = round(pmc.PeakWorkingSetSize / (1024 * 1024), 2)
+        except Exception:
+            pass
+    else:
+        try:
+            import resource
+
+            ru = resource.getrusage(resource.RUSAGE_SELF)
+            denom = (1024 * 1024) if is_macos() else 1024
+            peak_mb = round(ru.ru_maxrss / denom, 2)
+            rss_mb = peak_mb
+        except Exception:
+            pass
+
+    return {
+        "rss_mb": rss_mb,
+        "peak_rss_mb": peak_mb,
+        "system_memory_load_pct": sys_load_pct,
+    }
+
+
+def get_system_cpu_times() -> Optional[Tuple[int, int, int]]:
+    """Return cumulative OS `(idle, busy_kernel, user)` ticks for average CPU% sampling."""
+    if is_windows():
+        class _FILETIME(ctypes.Structure):
+            _fields_ = [("dwLowDateTime", ctypes.c_ulong), ("dwHighDateTime", ctypes.c_ulong)]
+
+        def _ft_to_int(ft: _FILETIME) -> int:
+            return (int(ft.dwHighDateTime) << 32) | int(ft.dwLowDateTime)
+
+        idle, kernel, user = _FILETIME(), _FILETIME(), _FILETIME()
+        if ctypes.windll.kernel32.GetSystemTimes(ctypes.byref(idle), ctypes.byref(kernel), ctypes.byref(user)):
+            return (_ft_to_int(idle), _ft_to_int(kernel), _ft_to_int(user))
+    try:
+        times = os.times()
+        return (int(times.elapsed * 1000), int(times.system * 1000), int(times.user * 1000))
+    except Exception:
+        return None
+
+
+def get_ffmpeg_status() -> Dict[str, Any]:
+    """Detect FFmpeg & FFprobe availability and version string cleanly."""
+    from app.services.longform import app_paths
+
+    ff_bin_dir = app_paths.get_bundled_ffmpeg_bin_dir()
+    ffmpeg_path: Optional[str] = None
+    if ff_bin_dir is not None:
+        cand = ff_bin_dir / ("ffmpeg.exe" if is_windows() else "ffmpeg")
+        if cand.is_file():
+            ffmpeg_path = str(cand)
+    if not ffmpeg_path:
+        ffmpeg_path = shutil.which("ffmpeg")
+
+    if not ffmpeg_path:
+        return {"available": False, "path": None, "version": None}
+
+    version_str: Optional[str] = None
+    try:
+        res = subprocess.run(
+            [ffmpeg_path, "-version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            creationflags=get_hidden_subprocess_flags(),
+        )
+        if res.returncode == 0 and res.stdout:
+            first_line = res.stdout.splitlines()[0].strip()
+            version_str = first_line
+    except Exception:
+        pass
+    return {"available": True, "path": ffmpeg_path, "version": version_str}
+
+
+def check_internet_connectivity(
+    url: str = "https://www.wikidata.org",
+    timeout: float = 3.0,
+) -> bool:
+    """Perform lightweight connectivity check with short timeout (returns False offline)."""
+    try:
+        req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "EasyFacelessStudio/1.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return int(getattr(resp, "status", 200)) < 500
+    except Exception:
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as resp:
+                return int(getattr(resp, "status", 200)) < 500
+        except Exception:
+            return False

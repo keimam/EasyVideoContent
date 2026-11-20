@@ -36,7 +36,10 @@ This guide covers the fastest way to produce both **Short Videos** and **10–20
 3. Inspect shots in the 3-column gallery: lock keepers, switch candidates, or generate bespoke clips via **AI Video**. See [Visual Gallery & Shot Controls](visual-gallery.md).
 
 ### Step 5 — Render & CapCut (`Render` → `CapCut`)
-- In **Render**, pick optional background music and click **Render All** to output `output/final_video.mp4` plus YouTube chapter timestamps.
+- In **Render**, pick optional background music and click **Render All** to output `export/final_video.mp4`, YouTube chapter timestamps (`export/youtube_chapters.txt`), and source attribution notes (`export/credits.md`).
+- On completed project cards or the Render summary, use **Open output folder** and **Open credits.md** (with one-click copy) to access outputs and credits directly.
 - *(Optional)* In **CapCut**, close **CapCut Desktop** completely first, then click **Export & Install to CapCut** to install the multi-track timeline directly into CapCut.
+
+> **System Requirements (10-min benchmark calibrated):** Windows 10/11 64-bit, minimum 4 CPU threads (8+ recommended), minimum 8 GB RAM (16 GB recommended with CapCut), and minimum 15 GB free disk space (20 GB+ SSD recommended).
 
 > **Auto-Run Tip:** Once the script is ready, click **Auto-Run** to execute Voice → Visual → Render sequentially (pausing automatically if any shot is flagged *Needs check*).

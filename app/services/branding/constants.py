@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import base64
+import json
+import subprocess
+from functools import lru_cache
 from pathlib import Path
+from typing import Dict
 
 # Application Identity (B1)
 APP_NAME = "EasyFaceless Studio"
@@ -25,6 +29,14 @@ except Exception:
 
 VERSION_STRING = f"v{APP_VERSION} · inti v{CORE_VERSION}"
 UPSTREAM_UPDATE_PREFIX = "Pembaruan inti tersedia: "
+
+# E1 / E2 / E3 External URLs & Release Update Manifest (Single Source)
+# Empty placeholder by default: silent no-op for auto-check until production URL is set (E11.4); override via EFS_UPDATE_URL.
+UPDATE_MANIFEST_URL = ""
+OPENROUTER_KEYS_URL = "https://openrouter.ai/keys"
+PIXABAY_API_DOCS_URL = "https://pixabay.com/api/docs/"
+COVERR_API_URL = "https://coverr.co/api"
+CAPCUT_DOWNLOAD_URL = "https://www.capcut.com/"
 
 # Legal & MIT Attribution (Preserved from MoneyPrinterTurbo)
 MIT_ATTRIBUTION = "Dibangun di atas MoneyPrinterTurbo (MIT)"
@@ -100,3 +112,84 @@ def get_logo_data_uri() -> str:
     svg = get_logo_svg_content()
     b64 = base64.b64encode(svg.encode("utf-8")).decode("ascii")
     return f"data:image/svg+xml;base64,{b64}"
+
+
+BUILD_META_PATH = Path(__file__).resolve().parent / "_build_meta.json"
+
+
+@lru_cache(maxsize=1)
+def _read_repo_git_head() -> tuple[str, str]:
+    try:
+        short_res = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        full_res = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        short_hash = short_res.stdout.strip() if short_res.returncode == 0 else ""
+        full_hash = full_res.stdout.strip() if full_res.returncode == 0 else ""
+        if short_hash:
+            return (short_hash, full_hash or short_hash)
+    except Exception:
+        pass
+    return ("dev", "dev")
+
+
+def get_build_info() -> Dict[str, str]:
+    """Return embedded installer build metadata or live git HEAD fallback (E12.1, E12.3)."""
+    if BUILD_META_PATH.is_file():
+        try:
+            data = json.loads(BUILD_META_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                short_hash = str(data.get("git_commit") or "").strip() or "unknown"
+                full_hash = str(data.get("git_commit_full") or short_hash).strip()
+                build_time = str(data.get("build_time") or "").strip() or "unknown"
+                build_id = str(data.get("build_id") or "").strip() or f"{short_hash}-{build_time}"
+                return {
+                    "git_commit": short_hash,
+                    "git_commit_full": full_hash,
+                    "build_time": build_time,
+                    "build_id": build_id,
+                    "source": "embedded",
+                }
+        except Exception:
+            pass
+    short_hash, full_hash = _read_repo_git_head()
+    return {
+        "git_commit": short_hash,
+        "git_commit_full": full_hash,
+        "build_time": "source",
+        "build_id": f"{short_hash}-source",
+        "source": "git",
+    }
+
+
+def get_build_commit() -> str:
+    return get_build_info()["git_commit"]
+
+
+def get_build_time() -> str:
+    return get_build_info()["build_time"]
+
+
+def get_build_id() -> str:
+    return get_build_info()["build_id"]
+
+
+def get_app_build_signature() -> Dict[str, str]:
+    """Return normalized `{app_version, build_id, git_commit, build_time}` for lock & UI (E12.1, E12.3)."""
+    info = get_build_info()
+    return {
+        "app_version": APP_VERSION,
+        "build_id": info["build_id"],
+        "git_commit": info["git_commit"],
+        "build_time": info["build_time"],
+    }

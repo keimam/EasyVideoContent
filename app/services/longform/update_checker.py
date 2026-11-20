@@ -1,0 +1,416 @@
+"""Application version update checker with 24-hour throttle, single URL source, and structured logging (E2, E10, E11)."""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import sys
+import tempfile
+import threading
+import urllib.error
+import urllib.request
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any, Dict, Optional, Tuple
+
+from loguru import logger
+
+from app.services.branding.constants import APP_VERSION, UPDATE_MANIFEST_URL, get_app_build_signature
+from app.services.longform import app_paths
+
+
+UPDATE_STATE_FILENAME = ".efs_update_state.json"
+DEFAULT_CHECK_INTERVAL_HOURS = 24.0
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 3.5
+
+_BG_CHECK_LOCK = threading.Lock()
+_BG_CHECK_STARTED = False
+_STARTUP_ENV_LOGGED = False
+_THROTTLE_LOGGED = False
+
+
+def _flush_log_streams() -> None:
+    try:
+        sys.stdout.flush()
+    except Exception:
+        pass
+    try:
+        sys.stderr.flush()
+    except Exception:
+        pass
+
+
+def _normalize_manifest_url(url: str) -> str:
+    cleaned = str(url or "").strip()
+    if not cleaned:
+        return ""
+    if "://" not in cleaned and Path(cleaned).exists():
+        return Path(cleaned).resolve().as_uri()
+    if cleaned.lower().startswith("file://") and not cleaned.lower().startswith("file:///"):
+        tail = cleaned[7:]
+        if len(tail) >= 2 and tail[1] == ":":
+            return f"file:///{tail.lstrip('/')}"
+    return cleaned
+
+
+def get_update_manifest_url() -> str:
+    """Single source of truth for update manifest URL (E11.1).
+
+    Reads `EFS_UPDATE_URL` dynamically on every call; falls back to `UPDATE_MANIFEST_URL`.
+    Returns empty string if neither is configured.
+    """
+    override = os.environ.get("EFS_UPDATE_URL", "").strip()
+    if override:
+        return _normalize_manifest_url(override)
+    prod = str(UPDATE_MANIFEST_URL or "").strip()
+    return _normalize_manifest_url(prod) if prod else ""
+
+
+def log_startup_update_env_once() -> None:
+    """Log non-sensitive update URL environment once at Streamlit process startup into server.log (E11.1)."""
+    global _STARTUP_ENV_LOGGED
+    if _STARTUP_ENV_LOGGED:
+        return
+    _STARTUP_ENV_LOGGED = True
+    raw_env = os.environ.get("EFS_UPDATE_URL", "").strip()
+    resolved = get_update_manifest_url()
+    sig = get_app_build_signature()
+    logger.info(
+        f"Update env at startup: EFS_UPDATE_URL={raw_env or '<unset>'} "
+        f"resolved_url={resolved or '<disabled_placeholder>'} "
+        f"app_version={sig['app_version']} build_id={sig['build_id']}"
+    )
+    _flush_log_streams()
+
+
+def get_update_state_path() -> Path:
+    """Return path to `.efs_update_state.json` inside `get_data_dir()`."""
+    return app_paths.get_data_dir() / UPDATE_STATE_FILENAME
+
+
+def _default_state() -> Dict[str, Any]:
+    return {
+        "auto_check_enabled": True,
+        "last_checked_at": None,
+        "skipped_version": None,
+        "latest_manifest": None,
+        "manifest_url": None,
+        "last_error": None,
+        "last_error_kind": None,
+    }
+
+
+def read_update_state() -> Dict[str, Any]:
+    """Read update checker state from `<data_dir>/.efs_update_state.json`."""
+    state = _default_state()
+    path = get_update_state_path()
+    if not path.is_file():
+        return state
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            state.update(raw)
+    except Exception as exc:
+        logger.debug(f"Could not read update state '{path}': {exc}")
+    return state
+
+
+def write_update_state(state: Dict[str, Any]) -> Path:
+    """Atomically persist update checker state into `get_data_dir()`."""
+    path = get_update_state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=".efs_update_state.", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fp:
+            json.dump(state, fp, indent=2, ensure_ascii=False)
+            fp.write("\n")
+        os.replace(tmp_name, path)
+    finally:
+        Path(tmp_name).unlink(missing_ok=True)
+    return path
+
+
+def parse_version_tuple(version_str: Optional[str]) -> Tuple[Tuple[int, ...], str]:
+    """Parse semver-like version string ('v1.0.1' -> ((1, 0, 1), ''))."""
+    raw = str(version_str or "").strip()
+    if raw.lower().startswith("v"):
+        raw = raw[1:].strip()
+    if not raw:
+        return ((0, 0, 0), "")
+    main_part, _, pre_part = raw.partition("-")
+    nums = [int(tok) for tok in re.findall(r"\d+", main_part)]
+    while len(nums) < 3:
+        nums.append(0)
+    return (tuple(nums), pre_part.strip().lower())
+
+
+def is_newer_version(remote_version: Optional[str], current_version: str = APP_VERSION) -> bool:
+    """Return True strictly when `remote_version` is newer than `current_version`."""
+    if not remote_version or not str(remote_version).strip():
+        return False
+    rem_nums, rem_pre = parse_version_tuple(remote_version)
+    cur_nums, cur_pre = parse_version_tuple(current_version)
+    max_len = max(len(rem_nums), len(cur_nums))
+    rem_padded = rem_nums + (0,) * (max_len - len(rem_nums))
+    cur_padded = cur_nums + (0,) * (max_len - len(cur_nums))
+    if rem_padded != cur_padded:
+        return rem_padded > cur_padded
+    if cur_pre and not rem_pre:
+        return True
+    return False
+
+
+def _parse_iso_dt(value: Optional[str]) -> Optional[datetime]:
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        dt = datetime.fromisoformat(value.strip())
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        return None
+
+
+def should_run_auto_check(
+    now: Optional[datetime] = None,
+    *,
+    interval_hours: float = DEFAULT_CHECK_INTERVAL_HOURS,
+) -> bool:
+    """Return True if automatic checks are enabled and >= 24 hours elapsed (or manifest_url changed)."""
+    state = read_update_state()
+    if not state.get("auto_check_enabled", True):
+        return False
+    active_url = get_update_manifest_url()
+    if not active_url:
+        return False
+    cached_url = str(state.get("manifest_url") or "").strip()
+    if cached_url and cached_url != active_url:
+        return True
+    last_dt = _parse_iso_dt(state.get("last_checked_at"))
+    if last_dt is None:
+        return True
+    current_dt = now or datetime.now(timezone.utc)
+    if current_dt.tzinfo is None:
+        current_dt = current_dt.replace(tzinfo=timezone.utc)
+    return (current_dt - last_dt) >= timedelta(hours=float(interval_hours))
+
+
+def _format_short_error(exc: Exception) -> str:
+    reason = str(exc or "").strip()
+    if hasattr(exc, "reason") and getattr(exc, "reason"):
+        reason = str(getattr(exc, "reason"))
+    elif isinstance(exc, OSError) and getattr(exc, "strerror", None):
+        reason = str(exc.strerror)
+    reason = " ".join(reason.split())
+    if len(reason) > 140:
+        reason = reason[:137] + "..."
+    return reason or type(exc).__name__
+
+
+def classify_update_error(exc: Exception) -> Tuple[str, str]:
+    """Classify fetch error into ('http_404' | 'offline' | 'invalid_manifest' | 'other', short_reason)."""
+    short = _format_short_error(exc)
+    if isinstance(exc, urllib.error.HTTPError) and int(getattr(exc, "code", 0)) == 404:
+        return ("http_404", short)
+    if isinstance(exc, (json.JSONDecodeError, ValueError)):
+        return ("invalid_manifest", short)
+    if isinstance(exc, (urllib.error.URLError, TimeoutError, ConnectionError, OSError)):
+        low = short.lower()
+        if "no such file" in low or "cannot find the file" in low:
+            return ("http_404", short)
+        return ("offline", short)
+    if "404" in short or "not found" in short.lower():
+        return ("http_404", short)
+    return ("other", short)
+
+
+def fetch_update_manifest(url: str, *, timeout: float = DEFAULT_REQUEST_TIMEOUT_SECONDS) -> Dict[str, Any]:
+    """Fetch and validate `latest.json` from HTTP(S) or `file:///` URI cleanly."""
+    target_url = _normalize_manifest_url(url)
+    if not target_url:
+        raise ValueError("No update manifest URL configured.")
+    req = urllib.request.Request(
+        target_url,
+        headers={"User-Agent": f"EasyFacelessStudio/{APP_VERSION}"},
+    )
+    with urllib.request.urlopen(req, timeout=float(timeout)) as resp:
+        raw_bytes = resp.read()
+    data = json.loads(raw_bytes.decode("utf-8"))
+    if not isinstance(data, dict) or not str(data.get("version") or "").strip():
+        raise ValueError("Invalid update manifest: missing 'version' field.")
+    return {
+        "version": str(data.get("version") or "").strip(),
+        "released": str(data.get("released") or "").strip(),
+        "notes_id": str(data.get("notes_id") or data.get("notes") or "").strip(),
+        "notes_en": str(data.get("notes_en") or data.get("notes") or "").strip(),
+        "download_url": str(data.get("download_url") or "").strip(),
+        "min_supported": str(data.get("min_supported") or "").strip() or None,
+    }
+
+
+def build_update_result(
+    state: Dict[str, Any],
+    *,
+    checked_now: bool = False,
+    error: Optional[str] = None,
+    error_kind: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Construct standardized update status payload from cached/live state."""
+    manifest = state.get("latest_manifest") if isinstance(state.get("latest_manifest"), dict) else None
+    remote_ver = str((manifest or {}).get("version") or "").strip() or None
+    has_update = bool(remote_ver and is_newer_version(remote_ver, APP_VERSION))
+    skipped_ver = str(state.get("skipped_version") or "").strip() or None
+    is_skipped = bool(has_update and skipped_ver and remote_ver == skipped_ver)
+
+    return {
+        "current_version": APP_VERSION,
+        "remote_version": remote_ver,
+        "has_update": has_update,
+        "is_skipped": is_skipped,
+        "show_banner": bool(has_update and not is_skipped),
+        "manifest": manifest,
+        "manifest_url": state.get("manifest_url"),
+        "auto_check_enabled": bool(state.get("auto_check_enabled", True)),
+        "last_checked_at": state.get("last_checked_at"),
+        "skipped_version": skipped_ver,
+        "checked_now": checked_now,
+        "error": error,
+        "error_kind": error_kind,
+    }
+
+
+def _log_update_check(url: str, remote_ver: Optional[str], decision: str) -> None:
+    logger.info(
+        f"App update check: url={url or '<none>'} local_version={APP_VERSION} "
+        f"remote_version={remote_ver or 'N/A'} decision={decision}"
+    )
+    _flush_log_streams()
+
+
+def check_for_updates(
+    *,
+    force: bool = False,
+    timeout: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    now: Optional[datetime] = None,
+    manifest_url: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Check for a newer EasyFaceless Studio release, obeying 24-hour throttle unless `force=True`."""
+    state = read_update_state()
+    target_url = _normalize_manifest_url(manifest_url) if manifest_url else get_update_manifest_url()
+
+    if not force and not should_run_auto_check(now=now):
+        res = build_update_result(state, checked_now=False, error=None)
+        _log_update_check(target_url, res.get("remote_version"), "skipped_throttle")
+        return res
+
+    current_dt = now or datetime.now(timezone.utc)
+    if current_dt.tzinfo is None:
+        current_dt = current_dt.replace(tzinfo=timezone.utc)
+
+    if not target_url:
+        decision = "failed:no_update_url"
+        _log_update_check("<none>", None, decision)
+        if not force:
+            return build_update_result(state, checked_now=False, error=None)
+        state["last_checked_at"] = current_dt.isoformat()
+        state["manifest_url"] = ""
+        state["last_error"] = "UPDATE_MANIFEST_URL is empty (not configured)"
+        state["last_error_kind"] = "no_url"
+        write_update_state(state)
+        return build_update_result(
+            state,
+            checked_now=True,
+            error=state["last_error"],
+            error_kind="no_url",
+        )
+
+    try:
+        manifest = fetch_update_manifest(target_url, timeout=timeout)
+        state["latest_manifest"] = manifest
+        state["manifest_url"] = target_url
+        state["last_checked_at"] = current_dt.isoformat()
+        state["last_error"] = None
+        state["last_error_kind"] = None
+        write_update_state(state)
+        res = build_update_result(state, checked_now=True, error=None)
+        decision = (
+            "skipped_version"
+            if res["is_skipped"]
+            else ("update_available" if res["has_update"] else "up_to_date")
+        )
+        _log_update_check(target_url, res.get("remote_version"), decision)
+        return res
+    except Exception as exc:
+        err_kind, short_err = classify_update_error(exc)
+        _log_update_check(target_url, None, f"failed:{short_err}")
+        state["manifest_url"] = target_url
+        state["last_checked_at"] = current_dt.isoformat()
+        state["last_error"] = short_err
+        state["last_error_kind"] = err_kind
+        write_update_state(state)
+        return build_update_result(state, checked_now=True, error=short_err, error_kind=err_kind)
+
+
+def skip_update_version(version: str) -> Dict[str, Any]:
+    """Persist `skipped_version` so the banner for that version stays hidden."""
+    state = read_update_state()
+    state["skipped_version"] = str(version or "").strip() or None
+    write_update_state(state)
+    return build_update_result(state, checked_now=False)
+
+
+def set_auto_check_enabled(enabled: bool) -> Dict[str, Any]:
+    """Enable or disable automatic startup update checks."""
+    state = read_update_state()
+    state["auto_check_enabled"] = bool(enabled)
+    write_update_state(state)
+    return build_update_result(state, checked_now=False)
+
+
+def get_active_update_banner(*, ignore_session_dismiss: bool = False) -> Optional[Dict[str, Any]]:
+    """Return update manifest dict if cached check matches current URL and shows a newer unskipped version."""
+    state = read_update_state()
+    cached_url = str(state.get("manifest_url") or "").strip()
+    active_url = get_update_manifest_url()
+    if cached_url and active_url and cached_url != active_url:
+        return None
+    if not active_url and not os.environ.get("PYTEST_CURRENT_TEST", "").strip():
+        # Production placeholder empty and no EFS_UPDATE_URL override -> no stale cached banner
+        if cached_url:
+            return None
+    info = build_update_result(state, checked_now=False)
+    if info["show_banner"] or (ignore_session_dismiss and info["has_update"] and not info["is_skipped"]):
+        return info
+    return None
+
+
+def start_background_update_check(*, timeout: float = DEFAULT_REQUEST_TIMEOUT_SECONDS) -> bool:
+    """Run bounded 1-time startup update check per 24h throttle so banner appears immediately (E2, E10, E11)."""
+    global _BG_CHECK_STARTED, _THROTTLE_LOGGED
+    log_startup_update_env_once()
+    if os.environ.get("PYTEST_CURRENT_TEST", "").strip() and not os.environ.get("EFS_UPDATE_URL", "").strip():
+        return False
+    manifest_url = get_update_manifest_url()
+    if not manifest_url:
+        return False
+    if not should_run_auto_check():
+        if not _THROTTLE_LOGGED:
+            _THROTTLE_LOGGED = True
+            state = read_update_state()
+            res = build_update_result(state, checked_now=False, error=None)
+            _log_update_check(manifest_url, res.get("remote_version"), "skipped_throttle")
+        return False
+    with _BG_CHECK_LOCK:
+        if _BG_CHECK_STARTED:
+            return False
+        _BG_CHECK_STARTED = True
+
+    bounded_timeout = min(max(0.5, float(timeout)), 2.0)
+    try:
+        check_for_updates(force=False, timeout=bounded_timeout, manifest_url=manifest_url)
+    finally:
+        with _BG_CHECK_LOCK:
+            _BG_CHECK_STARTED = False
+    return True

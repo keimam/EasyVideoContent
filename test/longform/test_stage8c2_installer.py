@@ -99,10 +99,15 @@ def test_d3_launcher_single_instance_port_and_exit_app_ui(tmp_path: Path, monkey
     # 2. Single-instance reuses active healthy server instead of spawning a second process
     data_dir = tmp_path / "launcher_data"
     monkeypatch.setenv("EFS_DATA_DIR", str(data_dir))
+    from app.services.branding.constants import get_app_build_signature
+
+    sig = get_app_build_signature()
     launcher_runtime.write_launcher_lock({
         "pid": 43210,
         "port": 8519,
         "url": "http://127.0.0.1:8519",
+        "app_version": sig["app_version"],
+        "build_id": sig["build_id"],
     })
     opened_urls: list[str] = []
     spawned: list[list[str]] = []

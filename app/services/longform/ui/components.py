@@ -865,6 +865,11 @@ def render_home_page():
     from app.services.longform.ui.nav import render_mpt_entry
     render_mpt_entry(show_top_return=False)
 
+    from app.services.branding.lifecycle_ui import is_wizard_active, render_studio_lifecycle_ui
+    render_studio_lifecycle_ui(key_prefix="home")
+    if is_wizard_active():
+        return
+
     notice_msg = st.session_state.pop("last_deleted_notice", None)
     if notice_msg:
         st.success(notice_msg)
@@ -1239,6 +1244,25 @@ def render_home_page():
                             st.session_state["confirm_delete_project_id"] = p["project_id"]
                             st.rerun()
 
+                if comp_steps == 5:
+                    col_co1, col_co2 = st.columns(2)
+                    with col_co1:
+                        if st.button(
+                            t("btn_open_output_folder"),
+                            key=f"btn_card_output_{p['project_id']}",
+                            use_container_width=True,
+                        ):
+                            out_target = (p_dir / "export") if (p_dir / "export").is_dir() else p_dir
+                            _safe_open_path(out_target, is_folder=True)
+                    with col_co2:
+                        if st.button(
+                            t("btn_open_credits_md"),
+                            key=f"btn_card_credits_{p['project_id']}",
+                            use_container_width=True,
+                        ):
+                            from app.services.branding.lifecycle_ui import show_credits_dialog
+                            show_credits_dialog(p_dir, p["project_id"])
+
     _render_delete_project_dialog(on_deleted_redirect_home=False)
 
 
@@ -1271,6 +1295,12 @@ def render_project_page(project_id: str):
 
     # C6: Studio sidebar navigation without redundant top back link
     render_mpt_entry(show_top_return=False)
+
+    try:
+        from app.services.branding.lifecycle_ui import render_update_banner
+        render_update_banner(key_prefix=f"proj_{project_id}")
+    except Exception:
+        pass
 
     # Navigation header & top meta row (Mockup 2)
     col_back, col_title, col_actions = st.columns([1.2, 3.6, 2.2])
@@ -3951,15 +3981,19 @@ def render_render_step_flow(
         with col_m4:
             render_metric_tile(t("metric_frame_count"), f"{total_frames} frames ({fps:.0f} fps)")
 
-        col_a1, col_a2 = st.columns(2)
+        col_a1, col_a2, col_a3 = st.columns(3)
         with col_a1:
             if st.button(t("btn_open_system_player"), key=f"btn_play_sys_{project_id}", use_container_width=True):
                 if final_vid_path:
                     _safe_open_path(final_vid_path)
         with col_a2:
-            if st.button(t("btn_open_export_folder"), key=f"btn_open_exp_{project_id}", use_container_width=True):
-                if final_vid_path:
-                    _safe_open_path(final_vid_path.parent, is_folder=True)
+            if st.button(t("btn_open_output_folder"), key=f"btn_open_exp_{project_id}", use_container_width=True):
+                out_target = final_vid_path.parent if final_vid_path else (p_dir / "export")
+                _safe_open_path(out_target, is_folder=True)
+        with col_a3:
+            if st.button(t("btn_open_credits_md"), key=f"btn_open_credits_done_{project_id}", use_container_width=True):
+                from app.services.branding.lifecycle_ui import show_credits_dialog
+                show_credits_dialog(p_dir, project_id)
 
         col_a3, col_a4 = st.columns(2)
         with col_a3:
@@ -4073,14 +4107,18 @@ def render_render_step_flow(
             with col_m4:
                 render_metric_tile(t("metric_frame_count"), f"{total_frames} frames ({fps:.0f} fps)")
 
-            col_a1, col_a2, col_a3, col_a4 = st.columns(4)
+            col_a1, col_a2, col_a3, col_a4, col_a5 = st.columns(5)
             with col_a1:
                 if st.button(t("btn_open_system_player"), key=f"btn_play_sys_{project_id}", use_container_width=True):
                     _safe_open_path(final_vid_path)
             with col_a2:
-                if st.button(t("btn_open_export_folder"), key=f"btn_open_exp_{project_id}", use_container_width=True):
+                if st.button(t("btn_open_output_folder"), key=f"btn_open_exp_{project_id}", use_container_width=True):
                     _safe_open_path(final_vid_path.parent, is_folder=True)
             with col_a3:
+                if st.button(t("btn_open_credits_md"), key=f"btn_open_credits_rend_{project_id}", use_container_width=True):
+                    from app.services.branding.lifecycle_ui import show_credits_dialog
+                    show_credits_dialog(p_dir, project_id)
+            with col_a4:
                 srt_path = p_dir / "export" / "subtitles" / "full_timeline.srt"
                 if srt_path.is_file():
                     srt_data = srt_path.read_text(encoding="utf-8", errors="replace")
@@ -4094,7 +4132,7 @@ def render_render_step_flow(
                     )
                 else:
                     st.button(t("btn_sub_not_ready"), disabled=True, use_container_width=True, key=f"dl_srt_dis_{project_id}")
-            with col_a4:
+            with col_a5:
                 if yt_path.is_file():
                     yt_data = yt_path.read_text(encoding="utf-8", errors="replace")
                     st.download_button(
@@ -4217,13 +4255,27 @@ def render_capcut_step_flow(
             if st.button(t("btn_recheck"), key=f"btn_recheck_capcut_{project_id}", use_container_width=True):
                 st.rerun()
 
+        from app.services.branding.lifecycle_ui import format_capcut_status_text
+        cc_kind = doc_report.get("status_kind", "not_installed")
+        status_capcut_label = format_capcut_status_text(doc_report)
+
         col_d1, col_d2 = st.columns(2)
         with col_d1:
-            status_capcut_label = t("capcut_status_installed_ver", ver=installed_ver or "N/A") if capcut_installed else t("capcut_status_not_installed")
-            render_metric_tile(t("capcut_metric_status"), status_capcut_label, status="success" if capcut_installed else "warning")
+            render_metric_tile(
+                t("capcut_metric_status"),
+                status_capcut_label,
+                status="success" if cc_kind == "tested" else "warning",
+            )
         with col_d2:
             status_app_label = t("capcut_app_running") if capcut_running else t("capcut_app_closed_safe")
             render_metric_tile(t("capcut_metric_app_label"), status_app_label, status="warning" if capcut_running else "success")
+
+        if cc_kind == "untested":
+            st.warning(t("capcut_untested_warn", ver=installed_ver or "?", tested=", ".join(doc_report.get("tested_versions") or [tmpl_ver])))
+        elif cc_kind == "not_installed":
+            st.info(t("capcut_download_guide", url=doc_report.get("download_url") or "https://www.capcut.com/"))
+        elif cc_kind == "unsupported_os":
+            st.info(t("capcut_unsupported_os_note", reason=doc_report.get("unsupported_os_reason") or ""))
 
         if draft_folder:
             st.caption(t("capcut_draft_folder_caption", folder=draft_folder))
@@ -4328,9 +4380,16 @@ def render_capcut_step_flow(
                 if st.button(t("btn_recheck_capcut"), key=f"btn_recheck_capcut_{project_id}"):
                     st.rerun()
 
+            from app.services.branding.lifecycle_ui import format_capcut_status_text
+            cc_kind = doc_report.get("status_kind", "not_installed")
+
             col_d1, col_d2, col_d3 = st.columns(3)
             with col_d1:
-                render_metric_tile(t("capcut_metric_status"), t("capcut_status_installed") if capcut_installed else t("capcut_status_not_installed"), status="success" if capcut_installed else "warning")
+                render_metric_tile(
+                    t("capcut_metric_status"),
+                    format_capcut_status_text(doc_report),
+                    status="success" if cc_kind == "tested" else "warning",
+                )
             with col_d2:
                 render_metric_tile(t("capcut_metric_version_label"), str(installed_ver or "N/A"))
             with col_d3:
@@ -4341,8 +4400,12 @@ def render_capcut_step_flow(
             else:
                 st.caption(t("capcut_draft_folder_missing"))
 
-            if capcut_installed and installed_ver != tmpl_ver:
-                st.warning(t("capcut_version_mismatch_warn", inst=installed_ver, tmpl=tmpl_ver))
+            if cc_kind == "untested":
+                st.warning(t("capcut_untested_warn", ver=installed_ver or "?", tested=", ".join(doc_report.get("tested_versions") or [tmpl_ver])))
+            elif cc_kind == "not_installed":
+                st.info(t("capcut_download_guide", url=doc_report.get("download_url") or "https://www.capcut.com/"))
+            elif cc_kind == "unsupported_os":
+                st.info(t("capcut_unsupported_os_note", reason=doc_report.get("unsupported_os_reason") or ""))
 
             if capcut_running:
                 st.error(t("capcut_err_running_active"))

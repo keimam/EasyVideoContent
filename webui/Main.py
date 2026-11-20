@@ -79,8 +79,12 @@ from app.utils.request_logging import trace_http_call
 try:
     from app.services.branding.hooks import init_main_page
     init_main_page(Path(__file__).with_name("styles.css"))
-except Exception:
-    st.set_page_config(page_title="EasyFaceless Studio", page_icon="🎬", layout="wide")
+except Exception as _brand_exc:
+    logger.exception(f"EasyFaceless branding init failed: {_brand_exc}")
+    try:
+        st.set_page_config(page_title="EasyFaceless Studio", page_icon="🎬", layout="wide")
+    except Exception:
+        pass
 # 定义资源目录
 font_dir = utils.font_dir()
 song_dir = utils.song_dir()
@@ -1825,42 +1829,24 @@ def _render_top_bar():
                 on_click=_open_settings_dialog,
             )
 
-            language_codes = list(locales.keys())
-            selected_index = 0
-            for i, code in enumerate(language_codes):
-                if code == st.session_state.get("ui_language", ""):
-                    selected_index = i
-
-            selected_language_code = st.selectbox(
-                "Language / 语言",
-                options=language_codes,
-                index=selected_index,
-                format_func=lambda code: locales[code].get("Language", code),
-                key="top_language_code_selector",
-                label_visibility="collapsed",
-                width=180,
-            )
-            if selected_language_code:
-                previous_language = st.session_state.get("ui_language", "")
-                if selected_language_code != previous_language:
-                    logger.info(
-                        "UI language changed by user: "
-                        f"previous_language={previous_language or '<empty>'}, "
-                        f"selected_language={selected_language_code}"
-                    )
-                    st.session_state["ui_language"] = selected_language_code
-                    # 浏览器自动识别只影响当前会话；只有用户主动切换下拉框时才
-                    # 写入 config.toml，后续新会话将优先使用该明确选择。
-                    _set_runtime_config("ui", "language", selected_language_code)
-                    _save_runtime_config()
-                    # 切换语言会先重跑顶部栏，正文控件尚未渲染就触发 rerun。
-                    # 显式保留本次创作内容，防止 Streamlit 清理旧控件状态后，
-                    # 新语言页面把已经输入的主题、文案和关键词重置为空。
-                    for content_key in ("video_subject", "video_script", "video_terms"):
-                        if content_key in st.session_state:
-                            st.session_state[content_key] = st.session_state[content_key]
-                    # 切换语言后强制刷新，避免 selectbox 继续展示旧语言文案。
-                    st.rerun()
+            try:
+                from app.services.branding.hooks import render_top_language_selector
+                render_top_language_selector(locales)
+            except Exception:
+                language_codes = list(locales.keys())
+                selected_index = 0
+                for i, code in enumerate(language_codes):
+                    if code == st.session_state.get("ui_language", ""):
+                        selected_index = i
+                st.selectbox(
+                    "Language / 语言",
+                    options=language_codes,
+                    index=selected_index,
+                    format_func=lambda code: locales[code].get("Language", code),
+                    key="top_language_code_selector",
+                    label_visibility="collapsed",
+                    width=180,
+                )
 
 
 support_locales = [
@@ -4249,6 +4235,11 @@ def _render_settings_dialog():
         with general_config_panel:
             if general_config_panel.open:
                 _render_general_settings(app_settings)
+                try:
+                    from app.services.branding.hooks import render_settings_studio_controls
+                    render_settings_studio_controls()
+                except Exception:
+                    pass
 
         with publish_config_panel:
             if publish_config_panel.open:
@@ -9008,7 +8999,11 @@ def _render_generation_controls(
         on_click=_prepare_generation_task,
         disabled=generation_busy,
     )
-    render_onboarding_tour()
+    try:
+        from app.services.branding.hooks import run_short_video_onboarding_tour
+        run_short_video_onboarding_tour(Tour)
+    except Exception as _tour_exc:
+        logger.debug(f"Short video onboarding tour skipped: {_tour_exc}")
     if start_button:
         _save_runtime_config()
         task_id = st.session_state.get("pending_generation_task_id") or str(uuid4())
