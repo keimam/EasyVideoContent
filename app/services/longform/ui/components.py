@@ -3669,17 +3669,28 @@ def render_visual_step_flow(
                         cur_asset_file = Path(target_shot.asset_path).name if target_shot.asset_path else ""
                         active_cid = str(getattr(target_shot, "source_candidate_id", None) or "").strip()
                         active_attr_url = str(getattr(target_shot, "attribution_url", None) or "").strip()
+                        active_match_cand = next(
+                            (
+                                c for c in raw_cands_all
+                                if active_cid and str(c.get("candidate_id") or "").strip() == active_cid
+                            ),
+                            None,
+                        )
                         active_canon = (
-                            canonical_candidate_dedup_key(
-                                {
-                                    "candidate_id": active_cid,
-                                    "provider": getattr(target_shot, "actual_source", "") or "",
-                                    "source_url": active_attr_url,
-                                    "url": active_attr_url,
-                                }
+                            canonical_candidate_dedup_key(active_match_cand)
+                            if active_match_cand
+                            else (
+                                canonical_candidate_dedup_key(
+                                    {
+                                        "candidate_id": active_cid,
+                                        "provider": getattr(target_shot, "actual_source", "") or "",
+                                        "source_url": active_attr_url,
+                                        "url": active_attr_url,
+                                    }
+                                )
+                                if (active_cid or active_attr_url)
+                                else ""
                             )
-                            if (active_cid or active_attr_url)
-                            else ""
                         )
 
                         active_base_id = ""
