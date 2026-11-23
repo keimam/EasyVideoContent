@@ -373,6 +373,15 @@ class ProjectManifest(BaseModel):
     visual_anchor_terms: List[str] = Field(default_factory=list)
     visual_avoid_terms: List[str] = Field(default_factory=list)
     visual_summary: Optional[str] = None
+    # V0/V1/V3 visual search & external bridge settings on manifest.
+    # Note: schema default stays "priority" so legacy saved manifests preserve Prioritas behavior;
+    # create_project() sets "mix_best" for newly created projects.
+    visual_search_mode: str = "priority"
+    visual_source_order: List[str] = Field(default_factory=list)
+    visual_max_source_share: float = Field(default=0.6, ge=0.1, le=1.0)
+    visual_avoid_consecutive_same_source: bool = True
+    fill_local_random: bool = False
+    last_prompt_export_shot_ids: List[str] = Field(default_factory=list)
     encoder_settings: EncoderSettings = Field(default_factory=EncoderSettings)
     chapters: List[Chapter] = Field(default_factory=list)
     status: ItemStatus = ItemStatus.pending

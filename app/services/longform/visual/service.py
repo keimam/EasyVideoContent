@@ -147,7 +147,11 @@ class VisualService:
             backend = p_name if p_name in ("openai_image", "codex_image") else None
             return AIImageProvider(prompt_template=template, visual_style=style, backend=backend)
         elif p_name == "local":
-            return LocalVisualProvider(self.project_dir, credits_manager=self.credits_manager)
+            return LocalVisualProvider(
+                self.project_dir,
+                credits_manager=self.credits_manager,
+                fill_local_random=bool(getattr(manifest, "fill_local_random", False)),
+            )
         else:
             raise ValueError(f"Unknown visual provider: {provider_name}")
 
@@ -472,7 +476,8 @@ class VisualService:
             or "cinematic scene"
         )
         ordered_base_queries: List[str] = []
-        for q_cand in ([raw_query] + list(getattr(shot, "search_queries_en", []) or [])):
+        extra_shot_q = [] if explicit_prompt else [getattr(shot, "search_query", None)]
+        for q_cand in ([raw_query] + list(getattr(shot, "search_queries_en", []) or []) + extra_shot_q):
             qc = str(q_cand or "").strip()
             if qc and qc.lower() not in [x.lower() for x in ordered_base_queries]:
                 ordered_base_queries.append(qc)

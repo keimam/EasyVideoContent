@@ -805,7 +805,9 @@ def generate_chapter_visual_keywords_ai(
                 topic_keywords=snap.get("topic_keywords"),
                 required_subject_terms=snap.get("required_subject_terms"),
             )
-            shot.search_query = ext_q
+            existing_q = str(getattr(shot, "search_query", None) or "").strip()
+            if not existing_q or force:
+                shot.search_query = ext_q
             shot.search_query_source = "extraction"
             shot.search_query_reason = "llm_not_ready"
             if norm_lang != "en":
@@ -813,7 +815,7 @@ def generate_chapter_visual_keywords_ai(
                 if not getattr(shot, "search_query_en", None):
                     shot.search_query_en = None
             else:
-                shot.search_query_en = ext_q
+                shot.search_query_en = existing_q if (existing_q and not force) else ext_q
             updated += 1
             examples.append({
                 "shot_id": shot.shot_id,
