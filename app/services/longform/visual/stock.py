@@ -1084,30 +1084,39 @@ class StockVisualProvider(BaseVisualProvider):
                         ratio = w / h
                         is_near_16_9 = 1.60 <= ratio <= 1.95
                         is_extreme = ratio < 1.33 or ratio > 2.20
+                        t_url = r_info.get("thumbnail") or ""
                         if w >= 1920 and is_near_16_9:
-                            tier_a.append((w, h, sz, r_name, u, False))
+                            tier_a.append((w, h, sz, r_name, u, False, t_url))
                         elif w >= 1920 and not is_extreme:
-                            tier_b.append((w, h, sz, r_name, u, False))
+                            tier_b.append((w, h, sz, r_name, u, False, t_url))
                         else:
-                            tier_c.append((w, h, sz, r_name, u, True))
+                            tier_c.append((w, h, sz, r_name, u, True, t_url))
 
                 if tier_a:
                     # Pick smallest rendition with width >= 1920 (e.g. medium 1920x1080 rather than large 3840x2160)
                     tier_a.sort(key=lambda x: (x[0], x[2]))
-                    chosen_w, chosen_h, chosen_sz, chosen_key, chosen_url, is_low_res = tier_a[0]
+                    chosen_w, chosen_h, chosen_sz, chosen_key, chosen_url, is_low_res, chosen_thumb = tier_a[0]
                 elif tier_b:
                     tier_b.sort(key=lambda x: (x[0], x[2]))
-                    chosen_w, chosen_h, chosen_sz, chosen_key, chosen_url, is_low_res = tier_b[0]
+                    chosen_w, chosen_h, chosen_sz, chosen_key, chosen_url, is_low_res, chosen_thumb = tier_b[0]
                 elif tier_c:
                     # Pick highest resolution among tier_c (< 1920 or extreme ratio)
                     tier_c.sort(key=lambda x: x[0], reverse=True)
-                    chosen_w, chosen_h, chosen_sz, chosen_key, chosen_url, is_low_res = tier_c[0]
+                    chosen_w, chosen_h, chosen_sz, chosen_key, chosen_url, is_low_res, chosen_thumb = tier_c[0]
                 else:
                     continue
+
+                if not chosen_thumb:
+                    for fb_k in ("small", "medium", "tiny", "large"):
+                        fb_r = vids.get(fb_k)
+                        if isinstance(fb_r, dict) and fb_r.get("thumbnail"):
+                            chosen_thumb = fb_r["thumbnail"]
+                            break
 
                 raw_candidates.append({
                     "asset_id": str(v.get("id")),
                     "url": chosen_url,
+                    "thumbnail_url": chosen_thumb or None,
                     "tags": tags,
                     "author": v.get("user"),
                     "author_url": f"https://pixabay.com/users/{v.get('user')}-{v.get('user_id')}/" if v.get("user") else None,
@@ -1218,6 +1227,7 @@ class StockVisualProvider(BaseVisualProvider):
                                 relevance_score=score,
                                 rendition_name=raw["rendition_name"],
                                 is_low_res=raw.get("is_low_res", False),
+                                thumbnail_url=raw.get("thumbnail_url"),
                             )
                         )
                 else:

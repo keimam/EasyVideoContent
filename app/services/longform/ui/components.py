@@ -2308,11 +2308,41 @@ def get_shot_thumbnail_path(project_dir: Path, shot: Shot, fps: int = 25) -> Opt
     return None
 
 
+def _download_image_thumbnail(image_url: str, dest_jpg: Path) -> bool:
+    """Download remote image/thumbnail via HTTP with EasyFaceless User-Agent and resize to 320px JPEG (A1.2)."""
+    if not image_url or not str(image_url).strip().lower().startswith(("http://", "https://")):
+        return False
+    try:
+        import io
+        import requests
+        from PIL import Image
+        from app.services.longform.visual.free_providers import EASYFACELESS_USER_AGENT
+
+        resp = requests.get(
+            str(image_url).strip(),
+            headers={"User-Agent": EASYFACELESS_USER_AGENT},
+            timeout=12,
+        )
+        if resp.status_code != 200 or not resp.content:
+            return False
+        with Image.open(io.BytesIO(resp.content)) as im:
+            im_rgb = im.convert("RGB")
+            w, h = im_rgb.size
+            if w <= 0 or h <= 0:
+                return False
+            new_h = max(1, int(h * (320 / w)))
+            im_rgb.resize((320, new_h), Image.Resampling.LANCZOS).save(dest_jpg, "JPEG", quality=85)
+        return dest_jpg.is_file() and dest_jpg.stat().st_size > 0
+    except Exception:
+        return False
+
+
 def get_candidate_thumbnail_path(project_dir: Path, candidate: Dict[str, Any]) -> Optional[Path]:
-    """Get or extract 320px cached thumbnail for an alternative visual candidate (X2)."""
+    """Get or extract 320px cached thumbnail for an alternative visual candidate (X2, A1.2)."""
     cand_id = candidate.get("candidate_id") or str(abs(hash(candidate.get("url", ""))))
+    safe_cid = re.sub(r"[^A-Za-z0-9._-]+", "_", str(cand_id))
     cand_t_dir = project_dir / "assets" / "visual" / "thumbnails" / "candidates"
-    cand_t_file = cand_t_dir / f"{cand_id}.jpg"
+    cand_t_file = cand_t_dir / f"{safe_cid}.jpg"
     if cand_t_file.is_file() and cand_t_file.stat().st_size > 0:
         return cand_t_file
 
@@ -2329,6 +2359,8 @@ def get_candidate_thumbnail_path(project_dir: Path, candidate: Dict[str, Any]) -
             src = project_dir / local_p
 
     url = candidate.get("url")
+    thumb_url = candidate.get("thumbnail_url") or (candidate.get("source_info") or {}).get("thumb_url")
+    src_type = str(candidate.get("source_type") or "").lower().strip()
     dur = float(candidate.get("duration_seconds") or 3.0)
     ss = max(dur / 2.0, 0.5)
 
@@ -2351,18 +2383,34 @@ def get_candidate_thumbnail_path(project_dir: Path, candidate: Dict[str, Any]) -
                     im_rgb = im.convert("RGB")
                     w, h = im_rgb.size
                     new_h = int(h * (320 / w)) if w > 0 else 180
-                    im.resize((320, max(new_h, 1)), Image.Resampling.LANCZOS).save(cand_t_file, "JPEG", quality=85)
-        elif url:
-            cmd = [
-                "ffmpeg", "-y",
-                "-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-                "-ss", f"{ss:.2f}",
-                "-i", url,
-                "-vframes", "1",
-                "-vf", "scale=320:-1",
-                str(cand_t_file),
-            ]
-            subprocess.run(cmd, capture_output=True, timeout=10)
+                    im_rgb.resize((320, max(new_h, 1)), Image.Resampling.LANCZOS).save(cand_t_file, "JPEG", quality=85)
+        else:
+            # 2. Remote image thumbnail URL first (Wikimedia thumburl, Openverse/NASA/Pixabay thumbnails)
+            candidate_img_urls: List[str] = []
+            if thumb_url:
+                candidate_img_urls.append(str(thumb_url))
+            url_low = str(url or "").lower().split("?")[0]
+            if url and (src_type == "stock_image" or url_low.endswith((".jpg", ".jpeg", ".png", ".webp"))):
+                if str(url) not in candidate_img_urls:
+                    candidate_img_urls.append(str(url))
+
+            for img_u in candidate_img_urls:
+                if _download_image_thumbnail(img_u, cand_t_file):
+                    return cand_t_file
+
+            # 3. Video URL fallback via ffmpeg when no static thumbnail URL succeeded
+            if url and src_type != "stock_image":
+                from app.services.longform.visual.free_providers import EASYFACELESS_USER_AGENT
+                cmd = [
+                    "ffmpeg", "-y",
+                    "-user_agent", EASYFACELESS_USER_AGENT,
+                    "-ss", f"{ss:.2f}",
+                    "-i", str(url),
+                    "-vframes", "1",
+                    "-vf", "scale=320:-1",
+                    str(cand_t_file),
+                ]
+                subprocess.run(cmd, capture_output=True, timeout=10)
 
         if cand_t_file.is_file() and cand_t_file.stat().st_size > 0:
             return cand_t_file
@@ -3566,6 +3614,7 @@ def render_visual_step_flow(
                     ])
 
                     with tab_cands:
+                        from app.services.longform.visual.base import canonical_candidate_dedup_key
                         from app.services.longform.visual.stock import filter_candidates_by_anchors_and_avoids
 
                         raw_cands_all = target_shot.candidates or []
@@ -3576,32 +3625,61 @@ def render_visual_step_flow(
                             blocked_terms=list((preset_snap or {}).get("blocked_terms") or []),
                         )
                         cur_asset_file = Path(target_shot.asset_path).name if target_shot.asset_path else ""
+                        active_cid = str(getattr(target_shot, "source_candidate_id", None) or "").strip()
+                        active_attr_url = str(getattr(target_shot, "attribution_url", None) or "").strip()
+                        active_canon = (
+                            canonical_candidate_dedup_key(
+                                {
+                                    "candidate_id": active_cid,
+                                    "provider": getattr(target_shot, "actual_source", "") or "",
+                                    "source_url": active_attr_url,
+                                    "url": active_attr_url,
+                                }
+                            )
+                            if (active_cid or active_attr_url)
+                            else ""
+                        )
 
                         active_base_id = ""
-                        m_act = re.search(r"(\d{4,})", f"{target_shot.asset_path or ''} {getattr(target_shot, 'source_candidate_id', '')}")
+                        m_act = re.search(r"(\d{4,})", f"{target_shot.asset_path or ''} {active_cid}")
                         if m_act:
                             active_base_id = m_act.group(1)
 
                         unique_cands = []
                         seen_ids = set()
+                        seen_canon_keys = set()
                         for orig_idx, cand in enumerate(raw_cands):
-                            cid = str(cand.get("candidate_id") or "")
-                            curl = str(cand.get("url") or cand.get("source_url") or "")
+                            cid = str(cand.get("candidate_id") or "").strip()
+                            curl = str(cand.get("url") or cand.get("source_url") or "").strip()
+                            c_src_url = str(cand.get("source_url") or "").strip()
+                            canon_k = canonical_candidate_dedup_key(cand)
+
                             m_base = re.search(r"(\d{4,})", f"{cid} {curl}")
                             base_id = m_base.group(1) if m_base else (cid or curl)
 
-                            if not base_id:
+                            if not base_id and not canon_k:
+                                continue
+                            if active_cid and cid and cid == active_cid:
+                                continue
+                            if active_attr_url and c_src_url and c_src_url == active_attr_url:
+                                continue
+                            if active_canon and canon_k and canon_k == active_canon:
                                 continue
                             if active_base_id and base_id == active_base_id:
                                 continue
                             if orig_idx == 0 and target_shot.asset_path and not getattr(target_shot, "locked", False):
                                 continue
-                            if cur_asset_file and base_id in cur_asset_file:
+                            if cur_asset_file and base_id and base_id in cur_asset_file:
                                 continue
-                            if base_id in seen_ids:
+                            if base_id and base_id in seen_ids:
+                                continue
+                            if canon_k and canon_k in seen_canon_keys:
                                 continue
 
-                            seen_ids.add(base_id)
+                            if base_id:
+                                seen_ids.add(base_id)
+                            if canon_k:
+                                seen_canon_keys.add(canon_k)
                             unique_cands.append((orig_idx, cand))
 
                         if not unique_cands:

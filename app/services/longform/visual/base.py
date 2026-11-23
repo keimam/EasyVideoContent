@@ -75,6 +75,7 @@ class VisualCandidate:
     rendition_name: Optional[str] = None
     is_low_res: bool = False
     title: Optional[str] = None
+    thumbnail_url: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -96,6 +97,7 @@ class VisualCandidate:
             "rendition_name": self.rendition_name,
             "is_low_res": self.is_low_res,
             "title": self.title,
+            "thumbnail_url": self.thumbnail_url,
         }
 
     @classmethod
@@ -119,7 +121,93 @@ class VisualCandidate:
             rendition_name=data.get("rendition_name"),
             is_low_res=bool(data.get("is_low_res", False)),
             title=data.get("title"),
+            thumbnail_url=data.get("thumbnail_url"),
         )
+
+
+def _extract_canonical_media_token(url_val: Optional[str], source_url_val: Optional[str] = None) -> str:
+    """Normalize a remote/local media URL (especially Wikimedia Commons & thumb paths) to a canonical file key."""
+    import posixpath
+    import re
+    import urllib.parse
+
+    for raw in (url_val, source_url_val):
+        txt = str(raw or "").strip()
+        if not txt:
+            continue
+        parsed = urllib.parse.urlparse(txt)
+        host = (parsed.netloc or "").lower()
+        path = urllib.parse.unquote(parsed.path or "")
+        # Wikimedia upload URL: /wikipedia/commons/thumb/a/ab/FileName.jpg/800px-FileName.jpg -> FileName.jpg
+        if "wikimedia.org" in host:
+            q_params = urllib.parse.parse_qs(parsed.query or "")
+            if "curid" in q_params and q_params["curid"]:
+                return f"wikimedia_page:{q_params['curid'][0]}"
+            m_file = re.search(r"/wiki/File:([^/?#]+)", path, re.IGNORECASE)
+            if m_file:
+                return f"commons_file:{m_file.group(1).replace(' ', '_').lower()}"
+            parts = [p for p in path.split("/") if p]
+            if "/thumb/" in path.lower() and len(parts) >= 2:
+                # parent directory of the sized thumb is the canonical Commons filename
+                return f"commons_file:{parts[-2].replace(' ', '_').lower()}"
+            base = posixpath.basename(path)
+            if base:
+                base_clean = re.sub(r"^\d+px-", "", base, flags=re.IGNORECASE)
+                return f"commons_file:{base_clean.replace(' ', '_').lower()}"
+        if host and path:
+            clean_path = re.sub(r"/+$", "", path).lower()
+            return f"url:{host}{clean_path}"
+        if path:
+            return f"path:{path.replace(chr(92), '/').lower()}"
+    return ""
+
+
+def canonical_candidate_dedup_key(cand: Any) -> str:
+    """Compute canonical deduplication key across providers, query tiers, and search-again refreshes (A1.2)."""
+    if isinstance(cand, dict):
+        cid = str(cand.get("candidate_id") or "").strip()
+        prov = str(cand.get("provider") or "").strip().lower()
+        url_val = cand.get("url")
+        src_url = cand.get("source_url")
+    else:
+        cid = str(getattr(cand, "candidate_id", "") or "").strip()
+        prov = str(getattr(cand, "provider", "") or "").strip().lower()
+        url_val = getattr(cand, "url", None)
+        src_url = getattr(cand, "source_url", None)
+
+    media_tok = _extract_canonical_media_token(url_val, src_url)
+    if media_tok:
+        return media_tok
+    if cid.startswith("wikimedia_"):
+        return f"wikimedia_page:{cid[len('wikimedia_'):]}"
+    if cid:
+        return f"cid:{prov}:{cid}"
+    return ""
+
+
+def deduplicate_candidates(candidates: List[Any]) -> List[Any]:
+    """Preserve order while removing duplicate candidates by canonical media URL/pageid/id (A1.2)."""
+    out: List[Any] = []
+    seen_keys: set[str] = set()
+    seen_cids: set[Tuple[str, str]] = set()
+    for c in candidates or []:
+        if isinstance(c, dict):
+            prov = str(c.get("provider") or "").strip().lower()
+            cid = str(c.get("candidate_id") or "").strip()
+        else:
+            prov = str(getattr(c, "provider", "") or "").strip().lower()
+            cid = str(getattr(c, "candidate_id", "") or "").strip()
+        canon = canonical_candidate_dedup_key(c)
+        if cid and (prov, cid) in seen_cids:
+            continue
+        if canon and canon in seen_keys:
+            continue
+        if cid:
+            seen_cids.add((prov, cid))
+        if canon:
+            seen_keys.add(canon)
+        out.append(c)
+    return out
 
 
 @dataclass

@@ -36,7 +36,9 @@ from app.services.longform.visual.base import (
     VisualCandidate,
     VisualConfigurationError,
     VisualError,
+    canonical_candidate_dedup_key,
     compute_file_content_hash,
+    deduplicate_candidates,
     invalidate_shot_thumbnail_cache,
     is_dev_or_test_mode,
     license_requires_attribution,
@@ -678,6 +680,7 @@ class VisualService:
         best_candidates: List[VisualCandidate] = []
         cand_origin_query: Dict[Tuple[str, str], str] = {}
         seen_best_ids: Set[str] = set(existing_ids or ())
+        seen_canon_keys: Set[str] = set()
         attempts: List[Dict[str, Any]] = []
         zero_raw_streak = 0
 
@@ -722,11 +725,15 @@ class VisualService:
 
             added_cnt = 0
             for tc in tier_cands or []:
-                if tc.candidate_id not in seen_best_ids:
-                    seen_best_ids.add(tc.candidate_id)
-                    best_candidates.append(tc)
-                    cand_origin_query[(tc.provider, tc.candidate_id)] = q_text
-                    added_cnt += 1
+                canon_k = canonical_candidate_dedup_key(tc)
+                if tc.candidate_id in seen_best_ids or (canon_k and canon_k in seen_canon_keys):
+                    continue
+                seen_best_ids.add(tc.candidate_id)
+                if canon_k:
+                    seen_canon_keys.add(canon_k)
+                best_candidates.append(tc)
+                cand_origin_query[(tc.provider, tc.candidate_id)] = q_text
+                added_cnt += 1
 
             logger.info(
                 f"Shot {shot.shot_id}: [{prov_name}] query '{q_text}' (cat={q_cat}) -> "
@@ -944,6 +951,7 @@ class VisualService:
             # V1: Parallel Mix Best across ALL active sources
             pool_candidates: List[VisualCandidate] = []
             seen_pool_keys: Set[Tuple[str, str]] = set()
+            seen_pool_canon: Set[str] = set()
             seen_per_prov_ids: Dict[str, Set[str]] = {pn: set() for pn, _, _ in resolved_provs}
             prov_obj_map: Dict[str, BaseVisualProvider] = {pn: po for pn, po, _ in resolved_provs}
 
@@ -1001,8 +1009,11 @@ class VisualService:
                         for tc in p_cands:
                             seen_per_prov_ids[p_name].add(tc.candidate_id)
                             k = (tc.provider, tc.candidate_id)
-                            if k not in seen_pool_keys:
+                            ck = canonical_candidate_dedup_key(tc)
+                            if k not in seen_pool_keys and not (ck and ck in seen_pool_canon):
                                 seen_pool_keys.add(k)
+                                if ck:
+                                    seen_pool_canon.add(ck)
                                 pool_candidates.append(tc)
 
             # Phase A: max 2 query tiers per source in parallel
@@ -1077,6 +1088,7 @@ class VisualService:
                     if eff_mode == "priority":
                         break
 
+        candidates = deduplicate_candidates(candidates)
         self._last_shot_origin_queries = origin_map
         return candidates, chosen_provider, chosen_query, attempts_log, fallback_reason
 
@@ -1528,6 +1540,7 @@ class VisualService:
                 # Update shot metadata & D9.3 attribution info
                 shot.asset_path = rel_dest
                 shot.asset_content_hash = asset.content_hash
+                shot.source_candidate_id = selected_candidate.candidate_id
                 shot.requested_source = active_provider.name if use_waterfall else effective_provider_name
                 shot.actual_source = active_provider.name
                 shot.is_fake = active_provider.is_fake
@@ -2166,6 +2179,7 @@ class VisualService:
 
             target_shot.asset_path = rel_dest
             target_shot.asset_content_hash = asset.content_hash
+            target_shot.source_candidate_id = candidate.candidate_id
             target_shot.actual_source = candidate.provider
             target_shot.is_fake = False
             target_shot.fallback_reason = None
@@ -2248,6 +2262,7 @@ class VisualService:
 
             target_shot.asset_path = rel_dest
             target_shot.asset_content_hash = asset.content_hash
+            target_shot.source_candidate_id = sel.candidate_id
             target_shot.actual_source = prov.name
             target_shot.is_fake = prov.is_fake
             target_shot.fallback_reason = None

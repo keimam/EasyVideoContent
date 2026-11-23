@@ -31,6 +31,7 @@ from app.services.longform.visual.base import (
     VisualAsset,
     VisualCandidate,
     VisualError,
+    canonical_candidate_dedup_key,
     compute_file_content_hash,
     is_commercial_license_allowed,
 )
@@ -253,9 +254,19 @@ class _FreeApiProviderBase(BaseVisualProvider):
         pool = hd_items if hd_items else raw_items
 
         accepted: List[VisualCandidate] = []
+        seen_canon_keys: Set[str] = set()
         for it in pool:
             cid = str(it["candidate_id"])
             if cid in excluded or any(c.candidate_id == cid for c in accepted):
+                continue
+            cand_stub = {
+                "candidate_id": cid,
+                "provider": self.name,
+                "url": it.get("url"),
+                "source_url": it.get("source_url"),
+            }
+            canon_k = canonical_candidate_dedup_key(cand_stub)
+            if canon_k and canon_k in seen_canon_keys:
                 continue
 
             w = int(it.get("width") or 0)
@@ -306,8 +317,11 @@ class _FreeApiProviderBase(BaseVisualProvider):
                     rendition_name=f"{self.name} ({w}x{h})",
                     is_low_res=is_low_res,
                     title=it.get("title"),
+                    thumbnail_url=it.get("thumbnail_url") or it.get("url"),
                 )
             )
+            if canon_k:
+                seen_canon_keys.add(canon_k)
 
         accepted.sort(key=lambda c: c.relevance_score, reverse=True)
         return accepted[:limit], len(raw_items), rejected_reasons
@@ -491,8 +505,9 @@ class WikimediaVisualProvider(_FreeApiProviderBase):
                 "source_url": desc_url,
                 "license": lic_name,
                 "title": obj_name,
+                "thumbnail_url": thumb_url or media_url,
                 "tags": tags,
-                "source_info": {"mime": mime, "license_url": _strip_html((extmeta.get("LicenseUrl") or {}).get("value"))},
+                "source_info": {"mime": mime, "thumb_url": thumb_url, "license_url": _strip_html((extmeta.get("LicenseUrl") or {}).get("value"))},
             })
 
         accepted, seen_count, rej_score = self._score_and_filter_items(
@@ -619,6 +634,7 @@ class NasaVisualProvider(_FreeApiProviderBase):
                 "source_url": f"https://images.nasa.gov/details/{urllib.parse.quote(nasa_id)}",
                 "license": "NASA Media (Public Domain / U.S. Government)",
                 "title": title,
+                "thumbnail_url": preview_href,
                 "tags": tags,
                 "source_info": {
                     "nasa_id": nasa_id,
@@ -733,6 +749,7 @@ class OpenverseVisualProvider(_FreeApiProviderBase):
                 "source_url": src_url,
                 "license": lic_label,
                 "title": title,
+                "thumbnail_url": str(r.get("thumbnail") or "").strip() or img_url,
                 "tags": tags,
                 "source_info": {"source": r.get("source"), "license_url": r.get("license_url")},
             })

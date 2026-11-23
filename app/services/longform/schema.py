@@ -122,6 +122,7 @@ class VisualSpec(BaseModel):
     requested_source: Optional[str] = None
     actual_source: Optional[str] = None
     fallback_reason: Optional[str] = None
+    source_candidate_id: Optional[str] = None
     candidates: List[dict[str, Any]] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
@@ -146,6 +147,7 @@ class Shot(BaseModel):
     requested_source: Optional[str] = None
     actual_source: Optional[str] = None
     fallback_reason: Optional[str] = None
+    source_candidate_id: Optional[str] = None
     visual_prompt: str = ""
     search_query: str = ""
     motion: MotionType = MotionType.zoom_in

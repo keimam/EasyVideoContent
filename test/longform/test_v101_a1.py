@@ -154,3 +154,81 @@ def test_a1_1_recommended_visual_sources_weighting_non_destructive():
     )
     assert ok_pix is True and ok_wiki is True
     assert sc_pix > sc_wiki > 0.45
+
+
+def test_a1_2_dedup_wikimedia_and_cross_provider_canonical():
+    """A1.2: Deduplicate identical Commons files across Wikimedia tiers, Openverse, and refresh."""
+    from app.services.longform.visual.base import (
+        VisualCandidate,
+        canonical_candidate_dedup_key,
+        deduplicate_candidates,
+    )
+
+    c_wiki_thumb = VisualCandidate(
+        candidate_id="wikimedia_14751776",
+        provider="wikimedia",
+        source_type="stock_image",
+        url="https://upload.wikimedia.org/wikipedia/commons/thumb/1/12/Village_Bridge.jpg/1920px-Village_Bridge.jpg",
+        thumbnail_url="https://upload.wikimedia.org/wikipedia/commons/thumb/1/12/Village_Bridge.jpg/400px-Village_Bridge.jpg",
+        source_url="https://commons.wikimedia.org/wiki/File:Village_Bridge.jpg",
+    )
+    c_wiki_dup_id_diff_size = VisualCandidate(
+        candidate_id="wikimedia_99999999",
+        provider="wikimedia",
+        source_type="stock_image",
+        url="https://upload.wikimedia.org/wikipedia/commons/thumb/1/12/Village_Bridge.jpg/800px-Village_Bridge.jpg",
+        source_url="https://commons.wikimedia.org/wiki/File:Village_Bridge.jpg",
+    )
+    c_openverse_same = VisualCandidate(
+        candidate_id="openverse_abcd-1234",
+        provider="openverse",
+        source_type="stock_image",
+        url="https://upload.wikimedia.org/wikipedia/commons/1/12/Village_Bridge.jpg",
+        thumbnail_url="https://api.openverse.org/v1/images/abcd-1234/thumb/",
+        source_url="https://commons.wikimedia.org/wiki/File:Village_Bridge.jpg",
+    )
+    c_distinct = VisualCandidate(
+        candidate_id="pixabay_159022",
+        provider="pixabay",
+        source_type="stock_video",
+        url="https://cdn.pixabay.com/video/2023/04/15/159022_small.mp4",
+        thumbnail_url="https://cdn.pixabay.com/video/2023/04/15/159022_small.jpg",
+    )
+
+    assert canonical_candidate_dedup_key(c_wiki_thumb) == canonical_candidate_dedup_key(c_wiki_dup_id_diff_size)
+    assert canonical_candidate_dedup_key(c_wiki_thumb) == canonical_candidate_dedup_key(c_openverse_same)
+
+    deduped = deduplicate_candidates([c_wiki_thumb, c_wiki_dup_id_diff_size, c_openverse_same, c_distinct])
+    assert len(deduped) == 2
+    assert [d.candidate_id for d in deduped] == ["wikimedia_14751776", "pixabay_159022"]
+
+
+def test_a1_2_candidate_thumbnail_fetches_remote_image_without_ffmpeg(tmp_path):
+    """A1.2: get_candidate_thumbnail_path uses thumbnail_url HTTP image fetch cleanly."""
+    import io
+    from unittest.mock import MagicMock, patch
+    from PIL import Image
+    from app.services.longform.ui.components import get_candidate_thumbnail_path
+
+    buf = io.BytesIO()
+    Image.new("RGB", (640, 360), color=(30, 80, 140)).save(buf, format="JPEG")
+    fake_jpg = buf.getvalue()
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.content = fake_jpg
+
+    cand_dict = {
+        "candidate_id": "wikimedia_123456",
+        "provider": "wikimedia",
+        "source_type": "stock_image",
+        "url": "https://upload.wikimedia.org/wikipedia/commons/a/ab/TestScene.jpg",
+        "thumbnail_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/a/ab/TestScene.jpg/640px-TestScene.jpg",
+    }
+    with patch("requests.get", return_value=mock_resp) as m_get:
+        thumb = get_candidate_thumbnail_path(tmp_path, cand_dict)
+        assert thumb is not None and thumb.is_file() and thumb.stat().st_size > 0
+        m_get.assert_called_once()
+        with Image.open(thumb) as im:
+            assert im.size[0] == 320
+
