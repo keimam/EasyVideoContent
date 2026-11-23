@@ -317,7 +317,8 @@ def render_openai_image_preset_controls(
     set_runtime_cfg_fn: Optional[Any] = None,
 ) -> None:
     """Render preset dropdown and 1-image test UI inside upstream openai_image settings (V4)."""
-    from app.config import config as _cfg, save_config as _save_cfg
+    from app.config import config as _cfg
+    from app.config.config import save_config as _save_cfg
 
     lang = get_ui_language()
     inferred = infer_image_preset_key(app_settings.get("openai_image_base_url"))

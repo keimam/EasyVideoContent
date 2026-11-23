@@ -766,3 +766,45 @@ def test_v5_capcut_971_and_version_101_consistency():
     assert latest_payload["version"] == "1.0.1"
     assert latest_payload["download_url"] == "GANTI_DENGAN_LINK_GOOGLE_DRIVE"
     assert latest_payload["notes_id"] and latest_payload["notes_en"]
+
+
+def test_v4_render_openai_image_preset_controls_imports_and_executes(monkeypatch):
+    """Ensure Settings preset UI helper imports and renders cleanly without silent exception."""
+    from types import SimpleNamespace
+    from app.services.longform.visual.image_presets import render_openai_image_preset_controls
+
+    class _DummyCol:
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+
+    rendered_labels = []
+    class _DummySt:
+        session_state: dict = {}
+        def selectbox(self, label, options, **_kw):
+            rendered_labels.append(("selectbox", label, list(options)))
+            return "together"
+        def columns(self, n):
+            return [_DummyCol() for _ in range(n)]
+        def button(self, label, **_kw):
+            rendered_labels.append(("button", label))
+            return False
+        def spinner(self, *_a):
+            return _DummyCol()
+        def success(self, *_a):
+            pass
+        def error(self, *_a):
+            pass
+        def image(self, *_a, **_kw):
+            pass
+        def rerun(self):
+            pass
+
+    monkeypatch.setattr("app.config.config.save_config", lambda: None)
+    render_openai_image_preset_controls(
+        st_module=_DummySt(),
+        app_settings={"openai_image_base_url": ""},
+    )
+    assert any(kind == "selectbox" and "together" in opts and "deepinfra" in opts for kind, _lbl, opts in [(x[0], x[1], x[2] if len(x) > 2 else []) for x in rendered_labels])
+    assert any(x[0] == "button" and ("Uji 1 gambar" in x[1] or "Test 1 image" in x[1]) for x in rendered_labels)
