@@ -549,14 +549,38 @@ def render_brand_sidebar(current_page: str = "main"):
         is_lv = (current_page == "longform")
         lv_label = f"**{t('nav_long_video')}**" if is_lv else t("nav_long_video")
         lv_help = t("nav_long_video_help")
-        lv_rendered = False
-        for path in ["pages/1_🎬_Long_Video.py", "1_🎬_Long_Video.py", "webui/pages/1_🎬_Long_Video.py"]:
+        has_open_project = bool(st.query_params.get("project") or st.session_state.get("efs_active_project_id"))
+
+        def _reset_lv_project_cb() -> None:
             try:
-                st.page_link(path, label=lv_label, icon=":material/movie:", help=lv_help)
-                lv_rendered = True
-                break
+                from app.services.longform.ui.components import clear_project_state
+                clear_project_state()
             except Exception:
-                continue
+                st.query_params.pop("project", None)
+                st.query_params.pop("step", None)
+                st.session_state.pop("efs_active_project_id", None)
+
+        lv_rendered = False
+        if is_lv and has_open_project:
+            # Clicking "Video Panjang" inside an open project MUST return to Project List cleanly (A1.4)
+            st.button(
+                lv_label,
+                key="efs_btn_lv_home_reset",
+                icon=":material/movie:",
+                type="secondary",
+                use_container_width=True,
+                help=lv_help,
+                on_click=_reset_lv_project_cb,
+            )
+            lv_rendered = True
+        else:
+            for path in ["pages/1_🎬_Long_Video.py", "1_🎬_Long_Video.py", "webui/pages/1_🎬_Long_Video.py"]:
+                try:
+                    st.page_link(path, label=lv_label, icon=":material/movie:", help=lv_help)
+                    lv_rendered = True
+                    break
+                except Exception:
+                    continue
 
         if not lv_rendered:
             if st.button(
@@ -566,6 +590,7 @@ def render_brand_sidebar(current_page: str = "main"):
                 type="primary" if is_lv else "secondary",
                 use_container_width=True,
                 help=lv_help,
+                on_click=_reset_lv_project_cb,
             ):
                 if not is_lv:
                     try:

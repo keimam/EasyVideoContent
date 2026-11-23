@@ -94,10 +94,15 @@ else:
         except Exception as _exc:
             st.error(t("err_open_settings_dialog", err=str(_exc)))
 
-    # Read query parameter for persistent project selection across refreshes (C4.5)
+    # Read query parameter for persistent project selection across refreshes (C4.5, A1.4)
     query_pid = st.query_params.get("project")
+    if isinstance(query_pid, list):
+        query_pid = query_pid[0] if query_pid else None
+    query_pid = str(query_pid).strip() if query_pid else None
 
     if query_pid:
+        st.session_state["efs_active_project_id"] = query_pid
         components.render_project_page(query_pid)
     else:
+        st.session_state.pop("efs_active_project_id", None)
         components.render_home_page()

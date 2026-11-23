@@ -683,6 +683,31 @@ def render_niche_management_section():
                                     _render_friendly_error(t("err_niche_delete_friendly"), exc)
 
 
+def open_project_state(project_id: Optional[str]) -> None:
+    """Atomically switch active project query param & session state via button on_click (A1.4)."""
+    clean_pid = str(project_id or "").strip()
+    if not clean_pid:
+        return
+    prev_pid = st.session_state.get("efs_active_project_id")
+    if prev_pid and prev_pid != clean_pid:
+        st.session_state.pop(f"active_step_{prev_pid}", None)
+    st.session_state["efs_active_project_id"] = clean_pid
+    st.query_params["project"] = clean_pid
+    st.query_params.pop("step", None)
+
+
+def clear_project_state(project_id: Optional[str] = None) -> None:
+    """Atomically return to the project list by clearing ?project=, ?step=, and active project state (A1.4)."""
+    old_pid = project_id or st.session_state.get("efs_active_project_id") or st.query_params.get("project")
+    if isinstance(old_pid, list):
+        old_pid = old_pid[0] if old_pid else None
+    st.query_params.pop("project", None)
+    st.query_params.pop("step", None)
+    st.session_state.pop("efs_active_project_id", None)
+    if old_pid:
+        st.session_state.pop(f"active_step_{old_pid}", None)
+
+
 def _render_delete_project_dialog(*, on_deleted_redirect_home: bool = False) -> None:
     """Render shared safe project delete confirmation modal (F7 / F10)."""
     target_pid = st.session_state.get("confirm_delete_project_id")
@@ -757,8 +782,7 @@ def _render_delete_project_dialog(*, on_deleted_redirect_home: bool = False) -> 
                     st.session_state["confirm_delete_project_id"] = None
                     st.session_state["last_deleted_notice"] = t("delete_project_success", title=preview["title"])
                     if on_deleted_redirect_home:
-                        st.query_params.clear()
-                        st.session_state.pop(f"active_step_{pid}", None)
+                        clear_project_state(pid)
                     st.rerun()
                 except Exception as exc:
                     if prog_ph is not None:
@@ -1104,7 +1128,7 @@ def render_home_page():
                             aspect_ratio="16:9" if "16:9" in aspect_ratio else "9:16",
                             language=eff_lang_code,
                         )
-                        st.query_params["project"] = eff_id
+                        open_project_state(eff_id)
                         st.session_state["show_new_proj_form"] = False
                         st.rerun()
                     except Exception as exc:
@@ -1120,9 +1144,12 @@ def render_home_page():
             st.warning(t("home_corrupt_projects_warn", count=len(failed_loads)))
             for f_item in failed_loads[:5]:
                 f_pid = f_item["project_id"]
-                if st.button(t("btn_inspect_broken_project", id=f_pid), key=f"btn_open_broken_{f_pid}"):
-                    st.query_params["project"] = f_pid
-                    st.rerun()
+                st.button(
+                    t("btn_inspect_broken_project", id=f_pid),
+                    key=f"btn_open_broken_{f_pid}",
+                    on_click=open_project_state,
+                    args=(f_pid,),
+                )
 
     trashed_items = list_trashed_projects()
     total_cnt = len(projects)
@@ -1231,9 +1258,13 @@ def render_home_page():
 
                 col_card_open, col_card_more = st.columns([4, 1])
                 with col_card_open:
-                    if st.button(t("btn_open_project"), key=f"btn_open_{p['project_id']}", use_container_width=True):
-                        st.query_params["project"] = p["project_id"]
-                        st.rerun()
+                    st.button(
+                        t("btn_open_project"),
+                        key=f"btn_open_{p['project_id']}",
+                        use_container_width=True,
+                        on_click=open_project_state,
+                        args=(p["project_id"],),
+                    )
                 with col_card_more:
                     with st.popover("⋯", help=t("popover_more_help"), use_container_width=True):
                         if st.button(
@@ -1276,18 +1307,24 @@ def render_project_page(project_id: str):
     if not p_dir.is_dir() or not (p_dir / "manifest.json").is_file():
         render_mpt_entry(show_top_return=False)
         st.error(t("err_project_not_found", id=project_id))
-        if st.button("← " + t("btn_back_to_projects"), key=f"btn_notfound_back_{project_id}"):
-            st.query_params.clear()
-            st.rerun()
+        st.button(
+            "← " + t("btn_back_to_projects"),
+            key=f"btn_notfound_back_{project_id}",
+            on_click=clear_project_state,
+            args=(project_id,),
+        )
         return
 
     try:
         st_info = compute_project_step_status(p_dir)
     except Exception as exc:
         render_mpt_entry(show_top_return=False)
-        if st.button("← " + t("btn_all_projects"), key=f"btn_err_back_{project_id}"):
-            st.query_params.clear()
-            st.rerun()
+        st.button(
+            "← " + t("btn_all_projects"),
+            key=f"btn_err_back_{project_id}",
+            on_click=clear_project_state,
+            args=(project_id,),
+        )
         _render_project_load_error(project_id, exc, traceback.format_exc())
         return
 
@@ -1305,10 +1342,12 @@ def render_project_page(project_id: str):
     # Navigation header & top meta row (Mockup 2)
     col_back, col_title, col_actions = st.columns([1.2, 3.6, 2.2])
     with col_back:
-        if st.button("← " + t("btn_all_projects"), key=f"btn_back_{project_id}"):
-            st.query_params.clear()
-            st.session_state.pop(f"active_step_{project_id}", None)
-            st.rerun()
+        st.button(
+            "← " + t("btn_all_projects"),
+            key=f"btn_back_{project_id}",
+            on_click=clear_project_state,
+            args=(project_id,),
+        )
 
     with col_title:
         st.title(manifest.title)

@@ -306,3 +306,53 @@ def test_a1_3_fallback_extractor_strips_character_proper_nouns_keeps_places():
     assert "musashi" in q_musashi.lower() and "province" in q_musashi.lower()
 
 
+def test_a1_4_switch_project_a_to_b_via_back_and_sidebar_reset(tmp_path, monkeypatch):
+    """A1.4: Returning from Project A via Back or sidebar Long Video then opening Project B opens B cleanly."""
+    from pathlib import Path
+    from streamlit.testing.v1 import AppTest
+    from app.services.longform.store import create_project
+
+    proj_root = tmp_path / "projects_a14"
+    proj_root.mkdir()
+    create_project("proj_alpha", "Project Alpha Title", "umum.en", language="en-US", projects_root=proj_root)
+    create_project("proj_beta", "Project Beta Title", "umum.en", language="en-US", projects_root=proj_root)
+
+    monkeypatch.setattr("app.services.longform.store.get_projects_root", lambda: proj_root)
+    monkeypatch.setattr("app.services.longform.ui.components.get_projects_root", lambda: proj_root)
+
+    app_file = str(Path(__file__).resolve().parents[2] / "webui" / "pages" / "1_🎬_Long_Video.py")
+    at = AppTest.from_file(app_file, default_timeout=20)
+    at.run()
+    assert not at.exception
+
+    # 1. Open Project A
+    at.button(key="btn_open_proj_alpha").click().run()
+    assert not at.exception
+    assert any("Project Alpha Title" in t.value for t in at.title)
+    assert at.query_params.get("project") in ("proj_alpha", ["proj_alpha"])
+
+    # 2. Return via sidebar "Video Panjang" reset button -> back on project home
+    at.button(key="efs_btn_lv_home_reset").click().run()
+    assert not at.exception
+    assert "project" not in at.query_params
+    assert any(b.key == "btn_open_proj_beta" for b in at.button)
+
+    # 3. Open Project B -> must open B, NOT A
+    at.button(key="btn_open_proj_beta").click().run()
+    assert not at.exception
+    assert any("Project Beta Title" in t.value for t in at.title)
+    assert not any("Project Alpha Title" in t.value for t in at.title)
+    assert at.query_params.get("project") in ("proj_beta", ["proj_beta"])
+
+    # 4. Return via "← All projects" button -> open Project A again -> back -> open B
+    at.button(key="btn_back_proj_beta").click().run()
+    assert not at.exception
+    assert "project" not in at.query_params
+    at.button(key="btn_open_proj_alpha").click().run()
+    assert any("Project Alpha Title" in t.value for t in at.title)
+    at.button(key="btn_back_proj_alpha").click().run()
+    at.button(key="btn_open_proj_beta").click().run()
+    assert any("Project Beta Title" in t.value for t in at.title)
+
+
+
