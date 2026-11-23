@@ -28,7 +28,7 @@ from app.services.longform.llm_adapter import (
     get_llm_readiness,
 )
 
-AI_KEYWORDS_BATCH_SIZE = 10
+AI_KEYWORDS_BATCH_SIZE = 15
 from app.services.longform.schema import Chapter, ItemStatus, ProjectManifest, Shot
 from app.services.longform.visual.cache import get_global_cache_dir
 from app.services.longform.visual.keyword_translator import (
@@ -934,7 +934,7 @@ def generate_chapter_visual_keywords_ai(
             anchor_terms=clean_anchors,
             avoid_terms=clean_avoids,
         )
-        batch_max_tokens = min(2400, max(520, 95 * len(chunk) + 260))
+        batch_max_tokens = min(3072, max(600, 120 * len(chunk) + 300))
 
         try:
             content, used_prov, used_model = _invoke_translation_llm(
