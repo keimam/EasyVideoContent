@@ -641,3 +641,91 @@ def test_v3_export_prompts_matching_import_and_post_import_survival(tmp_path: Pa
     assert after_kw.chapters[0].shots[0].locked is True
     assert after_kw.chapters[0].shots[1].actual_source == "external_image"
     assert after_kw.chapters[0].shots[1].locked is True
+
+
+def test_v4_image_presets_payload_adaptation_and_single_test_errors(monkeypatch):
+    """V4: Presets exclude Nebius, preserve keys, adapt Together AI payload, and sanitize/categorize test errors."""
+    from io import BytesIO
+    import requests
+    from app.services.longform.visual.image_presets import (
+        IMAGE_PROVIDER_PRESETS,
+        adapt_openai_image_payload,
+        apply_image_provider_preset,
+        categorize_image_test_error,
+        test_single_openai_image,
+    )
+
+    assert "nebius" not in IMAGE_PROVIDER_PRESETS
+    assert "together" in IMAGE_PROVIDER_PRESETS
+    assert "deepinfra" in IMAGE_PROVIDER_PRESETS
+    assert "custom" in IMAGE_PROVIDER_PRESETS
+
+    # Preset application NEVER overwrites existing API keys and ships zero default keys
+    settings_dict = {"openai_image_api_keys": ["secret-user-key-9999"], "openai_image_base_url": ""}
+    apply_image_provider_preset("together", settings_dict)
+    assert settings_dict["openai_image_api_keys"] == ["secret-user-key-9999"]
+    assert settings_dict["openai_image_base_url"] == "https://api.together.xyz/v1"
+    assert settings_dict["openai_image_model"] == "black-forest-labs/FLUX.1-schnell"
+    assert settings_dict["openai_image_size"] == "1344x768"
+
+    # Together AI payload removes OpenAI 'size' and uses aspect_ratio/width/height/steps/response_format
+    t_payload = adapt_openai_image_payload(
+        "https://api.together.xyz/v1/images/generations",
+        {"model": "black-forest-labs/FLUX.1-schnell", "prompt": "castle", "n": 1, "size": "1344x768"},
+        image_size="1344x768",
+    )
+    assert "size" not in t_payload
+    assert t_payload["width"] == 1344 and t_payload["height"] == 768
+    assert t_payload["aspect_ratio"] == "16:9"
+    assert t_payload["steps"] == 4
+    assert t_payload["response_format"] == "b64_json"
+
+    # Error categorization + API key redaction
+    secret = "tgp_v1_MY_SUPER_SECRET_KEY_12345"
+    cat_auth, msg_auth = categorize_image_test_error(401, f"Unauthorized key {secret}", api_key=secret, lang="en")
+    assert cat_auth == "auth" and secret not in msg_auth
+
+    cat_quota, _ = categorize_image_test_error(402, "Insufficient credit", api_key=secret, lang="en")
+    assert cat_quota == "quota"
+
+    cat_404, _ = categorize_image_test_error(404, "Not found", api_key=secret, lang="en")
+    assert cat_404 == "not_found"
+
+    cat_422, msg_422 = categorize_image_test_error(
+        422,
+        '{"error":{"message":"Unknown parameter: size","param":"size"}}',
+        api_key=secret,
+        lang="en",
+    )
+    assert cat_422 == "invalid_param" and "size" in msg_422
+
+    # Mocked 200 image generation via test_single_openai_image
+    import base64
+    buf = BytesIO()
+    Image.new("RGB", (64, 36), color=(12, 34, 56)).save(buf, format="PNG")
+    b64_png = base64.b64encode(buf.getvalue()).decode("ascii")
+
+    class _MockResp:
+        status_code = 200
+        def json(self):
+            return {"data": [{"b64_json": b64_png}]}
+
+    captured_req = {}
+    def _fake_post(url, json=None, headers=None, **_kw):
+        captured_req["url"] = url
+        captured_req["json"] = json
+        captured_req["headers"] = headers
+        return _MockResp()
+
+    monkeypatch.setattr(requests, "post", _fake_post)
+    res_ok = test_single_openai_image(
+        base_url="https://api.together.xyz/v1",
+        api_key=secret,
+        model="black-forest-labs/FLUX.1-schnell",
+        image_size="1344x768",
+        lang="en",
+    )
+    assert res_ok["ok"] is True
+    assert res_ok["width"] == 64 and res_ok["height"] == 36
+    assert captured_req["url"] == "https://api.together.xyz/v1/images/generations"
+    assert "size" not in captured_req["json"] and captured_req["json"]["aspect_ratio"] == "16:9"

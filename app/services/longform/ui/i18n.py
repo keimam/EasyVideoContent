@@ -1124,6 +1124,24 @@ ID_TRANSLATIONS: Dict[str, str] = {
     "spinner_applying_external": "Memproses & menyusun klip visual eksternal...",
     "ext_import_applied_ok": "Berhasil memasang & mengunci **{count}** visual eksternal (`credits.md` diperbarui).",
     "ext_import_nothing_selected": "Tidak ada file dengan shot tujuan yang dipilih untuk diimpor.",
+    # --- V101 V4: Image Provider Presets & 1-Image Test ---
+    "img_preset_select_label": "Preset penyedia gambar (OpenAI Compatible)",
+    "img_preset_select_help": "Mengisi Base URL, slug model, dan ukuran 16:9 secara aman tanpa menimpa API key yang sudah ada.",
+    "btn_apply_image_preset": "Terapkan preset",
+    "img_preset_applied_ok": "Preset **{name}** diterapkan (API key Anda tetap dipertahankan).",
+    "btn_test_single_image": "🧪 Uji 1 gambar",
+    "spinner_testing_single_image": "Mengirim 1 uji gambar ke penyedia...",
+    "img_test_ok": "Uji berhasil! Gambar {w}x{h} dibuat dengan model `{model}`.",
+    "img_test_err_auth": "Kunci API ditolak atau tidak sah (HTTP {code}). Periksa API key Anda.",
+    "img_test_err_quota": "Kuota atau saldo penyedia tidak mencukupi (HTTP {code}). Periksa kredit akun Anda.",
+    "img_test_err_not_found": "Endpoint atau model tidak ditemukan (HTTP 404). Periksa Base URL dan slug model.",
+    "img_test_err_invalid_param": "Parameter ditolak penyedia (HTTP {code}, parameter: `{param}`): {detail}",
+    "img_test_err_rate_limit": "Terlalu banyak permintaan ke penyedia gambar (HTTP 429). Coba lagi sebentar lagi.",
+    "img_test_err_network": "Gagal menghubungi penyedia gambar ({detail}).",
+    "img_test_err_generic": "Uji gambar gagal (HTTP {code}): {detail}",
+    "img_test_err_missing_url": "Base URL gambar belum diisi.",
+    "img_test_err_missing_model": "Slug model gambar belum diisi.",
+    "img_test_err_bad_json": "Respons penyedia tidak berisi data gambar yang valid.",
 }
 
 
@@ -2240,6 +2258,24 @@ EN_TRANSLATIONS: Dict[str, str] = {
     "spinner_applying_external": "Processing & building external visual clips...",
     "ext_import_applied_ok": "Applied & locked **{count}** external visual(s) (`credits.md` updated).",
     "ext_import_nothing_selected": "No files have a target shot assigned to import.",
+    # --- V101 V4: Image Provider Presets & 1-Image Test ---
+    "img_preset_select_label": "Image provider preset (OpenAI Compatible)",
+    "img_preset_select_help": "Safely fills Base URL, model slug, and 16:9 image size without overwriting your existing API key.",
+    "btn_apply_image_preset": "Apply preset",
+    "img_preset_applied_ok": "Applied **{name}** preset (existing API key preserved).",
+    "btn_test_single_image": "🧪 Test 1 image",
+    "spinner_testing_single_image": "Sending 1 test image request to provider...",
+    "img_test_ok": "Test succeeded! Generated {w}x{h} image with model `{model}`.",
+    "img_test_err_auth": "API key rejected or unauthorized (HTTP {code}). Check your API key.",
+    "img_test_err_quota": "Insufficient credits or quota exceeded (HTTP {code}). Check your provider balance.",
+    "img_test_err_not_found": "Endpoint or model slug not found (HTTP 404). Check Base URL and model name.",
+    "img_test_err_invalid_param": "Parameter rejected by provider (HTTP {code}, parameter: `{param}`): {detail}",
+    "img_test_err_rate_limit": "Image provider rate limit exceeded (HTTP 429). Please retry shortly.",
+    "img_test_err_network": "Could not reach image provider ({detail}).",
+    "img_test_err_generic": "Image test failed (HTTP {code}): {detail}",
+    "img_test_err_missing_url": "OpenAI-compatible image Base URL is empty.",
+    "img_test_err_missing_model": "Image model slug is empty.",
+    "img_test_err_bad_json": "Provider response did not include valid image data.",
 }
 
 

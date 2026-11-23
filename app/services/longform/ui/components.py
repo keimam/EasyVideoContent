@@ -2932,6 +2932,23 @@ def render_visual_step_flow(
                     count=ai_est["estimated_count"],
                 )
             )
+        if has_ai_image and str(ai_readiness.get("backend") or "") == "openai_image":
+            from app.services.longform.visual.image_presets import test_single_openai_image
+
+            if st.button(
+                t("btn_test_single_image"),
+                key=f"btn_lf_test_single_img_{project_id}",
+                disabled=is_job_running,
+            ):
+                with st.spinner(t("spinner_testing_single_image")):
+                    st.session_state[f"lf_img_test_res_{project_id}"] = test_single_openai_image()
+            lf_img_res = st.session_state.get(f"lf_img_test_res_{project_id}")
+            if isinstance(lf_img_res, dict):
+                if lf_img_res.get("ok"):
+                    st.success(t("img_test_ok", w=lf_img_res["width"], h=lf_img_res["height"], model=lf_img_res["model"]))
+                    st.image(lf_img_res["image_bytes"], width=320)
+                elif lf_img_res.get("message"):
+                    st.error(lf_img_res["message"])
         elif not has_ai_image:
             if col_s5.button(t("btn_open_image_settings"), key=f"btn_ai_img_cfg_{project_id}"):
                 _open_mpt_settings_dialog("image")

@@ -1822,6 +1822,12 @@ def generate_images_openai(
         "n": 1,
         "size": image_size,
     }
+    try:
+        from app.services.longform.visual.image_presets import adapt_openai_image_payload
+
+        payload = adapt_openai_image_payload(endpoint, payload, image_size=image_size)
+    except Exception:
+        pass
     logger.info(
         f"generating image via openai-compatible endpoint: model={model}, "
         f"term={search_term!r}, size={image_size}"

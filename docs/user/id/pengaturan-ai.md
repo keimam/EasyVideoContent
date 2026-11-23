@@ -34,3 +34,21 @@ Seluruh konfigurasi API dan model AI dikelola terpusat lewat jendela **Pengatura
   *Solusi:* Buka **Pengaturan**, klik **Muat daftar model** pada kartu Naskah atau masukkan slug model aktif terbaru.
 - **Error `429` (Rate Limit / Terlalu Banyak Permintaan):**
   Anda melampaui batas permintaan per menit/hari dari penyedia API. Studio otomatis melakukan coba ulang bertahap (*backoff*). Pada penulisan naskah bab, bab yang sudah selesai tetap aman tersimpan dan bisa dilanjutkan dengan tombol **Lanjutkan Bab Tersisa**.
+
+---
+
+## 4. Preset Penyedia Gambar AI (OpenAI Compatible)
+
+Di jendela **Pengaturan → Sumber Visual / Gambar** (*OpenAI Compatible*), tersedia preset siap pakai yang mengisi **Base URL**, **Model**, dan ukuran **16:9** (`1344x768`) secara otomatis **tanpa menimpa API key Anda**:
+
+| Preset | Base URL | Slug Model | Catatan Teknis & Lisensi (Diakses 2026-11-23) |
+|---|---|---|---|
+| **Together AI** | `https://api.together.xyz/v1` | `black-forest-labs/FLUX.1-schnell` | Studio otomatis menyesuaikan payload (`aspect_ratio`, `width`, `height`, `steps`, `response_format`). Tarif resmi: [together.ai/pricing](https://together.ai/pricing). Referensi: [docs.together.ai](https://docs.together.ai/docs/inference/images/overview). |
+| **DeepInfra** | `https://api.deepinfra.com/v1/openai` | `black-forest-labs/FLUX-1-schnell` | Mendukung parameter OpenAI `size` dan `b64_json`. Tarif di halaman model resminya memakai rumus `\$0.0005 × (width / 1024) × (height / 1024) × iters`. Referensi: [deepinfra.com/black-forest-labs/FLUX-1-schnell](https://deepinfra.com/black-forest-labs/FLUX-1-schnell). |
+| **Kustom** | *(isi manual)* | *(isi manual)* | Untuk gateway lokal (ComfyUI / Automatic1111) atau penyedia OpenAI-compatible lain. |
+
+- **Status Nebius Token Factory:** Seluruh model *Text-to-Image* pada Nebius dinonaktifkan mulai 13 April 2026 ([docs.tokenfactory.nebius.com/other-capabilities/deprecation-info](https://docs.tokenfactory.nebius.com/other-capabilities/deprecation-info)), sehingga tidak disertakan sebagai preset.
+- **Catatan Lisensi Model FLUX.1:**
+  - `black-forest-labs/FLUX.1-schnell`: berlisensi **Apache 2.0**, dapat digunakan untuk penggunaan pribadi, ilmiah, maupun komersial ([huggingface.co/black-forest-labs/FLUX.1-schnell](https://huggingface.co/black-forest-labs/FLUX.1-schnell)).
+  - `black-forest-labs/FLUX.1-dev` *(jika dipakai manual)*: memakai lisensi **non-komersial** khusus ([huggingface.co/black-forest-labs/FLUX.1-dev](https://huggingface.co/black-forest-labs/FLUX.1-dev)); perhatikan ketentuannya sebelum pemakaian komersial.
+- **Tombol Uji 1 Gambar:** Gunakan **Uji 1 gambar** di Pengaturan Gambar atau panel **Sumber Footage** Video Panjang untuk melihat pratinjau gambar langsung atau kategori error yang aman (`401/403` auth, `402`/kuota, `404` model/endpoint, `400/422` parameter, atau timeout jaringan) tanpa pernah menampilkan API key.

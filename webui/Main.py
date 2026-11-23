@@ -4093,6 +4093,18 @@ def _render_material_provider_settings(provider):
     elif provider == "openai_image":
         st.markdown(f"**{tr('OpenAI Compatible Text-to-Image')}**")
 
+        try:
+            from app.services.longform.visual.image_presets import render_openai_image_preset_controls
+
+            render_openai_image_preset_controls(
+                st_module=st,
+                app_settings=app_settings,
+                save_settings_fn=_save_settings_change,
+                set_runtime_cfg_fn=_set_runtime_config,
+            )
+        except Exception:
+            pass
+
         openai_image_base_url = st.text_input(
             tr("OpenAI Image Base URL"),
             value=str(app_settings.get("openai_image_base_url", "") or ""),
