@@ -467,3 +467,52 @@ def test_v1_search_again_auto_and_thread_safe_rate_limit(tmp_path: Path, monkeyp
         futs = [ex.submit(respect_provider_rate_limit, "p_a" if i % 2 == 0 else "p_b", 0.01) for i in range(8)]
         for f in futs:
             f.result()
+
+
+def test_v2_local_multi_upload_conflict_and_invalid_extension_handling(tmp_path: Path):
+    """V2: Multi-file upload rejects unsupported extensions clearly and never silently overwrites on collision."""
+    from io import BytesIO
+    from app.services.longform.visual.local import ALL_SUPPORTED_EXTS, save_uploaded_library_files
+    from app.services.longform.ui.i18n import t
+
+    proj_dir = tmp_path / "v2_upload"
+    mgr = LocalLibraryManager(proj_dir)
+
+    buf1 = BytesIO()
+    Image.new("RGB", (640, 360), color=(10, 20, 30)).save(buf1, format="JPEG")
+    jpg_bytes_1 = buf1.getvalue()
+
+    buf2 = BytesIO()
+    Image.new("RGB", (640, 360), color=(200, 100, 50)).save(buf2, format="JPEG")
+    jpg_bytes_2 = buf2.getvalue()
+
+    res1 = save_uploaded_library_files(
+        mgr,
+        [("old_lighthouse_night_fog.jpg", jpg_bytes_1), ("malicious_script.exe", b"nope")],
+        conflict_policy="ask",
+    )
+    assert len(res1["saved"]) == 1
+    assert len(res1["rejected"]) == 1
+    assert "malicious_script.exe" in res1["rejected"][0][0]
+    assert len(res1["conflicts"]) == 0
+
+    # Uploading same filename again with conflict_policy='ask' must NOT overwrite existing file!
+    res_ask = save_uploaded_library_files(
+        mgr,
+        [("old_lighthouse_night_fog.jpg", jpg_bytes_2)],
+        conflict_policy="ask",
+    )
+    assert len(res_ask["saved"]) == 0
+    assert len(res_ask["conflicts"]) == 1
+    assert (mgr.library_dir / "old_lighthouse_night_fog.jpg").read_bytes() == jpg_bytes_1
+
+    # Resolving conflict with 'rename' creates a suffixed copy while keeping original intact
+    res_ren = save_uploaded_library_files(mgr, res_ask["conflicts"], conflict_policy="rename")
+    assert len(res_ren["saved"]) == 1
+    assert res_ren["saved"][0]["filename"] == "old_lighthouse_night_fog_1.jpg"
+    assert (mgr.library_dir / "old_lighthouse_night_fog.jpg").read_bytes() == jpg_bytes_1
+    assert (mgr.library_dir / "old_lighthouse_night_fog_1.jpg").read_bytes() == jpg_bytes_2
+
+    assert "old_lighthouse_night_fog.jpg" in t("local_upload_guide_text", lang="id", videos=".mp4", images=".jpg")
+    assert "old_lighthouse_night_fog.jpg" in t("local_upload_guide_text", lang="en", videos=".mp4", images=".jpg")
+    assert ".mp4" in ALL_SUPPORTED_EXTS and ".png" in ALL_SUPPORTED_EXTS

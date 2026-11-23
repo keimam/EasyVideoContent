@@ -49,3 +49,15 @@ Secara default, studio mencari footage secara bertingkat per shot (**Query Utama
 
 - **Alasan "Belum ada visual":** Bila seluruh query dan sumber gagal, shot ditandai `"Belum ada visual"` beserta ringkasan alasannya di panel Detail (mis. jumlah kandidat & alasan penolakan relevansi/lisensi).
 - **Berkas `credits.md`:** Otomatis dibuat di `export/credits.md` dan ikut disalin ke folder hasil render MP4 & draft CapCut berisi judul, pembuat, lisensi, dan tautan sumber. Shot yang memakai `CC BY` / `CC BY-SA` menampilkan tanda **Perlu atribusi** di panel Detail.
+
+
+---
+
+## 5. Pustaka Media Lokal (`Local files`)
+
+Anda bisa menyiapkan koleksi gambar atau klip video milik sendiri (arsip dokumenter, aset merek, atau rekaman Pribadi) di folder `assets/visual/library` proyek:
+
+1. **Cara membuka & mengunggah:** Buka panel **Sumber Footage** di halaman **Visual**, lihat jumlah file saat ini, lalu tekan **Buka folder Local files** untuk membuka folder langsung di Windows Explorer, atau pakai pengunggah multi-file yang tersedia (bila nama file sudah ada, studio akan menanyakan **Ganti nama otomatis**, **Timpa**, atau **Lewati** agar file lama tidak tertimpa diam-diam).
+2. **Aturan penamaan agar akurat:** Studio membaca kata kunci dari nama file (pisahkan kata dengan garis bawah `_`, tanda hubung `-`, atau titik `.`) serta nama subfolder di dalamnya — contohnya `old_lighthouse_night_fog.jpg` atau subfolder `vikings/ship_storm.jpg`.
+3. **Prioritas & opsi pengisian acak:** Jika centang **Local files** aktif dan ada file lokal yang lolos skor relevansi, file tersebut selalu didahulukan baik di mode **Campur terbaik** maupun **Prioritas**. Opsi **Isi shot kosong dengan file lokal acak** nonaktif secara bawaan agar file yang tidak cocok tidak mengisi semua shot otomatis.
+4. **Format yang didukung:** Video (`.mp4`, `.mov`, `.mkv`, `.webm`, `.avi`) dan gambar (`.jpg`, `.jpeg`, `.png`, `.webp`, `.bmp`).

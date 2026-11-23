@@ -49,3 +49,15 @@ By default, the studio searches each shot in escalating tiers (**Primary/AI Quer
 
 - **Missing Visual Diagnostics:** When no source returns an acceptable match, the shot is marked `"No visual yet"` with a concise summary and expandable search attempt log in the Detail panel.
 - **Automatic `credits.md`:** Always written to `export/credits.md` and copied into final MP4 outputs and CapCut draft folders with creator, title, license, and source links. Shots using `CC BY` / `CC BY-SA` display an **Attribution required** notice in the Detail panel.
+
+
+---
+
+## 5. Local Media Library (`Local files`)
+
+You can include your own footage or images (archival material, brand assets, or custom clips) inside your project's `assets/visual/library` folder:
+
+1. **Opening the folder & uploading:** Expand **Footage Sources** on the **Visual** step to check the current file count, click **Open Local files folder** to jump straight to the directory, or use the multi-file uploader (existing filenames trigger an explicit **Auto-rename**, **Overwrite**, or **Skip** prompt so files are never silently overwritten).
+2. **Naming guidelines for relevance matching:** The studio extracts lowercase tags from filename separators (`_`, `-`, `.`) and subfolder names — for example `old_lighthouse_night_fog.jpg` or `vikings/ship_storm.jpg`.
+3. **Priority & random fallback option:** Whenever **Local files** is checked and a file passes the relevance threshold, it takes priority in both **Mix best** and **Priority** search modes. The **Fill empty shots with random local files** option stays disabled by default so unrelated files are never injected automatically.
+4. **Supported formats:** Video (`.mp4`, `.mov`, `.mkv`, `.webm`, `.avi`) and image (`.jpg`, `.jpeg`, `.png`, `.webp`, `.bmp`).

@@ -412,3 +412,51 @@ class LocalVisualProvider(BaseVisualProvider):
             height=candidate.height,
             duration_seconds=candidate.duration_seconds,
         )
+
+
+
+def save_uploaded_library_files(
+    manager: LocalLibraryManager,
+    items: List[Tuple[str, bytes]],
+    *,
+    conflict_policy: str = "ask",
+) -> Dict[str, Any]:
+    """Save multiple uploaded media files into library safely (V2).
+
+    Returns {
+        'saved': [asset_info...],
+        'rejected': [(filename, reason)...],
+        'conflicts': [(filename, content_bytes)...],
+        'skipped': [filename...],
+    }.
+    """
+    saved: List[Dict[str, Any]] = []
+    rejected: List[Tuple[str, str]] = []
+    conflicts: List[Tuple[str, bytes]] = []
+    skipped: List[str] = []
+
+    supported_str = ", ".join(sorted(ALL_SUPPORTED_EXTS))
+    for raw_name, content in items:
+        clean_name = Path(str(raw_name or "")).name
+        ext = Path(clean_name).suffix.lower()
+        if not clean_name or ext not in ALL_SUPPORTED_EXTS:
+            rejected.append((clean_name or str(raw_name), f"Unsupported extension '{ext}'. Supported: {supported_str}"))
+            continue
+        target_path = manager.library_dir / clean_name
+        if target_path.exists():
+            if conflict_policy == "ask":
+                conflicts.append((clean_name, content))
+                continue
+            if conflict_policy == "skip":
+                skipped.append(clean_name)
+                continue
+            saved.append(manager.add_file(content, clean_name, on_conflict=conflict_policy))
+            continue
+        saved.append(manager.add_file(content, clean_name, on_conflict="overwrite"))
+
+    return {
+        "saved": saved,
+        "rejected": rejected,
+        "conflicts": conflicts,
+        "skipped": skipped,
+    }

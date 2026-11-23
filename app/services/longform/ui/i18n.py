@@ -1081,6 +1081,25 @@ ID_TRANSLATIONS: Dict[str, str] = {
     "prov_search_all_active": "Semua sumber aktif (mode proyek)",
     "prov_local_opt": "Local files (pustaka proyek)",
     "source_external_image": "Gambar eksternal",
+    # --- V101 V2: Local Files UX ---
+    "local_lib_count_label": "File di Local files proyek: **{count}** file",
+    "btn_open_local_folder": "📂 Buka folder Local files",
+    "local_folder_opened_ok": "Folder Local files dibuka: `{path}`",
+    "local_folder_open_fail": "Tidak bisa membuka folder otomatis. Buka manual di: `{path}`",
+    "local_multi_upload_label": "Tambah media ke Local files (multi-file)",
+    "btn_save_local_uploads": "Simpan ke Local files",
+    "local_upload_saved_ok": "Berhasil menyimpan **{count}** file ke Local files: {names}",
+    "local_upload_invalid_ext": "File `{name}` ditolak ({reason}). Format didukung: `{formats}`",
+    "local_upload_conflict_prompt": "File berikut sudah ada di Local files: **{names}**. Pilih tindakan:",
+    "local_conflict_opt_rename": "Ganti nama otomatis (tambah akhiran angka)",
+    "local_conflict_opt_overwrite": "Timpa file yang ada",
+    "local_conflict_opt_skip": "Lewati",
+    "btn_apply_local_conflicts": "Terapkan pilihan",
+    "local_upload_guide_text": (
+        "💡 **Panduan Local files:** Beri nama file dengan kata kunci bahasa Inggris deskriptif memakai garis bawah/tanda hubung, "
+        "misalnya `old_lighthouse_night_fog.jpg` (atau kelompokkan di subfolder tematik seperti `vikings/ship_storm.jpg`). "
+        "Format didukung — Video: `{videos}` | Gambar: `{images}`."
+    ),
 }
 
 
@@ -2154,6 +2173,25 @@ EN_TRANSLATIONS: Dict[str, str] = {
     "prov_search_all_active": "All active sources (project mode)",
     "prov_local_opt": "Local files (project library)",
     "source_external_image": "External image",
+    # --- V101 V2: Local Files UX ---
+    "local_lib_count_label": "Files in project Local files: **{count}** file(s)",
+    "btn_open_local_folder": "📂 Open Local files folder",
+    "local_folder_opened_ok": "Opened Local files folder: `{path}`",
+    "local_folder_open_fail": "Could not open folder automatically. Open manually at: `{path}`",
+    "local_multi_upload_label": "Add media to Local files (multi-file)",
+    "btn_save_local_uploads": "Save to Local files",
+    "local_upload_saved_ok": "Saved **{count}** file(s) to Local files: {names}",
+    "local_upload_invalid_ext": "Rejected `{name}` ({reason}). Supported formats: `{formats}`",
+    "local_upload_conflict_prompt": "These files already exist in Local files: **{names}**. Choose action:",
+    "local_conflict_opt_rename": "Auto-rename (append number)",
+    "local_conflict_opt_overwrite": "Overwrite existing file(s)",
+    "local_conflict_opt_skip": "Skip",
+    "btn_apply_local_conflicts": "Apply choice",
+    "local_upload_guide_text": (
+        "💡 **Local files guide:** Name files with descriptive English keywords separated by underscores or hyphens, "
+        "such as `old_lighthouse_night_fog.jpg` (or organize into subfolders like `vikings/ship_storm.jpg`). "
+        "Supported formats — Video: `{videos}` | Image: `{images}`."
+    ),
 }
 
 

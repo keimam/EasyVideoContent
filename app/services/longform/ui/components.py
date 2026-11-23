@@ -2745,6 +2745,94 @@ def render_visual_step_flow(
             manifest.fill_local_random = bool(new_fill_random)
             save_manifest(manifest, p_dir)
 
+        # V2: Local files UX (count, Open folder button, multi-file uploader with collision handling & guide)
+        from app.services.longform.visual.local import (
+            ALL_SUPPORTED_EXTS,
+            SUPPORTED_IMAGE_EXTS,
+            SUPPORTED_VIDEO_EXTS,
+            save_uploaded_library_files,
+        )
+        from app.services.longform.platform_utils import open_path_in_os
+
+        loc_mgr = LocalLibraryManager(p_dir)
+        loc_assets = loc_mgr.list_assets()
+        col_loc1, col_loc2 = st.columns([2.2, 1.4])
+        with col_loc1:
+            st.caption(t("local_lib_count_label", count=len(loc_assets)))
+            st.caption(
+                t(
+                    "local_upload_guide_text",
+                    videos=", ".join(sorted(SUPPORTED_VIDEO_EXTS)),
+                    images=", ".join(sorted(SUPPORTED_IMAGE_EXTS)),
+                )
+            )
+        with col_loc2:
+            if st.button(
+                t("btn_open_local_folder"),
+                key=f"btn_open_local_lib_{project_id}",
+                use_container_width=True,
+            ):
+                if open_path_in_os(loc_mgr.library_dir, is_folder=True):
+                    st.toast(t("local_folder_opened_ok", path=str(loc_mgr.library_dir)))
+                else:
+                    st.info(t("local_folder_open_fail", path=str(loc_mgr.library_dir)))
+
+        local_uploads = st.file_uploader(
+            t("local_multi_upload_label"),
+            accept_multiple_files=True,
+            disabled=is_job_running,
+            key=f"up_local_lib_multi_{project_id}",
+        )
+        conflict_key = f"local_lib_conflicts_{project_id}"
+        if local_uploads:
+            if st.button(
+                t("btn_save_local_uploads"),
+                key=f"btn_save_local_lib_{project_id}",
+                disabled=is_job_running,
+            ):
+                items_payload = [(uf.name, uf.getvalue()) for uf in local_uploads]
+                up_res = save_uploaded_library_files(loc_mgr, items_payload, conflict_policy="ask")
+                for bad_name, bad_reason in up_res["rejected"]:
+                    st.error(
+                        t(
+                            "local_upload_invalid_ext",
+                            name=bad_name,
+                            reason=bad_reason,
+                            formats=", ".join(sorted(ALL_SUPPORTED_EXTS)),
+                        )
+                    )
+                if up_res["saved"]:
+                    saved_names = ", ".join(x["filename"] for x in up_res["saved"])
+                    st.success(t("local_upload_saved_ok", count=len(up_res["saved"]), names=saved_names))
+                if up_res["conflicts"]:
+                    st.session_state[conflict_key] = up_res["conflicts"]
+                elif up_res["saved"] and not up_res["rejected"]:
+                    st.rerun()
+
+        pending_conflicts = st.session_state.get(conflict_key) or []
+        if pending_conflicts:
+            conflict_names = ", ".join(c_name for c_name, _ in pending_conflicts)
+            st.warning(t("local_upload_conflict_prompt", names=conflict_names))
+            c_action = st.radio(
+                t("local_upload_conflict_prompt", names=conflict_names),
+                options=["rename", "overwrite", "skip"],
+                format_func=lambda opt: t(f"local_conflict_opt_{opt}"),
+                horizontal=True,
+                label_visibility="collapsed",
+                key=f"rad_local_conflict_{project_id}",
+            )
+            if st.button(
+                t("btn_apply_local_conflicts"),
+                key=f"btn_apply_local_conflict_{project_id}",
+                disabled=is_job_running,
+            ):
+                c_res = save_uploaded_library_files(loc_mgr, pending_conflicts, conflict_policy=c_action)
+                st.session_state.pop(conflict_key, None)
+                if c_res["saved"]:
+                    saved_names = ", ".join(x["filename"] for x in c_res["saved"])
+                    st.success(t("local_upload_saved_ok", count=len(c_res["saved"]), names=saved_names))
+                st.rerun()
+
         # V1: Per-project Search Mode ('mix_best' vs 'priority'), diversity controls, and reorderable source order
         st.divider()
         cur_mode = str(getattr(manifest, "visual_search_mode", "priority") or "priority").lower().strip()
