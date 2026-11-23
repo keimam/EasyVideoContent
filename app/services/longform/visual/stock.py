@@ -262,6 +262,148 @@ _DIGITAL_OFFICE_TRAP_TAGS = {
     "notebook",
 }
 
+_TITLE_BASED_PROVIDERS = {"wikimedia", "openverse", "nasa"}
+
+_GENERIC_ROLE_OR_SCENE_WORDS = {
+    "apprentice",
+    "man",
+    "men",
+    "woman",
+    "women",
+    "boy",
+    "boys",
+    "girl",
+    "girls",
+    "person",
+    "people",
+    "child",
+    "children",
+    "mother",
+    "father",
+    "parent",
+    "parents",
+    "friend",
+    "friends",
+    "stranger",
+    "strangers",
+    "worker",
+    "workers",
+    "village",
+    "villages",
+    "town",
+    "city",
+    "cities",
+    "street",
+    "streets",
+    "road",
+    "roads",
+    "way",
+    "ways",
+    "home",
+    "house",
+    "room",
+    "door",
+    "place",
+    "places",
+    "area",
+    "areas",
+    "part",
+    "side",
+    "end",
+    "young",
+    "old",
+    "elderly",
+    "aged",
+    "eighteen",
+    "night",
+    "day",
+    "morning",
+    "evening",
+    "afternoon",
+    "winter",
+    "time",
+    "life",
+    "work",
+    "story",
+    "face",
+    "eyes",
+    "hand",
+    "hands",
+}
+
+_NON_VISUAL_ARCHIVE_TRAP_TAGS = {
+    "navy",
+    "seaman",
+    "boatswain",
+    "amphibious",
+    "cryptologic",
+    "dvids",
+    "marines",
+    "usmc",
+    "usaf",
+    "usn",
+    "battalion",
+    "regiment",
+    "corps",
+    "destroyer",
+    "frigate",
+    "petty officer",
+    "master-at-arms",
+    "landsat",
+    "usgs",
+    "topographic",
+    "spectrogram",
+}
+
+_GEO_SUFFIX_TERMS = {
+    "province",
+    "prefecture",
+    "county",
+    "state",
+    "city",
+    "town",
+    "village",
+    "river",
+    "lake",
+    "sea",
+    "ocean",
+    "bay",
+    "area",
+    "mount",
+    "mountain",
+    "mountains",
+    "island",
+    "valley",
+    "forest",
+    "street",
+    "avenue",
+    "road",
+    "highway",
+    "bridge",
+    "park",
+    "peninsula",
+    "harbor",
+    "district",
+}
+
+_COMMON_TITLECASE_NONPROPER = {
+    "a", "an", "the", "in", "on", "at", "by", "to", "for", "of", "with", "from",
+    "into", "over", "under", "after", "before", "one", "two", "three", "his", "her",
+    "their", "she", "he", "they", "it", "if", "then", "when", "while", "there", "these",
+    "those", "this", "that", "no", "now", "not", "winter", "summer", "autumn", "spring",
+    "snow", "snowstorm", "rain", "wind", "ice", "water", "fire", "river", "ferry",
+    "ferryman", "boat", "man", "men", "woman", "women", "people", "person", "village",
+    "forest", "night", "day", "morning", "evening", "afternoon", "dark", "cold", "pale",
+    "light", "door", "hut", "mother", "father", "old", "young", "apprentice", "breath",
+    "smoke", "eyes", "storm", "chapter", "part", "tokyo", "japan", "california",
+}
+
+_PERSON_START_VERBS = {
+    "was", "were", "is", "are", "lay", "fell", "felt", "slept", "sat", "stood",
+    "walked", "ran", "looked", "turned", "spoke", "told", "watched", "knew",
+    "heard", "saw", "cried", "whispered", "died", "lived", "stayed", "worked",
+}
+
 _GENERIC_NARRATION_NOUNS = {
     "workplace",
     "work",
@@ -285,7 +427,7 @@ _GENERIC_NARRATION_NOUNS = {
     "way",
     "place",
     "others",
-}
+} | _GENERIC_ROLE_OR_SCENE_WORDS
 
 _NARRATION_VERB_NOISE = {
     "some", "died", "while", "caused", "beneath", "under", "extreme", "many",
@@ -296,14 +438,94 @@ _NARRATION_VERB_NOISE = {
 }
 
 
-def extract_narration_nouns(narration_text: Optional[str]) -> Tuple[List[str], List[str]]:
-    """Extract (concrete_nouns, generic_nouns) from narration text for non-AI candidate ranking (D9.7)."""
+def extract_narration_proper_nouns(text: Optional[str]) -> Set[str]:
+    """Identify character/person proper nouns so they neither inflate nor penalize relevance scores (A1.1).
+
+    Preserves geographic place names paired with spatial designators (e.g. 'Musashi Province',
+    'Bay Area') while excluding capitalized character names (e.g. 'Minokichi', 'Mosaku').
+    """
+    raw = str(text or "").strip()
+    if not raw:
+        return set()
+    proper: Set[str] = set()
+    sentences = re.split(r"(?<=[.!?])\s+|\n+", raw)
+    for sent in sentences:
+        words = re.findall(r"[A-Za-z][A-Za-z'-]*", sent)
+        for idx, tok in enumerate(words):
+            if len(tok) < 3 or not tok[0].isupper():
+                continue
+            low = tok.lower().strip("'-")
+            if len(low) < 3 or low in _COMMON_TITLECASE_NONPROPER or low in STOP_WORDS or low in GENERIC_WORDS:
+                continue
+            prev_low = words[idx - 1].lower() if idx > 0 else ""
+            next_low = words[idx + 1].lower() if idx + 1 < len(words) else ""
+            if next_low in _GEO_SUFFIX_TERMS or prev_low in _GEO_SUFFIX_TERMS:
+                continue
+            if idx == 0:
+                # Sentence-initial capitalized word is a person name when followed by a narrative verb
+                if next_low in _PERSON_START_VERBS:
+                    proper.add(low)
+                continue
+            # Mid-sentence capitalized unknown noun not attached to a geographic designator
+            proper.add(low)
+    return proper
+
+
+def resolve_source_prior_weight(
+    source_name: Optional[str],
+    recommended_visual_sources: Optional[Dict[str, Any]],
+) -> float:
+    """Map preset recommended_visual_sources to a gentle calibrated score adjustment [-0.04, +0.05] (A1.1)."""
+    if not source_name or not isinstance(recommended_visual_sources, dict) or not recommended_visual_sources:
+        return 0.0
+    src = str(source_name).lower().strip()
+    clean_map: Dict[str, float] = {}
+    for k, v in recommended_visual_sources.items():
+        try:
+            clean_map[str(k).lower().strip()] = max(0.0, float(v))
+        except Exception:
+            continue
+    if not clean_map:
+        return 0.0
+
+    if src in clean_map:
+        eff_w = clean_map[src]
+    elif src in ("pixabay", "coverr", "pexels", "stock") and "stock" in clean_map:
+        eff_w = clean_map["stock"]
+    elif src in ("ai_image", "openai") and "ai_image" in clean_map:
+        eff_w = clean_map["ai_image"]
+    elif src == "local" and "local" in clean_map:
+        eff_w = clean_map["local"]
+    elif src in _TITLE_BASED_PROVIDERS:
+        base_stock = clean_map.get("stock", 0.5)
+        eff_w = 0.45 * base_stock
+    else:
+        return 0.0
+
+    adj = (eff_w - 0.45) * 0.16
+    return round(max(-0.04, min(0.05, adj)), 3)
+
+
+def extract_narration_nouns(
+    narration_text: Optional[str],
+    *,
+    excluded_proper_nouns: Optional[Set[str]] = None,
+) -> Tuple[List[str], List[str]]:
+    """Extract (concrete_nouns, generic_nouns) from narration text for non-AI candidate ranking (D9.7, A1.1)."""
+    prop_set = excluded_proper_nouns if excluded_proper_nouns is not None else extract_narration_proper_nouns(narration_text)
     raw_words = re.findall(r"[a-z]{3,}", (narration_text or "").lower())
     concrete: List[str] = []
     generic: List[str] = []
     seen: set[str] = set()
     for w in raw_words:
-        if w in STOP_WORDS or w in GENERIC_WORDS or w in ABSTRACT_WORDS or w in NUMBER_WORDS or w in _NARRATION_VERB_NOISE:
+        if (
+            w in STOP_WORDS
+            or w in GENERIC_WORDS
+            or w in ABSTRACT_WORDS
+            or w in NUMBER_WORDS
+            or w in _NARRATION_VERB_NOISE
+            or w in prop_set
+        ):
             continue
         forms = [w]
         if len(w) > 4 and w.endswith("es"):
@@ -311,7 +533,7 @@ def extract_narration_nouns(narration_text: Optional[str]) -> Tuple[List[str], L
         elif len(w) > 3 and w.endswith("s"):
             forms.append(w[:-1])
         norm = forms[-1]
-        if norm in seen:
+        if norm in seen or norm in prop_set:
             continue
         seen.add(norm)
         if w in _GENERIC_NARRATION_NOUNS or norm in _GENERIC_NARRATION_NOUNS:
@@ -321,7 +543,7 @@ def extract_narration_nouns(narration_text: Optional[str]) -> Tuple[List[str], L
     return concrete, generic
 
 
-def score_candidate_relevance(
+def score_candidate_relevance_detailed(
     candidate_tags: List[str],
     search_query: str,
     visual_keywords: Optional[List[str]] = None,
@@ -334,8 +556,12 @@ def score_candidate_relevance(
     is_low_res: bool = False,
     narration_text: Optional[str] = None,
     strict_ai_relevance: bool = False,
-) -> Tuple[bool, float, str]:
-    """Score candidate relevance against search query, preset rules, and project anchor/avoid terms (S1, S5, T3, F12)."""
+    source_name: Optional[str] = None,
+    is_title_based: Optional[bool] = None,
+    proper_nouns: Optional[Set[str]] = None,
+    recommended_visual_sources: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Score candidate relevance and return full component breakdown for A1.1 transparency."""
     req_terms = [t.lower().strip() for t in (required_subject_terms or []) if str(t or "").strip()]
     block_terms = [t.lower().strip() for t in (blocked_terms or []) if str(t or "").strip()]
     neg_terms = [t.lower().strip() for t in (negative_terms or []) if str(t or "").strip()]
@@ -343,14 +569,24 @@ def score_candidate_relevance(
     avoid_list = [t.lower().strip() for t in (avoid_terms or []) if str(t or "").strip()]
     cand_tags = [t.lower().strip() for t in (candidate_tags or []) if str(t or "").strip()]
     min_thresh = min_relevance_score if min_relevance_score is not None else 0.35
+    src_norm = str(source_name or "").lower().strip()
+    title_based = bool(is_title_based) if is_title_based is not None else (src_norm in _TITLE_BASED_PROVIDERS)
+
+    def _reject(sc: float, reason_txt: str, comps: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        return {
+            "is_valid": False,
+            "score": round(float(sc), 3),
+            "reason": reason_txt,
+            "components": comps or {},
+        }
 
     # 1. Blocked terms & project avoid_terms hard check (whole-word boundary, S5 / F12)
     for bt in block_terms:
         if term_matches_tags(bt, cand_tags):
-            return False, 0.0, f"Blocked term matched: {bt}"
+            return _reject(0.0, f"Blocked term matched: {bt}")
     for av in avoid_list:
         if term_matches_tags(av, cand_tags):
-            return False, 0.0, f"Avoid term matched: {av}"
+            return _reject(0.0, f"Avoid term matched: {av}")
 
     # 2. Required subject terms strict check (T3)
     if req_terms:
@@ -358,40 +594,56 @@ def score_candidate_relevance(
         subj_in_first_5 = any(term_matches_tags(req, first_5_tags) for req in req_terms)
         matched_distinct_subjects = {req for req in req_terms if term_matches_tags(req, cand_tags)}
         has_sufficient_subjects = subj_in_first_5 or (len(matched_distinct_subjects) >= 2)
-
         if not has_sufficient_subjects:
-            return (
-                False,
+            return _reject(
                 0.0,
                 f"Candidate lacks required subject terms: subject not in first 5 tags and fewer than 2 distinct subject terms ({len(matched_distinct_subjects)} found)",
             )
 
-    # 2b. Project anchor_terms check (F12 / F13): reject candidates lacking anchor in first 8 tags & < 2 overall
+    # 2b. Project anchor_terms check (F12 / F13)
     anchor_matched = True
+    distinct_anchor_hits = 0
+    matched_anchors: List[str] = []
     if anchor_list:
         top_anchor_hit = any(term_matches_tags(anc, cand_tags[:8]) for anc in anchor_list)
-        distinct_anchor_hits = sum(1 for anc in anchor_list if term_matches_tags(anc, cand_tags))
+        matched_anchors = [anc for anc in anchor_list if term_matches_tags(anc, cand_tags)]
+        distinct_anchor_hits = len(matched_anchors)
         anchor_matched = top_anchor_hit or (distinct_anchor_hits >= 2)
 
-    # 3. Subject score (if passed, 1.0 if req_terms present else 0.5)
-    subject_score = 1.0 if (req_terms or (anchor_list and anchor_matched)) else 0.5
+    # 3. Subject score (calibrated so single broad anchor on noisy title-based captions cannot max out)
+    if req_terms:
+        subject_score = 1.0
+    elif anchor_list and anchor_matched:
+        if title_based:
+            subject_score = 0.80 if distinct_anchor_hits >= 2 else 0.58
+        else:
+            subject_score = 1.0
+    else:
+        subject_score = 0.5
 
-    # 4. Check negative terms present in candidate tags (T3)
+    # 4. Negative terms present in candidate tags (T3)
     matched_neg_terms = [nt for nt in neg_terms if term_matches_tags(nt, cand_tags)]
 
-    # 5. Query keywords overlap (ignoring stopwords and generic words, S5)
-    # T3: If candidate contains negative terms, ambiguous query words matching negative terms
-    # (e.g. 'bay' in 'engine bay') must not give query overlap credit.
-    q_words = extract_query_keywords(search_query)
-    effective_q_words = []
+    # Extract proper nouns so character names neither inflate nor penalize scores (A1.1b)
+    detected_proper = (
+        extract_narration_proper_nouns(narration_text)
+        | extract_narration_proper_nouns(search_query)
+        | {str(p or "").lower().strip() for p in (proper_nouns or set()) if str(p or "").strip()}
+    )
+
+    # 5. Query keywords overlap (ignoring stopwords, generic words, negative collisions & proper nouns)
+    q_words_raw = extract_query_keywords(search_query)
+    q_words = [qw for qw in q_words_raw if qw not in detected_proper]
+    effective_q_words: List[str] = []
     for qw in q_words:
         if matched_neg_terms and (qw in neg_terms or any(term_matches_tags(qw, [nt]) for nt in neg_terms)):
             continue
         effective_q_words.append(qw)
 
+    q_matched_words: List[str] = []
     if effective_q_words:
-        q_matches = sum(1 for qw in effective_q_words if term_matches_tags(qw, cand_tags))
-        q_ratio = q_matches / len(effective_q_words)
+        q_matched_words = [qw for qw in effective_q_words if term_matches_tags(qw, cand_tags)]
+        q_ratio = len(q_matched_words) / len(effective_q_words)
     else:
         q_ratio = 0.5 if not matched_neg_terms else 0.0
 
@@ -407,48 +659,157 @@ def score_candidate_relevance(
     else:
         vk_ratio = 0.0
 
-    score = 0.50 * subject_score + 0.35 * q_ratio + 0.15 * vk_ratio
+    subj_comp = 0.50 * subject_score
+    q_comp = 0.35 * q_ratio
+    vk_comp = 0.15 * vk_ratio
+    score = subj_comp + q_comp + vk_comp
 
-    # T3: Negative terms heavy penalty (-0.15 per matched negative term, max -0.45)
+    # Penalties accumulator
+    penalties = 0.0
     if matched_neg_terms:
-        neg_penalty = min(len(matched_neg_terms) * 0.15, 0.45)
-        score = max(0.0, score - neg_penalty)
+        neg_pen = min(len(matched_neg_terms) * 0.15, 0.45)
+        score = max(0.0, score - neg_pen)
+        penalties -= neg_pen
 
-    # S6: Low resolution / extreme aspect ratio penalty
     if is_low_res:
+        before_s = score
         score = max(0.05, score - 0.20)
+        penalties += (score - before_s)
 
-    # D9.7: Prioritize concrete narration nouns & reject unrequested office/keyboard mismatches
-    conc_narration_nouns, gen_narration_nouns = extract_narration_nouns(narration_text)
+    # Narration nouns & trap checks (D9.7 + A1.1)
+    conc_narration_nouns, gen_narration_nouns = extract_narration_nouns(
+        narration_text, excluded_proper_nouns=detected_proper
+    )
+    asked_tokens = set(re.findall(r"[a-z]+", f"{search_query or ''} {narration_text or ''}".lower()))
+    conc_hits = [n for n in conc_narration_nouns if term_matches_tags(n, cand_tags)]
+    gen_hits = [n for n in gen_narration_nouns if term_matches_tags(n, cand_tags)]
+
+    narration_bonus = 0.0
     if conc_narration_nouns or gen_narration_nouns:
-        conc_hits = sum(1 for n in conc_narration_nouns if term_matches_tags(n, cand_tags))
-        gen_hits = sum(1 for n in gen_narration_nouns if term_matches_tags(n, cand_tags))
-        asked_tokens = set(re.findall(r"[a-z]+", f"{search_query or ''} {narration_text or ''}".lower()))
         head_tags = " ".join(cand_tags[:8])
         trap_hits = [
             tp for tp in _DIGITAL_OFFICE_TRAP_TAGS
             if tp not in asked_tokens and re.search(rf"\b{re.escape(tp)}\b", head_tags)
         ]
-        if trap_hits and conc_hits == 0:
+        if trap_hits and not conc_hits:
+            penalties -= 0.20
             score = max(0.0, score - 0.20)
-        elif conc_hits > 0:
-            score = min(1.0, score + min(conc_hits * 0.07, 0.21))
-        elif gen_hits > 0:
-            score = min(1.0, score + min(gen_hits * 0.02, 0.04))
+        elif conc_hits:
+            narration_bonus = min(len(conc_hits) * 0.07, 0.21)
+            score = min(1.0, score + narration_bonus)
+        elif gen_hits:
+            narration_bonus = min(len(gen_hits) * 0.02, 0.04)
+            score = min(1.0, score + narration_bonus)
+
+    # A1.1a: Title/description sources must NOT score high on a single generic/role word
+    concrete_q_matches = {w for w in q_matched_words if w not in _GENERIC_ROLE_OR_SCENE_WORDS}
+    concrete_narr_hits = {n for n in conc_hits if n not in _GENERIC_ROLE_OR_SCENE_WORDS}
+    all_concrete_hits = concrete_q_matches | concrete_narr_hits
+    title_cap_applied: Optional[str] = None
+    if title_based:
+        has_two_concrete = len(all_concrete_hits) >= 2
+        has_narr_plus_anchor = (len(concrete_narr_hits) >= 1 and bool(anchor_list and anchor_matched))
+        if not (has_two_concrete or has_narr_plus_anchor):
+            if len(all_concrete_hits) == 0:
+                score = min(score, 0.30)
+                title_cap_applied = "single_generic_only_cap_0.30"
+            else:
+                score = min(score, 0.44)
+                title_cap_applied = "insufficient_concrete_title_cap_0.44"
+
+    # Non-visual military / satellite archive trap check on title-based providers (applied after cap so penalties are never swallowed)
+    archive_trap_hits: List[str] = []
+    if title_based:
+        archive_trap_hits = [
+            tp for tp in _NON_VISUAL_ARCHIVE_TRAP_TAGS
+            if tp not in asked_tokens and term_matches_tags(tp, cand_tags)
+        ]
+        if archive_trap_hits:
+            arch_pen = 0.25 if any(tp in ("navy", "seaman", "boatswain", "amphibious", "cryptologic", "dvids", "marines", "usmc") for tp in archive_trap_hits) else 0.18
+            score = max(0.0, score - arch_pen)
+            penalties -= arch_pen
+
+    # A1.1c: Preset recommended_visual_sources prior calibration (never zeroes or disables)
+    source_prior = resolve_source_prior_weight(src_norm, recommended_visual_sources)
+    if source_prior != 0.0:
+        score = max(0.0, min(1.0, score + source_prior))
 
     score = round(score, 3)
+
+    components = {
+        "source_name": src_norm or "default",
+        "title_based": title_based,
+        "subject": round(subj_comp, 3),
+        "anchor": round(subj_comp if (not req_terms and anchor_list and anchor_matched) else 0.0, 3),
+        "matched_anchors": matched_anchors,
+        "query_overlap": round(q_comp, 3),
+        "query_matches": q_matched_words,
+        "concrete_matches": sorted(all_concrete_hits),
+        "visual_keyword": round(vk_comp, 3),
+        "narration_bonus": round(narration_bonus, 3),
+        "penalties": round(penalties, 3),
+        "source_prior": source_prior,
+        "proper_nouns_ignored": sorted(detected_proper),
+        "archive_trap_hits": archive_trap_hits,
+        "title_cap_applied": title_cap_applied,
+    }
 
     # F12: Anchor penalty & rejection when zero anchor terms match candidate tags
     if anchor_list and not anchor_matched:
         score = round(min(score * 0.35, max(0.0, min_thresh - 0.10)), 3)
-        return False, score, "No anchor_terms matched candidate tags"
+        return _reject(score, "No anchor_terms matched candidate tags", components)
 
-    # T3 + D9.7: Minimum threshold enforcement (stricter pre-filter when ai_relevance is enabled)
+    # T3 + D9.7: Minimum threshold enforcement
     effective_min = max(float(min_thresh), 0.42) if strict_ai_relevance else float(min_thresh)
     if score < effective_min:
-        return False, score, f"Score {score:.3f} below minimum threshold {effective_min:.2f}"
+        return _reject(score, f"Score {score:.3f} below minimum threshold {effective_min:.2f}", components)
 
-    return True, score, "Accepted"
+    return {
+        "is_valid": True,
+        "score": score,
+        "reason": "Accepted",
+        "components": components,
+    }
+
+
+def score_candidate_relevance(
+    candidate_tags: List[str],
+    search_query: str,
+    visual_keywords: Optional[List[str]] = None,
+    required_subject_terms: Optional[List[str]] = None,
+    blocked_terms: Optional[List[str]] = None,
+    negative_terms: Optional[List[str]] = None,
+    anchor_terms: Optional[List[str]] = None,
+    avoid_terms: Optional[List[str]] = None,
+    min_relevance_score: Optional[float] = None,
+    is_low_res: bool = False,
+    narration_text: Optional[str] = None,
+    strict_ai_relevance: bool = False,
+    source_name: Optional[str] = None,
+    is_title_based: Optional[bool] = None,
+    proper_nouns: Optional[Set[str]] = None,
+    recommended_visual_sources: Optional[Dict[str, Any]] = None,
+) -> Tuple[bool, float, str]:
+    """Score candidate relevance against search query, preset rules, and project anchor/avoid terms (S1, S5, T3, F12, A1.1)."""
+    res = score_candidate_relevance_detailed(
+        candidate_tags=candidate_tags,
+        search_query=search_query,
+        visual_keywords=visual_keywords,
+        required_subject_terms=required_subject_terms,
+        blocked_terms=blocked_terms,
+        negative_terms=negative_terms,
+        anchor_terms=anchor_terms,
+        avoid_terms=avoid_terms,
+        min_relevance_score=min_relevance_score,
+        is_low_res=is_low_res,
+        narration_text=narration_text,
+        strict_ai_relevance=strict_ai_relevance,
+        source_name=source_name,
+        is_title_based=is_title_based,
+        proper_nouns=proper_nouns,
+        recommended_visual_sources=recommended_visual_sources,
+    )
+    return bool(res["is_valid"]), float(res["score"]), str(res["reason"])
 
 
 def extract_narrower_query(
@@ -792,6 +1153,7 @@ class StockVisualProvider(BaseVisualProvider):
         min_sec = max(int(target_duration), 2)
         narration_txt = kwargs.get("narration_text")
         strict_ai = bool(kwargs.get("strict_ai_relevance", False))
+        rec_sources = kwargs.get("recommended_visual_sources")
 
         has_pixabay = _has_non_empty_key("pixabay_api_keys")
         has_pexels = _has_non_empty_key("pexels_api_keys")
@@ -829,6 +1191,8 @@ class StockVisualProvider(BaseVisualProvider):
                             is_low_res=raw.get("is_low_res", False),
                             narration_text=narration_txt,
                             strict_ai_relevance=strict_ai,
+                            source_name="pixabay",
+                            recommended_visual_sources=rec_sources,
                         )
                         if not is_valid:
                             rejected_reasons_log.append(reason)
@@ -891,6 +1255,8 @@ class StockVisualProvider(BaseVisualProvider):
                             min_relevance_score=min_relevance_score,
                             narration_text=narration_txt,
                             strict_ai_relevance=strict_ai,
+                            source_name="pixabay",
+                            recommended_visual_sources=rec_sources,
                         )
                         if not is_valid:
                             rejected_reasons_log.append(reason)
@@ -954,6 +1320,8 @@ class StockVisualProvider(BaseVisualProvider):
                         min_relevance_score=min_relevance_score,
                         narration_text=narration_txt,
                         strict_ai_relevance=strict_ai,
+                        source_name="pexels",
+                        recommended_visual_sources=rec_sources,
                     )
                     if not is_valid:
                         continue
@@ -1016,6 +1384,8 @@ class StockVisualProvider(BaseVisualProvider):
                         min_relevance_score=min_relevance_score,
                         narration_text=narration_txt,
                         strict_ai_relevance=strict_ai,
+                        source_name="coverr",
+                        recommended_visual_sources=rec_sources,
                     )
                     if not is_valid:
                         continue

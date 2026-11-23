@@ -479,6 +479,7 @@ class VisualService:
         stock_cat = preset_snap.get("stock_category")
         topic_kws = preset_snap.get("topic_keywords") or []
         visual_kws = preset_snap.get("visual_keywords") or []
+        rec_sources = preset_snap.get("recommended_visual_sources") if isinstance(preset_snap.get("recommended_visual_sources"), dict) else None
         proj_anchors = list(getattr(manifest, "visual_anchor_terms", []) or [])
 
         raw_query = (
@@ -555,6 +556,7 @@ class VisualService:
         category: Optional[str],
         narration_text: str,
         strict_ai_relevance: bool,
+        recommended_visual_sources: Optional[Dict[str, Any]] = None,
     ) -> Tuple[List[VisualCandidate], int, List[str]]:
         """Invoke provider search_with_diagnostics or search_candidates with graceful stub compatibility."""
         search_kwargs: Dict[str, Any] = {
@@ -563,6 +565,8 @@ class VisualService:
             "limit": limit,
             "excluded_ids": excluded_ids,
         }
+        if recommended_visual_sources:
+            search_kwargs["recommended_visual_sources"] = recommended_visual_sources
         if hasattr(provider, "search_with_diagnostics"):
             try:
                 return provider.search_with_diagnostics(
@@ -668,6 +672,7 @@ class VisualService:
         strict_ai_relevance: bool,
         stop_on_first_hit: bool = False,
         existing_ids: Optional[Set[str]] = None,
+        recommended_visual_sources: Optional[Dict[str, Any]] = None,
     ) -> Tuple[List[VisualCandidate], Dict[Tuple[str, str], str], List[Dict[str, Any]]]:
         """Run sequential query tiers against one provider (used by both Priority and Mix Best)."""
         best_candidates: List[VisualCandidate] = []
@@ -700,6 +705,7 @@ class VisualService:
                     category=q_cat,
                     narration_text=narration_txt,
                     strict_ai_relevance=strict_ai_relevance,
+                    recommended_visual_sources=recommended_visual_sources,
                 )
             except Exception as search_exc:
                 err_txt = str(search_exc)[:120]
@@ -823,6 +829,7 @@ class VisualService:
         neg_terms = preset_snap.get("negative_terms") or []
         min_rel_score = preset_snap.get("min_relevance_score", 0.35)
         visual_kws = preset_snap.get("visual_keywords") or []
+        rec_sources = preset_snap.get("recommended_visual_sources") if isinstance(preset_snap.get("recommended_visual_sources"), dict) else None
         proj_anchors = list(getattr(manifest, "visual_anchor_terms", []) or [])
         proj_avoids = list(getattr(manifest, "visual_avoid_terms", []) or [])
 
@@ -919,6 +926,7 @@ class VisualService:
                     visual_kws=visual_kws,
                     narration_txt=narration_txt,
                     strict_ai_relevance=strict_ai_relevance,
+                    recommended_visual_sources=rec_sources,
                 )
                 attempts_log.extend(p_attempts)
                 origin_map.update(p_origin)
@@ -963,6 +971,7 @@ class VisualService:
                             narration_txt=narration_txt,
                             strict_ai_relevance=strict_ai_relevance,
                             existing_ids=seen_per_prov_ids.get(p_name),
+                            recommended_visual_sources=rec_sources,
                         ): p_name
                         for p_name, p_obj, p_tiers in phase_slices
                     }
@@ -1052,6 +1061,7 @@ class VisualService:
                     narration_txt=narration_txt,
                     strict_ai_relevance=strict_ai_relevance,
                     stop_on_first_hit=True,
+                    recommended_visual_sources=rec_sources,
                 )
                 attempts_log.extend(rel_att)
                 origin_map.update(rel_origin)

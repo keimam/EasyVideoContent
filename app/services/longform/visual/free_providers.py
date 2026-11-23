@@ -242,6 +242,7 @@ class _FreeApiProviderBase(BaseVisualProvider):
         min_relevance_score: Optional[float],
         narration_text: Optional[str] = None,
         strict_ai_relevance: bool = False,
+        recommended_visual_sources: Optional[Dict[str, Any]] = None,
     ) -> Tuple[List[VisualCandidate], int, List[str]]:
         """Apply resolution preference (>=720p unless no alt), license check, and relevance scoring."""
         excluded = excluded_ids or set()
@@ -278,6 +279,8 @@ class _FreeApiProviderBase(BaseVisualProvider):
                 is_low_res=is_low_res,
                 narration_text=narration_text,
                 strict_ai_relevance=strict_ai_relevance,
+                source_name=self.name,
+                recommended_visual_sources=recommended_visual_sources,
             )
             if not is_valid:
                 rejected_reasons.append(reason)
@@ -506,6 +509,7 @@ class WikimediaVisualProvider(_FreeApiProviderBase):
             min_relevance_score=min_relevance_score,
             narration_text=kwargs.get("narration_text"),
             strict_ai_relevance=bool(kwargs.get("strict_ai_relevance", False)),
+            recommended_visual_sources=kwargs.get("recommended_visual_sources"),
         )
         return accepted, len(page_iter), (rejected_early + rej_score)
 
@@ -638,6 +642,7 @@ class NasaVisualProvider(_FreeApiProviderBase):
             min_relevance_score=min_relevance_score,
             narration_text=kwargs.get("narration_text"),
             strict_ai_relevance=bool(kwargs.get("strict_ai_relevance", False)),
+            recommended_visual_sources=kwargs.get("recommended_visual_sources"),
         )
         resolved_accepted: List[VisualCandidate] = []
         for cand in accepted:
@@ -746,6 +751,7 @@ class OpenverseVisualProvider(_FreeApiProviderBase):
             min_relevance_score=min_relevance_score,
             narration_text=kwargs.get("narration_text"),
             strict_ai_relevance=bool(kwargs.get("strict_ai_relevance", False)),
+            recommended_visual_sources=kwargs.get("recommended_visual_sources"),
         )
         return accepted, len(results), (rejected_early + rej_score)
 
