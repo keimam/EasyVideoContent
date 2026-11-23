@@ -14,6 +14,7 @@ import json
 import os
 import re
 import subprocess
+import threading
 import time
 import urllib.parse
 import uuid
@@ -24,6 +25,7 @@ import requests
 from loguru import logger
 
 from app.config import config
+from app.services.branding.constants import APP_VERSION
 from app.services.longform.visual.base import (
     BaseVisualProvider,
     VisualAsset,
@@ -37,27 +39,42 @@ from app.services.longform.visual.credits import CreditsManager
 from app.services.longform.visual.stock import score_candidate_relevance
 
 EASYFACELESS_USER_AGENT = (
-    "EasyFacelessStudio/1.0.0 "
+    f"EasyFacelessStudio/{APP_VERSION} "
     "(https://github.com/naseh-ngulik/EasyFacelessStudio; "
     "opensource@easyfaceless.studio)"
 )
 
+_STATE_LOCK = threading.Lock()
+_PROVIDER_LOCKS: Dict[str, threading.Lock] = {}
 _LAST_REQUEST_TS: Dict[str, float] = {}
 _PROVIDER_COOLDOWN_UNTIL: Dict[str, float] = {}
 _SEARCH_CACHE_TTL_SECONDS = 86400.0  # 24h polite search cache
 
 
+def _get_provider_lock(provider_key: str) -> threading.Lock:
+    with _STATE_LOCK:
+        lk = _PROVIDER_LOCKS.get(provider_key)
+        if lk is None:
+            lk = threading.Lock()
+            _PROVIDER_LOCKS[provider_key] = lk
+        return lk
+
+
 def _respect_rate_limit(provider_key: str, min_interval_sec: float = 0.35) -> None:
-    """Enforce a polite per-provider minimum interval between live network calls (D9.4)."""
+    """Enforce a thread-safe polite per-provider minimum interval between live network calls (D9.4, V1)."""
     if min_interval_sec <= 0:
         return
-    now = time.monotonic()
-    last = _LAST_REQUEST_TS.get(provider_key)
-    if last is not None:
-        elapsed = now - last
-        if elapsed < min_interval_sec:
-            time.sleep(min_interval_sec - elapsed)
-    _LAST_REQUEST_TS[provider_key] = time.monotonic()
+    p_lock = _get_provider_lock(provider_key)
+    with p_lock:
+        now = time.monotonic()
+        with _STATE_LOCK:
+            last = _LAST_REQUEST_TS.get(provider_key)
+        if last is not None:
+            elapsed = now - last
+            if elapsed < min_interval_sec:
+                time.sleep(min_interval_sec - elapsed)
+        with _STATE_LOCK:
+            _LAST_REQUEST_TS[provider_key] = time.monotonic()
 
 
 def _strip_html(text: Optional[str]) -> str:
@@ -118,7 +135,8 @@ def cached_json_get(
         req_headers.update(headers)
 
     last_err = ""
-    cooldown_until = _PROVIDER_COOLDOWN_UNTIL.get(provider_key, 0.0)
+    with _STATE_LOCK:
+        cooldown_until = _PROVIDER_COOLDOWN_UNTIL.get(provider_key, 0.0)
     if cooldown_until > time.time():
         raise VisualError(f"{provider_key} rate-limited cooldown active ({int(cooldown_until - time.time())}s remaining)")
 
@@ -136,7 +154,8 @@ def cached_json_get(
                 body_low = (resp.text or "")[:300].lower()
                 last_err = f"HTTP {resp.status_code} rate limit/challenge"
                 if "just a moment" in body_low or resp.status_code == 403 or attempt >= 2:
-                    _PROVIDER_COOLDOWN_UNTIL[provider_key] = time.time() + 60.0
+                    with _STATE_LOCK:
+                        _PROVIDER_COOLDOWN_UNTIL[provider_key] = time.time() + 60.0
                     break
                 wait_s = float(resp.headers.get("Retry-After") or 2.0)
                 time.sleep(min(wait_s, 5.0))

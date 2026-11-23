@@ -11,10 +11,36 @@ from __future__ import annotations
 
 import hashlib
 import os
+import threading
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+
+_BASE_RATE_GUARD = threading.Lock()
+_BASE_PROVIDER_LOCKS: Dict[str, threading.Lock] = {}
+_BASE_LAST_REQUEST_TS: Dict[str, float] = {}
+
+
+def respect_provider_rate_limit(provider_key: str, min_interval_sec: float = 0.35) -> None:
+    """Thread-safe per-provider minimum interval between live API requests (V1)."""
+    if min_interval_sec <= 0:
+        return
+    with _BASE_RATE_GUARD:
+        p_lock = _BASE_PROVIDER_LOCKS.get(provider_key)
+        if p_lock is None:
+            p_lock = threading.Lock()
+            _BASE_PROVIDER_LOCKS[provider_key] = p_lock
+    with p_lock:
+        now = time.monotonic()
+        last = _BASE_LAST_REQUEST_TS.get(provider_key)
+        if last is not None:
+            elapsed = now - last
+            if elapsed < min_interval_sec:
+                time.sleep(min_interval_sec - elapsed)
+        _BASE_LAST_REQUEST_TS[provider_key] = time.monotonic()
 
 
 class VisualError(Exception):

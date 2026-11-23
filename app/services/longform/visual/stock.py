@@ -16,6 +16,7 @@ Features:
 from __future__ import annotations
 
 import re
+import threading
 import urllib.parse
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -32,6 +33,7 @@ from app.services.longform.visual.base import (
     VisualConfigurationError,
     VisualError,
     compute_file_content_hash,
+    respect_provider_rate_limit,
 )
 from app.services.longform.visual.cache import GlobalMediaCache
 from app.services.longform.visual.credits import CreditsManager
@@ -602,6 +604,7 @@ class StockVisualProvider(BaseVisualProvider):
             raise ValueError(f"Unsupported stock provider: {provider_name}")
         self.cache = cache or GlobalMediaCache()
         self.credits_manager = credits_manager
+        self._diag_local = threading.local()
         self._last_raw_count: int = 0
         self._last_rejected_reasons: List[str] = []
 
@@ -613,10 +616,14 @@ class StockVisualProvider(BaseVisualProvider):
         **kwargs: Any,
     ) -> Tuple[List[VisualCandidate], int, List[str]]:
         """Run search_candidates and return (accepted_candidates, raw_hit_count, rejected_reasons) (D9.1)."""
+        self._diag_local.raw_count = 0
+        self._diag_local.rejected_reasons = []
         self._last_raw_count = 0
         self._last_rejected_reasons = []
         cands = self.search_candidates(query=query, target_duration=target_duration, limit=limit, **kwargs)
-        return cands, int(self._last_raw_count), list(self._last_rejected_reasons)
+        raw_cnt = int(getattr(self._diag_local, "raw_count", self._last_raw_count))
+        rej_list = list(getattr(self._diag_local, "rejected_reasons", self._last_rejected_reasons))
+        return cands, raw_cnt, rej_list
 
     @property
     def name(self) -> str:
@@ -681,6 +688,7 @@ class StockVisualProvider(BaseVisualProvider):
 
         query_url = f"https://pixabay.com/api/videos/?{urllib.parse.urlencode(params)}"
         try:
+            respect_provider_rate_limit("pixabay", 0.25)
             r = requests.get(query_url, proxies=config.proxy, timeout=30)
             if r.status_code != 200:
                 logger.warning(f"Pixabay direct query returned status {r.status_code}")
@@ -1039,6 +1047,8 @@ class StockVisualProvider(BaseVisualProvider):
 
         # S1: Sort candidates by relevance score descending so highest match is chosen first
         candidates.sort(key=lambda c: c.relevance_score, reverse=True)
+        self._diag_local.raw_count = raw_total_count
+        self._diag_local.rejected_reasons = rejected_reasons_log
         self._last_raw_count = raw_total_count
         self._last_rejected_reasons = rejected_reasons_log
         return candidates[:limit]

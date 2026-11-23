@@ -1057,6 +1057,30 @@ ID_TRANSLATIONS: Dict[str, str] = {
     # --- E9: Language Selector in Settings ---
     "settings_ui_language_label": "Bahasa antarmuka aplikasi",
     "settings_ui_language_help": "Mengubah bahasa seluruh antarmuka EasyFaceless Studio (Video Panjang, Video Pendek, Pengaturan, dan Wizard).",
+    # --- V101 V0/V1: Search Mode, Reorderable Priority, Diversity & Distribution ---
+    "visual_search_mode_label": "Mode pencarian sumber footage (khusus proyek ini)",
+    "visual_search_mode_mix_best": "Campur terbaik (skor relevansi tertinggi lintas sumber)",
+    "visual_search_mode_priority": "Prioritas (habiskan sumber berurutan sesuai daftar)",
+    "visual_search_mode_help": (
+        "**Campur terbaik** mencari semua sumber aktif secara paralel dan memilih kandidat paling relevan serta menjaga variasi sumber. "
+        "**Prioritas** mencoba sumber satu per satu dari atas ke bawah. Local files selalu didahulukan bila lolos relevansi."
+    ),
+    "visual_source_order_title": "Urutan sumber aktif (Prioritas & fallback):",
+    "visual_source_move_up": "↑",
+    "visual_source_move_down": "↓",
+    "chk_fill_local_random": "Isi shot kosong dengan file lokal acak",
+    "chk_fill_local_random_help": (
+        "Nonaktif secara bawaan agar file lokal yang tidak cocok tidak mengisi semua shot. "
+        "Aktifkan hanya jika ingin file di folder Local files dipakai berulang saat hasil cocok tidak ditemukan."
+    ),
+    "visual_diversity_heading": "Pembatasan variasi sumber (mode Campur terbaik)",
+    "chk_limit_source_share": "Batasi satu sumber maks. {pct}% shot",
+    "slider_max_source_share": "Batas maks. persentase satu sumber (%)",
+    "chk_avoid_consec_same_source": "Hindari sumber yang sama >3 shot berturut-turut",
+    "source_distribution_summary": "Distribusi: {items}",
+    "prov_search_all_active": "Semua sumber aktif (mode proyek)",
+    "prov_local_opt": "Local files (pustaka proyek)",
+    "source_external_image": "Gambar eksternal",
 }
 
 
@@ -2106,6 +2130,30 @@ EN_TRANSLATIONS: Dict[str, str] = {
     # --- E9: Language Selector in Settings ---
     "settings_ui_language_label": "Application display language",
     "settings_ui_language_help": "Changes the display language across EasyFaceless Studio (Long Video, Short Video, Settings, and Wizard).",
+    # --- V101 V0/V1: Search Mode, Reorderable Priority, Diversity & Distribution ---
+    "visual_search_mode_label": "Footage search mode (this project)",
+    "visual_search_mode_mix_best": "Mix best (highest relevance score across active sources)",
+    "visual_search_mode_priority": "Priority (exhaust sources sequentially in list order)",
+    "visual_search_mode_help": (
+        "**Mix best** queries all active sources in parallel and picks the highest-scoring candidate with source diversity. "
+        "**Priority** checks sources strictly top-to-bottom. Local files always stay prioritized when matching."
+    ),
+    "visual_source_order_title": "Active source order (Priority & fallback):",
+    "visual_source_move_up": "↑",
+    "visual_source_move_down": "↓",
+    "chk_fill_local_random": "Fill empty shots with random local files",
+    "chk_fill_local_random_help": (
+        "Disabled by default so unrelated local files are not used automatically. "
+        "Enable only if you want remaining empty shots filled or recycled from your Local files folder."
+    ),
+    "visual_diversity_heading": "Source diversity rules (Mix best mode)",
+    "chk_limit_source_share": "Cap any single source at {pct}% of shots",
+    "slider_max_source_share": "Max share per source (%)",
+    "chk_avoid_consec_same_source": "Avoid same source for >3 consecutive shots",
+    "source_distribution_summary": "Distribution: {items}",
+    "prov_search_all_active": "All active sources (project mode)",
+    "prov_local_opt": "Local files (project library)",
+    "source_external_image": "External image",
 }
 
 

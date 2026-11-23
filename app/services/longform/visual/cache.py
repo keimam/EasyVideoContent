@@ -28,6 +28,8 @@ from typing import Any, Dict, List, Optional, Set
 import requests
 from loguru import logger
 
+from app.services.branding.constants import APP_VERSION
+
 if sys.version_info >= (3, 11):
     import tomllib
 else:
@@ -347,7 +349,7 @@ class GlobalMediaCache:
         last_error = ""
 
         req_headers = {
-            "User-Agent": "EasyFacelessStudio/1.0.0 (Open-Source Longform Video Studio)"
+            "User-Agent": f"EasyFacelessStudio/{APP_VERSION} (Open-Source Longform Video Studio)"
         }
         if headers:
             req_headers.update(headers)

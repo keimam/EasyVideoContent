@@ -1354,20 +1354,20 @@ def render_project_page(project_id: str):
 
                 from app.services.longform.visual.base import has_real_visual_source
                 visual_done_auto = (st_info["steps"]["visual"]["status"] == "selesai")
-                auto_enabled_sources = [
-                    p_k
+                auto_enabled_map = {
+                    p_k: bool(st.session_state.get(f"cb_prov_{'ai' if p_k == 'ai_image' else p_k}_{project_id}", dflt))
                     for p_k, dflt in (
+                        ("local", True),
                         ("pixabay", True),
                         ("coverr", True),
                         ("pexels", True),
                         ("wikimedia", True),
                         ("nasa", True),
                         ("openverse", True),
-                        ("local", True),
                         ("ai_image", False),
                     )
-                    if st.session_state.get(f"cb_prov_{'ai' if p_k == 'ai_image' else p_k}_{project_id}", dflt)
-                ]
+                }
+                auto_enabled_sources = _resolve_ordered_selected_sources(auto_enabled_map, manifest)
                 has_vis_src_auto = has_real_visual_source(p_dir, enabled_sources=auto_enabled_sources)
                 auto_missing_vis_src = (not visual_done_auto) and (not has_vis_src_auto)
                 if auto_missing_vis_src:
@@ -1379,10 +1379,7 @@ def render_project_page(project_id: str):
                     ):
                         _open_mpt_settings_dialog("stock")
 
-                auto_providers_order = [
-                    p for p in auto_enabled_sources
-                    if p in ("pixabay", "coverr", "pexels", "wikimedia", "nasa", "openverse")
-                ]
+                auto_providers_order = list(auto_enabled_sources)
                 auto_providers_csv = ",".join(auto_providers_order)
                 auto_check_ai_rel = bool(st.session_state.get(f"cb_ai_rel_{project_id}", False))
 
@@ -2375,6 +2372,60 @@ def get_candidate_thumbnail_path(project_dir: Path, candidate: Dict[str, Any]) -
     return None
 
 
+_DEFAULT_VISUAL_ORDER: tuple[str, ...] = (
+    "local",
+    "pixabay",
+    "coverr",
+    "pexels",
+    "wikimedia",
+    "nasa",
+    "openverse",
+    "ai_image",
+)
+
+_VISUAL_SOURCE_LABELS: Dict[str, str] = {
+    "local": "Local files",
+    "pixabay": "Pixabay",
+    "coverr": "Coverr",
+    "pexels": "Pexels",
+    "wikimedia": "Wikimedia",
+    "nasa": "NASA",
+    "openverse": "Openverse",
+    "ai_image": "AI Image",
+}
+
+
+def _format_visual_source_label(src: Optional[str]) -> str:
+    """Format an asset's actual_source identifier for user-facing display."""
+    low = str(src or "").strip().lower()
+    if low == "fake":
+        return t("source_placeholder")
+    if low == "neutral_backdrop":
+        return t("source_neutral_backdrop")
+    if low == "external_image":
+        return t("source_external_image")
+    if low in _VISUAL_SOURCE_LABELS:
+        return "Local" if low == "local" else _VISUAL_SOURCE_LABELS[low]
+    if str(src or "").startswith("AI Video"):
+        return str(src)
+    return str(src or "stock").capitalize()
+
+
+def _get_project_source_order(manifest: ProjectManifest) -> List[str]:
+    """Return complete deduplicated source order persisted on manifest."""
+    raw = [str(p or "").lower().strip() for p in (getattr(manifest, "visual_source_order", []) or []) if str(p or "").strip()]
+    order: List[str] = []
+    for p in raw + list(_DEFAULT_VISUAL_ORDER):
+        if p in _DEFAULT_VISUAL_ORDER and p not in order:
+            order.append(p)
+    return order
+
+
+def _resolve_ordered_selected_sources(enabled_map: Dict[str, bool], manifest: ProjectManifest) -> List[str]:
+    """Return checked visual sources ordered by manifest.visual_source_order."""
+    return [p for p in _get_project_source_order(manifest) if enabled_map.get(p, False)]
+
+
 def render_visual_step_flow(
     project_id: str,
     p_dir: Path,
@@ -2456,23 +2507,19 @@ def render_visual_step_flow(
     _cb_loc = bool(st.session_state.get(f"cb_prov_local_{project_id}", True))
     _cb_ai_rel = bool(st.session_state.get(f"cb_ai_rel_{project_id}", False)) if vision_info.get("vision_supported") else False
 
-    selected_sources: List[str] = []
-    if _cb_pix:
-        selected_sources.append("pixabay")
-    if _cb_cov:
-        selected_sources.append("coverr")
-    if _cb_pxl:
-        selected_sources.append("pexels")
-    if _cb_wiki:
-        selected_sources.append("wikimedia")
-    if _cb_nasa:
-        selected_sources.append("nasa")
-    if _cb_ov:
-        selected_sources.append("openverse")
-    if _cb_loc:
-        selected_sources.append("local")
-    if _cb_ai:
-        selected_sources.append("ai_image")
+    selected_sources = _resolve_ordered_selected_sources(
+        {
+            "pixabay": bool(_cb_pix),
+            "coverr": bool(_cb_cov),
+            "pexels": bool(_cb_pxl),
+            "wikimedia": bool(_cb_wiki),
+            "nasa": bool(_cb_nasa),
+            "openverse": bool(_cb_ov),
+            "local": bool(_cb_loc),
+            "ai_image": bool(_cb_ai),
+        },
+        manifest,
+    )
 
     has_vis_source = has_real_visual_source(p_dir, enabled_sources=selected_sources)
     start_vis_blocked = (not has_vis_source) and (not is_dev_or_test_mode())
@@ -2575,20 +2622,21 @@ def render_visual_step_flow(
         if getattr(s, "is_fake", False) or getattr(s, "actual_source", "") == "fake"
     )
 
-    used_sources_set = set()
+    used_sources_counts: Dict[str, int] = {}
     for ch in manifest.chapters:
         for s in ch.shots:
             has_asset = bool(s.asset_path and (p_dir / s.asset_path).is_file())
             has_clip = bool(s.rendered_clip and (p_dir / s.rendered_clip).is_file())
             if has_asset or has_clip:
-                if getattr(s, "is_fake", False) or s.actual_source == "fake":
-                    used_sources_set.add(t("source_placeholder"))
-                elif s.actual_source == "neutral_backdrop":
-                    used_sources_set.add(t("source_neutral_backdrop"))
-                else:
-                    src = s.actual_source or s.requested_source or "stock"
-                    used_sources_set.add(src if str(src).startswith("AI Video") else str(src).capitalize())
-    sources_str = ", ".join(sorted(used_sources_set)) if used_sources_set else t("source_none_yet")
+                src_lbl = _format_visual_source_label(
+                    "fake" if getattr(s, "is_fake", False) else (s.actual_source or s.requested_source or "stock")
+                )
+                used_sources_counts[src_lbl] = used_sources_counts.get(src_lbl, 0) + 1
+    sources_str = ", ".join(sorted(used_sources_counts.keys())) if used_sources_counts else t("source_none_yet")
+    source_dist_items = [
+        f"{k} {v}"
+        for k, v in sorted(used_sources_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    ]
 
     unready_vis_info = inspect_project_missing_visuals(p_dir, manifest) if total_shots > 0 else {
         "missing_count": 0,
@@ -2605,6 +2653,8 @@ def render_visual_step_flow(
         render_metric_tile(t("metric_locked"), str(locked_count), status="accent" if locked_count > 0 else "")
     with col_m4:
         render_metric_tile(t("metric_sources_used"), sources_str)
+    if source_dist_items:
+        st.caption(t("source_distribution_summary", items=" • ".join(source_dist_items)))
 
     if unready_vis_info["missing_count"] > 0:
         st.warning(t("vis_missing_summary_warn", missing=unready_vis_info["missing_count"]))
@@ -2681,6 +2731,110 @@ def render_visual_step_flow(
         )
         st.caption(t("prov_source_order_caption"))
         st.caption(t("prov_pexels_closed_note"))
+
+        # V0: Explicit opt-in random fallback for Local files
+        cur_fill_random = bool(getattr(manifest, "fill_local_random", False))
+        new_fill_random = st.checkbox(
+            t("chk_fill_local_random"),
+            value=cur_fill_random,
+            help=t("chk_fill_local_random_help"),
+            disabled=is_job_running,
+            key=f"chk_fill_local_rnd_{project_id}",
+        )
+        if new_fill_random != cur_fill_random:
+            manifest.fill_local_random = bool(new_fill_random)
+            save_manifest(manifest, p_dir)
+
+        # V1: Per-project Search Mode ('mix_best' vs 'priority'), diversity controls, and reorderable source order
+        st.divider()
+        cur_mode = str(getattr(manifest, "visual_search_mode", "priority") or "priority").lower().strip()
+        if cur_mode not in ("mix_best", "priority"):
+            cur_mode = "priority"
+        new_mode = st.radio(
+            t("visual_search_mode_label"),
+            options=["mix_best", "priority"],
+            index=0 if cur_mode == "mix_best" else 1,
+            format_func=lambda m: t("visual_search_mode_mix_best") if m == "mix_best" else t("visual_search_mode_priority"),
+            horizontal=True,
+            help=t("visual_search_mode_help"),
+            disabled=is_job_running,
+            key=f"rad_vis_mode_{project_id}",
+        )
+        if new_mode != cur_mode:
+            manifest.visual_search_mode = new_mode
+            save_manifest(manifest, p_dir)
+            st.rerun()
+
+        if new_mode == "mix_best":
+            cur_share = float(getattr(manifest, "visual_max_source_share", 0.6) or 0.6)
+            cur_pct = int(round(cur_share * 100))
+            cur_cap_enabled = cur_pct < 100
+            cur_avoid_consec = bool(getattr(manifest, "visual_avoid_consecutive_same_source", True))
+            st.caption(f"**{t('visual_diversity_heading')}**")
+            col_d1, col_d2 = st.columns(2)
+            with col_d1:
+                new_cap_enabled = st.checkbox(
+                    t("chk_limit_source_share", pct=cur_pct if cur_cap_enabled else 60),
+                    value=cur_cap_enabled,
+                    disabled=is_job_running,
+                    key=f"chk_div_cap_{project_id}",
+                )
+                if new_cap_enabled:
+                    new_pct = st.slider(
+                        t("slider_max_source_share"),
+                        min_value=25,
+                        max_value=95,
+                        value=min(95, max(25, cur_pct if cur_pct < 100 else 60)),
+                        step=5,
+                        disabled=is_job_running,
+                        key=f"sld_div_pct_{project_id}",
+                    )
+                    new_share = round(new_pct / 100.0, 2)
+                else:
+                    new_share = 1.0
+                if abs(new_share - cur_share) > 1e-4:
+                    manifest.visual_max_source_share = new_share
+                    save_manifest(manifest, p_dir)
+            with col_d2:
+                new_avoid_consec = st.checkbox(
+                    t("chk_avoid_consec_same_source"),
+                    value=cur_avoid_consec,
+                    disabled=is_job_running,
+                    key=f"chk_div_consec_{project_id}",
+                )
+                if new_avoid_consec != cur_avoid_consec:
+                    manifest.visual_avoid_consecutive_same_source = bool(new_avoid_consec)
+                    save_manifest(manifest, p_dir)
+        else:
+            st.caption(f"**{t('visual_source_order_title')}**")
+            proj_order = _get_project_source_order(manifest)
+            # Reorderable active non-local sources (Local is always checked first when passing)
+            reorderable = [p for p in proj_order if p in selected_sources and p != "local"]
+            for idx_r, src_k in enumerate(reorderable):
+                rc1, rc2, rc3 = st.columns([4, 0.7, 0.7])
+                rc1.markdown(f"`{idx_r + 1}.` **{_VISUAL_SOURCE_LABELS.get(src_k, src_k)}**")
+                if rc2.button(
+                    t("visual_source_move_up"),
+                    key=f"btn_src_up_{project_id}_{src_k}",
+                    disabled=is_job_running or idx_r == 0,
+                ):
+                    new_re = list(reorderable)
+                    new_re[idx_r - 1], new_re[idx_r] = new_re[idx_r], new_re[idx_r - 1]
+                    rest = [p for p in proj_order if p not in new_re]
+                    manifest.visual_source_order = (["local"] if "local" in rest else []) + new_re + [p for p in rest if p != "local"]
+                    save_manifest(manifest, p_dir)
+                    st.rerun()
+                if rc3.button(
+                    t("visual_source_move_down"),
+                    key=f"btn_src_dn_{project_id}_{src_k}",
+                    disabled=is_job_running or idx_r == len(reorderable) - 1,
+                ):
+                    new_re = list(reorderable)
+                    new_re[idx_r], new_re[idx_r + 1] = new_re[idx_r + 1], new_re[idx_r]
+                    rest = [p for p in proj_order if p not in new_re]
+                    manifest.visual_source_order = (["local"] if "local" in rest else []) + new_re + [p for p in rest if p != "local"]
+                    save_manifest(manifest, p_dir)
+                    st.rerun()
         if has_ai_image and cb_ai:
             ai_est = estimate_ai_image_usage(manifest, p_dir)
             st.info(
@@ -3234,7 +3388,7 @@ def render_visual_step_flow(
 
                                             score_txt = f"{cand.get('relevance_score', 0):.2f}"
                                             dur_txt = f"{cand.get('duration_seconds', 0):.1f}s"
-                                            prov_txt = cand.get('provider', 'stock').capitalize()
+                                            prov_txt = _format_visual_source_label(cand.get("provider") or "stock")
                                             st.caption(f"**{prov_txt}** • `{score_txt}` • {dur_txt}")
 
                                             c_url = cand.get("url") or cand.get("source_url")
@@ -3267,10 +3421,23 @@ def render_visual_step_flow(
                             value=search_prefill,
                             key=f"txt_srch_{project_id}_{target_shot.shot_id}",
                         )
-                        p_opts = [p for p in ("pixabay", "coverr", "pexels", "wikimedia", "nasa", "openverse") if (p == "pixabay" and has_pixabay) or (p == "coverr" and has_coverr) or (p == "pexels" and has_pexels) or p in ("wikimedia", "nasa", "openverse")]
-                        if not p_opts:
-                            p_opts = ["wikimedia", "nasa", "openverse"]
-                        sel_p = st.selectbox(t("field_provider"), p_opts, key=f"sel_p_{project_id}_{target_shot.shot_id}")
+                        p_opts = ["auto", "local"] + [
+                            p for p in ("pixabay", "coverr", "pexels", "wikimedia", "nasa", "openverse")
+                            if (p == "pixabay" and has_pixabay)
+                            or (p == "coverr" and has_coverr)
+                            or (p == "pexels" and has_pexels)
+                            or p in ("wikimedia", "nasa", "openverse")
+                        ]
+                        sel_p = st.selectbox(
+                            t("field_provider"),
+                            p_opts,
+                            format_func=lambda p: (
+                                t("prov_search_all_active")
+                                if p == "auto"
+                                else (t("prov_local_opt") if p == "local" else _VISUAL_SOURCE_LABELS.get(p, p.capitalize()))
+                            ),
+                            key=f"sel_p_{project_id}_{target_shot.shot_id}",
+                        )
                         if st.button(t("btn_search_apply_footage"), key=f"btn_srch_apply_{project_id}_{target_shot.shot_id}", use_container_width=True):
                             with st.spinner(t("spinner_searching_footage")):
                                 try:

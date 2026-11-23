@@ -414,6 +414,11 @@ def create_project(
         preset_inheritance_chain=preset_chain,
         preset_snapshot=preset_snapshot,
         sub_niche_focus=sub_niche_focus.strip() if sub_niche_focus else None,
+        visual_search_mode="mix_best",
+        visual_source_order=["local", "pixabay", "coverr", "pexels", "wikimedia", "nasa", "openverse"],
+        visual_max_source_share=0.6,
+        visual_avoid_consecutive_same_source=True,
+        fill_local_random=False,
         chapters=chapters,
         status=ItemStatus.pending,
     )
