@@ -96,7 +96,7 @@ class CreditsManager:
                 row_data = {
                     "_key": dedup_k,
                     "source": src or "-",
-                    "title": title or sh.shot_id,
+                    "title": title or "-",
                     "author": author or ("Pengguna" if src.lower() == "external_image" else "Unknown Creator"),
                     "license": lic or "-",
                     "url": url or "-",
@@ -149,8 +149,9 @@ class CreditsManager:
             for r in other_rows:
                 shots_s = ", ".join(r["shots"])
                 url_md = f" ({r['url']})" if r["url"] != "-" else ""
+                title_part = f" {r['title']} —" if r["title"] and r["title"] != "-" else ""
                 lines.append(
-                    f"- **{shots_s}** [{r['source']}]: {r['title']} — {r['author']} — License: {r['license']}{url_md}"
+                    f"- **{shots_s}** [{r['source']}]:{title_part} {r['author']} — License: {r['license']}{url_md}"
                 )
             for bl in extra_lines:
                 lines.append(bl if bl.startswith("- ") else f"- {bl}")

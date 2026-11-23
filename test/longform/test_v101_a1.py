@@ -355,4 +355,79 @@ def test_a1_4_switch_project_a_to_b_via_back_and_sidebar_reset(tmp_path, monkeyp
     assert any("Project Beta Title" in t.value for t in at.title)
 
 
+def test_a1_5_mode_captions_priority_vs_mix_best_and_pixabay_credits(tmp_path, monkeypatch):
+    """A1.5: Source order caption shown only in Priority; Mix Best shows explanation; credits omit shot_id."""
+    from pathlib import Path
+    from streamlit.testing.v1 import AppTest
+    from app.services.longform.schema import Chapter, ItemStatus, Segment, Shot, TtsGroup
+    from app.services.longform.store import create_project, save_manifest
+    from app.services.longform.visual.credits import CreditsManager
+
+    proj_root = tmp_path / "projects_a15"
+    proj_root.mkdir()
+    manifest, p_dir = create_project("proj_a15", "A15 Mode Test", "umum.id", language="id-ID", projects_root=proj_root)
+    manifest.visual_search_mode = "mix_best"
+    manifest.chapters = [
+        Chapter(
+            chapter_index=1,
+            chapter_title="Bab 1",
+            audio_duration_seconds=4.0,
+            tts_groups=[
+                TtsGroup(
+                    group_index=1,
+                    paragraph_text="River boat at dusk.",
+                    segments=[Segment(segment_index=1, narration_text="River boat at dusk.", duration_seconds=4.0)],
+                )
+            ],
+            shots=[
+                Shot(
+                    shot_id="ch01_shot002",
+                    chapter_index=1,
+                    shot_index=2,
+                    segment_indices=[1],
+                    duration_seconds=4.0,
+                    target_frames=100,
+                    actual_source="pixabay",
+                    asset_path="assets/visual/shots/ch01_shot002_asset.mp4",
+                    attribution_author="PixabayUser",
+                    attribution_license="Pixabay Content License",
+                    attribution_title=None,
+                    tags=["river", "boat", "dusk"],
+                    status=ItemStatus.completed,
+                )
+            ],
+        )
+    ]
+    save_manifest(manifest, p_dir)
+
+    # Credits markdown must not print shot_id ('ch01_shot002') as asset title
+    cm = CreditsManager(p_dir)
+    md_path = cm.write_credits_markdown(manifest)
+    md_txt = md_path.read_text(encoding="utf-8")
+    assert "[pixabay]: ch01_shot002" not in md_txt
+
+    monkeypatch.setattr("app.services.longform.store.get_projects_root", lambda: proj_root)
+    monkeypatch.setattr("app.services.longform.ui.components.get_projects_root", lambda: proj_root)
+    app_file = str(Path(__file__).resolve().parents[2] / "webui" / "pages" / "1_🎬_Long_Video.py")
+
+    at = AppTest.from_file(app_file, default_timeout=20)
+    at.query_params["project"] = "proj_a15"
+    at.query_params["step"] = "visual"
+    at.run()
+    assert not at.exception
+    # Mix Best shows concise Mix Best explanation and omits Priority source order caption
+    mix_caps = "\n".join(c.value for c in at.caption)
+    assert "Mix Terbaik" in mix_caps or "Mix Best" in mix_caps
+    assert "Pixabay → Coverr → Wikimedia" not in mix_caps
+
+    # Switching to Priority shows Priority source order caption and hides Mix Best caption
+    at.radio(key="rad_vis_mode_proj_a15").set_value("priority").run()
+    assert not at.exception
+    prio_caps = "\n".join(c.value for c in at.caption)
+    assert "Pixabay → Coverr → Wikimedia" in prio_caps
+    assert "Mix Terbaik" not in prio_caps and "Mix Best" not in prio_caps
+
+
+
+
 

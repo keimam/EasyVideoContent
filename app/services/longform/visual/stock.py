@@ -1128,10 +1128,15 @@ class StockVisualProvider(BaseVisualProvider):
                             chosen_thumb = fb_r["thumbnail"]
                             break
 
+                pix_title = str(v.get("name") or v.get("heading") or "").strip()
+                if not pix_title and tags:
+                    pix_title = ", ".join(str(tg).strip() for tg in tags[:4] if str(tg or "").strip())
+
                 raw_candidates.append({
                     "asset_id": str(v.get("id")),
                     "url": chosen_url,
                     "thumbnail_url": chosen_thumb or None,
+                    "title": pix_title or None,
                     "tags": tags,
                     "author": v.get("user"),
                     "author_url": f"https://pixabay.com/users/{v.get('user')}-{v.get('user_id')}/" if v.get("user") else None,
@@ -1242,6 +1247,7 @@ class StockVisualProvider(BaseVisualProvider):
                                 relevance_score=score,
                                 rendition_name=raw["rendition_name"],
                                 is_low_res=raw.get("is_low_res", False),
+                                title=raw.get("title"),
                                 thumbnail_url=raw.get("thumbnail_url"),
                             )
                         )
@@ -1305,6 +1311,7 @@ class StockVisualProvider(BaseVisualProvider):
                                 tags=tags,
                                 relevance_score=score,
                                 rendition_name=f"{rend_id} ({rend_w}x{rend_h})",
+                                title=str(s_info.get("title") or "").strip() or (", ".join(tags[:4]) if tags else None),
                             )
                         )
             except Exception as exc:

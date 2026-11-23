@@ -2816,7 +2816,6 @@ def render_visual_step_flow(
             disabled=False,
             key=f"cb_prov_openverse_{project_id}",
         )
-        st.caption(t("prov_source_order_caption"))
         st.caption(t("prov_pexels_closed_note"))
 
         # V0: Explicit opt-in random fallback for Local files
@@ -2941,6 +2940,7 @@ def render_visual_step_flow(
             st.rerun()
 
         if new_mode == "mix_best":
+            st.caption(t("prov_mix_best_caption"))
             cur_share = float(getattr(manifest, "visual_max_source_share", 0.6) or 0.6)
             cur_pct = int(round(cur_share * 100))
             cur_cap_enabled = cur_pct < 100
@@ -2981,6 +2981,7 @@ def render_visual_step_flow(
                     manifest.visual_avoid_consecutive_same_source = bool(new_avoid_consec)
                     save_manifest(manifest, p_dir)
         else:
+            st.caption(t("prov_source_order_caption"))
             st.caption(f"**{t('visual_source_order_title')}**")
             proj_order = _get_project_source_order(manifest)
             # Reorderable active non-local sources (Local is always checked first when passing)
@@ -3578,10 +3579,12 @@ def render_visual_step_flow(
                     attr_url = getattr(target_shot, "attribution_url", None)
                     req_attr = bool(getattr(target_shot, "requires_attribution", False))
                     if attr_lic or attr_author or attr_title:
+                        tags_fallback_title = ", ".join(str(x) for x in (getattr(target_shot, "tags", None) or [])[:4] if str(x or "").strip())
+                        display_attr_title = str(attr_title or tags_fallback_title or "-").strip()
                         st.markdown(
                             t(
                                 "shot_attribution_heading",
-                                title=html.escape(str(attr_title or target_shot.shot_id)),
+                                title=html.escape(display_attr_title),
                                 author=html.escape(str(attr_author or "-")),
                                 license=html.escape(str(attr_lic or "-")),
                             )
