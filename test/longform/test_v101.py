@@ -516,3 +516,128 @@ def test_v2_local_multi_upload_conflict_and_invalid_extension_handling(tmp_path:
     assert "old_lighthouse_night_fog.jpg" in t("local_upload_guide_text", lang="id", videos=".mp4", images=".jpg")
     assert "old_lighthouse_night_fog.jpg" in t("local_upload_guide_text", lang="en", videos=".mp4", images=".jpg")
     assert ".mp4" in ALL_SUPPORTED_EXTS and ".png" in ALL_SUPPORTED_EXTS
+
+
+def test_v3_export_prompts_matching_import_and_post_import_survival(tmp_path: Path):
+    """V3: Export prompts (txt/csv), boundary-safe bulk import, Ken Burns build, credits.md, and survival after fetch/AI-kw."""
+    import csv
+    import io
+    from io import BytesIO
+    from app.services.longform.schema import Segment, TtsGroup
+    from app.services.longform.store import load_manifest
+    from app.services.longform.visual.external_bridge import (
+        EXTERNAL_ATTRIBUTION_TEXT,
+        apply_bulk_external_import,
+        export_external_image_prompts,
+        match_external_filename_to_shot,
+        plan_bulk_external_import,
+    )
+
+    proj_dir = tmp_path / "v3_ext"
+    proj_dir.mkdir(parents=True, exist_ok=True)
+    shots = [
+        Shot(
+            shot_id=f"ch01_shot00{i}",
+            chapter_index=1,
+            shot_index=i,
+            segment_indices=[1],
+            duration_seconds=1.5,
+            target_frames=38,
+            motion="zoom_in",
+            visual_prompt=f"historical scene {i}",
+            search_query=f"historical scene {i}",
+            search_query_en=f"historical scene {i}",
+            search_query_source="ai",
+        )
+        for i in range(1, 5)
+    ]
+    ch = Chapter(
+        chapter_index=1,
+        chapter_title="Ch1",
+        tts_groups=[TtsGroup(group_index=1, paragraph_text="In ancient times ships sailed afar.", segments=[Segment(segment_index=1, narration_text="In ancient times ships sailed afar.")])],
+        shots=shots,
+    )
+    manifest = ProjectManifest(
+        project_id="v3_ext",
+        title="External Bridge Test",
+        preset_id="umum.en",
+        preset_snapshot={"visual": {"style": "dramatic oil painting"}, "min_relevance_score": 0.35},
+        chapters=[ch],
+    )
+    save_manifest(manifest, proj_dir)
+
+    # 1. Export only selected subset (shots 2 and 4) -> persists export order [ch01_shot002, ch01_shot004]
+    exp = export_external_image_prompts(manifest, proj_dir, scope="selected", selected_shot_ids=["ch01_shot002", "ch01_shot004"])
+    assert exp["count"] == 2
+    assert exp["shot_ids"] == ["ch01_shot002", "ch01_shot004"]
+    assert "[ch01_shot002]" in exp["txt"] and "[ch01_shot004]" in exp["txt"]
+    reader = list(csv.DictReader(io.StringIO(exp["csv"])))
+    assert len(reader) == 2
+    assert reader[0]["aspect_ratio"] == "16:9"
+    assert reader[0]["visual_style"] == "dramatic oil painting"
+    assert "ships sailed" in reader[0]["narration_snippet"]
+    assert load_manifest(proj_dir).last_prompt_export_shot_ids == ["ch01_shot002", "ch01_shot004"]
+
+    # 2. Boundary matching safety: ch01_shot001 must NOT match ch01_shot0010!
+    sid_exact, r_exact = match_external_filename_to_shot("flow_ch01_shot001_final.png", manifest)
+    assert sid_exact == "ch01_shot001" and r_exact == "exact_shot_id"
+
+    sid_10, r_10 = match_external_filename_to_shot("ch01_shot0010.png", manifest)
+    assert sid_10 is None
+
+    # Export-sequence numeric matching: 1 -> ch01_shot002, 2 -> ch01_shot004
+    sid_seq1, r_seq1 = match_external_filename_to_shot("image_1.webp", manifest)
+    sid_seq2, r_seq2 = match_external_filename_to_shot("02.jpg", manifest)
+    assert sid_seq1 == "ch01_shot002" and r_seq1 == "export_sequence"
+    assert sid_seq2 == "ch01_shot004" and r_seq2 == "export_sequence"
+
+    # 3. Bulk import (PNG + WEBP + bad .txt)
+    png_b = BytesIO()
+    Image.new("RGB", (640, 360), color=(30, 100, 200)).save(png_b, format="PNG")
+    webp_b = BytesIO()
+    Image.new("RGB", (640, 360), color=(200, 90, 30)).save(webp_b, format="WEBP")
+
+    plan = plan_bulk_external_import(
+        manifest,
+        [
+            ("ch01_shot001.png", png_b.getvalue()),
+            ("image_1.webp", webp_b.getvalue()),
+            ("ch01_shot0010.png", png_b.getvalue()),
+            ("notes.txt", b"hello"),
+        ],
+    )
+    assert plan[0]["matched_shot_id"] == "ch01_shot001"
+    assert plan[1]["matched_shot_id"] == "ch01_shot002"
+    assert plan[2]["matched_shot_id"] is None
+    assert plan[3]["supported"] is False
+
+    app_res = apply_bulk_external_import(proj_dir, manifest, plan, rebuild=True)
+    assert app_res["applied_shots"] == ["ch01_shot001", "ch01_shot002"]
+    assert not app_res["errors"]
+
+    reloaded = load_manifest(proj_dir)
+    sh1, sh2 = reloaded.chapters[0].shots[0], reloaded.chapters[0].shots[1]
+    assert sh1.actual_source == "external_image" and sh1.locked is True
+    assert sh2.actual_source == "external_image" and sh2.locked is True
+    assert (proj_dir / sh1.rendered_clip).is_file()
+    assert (proj_dir / sh2.rendered_clip).is_file()
+
+    credits_md = (proj_dir / "export" / "credits.md").read_text(encoding="utf-8")
+    assert EXTERNAL_ATTRIBUTION_TEXT in credits_md
+
+    # 4. Mandatory survival verification: run Search all (fetch_all) + AI keyword update after import
+    orig_h1, orig_h2 = sh1.asset_content_hash, sh2.asset_content_hash
+    svc = VisualService(proj_dir)
+    reloaded = svc.fetch_all(reloaded, provider_name="fake", allow_fallback=True, translate_keywords=False)
+    assert reloaded.chapters[0].shots[0].actual_source == "external_image"
+    assert reloaded.chapters[0].shots[0].asset_content_hash == orig_h1
+    assert reloaded.chapters[0].shots[1].actual_source == "external_image"
+    assert reloaded.chapters[0].shots[1].asset_content_hash == orig_h2
+
+    save_manifest(reloaded, proj_dir)
+    after_kw, kw_stats = svc.update_keywords_with_ai(force=True, mark_stale=True)
+    assert kw_stats["skipped_locked"] >= 2
+    assert after_kw.chapters[0].shots[0].actual_source == "external_image"
+    assert after_kw.chapters[0].shots[0].locked is True
+    assert after_kw.chapters[0].shots[1].actual_source == "external_image"
+    assert after_kw.chapters[0].shots[1].locked is True

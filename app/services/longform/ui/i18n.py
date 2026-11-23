@@ -1100,6 +1100,30 @@ ID_TRANSLATIONS: Dict[str, str] = {
         "misalnya `old_lighthouse_night_fog.jpg` (atau kelompokkan di subfolder tematik seperti `vikings/ship_storm.jpg`). "
         "Format didukung — Video: `{videos}` | Gambar: `{images}`."
     ),
+    # --- V101 V3: External Image Bridge ---
+    "expander_external_bridge": "🖼️ Gambar Eksternal (Ekspor Prompt & Impor Massal)",
+    "ext_export_heading": "Ekspor prompt gambar (untuk Google Flow / Midjourney / ChatGPT)",
+    "ext_export_scope_label": "Cakupan shot yang diekspor",
+    "ext_scope_missing": "Shot tanpa visual",
+    "ext_scope_selected": "Shot terpilih",
+    "ext_scope_all": "Semua shot",
+    "ext_export_select_shots": "Pilih shot untuk diekspor",
+    "btn_prepare_prompt_export": "Siapkan file prompt (.txt & .csv)",
+    "ext_export_ready": "Siap mengunduh **{count}** prompt shot (urutan ekspor disimpan untuk pencocokan impor nomor urut).",
+    "btn_download_prompts_txt": "⬇️ Unduh Prompt (.txt)",
+    "btn_download_prompts_csv": "⬇️ Unduh Tabel Prompt (.csv UTF-8)",
+    "ext_import_heading": "Impor gambar/klip massal",
+    "ext_import_uploader": "Unggah hasil gambar/video (`.png`, `.jpg`, `.jpeg`, `.webp`, `.mp4`)",
+    "ext_import_hint": "Nama file dicocokkan otomatis berdasarkan `shot_id` (mis. `ch01_shot001.png`) atau nomor urut ekspor (`image_1.png`, `02.webp`).",
+    "ext_import_preview_heading": "Pratinjau pemetaan sebelum diterapkan",
+    "ext_import_unmatched_warn": "⚠️ **{count}** file belum cocok atau format tidak didukung (pilih shot tujuan manual atau lewati): {names}",
+    "ext_import_skip_opt": "(Lewati file ini)",
+    "ext_import_col_file": "File",
+    "ext_import_col_target": "Shot tujuan",
+    "btn_apply_external_import": "✅ Terapkan impor eksternal",
+    "spinner_applying_external": "Memproses & menyusun klip visual eksternal...",
+    "ext_import_applied_ok": "Berhasil memasang & mengunci **{count}** visual eksternal (`credits.md` diperbarui).",
+    "ext_import_nothing_selected": "Tidak ada file dengan shot tujuan yang dipilih untuk diimpor.",
 }
 
 
@@ -2192,6 +2216,30 @@ EN_TRANSLATIONS: Dict[str, str] = {
         "such as `old_lighthouse_night_fog.jpg` (or organize into subfolders like `vikings/ship_storm.jpg`). "
         "Supported formats — Video: `{videos}` | Image: `{images}`."
     ),
+    # --- V101 V3: External Image Bridge ---
+    "expander_external_bridge": "🖼️ External Image Bridge (Export Prompts & Bulk Import)",
+    "ext_export_heading": "Export image prompts (for Google Flow / Midjourney / ChatGPT)",
+    "ext_export_scope_label": "Shots to export",
+    "ext_scope_missing": "Shots without visual",
+    "ext_scope_selected": "Selected shots",
+    "ext_scope_all": "All shots",
+    "ext_export_select_shots": "Choose shots to export",
+    "btn_prepare_prompt_export": "Prepare prompt files (.txt & .csv)",
+    "ext_export_ready": "Ready to download **{count}** shot prompt(s) (export order saved for numeric sequence matching).",
+    "btn_download_prompts_txt": "⬇️ Download Prompts (.txt)",
+    "btn_download_prompts_csv": "⬇️ Download Prompt Table (.csv UTF-8)",
+    "ext_import_heading": "Bulk import images/clips",
+    "ext_import_uploader": "Upload generated images/videos (`.png`, `.jpg`, `.jpeg`, `.webp`, `.mp4`)",
+    "ext_import_hint": "Filenames auto-match by exact `shot_id` (e.g., `ch01_shot001.png`) or exported sequence number (`image_1.png`, `02.webp`).",
+    "ext_import_preview_heading": "Editable mapping preview before apply",
+    "ext_import_unmatched_warn": "⚠️ **{count}** file(s) unmatched or unsupported (assign a target shot manually or skip): {names}",
+    "ext_import_skip_opt": "(Skip this file)",
+    "ext_import_col_file": "File",
+    "ext_import_col_target": "Target shot",
+    "btn_apply_external_import": "✅ Apply external import",
+    "spinner_applying_external": "Processing & building external visual clips...",
+    "ext_import_applied_ok": "Applied & locked **{count}** external visual(s) (`credits.md` updated).",
+    "ext_import_nothing_selected": "No files have a target shot assigned to import.",
 }
 
 

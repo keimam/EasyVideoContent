@@ -97,7 +97,7 @@ class CreditsManager:
                     "_key": dedup_k,
                     "source": src or "-",
                     "title": title or sh.shot_id,
-                    "author": author or "Unknown Creator",
+                    "author": author or ("Pengguna" if src.lower() == "external_image" else "Unknown Creator"),
                     "license": lic or "-",
                     "url": url or "-",
                     "shots": [sh.shot_id],

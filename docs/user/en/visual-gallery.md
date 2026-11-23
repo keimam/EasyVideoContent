@@ -61,3 +61,14 @@ You can include your own footage or images (archival material, brand assets, or 
 2. **Naming guidelines for relevance matching:** The studio extracts lowercase tags from filename separators (`_`, `-`, `.`) and subfolder names — for example `old_lighthouse_night_fog.jpg` or `vikings/ship_storm.jpg`.
 3. **Priority & random fallback option:** Whenever **Local files** is checked and a file passes the relevance threshold, it takes priority in both **Mix best** and **Priority** search modes. The **Fill empty shots with random local files** option stays disabled by default so unrelated files are never injected automatically.
 4. **Supported formats:** Video (`.mp4`, `.mov`, `.mkv`, `.webm`, `.avi`) and image (`.jpg`, `.jpeg`, `.png`, `.webp`, `.bmp`).
+
+---
+
+## 6. External Image Bridge (Google Flow / Midjourney / ChatGPT)
+
+When you prefer generating specific shots with an external AI tool such as Google Flow, Midjourney, or ChatGPT, open **External Image Bridge** on the **Visual** step:
+
+1. **Export image prompts:** Choose your target scope (*Shots without visual*, *Selected shots*, or *All shots*), prepare the files, and download `.txt` (prefixed with `[shot_id]`) or UTF-8 `.csv` (`shot_id`, duration, narration snippet, English prompt, `16:9` aspect ratio, and project visual style).
+2. **Create your visuals externally:** Name outputs cleanly with the matching `shot_id` (e.g., `ch01_shot001.png`) or by trailing sequence number matching your last export order (`image_1.png`, `02.webp`, etc.).
+3. **Bulk import:** Upload `.png`, `.jpg`, `.jpeg`, `.webp`, or `.mp4` files. An editable mapping table shows auto-matches and flags unmatched files clearly before you click **Apply external import**.
+4. **Built & protected:** Imported images receive smooth *Ken Burns* motion (and `.mp4` clips trim to shot duration), become **Locked** automatically so they survive *Fetch & Build*, *Auto*, and *Update keywords with AI*, and are logged in `credits.md` as user-created external assets.

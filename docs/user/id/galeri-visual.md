@@ -61,3 +61,14 @@ Anda bisa menyiapkan koleksi gambar atau klip video milik sendiri (arsip dokumen
 2. **Aturan penamaan agar akurat:** Studio membaca kata kunci dari nama file (pisahkan kata dengan garis bawah `_`, tanda hubung `-`, atau titik `.`) serta nama subfolder di dalamnya — contohnya `old_lighthouse_night_fog.jpg` atau subfolder `vikings/ship_storm.jpg`.
 3. **Prioritas & opsi pengisian acak:** Jika centang **Local files** aktif dan ada file lokal yang lolos skor relevansi, file tersebut selalu didahulukan baik di mode **Campur terbaik** maupun **Prioritas**. Opsi **Isi shot kosong dengan file lokal acak** nonaktif secara bawaan agar file yang tidak cocok tidak mengisi semua shot otomatis.
 4. **Format yang didukung:** Video (`.mp4`, `.mov`, `.mkv`, `.webm`, `.avi`) dan gambar (`.jpg`, `.jpeg`, `.png`, `.webp`, `.bmp`).
+
+---
+
+## 6. Jembatan Gambar Eksternal (Google Flow / Midjourney / ChatGPT)
+
+Jika sebagian shot lebih cocok dibuat memakai generator eksternal seperti Google Flow, Midjourney, atau ChatGPT, gunakan panel **Gambar Eksternal** di halaman **Visual**:
+
+1. **Ekspor prompt gambar:** Pilih cakupan (*Shot tanpa visual*, *Shot terpilih*, atau *Semua shot*), klik **Siapkan file prompt**, lalu unduh berkas `.txt` (berawalan `[shot_id]`) atau `.csv` UTF-8 (`shot_id`, durasi, cuplikan narasi, prompt bahasa Inggris, rasio `16:9`, dan gaya visual proyek).
+2. **Buat gambar/klip di alat eksternal:** Hasilkan visual Anda lalu beri nama berkas sesuai `shot_id` (misalnya `ch01_shot001.png`) atau gunakan angka urutan sesuai urutan ekspor terakhir (`image_1.png`, `02.webp`, dst.).
+3. **Impor gambar massal:** Unggah sekumpulan `.png`, `.jpg`, `.jpeg`, `.webp`, atau `.mp4`. Studio menampilkan pratinjau pemetaan yang bisa Anda ubah manual per file dan memperingatkan jika ada file yang belum cocok sebelum Anda menekan **Terapkan impor eksternal**.
+4. **Otomatis disusun & dikunci:** Gambar otomatis diberi animasi *Ken Burns* (dan video `.mp4` dipotong/disesuaikan ke durasi shot), ditandai **terkunci** (`Locked`) agar tidak tertimpa saat menekan *Cari & Susun*, *Otomatis*, maupun *Perbarui kata kunci dengan AI*, serta dicatat di `credits.md` sebagai `"Gambar dibuat pengguna dengan alat eksternal"`.

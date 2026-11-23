@@ -2960,6 +2960,142 @@ def render_visual_step_flow(
                 )
             )
 
+    # --- V3: External Image Bridge (Export prompts & bulk import) ---
+    if total_shots > 0:
+        from app.services.longform.visual.external_bridge import (
+            EXTERNAL_IMPORT_EXTENSIONS,
+            apply_bulk_external_import,
+            export_external_image_prompts,
+            plan_bulk_external_import,
+        )
+
+        with st.expander(t("expander_external_bridge"), expanded=False):
+            col_exp, col_imp = st.columns(2)
+            all_shot_ids = [s.shot_id for ch in manifest.chapters for s in ch.shots]
+
+            with col_exp:
+                st.markdown(f"**{t('ext_export_heading')}**")
+                cur_sel_sid = st.session_state.get(f"selected_shot_{project_id}")
+                exp_scope = st.radio(
+                    t("ext_export_scope_label"),
+                    options=["missing_visual", "selected", "all"],
+                    index=0,
+                    format_func=lambda s: {
+                        "missing_visual": t("ext_scope_missing"),
+                        "selected": t("ext_scope_selected"),
+                        "all": t("ext_scope_all"),
+                    }[s],
+                    key=f"rad_ext_scope_{project_id}",
+                )
+                chosen_sids: List[str] = []
+                if exp_scope == "selected":
+                    dflt_sids = [cur_sel_sid] if (cur_sel_sid and cur_sel_sid in all_shot_ids) else (all_shot_ids[:1])
+                    chosen_sids = st.multiselect(
+                        t("ext_export_select_shots"),
+                        options=all_shot_ids,
+                        default=dflt_sids,
+                        key=f"ms_ext_sids_{project_id}",
+                    )
+
+                exp_cache_key = f"ext_export_payload_{project_id}"
+                if st.button(
+                    t("btn_prepare_prompt_export"),
+                    key=f"btn_ext_prepare_{project_id}",
+                    disabled=is_job_running,
+                ):
+                    res_exp = export_external_image_prompts(
+                        manifest,
+                        p_dir,
+                        scope=exp_scope,
+                        selected_shot_ids=chosen_sids,
+                    )
+                    st.session_state[exp_cache_key] = res_exp
+
+                cached_exp = st.session_state.get(exp_cache_key)
+                if isinstance(cached_exp, dict) and cached_exp.get("count", 0) > 0:
+                    st.success(t("ext_export_ready", count=cached_exp["count"]))
+                    st.download_button(
+                        t("btn_download_prompts_txt"),
+                        data=cached_exp["txt"],
+                        file_name=f"{project_id}_prompts.txt",
+                        mime="text/plain",
+                        key=f"dl_ext_txt_{project_id}",
+                    )
+                    st.download_button(
+                        t("btn_download_prompts_csv"),
+                        data=cached_exp["csv"].encode("utf-8"),
+                        file_name=f"{project_id}_prompts.csv",
+                        mime="text/csv",
+                        key=f"dl_ext_csv_{project_id}",
+                    )
+
+            with col_imp:
+                st.markdown(f"**{t('ext_import_heading')}**")
+                st.caption(t("ext_import_hint"))
+                ext_uploads = st.file_uploader(
+                    t("ext_import_uploader"),
+                    accept_multiple_files=True,
+                    disabled=is_job_running,
+                    key=f"up_ext_bulk_{project_id}",
+                )
+                if ext_uploads:
+                    raw_files = [(uf.name, uf.getvalue()) for uf in ext_uploads]
+                    plan_rows = plan_bulk_external_import(manifest, raw_files)
+                    st.markdown(f"**{t('ext_import_preview_heading')}**")
+
+                    unmatched_names = [
+                        r["filename"] for r in plan_rows
+                        if (not r["supported"]) or (not r["matched_shot_id"])
+                    ]
+                    if unmatched_names:
+                        st.warning(
+                            t(
+                                "ext_import_unmatched_warn",
+                                count=len(unmatched_names),
+                                names=", ".join(unmatched_names),
+                            )
+                        )
+
+                    shot_select_opts = [""] + all_shot_ids
+                    edited_mappings: List[Dict[str, Any]] = []
+                    for r in plan_rows:
+                        r_idx = r["index"]
+                        mc1, mc2 = st.columns([1.3, 1.7])
+                        with mc1:
+                            st.caption(f"**{r['filename']}**")
+                            if not r["supported"]:
+                                st.error(r["error"])
+                        with mc2:
+                            if r["supported"]:
+                                cur_sid = r["matched_shot_id"] or ""
+                                d_idx = shot_select_opts.index(cur_sid) if cur_sid in shot_select_opts else 0
+                                chosen_sid = st.selectbox(
+                                    t("ext_import_col_target"),
+                                    options=shot_select_opts,
+                                    index=d_idx,
+                                    format_func=lambda s: t("ext_import_skip_opt") if s == "" else s,
+                                    label_visibility="collapsed",
+                                    key=f"sel_ext_map_{project_id}_{r_idx}_{r['filename']}",
+                                )
+                                edited_mappings.append({**r, "matched_shot_id": chosen_sid or None})
+
+                    if st.button(
+                        t("btn_apply_external_import"),
+                        type="primary",
+                        disabled=is_job_running,
+                        key=f"btn_ext_apply_{project_id}",
+                    ):
+                        to_apply = [m for m in edited_mappings if m.get("matched_shot_id")]
+                        if not to_apply:
+                            st.warning(t("ext_import_nothing_selected"))
+                        else:
+                            with st.spinner(t("spinner_applying_external")):
+                                app_res = apply_bulk_external_import(p_dir, manifest, to_apply, rebuild=True)
+                            if app_res["applied_shots"]:
+                                st.success(t("ext_import_applied_ok", count=len(app_res["applied_shots"])))
+                                time.sleep(0.4)
+                                st.rerun()
+
     if needs_review_count > 0 and ai_vid_providers:
         if st.button(
             t("btn_bulk_ai_video_review", count=needs_review_count),
@@ -3184,6 +3320,9 @@ def render_visual_step_flow(
                                     st.caption(f"**#{shot.shot_index}** ({dur_s}){badge_str}")
                                 elif shot.actual_source == "neutral_backdrop":
                                     src = t("source_neutral_backdrop")
+                                    st.caption(f"**#{shot.shot_index}** ({dur_s}) • `{src}`{badge_str}")
+                                elif shot.actual_source == "external_image":
+                                    src = t("source_external_image")
                                     st.caption(f"**#{shot.shot_index}** ({dur_s}) • `{src}`{badge_str}")
                                 else:
                                     src = shot.actual_source or shot.requested_source or ("fake" if shot.is_fake else "")
