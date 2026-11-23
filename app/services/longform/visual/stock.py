@@ -384,6 +384,15 @@ _GEO_SUFFIX_TERMS = {
     "peninsula",
     "harbor",
     "district",
+    "colony",
+    "temple",
+    "shrine",
+    "castle",
+    "palace",
+    "tower",
+    "station",
+    "empire",
+    "kingdom",
 }
 
 _COMMON_TITLECASE_NONPROPER = {
@@ -455,7 +464,13 @@ def extract_narration_proper_nouns(text: Optional[str]) -> Set[str]:
             if len(tok) < 3 or not tok[0].isupper():
                 continue
             low = tok.lower().strip("'-")
-            if len(low) < 3 or low in _COMMON_TITLECASE_NONPROPER or low in STOP_WORDS or low in GENERIC_WORDS:
+            if (
+                len(low) < 3
+                or low in _COMMON_TITLECASE_NONPROPER
+                or low in _GEO_SUFFIX_TERMS
+                or low in STOP_WORDS
+                or low in GENERIC_WORDS
+            ):
                 continue
             prev_low = words[idx - 1].lower() if idx > 0 else ""
             next_low = words[idx + 1].lower() if idx + 1 < len(words) else ""

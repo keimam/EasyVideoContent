@@ -232,3 +232,77 @@ def test_a1_2_candidate_thumbnail_fetches_remote_image_without_ffmpeg(tmp_path):
         with Image.open(thumb) as im:
             assert im.size[0] == 320
 
+
+def test_a1_3_json_recovery_missing_key_retry_and_specific_reasons(tmp_path):
+    """A1.3: Recover wrapped/truncated JSON, retry omitted keys, and report explicit reasons."""
+    from unittest.mock import patch
+    from app.services.longform.schema import Chapter, Segment, Shot, TtsGroup
+    from app.services.longform.visual.ai_keywords import (
+        _extract_json_any_dict,
+        format_keyword_reason,
+        generate_chapter_visual_keywords_ai,
+    )
+
+    wrapped = '<think>thinking...</think>\n```json\n{"shots": {"ch01_shot001": ["snowstorm forest river"]}}\n```'
+    assert _extract_json_any_dict(wrapped) == {"ch01_shot001": ["snowstorm forest river"]}
+
+    truncated = '{"ch01_shot001": ["old wooden bridge", "misty river"], "ch01_shot002": ["incomplete'
+    salvaged = _extract_json_any_dict(truncated)
+    assert "ch01_shot001" in salvaged
+
+    ch = Chapter(
+        chapter_index=1,
+        chapter_title="Ch 1",
+        tts_groups=[
+            TtsGroup(
+                group_index=1,
+                paragraph_text="Winter river snowstorm. Wooden ferry boat.",
+                segments=[
+                    Segment(segment_index=1, narration_text="Winter river snowstorm."),
+                    Segment(segment_index=2, narration_text="Wooden ferry boat."),
+                ],
+            )
+        ],
+        shots=[
+            Shot(shot_id="ch01_shot001", chapter_index=1, shot_index=1, segment_indices=[1]),
+            Shot(shot_id="ch01_shot002", chapter_index=1, shot_index=2, segment_indices=[2]),
+        ],
+    )
+
+    # Simulate partial batch JSON followed by targeted retry recovering shot002
+    responses = [
+        ('{"ch01_shot001": ["winter river snowstorm dusk", "snowy river bank trees"]}', "openrouter", "openrouter/free"),
+        ('{"ch01_shot002": ["wooden ferry boat river", "empty boat dock mist"]}', "openrouter", "openrouter/free"),
+    ]
+    with (
+        patch("app.services.longform.visual.ai_keywords.get_llm_readiness", return_value={"configured": True, "is_invalid": False}),
+        patch("app.services.longform.visual.ai_keywords._invoke_translation_llm", side_effect=responses),
+    ):
+        res = generate_chapter_visual_keywords_ai(ch.shots, ch, project_lang="en-US", cache_dir=tmp_path)
+    assert res["llm_calls"] == 2
+    assert ch.shots[0].search_query_source == "ai"
+    assert ch.shots[1].search_query_source == "ai"
+    assert "ferry" in (ch.shots[1].search_query_en or "").lower()
+
+    # Check localized explicit reasons (id & en)
+    assert "tidak berformat JSON" in format_keyword_reason("ai_invalid_json", lang="id")
+    assert "not valid JSON" in format_keyword_reason("ai_invalid_json", lang="en")
+    assert "Kuota" in format_keyword_reason("ai_quota_exceeded", lang="id")
+    assert "quota" in format_keyword_reason("ai_quota_exceeded", lang="en").lower()
+    assert "respons kosong" in format_keyword_reason("ai_empty_response", lang="id")
+
+
+def test_a1_3_fallback_extractor_strips_character_proper_nouns_keeps_places():
+    """A1.3: Fallback extractor excludes non-visual character proper nouns (Mosaku, Minokichi)."""
+    from app.services.longform.visual.query_extractor import extract_short_search_query
+
+    q_mosaku = extract_short_search_query("Mosaku was an old man.", visual_keywords=["forest mist"])
+    q_minokichi = extract_short_search_query("His apprentice, Minokichi, was eighteen.", visual_keywords=["young worker", "river"])
+    q_musashi = extract_short_search_query("In a village in Musashi Province, two woodcutters walked to the forest.")
+
+    assert "mosaku" not in q_mosaku.lower()
+    assert "minokichi" not in q_minokichi.lower()
+    assert "eighteen" not in q_minokichi.lower()
+    assert "musashi" in q_musashi.lower() and "province" in q_musashi.lower()
+
+

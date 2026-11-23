@@ -126,14 +126,14 @@ class VisualCandidate:
 
 
 def _extract_canonical_media_token(url_val: Optional[str], source_url_val: Optional[str] = None) -> str:
-    """Normalize a remote/local media URL (especially Wikimedia Commons & thumb paths) to a canonical file key."""
+    """Normalize a remote HTTP media URL (especially Wikimedia Commons & thumb paths) to a canonical file key."""
     import posixpath
     import re
     import urllib.parse
 
     for raw in (url_val, source_url_val):
         txt = str(raw or "").strip()
-        if not txt:
+        if not txt or not txt.lower().startswith(("http://", "https://")):
             continue
         parsed = urllib.parse.urlparse(txt)
         host = (parsed.netloc or "").lower()
@@ -148,7 +148,6 @@ def _extract_canonical_media_token(url_val: Optional[str], source_url_val: Optio
                 return f"commons_file:{m_file.group(1).replace(' ', '_').lower()}"
             parts = [p for p in path.split("/") if p]
             if "/thumb/" in path.lower() and len(parts) >= 2:
-                # parent directory of the sized thumb is the canonical Commons filename
                 return f"commons_file:{parts[-2].replace(' ', '_').lower()}"
             base = posixpath.basename(path)
             if base:
@@ -157,8 +156,6 @@ def _extract_canonical_media_token(url_val: Optional[str], source_url_val: Optio
         if host and path:
             clean_path = re.sub(r"/+$", "", path).lower()
             return f"url:{host}{clean_path}"
-        if path:
-            return f"path:{path.replace(chr(92), '/').lower()}"
     return ""
 
 

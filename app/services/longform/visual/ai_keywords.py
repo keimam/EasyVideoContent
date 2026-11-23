@@ -28,7 +28,7 @@ from app.services.longform.llm_adapter import (
     get_llm_readiness,
 )
 
-AI_KEYWORDS_BATCH_SIZE = 15
+AI_KEYWORDS_BATCH_SIZE = 10
 from app.services.longform.schema import Chapter, ItemStatus, ProjectManifest, Shot
 from app.services.longform.visual.cache import get_global_cache_dir
 from app.services.longform.visual.keyword_translator import (
@@ -112,23 +112,81 @@ _TIME_OR_GENERIC_ONLY = {
 }
 
 
+def _unwrap_mapping_payload(parsed: Any) -> Dict[str, Any]:
+    """Normalize dict wrappers (e.g. {'shots': {...}}) or item lists into {shot_id: queries}."""
+    if isinstance(parsed, list):
+        out_list: Dict[str, Any] = {}
+        for el in parsed:
+            if not isinstance(el, dict):
+                continue
+            sid = str(el.get("id") or el.get("shot_id") or el.get("key") or "").strip()
+            qval = el.get("queries") or el.get("query") or el.get("keywords") or el.get("alts")
+            if sid and qval is not None:
+                out_list[sid] = qval
+        return out_list
+    if not isinstance(parsed, dict):
+        return {}
+    for wrap_key in ("shots", "results", "data", "items", "queries", "output"):
+        inner = parsed.get(wrap_key)
+        if isinstance(inner, (dict, list)) and len(parsed) <= 2:
+            unwrapped = _unwrap_mapping_payload(inner)
+            if unwrapped:
+                return unwrapped
+    return {str(k): v for k, v in parsed.items() if v is not None}
+
+
 def _extract_json_any_dict(raw_text: str) -> Dict[str, Any]:
-    """Parse JSON object from LLM text while preserving list/nested values (unlike F2 str-only helper)."""
+    """Parse JSON object from LLM text, handling <think> blocks, wrappers, lists, and truncated JSON (A1.3)."""
     text = str(raw_text or "").strip()
     if not text:
         return {}
+    text = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE).strip()
     text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\s*```$", "", text)
-    for candidate in (text, (re.search(r"\{[\s\S]*\}", text) or [None])[0]):
+    brace_m = re.search(r"(\{[\s\S]*\}|\[[\s\S]*\])", text)
+    for candidate in (text, brace_m.group(1) if brace_m else None):
         if not candidate:
             continue
         try:
             parsed = json.loads(candidate)
-            if isinstance(parsed, dict):
-                return {str(k): v for k, v in parsed.items() if v is not None}
+            unwrapped = _unwrap_mapping_payload(parsed)
+            if unwrapped:
+                return unwrapped
         except Exception:
             continue
-    return {}
+
+    # Salvage complete shot key/value entries even if trailing JSON was truncated mid-output
+    salvaged: Dict[str, Any] = {}
+    for m in re.finditer(
+        r'"([A-Za-z0-9_.-]*shot[A-Za-z0-9_.-]*)"\s*:\s*(\[[^\]]*\]|"[^"]*")',
+        text,
+        re.IGNORECASE,
+    ):
+        try:
+            salvaged[m.group(1)] = json.loads(m.group(2))
+        except Exception:
+            continue
+    return salvaged
+
+
+def _lookup_shot_mapping(mapping: Dict[str, Any], shot_id: str) -> Any:
+    """Resolve shot_id with exact, case-insensitive, or short suffix fallback matching (A1.3)."""
+    if not mapping:
+        return None
+    if shot_id in mapping:
+        return mapping[shot_id]
+    low_target = shot_id.lower().strip()
+    for k, v in mapping.items():
+        if str(k).lower().strip() == low_target:
+            return v
+    # Suffix match e.g. 'shot001' when batch contains single chapter
+    m_suf = re.search(r"(shot_?\d+)$", low_target)
+    if m_suf:
+        suf = m_suf.group(1)
+        matches = [v for k, v in mapping.items() if str(k).lower().strip().endswith(suf)]
+        if len(matches) == 1:
+            return matches[0]
+    return None
 
 
 def _clean_term_list(values: Any) -> List[str]:
@@ -455,9 +513,21 @@ def format_keyword_reason(reason: Optional[str], lang: str = "id") -> str:
         return ""
     is_en = str(lang or "id").lower().startswith("en")
     if raw == "llm_not_ready":
-        return "LLM not ready" if is_en else "LLM belum siap"
+        return "LLM not ready (API key / provider not configured)" if is_en else "LLM belum siap (API key / provider belum diatur)"
+    if raw == "ai_empty_response":
+        return "AI returned an empty response" if is_en else "AI mengembalikan respons kosong"
+    if raw == "ai_invalid_json":
+        return "AI output was not valid JSON" if is_en else "Respons AI tidak berformat JSON valid"
+    if raw == "ai_omitted_key":
+        return "AI skipped this shot ID in batch response" if is_en else "AI melewati ID shot ini dalam respons batch"
     if raw == "ai_empty_mapping":
-        return "AI returned no query" if is_en else "AI tidak mengembalikan query"
+        return "AI returned no query for this shot" if is_en else "AI tidak mengembalikan query untuk shot ini"
+    if raw == "ai_quota_exceeded":
+        return "AI quota / credit limit reached" if is_en else "Kuota / kredit AI habis"
+    if raw == "ai_auth_error":
+        return "AI API key authentication failed" if is_en else "Autentikasi API key AI gagal"
+    if raw == "ai_model_unavailable":
+        return "Configured AI model is unavailable" if is_en else "Model AI yang dipilih tidak tersedia"
     if raw.startswith("ai_failed:"):
         detail = raw[len("ai_failed:") :].strip() or "error"
         return f"AI failed: {detail}" if is_en else f"AI gagal: {detail}"
@@ -872,8 +942,55 @@ def generate_chapter_visual_keywords_ai(
             )
             llm_calls += 1
             mapping = _extract_json_any_dict(content)
+
+            # Retry once specifically for missing shots if batch response omitted or malformed any items
+            missing_entries: List[Tuple[Shot, str, str, int, int, str]] = []
+            for entry in chunk:
+                raw_q = _lookup_shot_mapping(mapping, entry[0].shot_id)
+                alts = _build_concrete_query_alternatives(
+                    raw_q, anchor_terms=clean_anchors, visual_keywords=vis_terms
+                )
+                if not alts:
+                    missing_entries.append(entry)
+
+            if missing_entries and (len(missing_entries) < len(chunk) or not mapping):
+                retry_payload = []
+                for m_shot, m_txt, _ck, m_pi, m_pt, m_fc in missing_entries:
+                    rit: Dict[str, Any] = {"id": m_shot.shot_id, "narration": m_txt}
+                    if m_pt > 1:
+                        rit["part"] = f"{m_pi}/{m_pt}"
+                        rit["focus_clause"] = m_fc
+                    retry_payload.append(rit)
+                retry_prompt = _build_visual_keywords_batch_prompt(
+                    retry_payload,
+                    source_lang=norm_lang,
+                    preset_snapshot=snap,
+                    project_topic=project_topic,
+                    chapter_title=getattr(chapter, "chapter_title", None),
+                    sub_niche_focus=sub_niche_focus,
+                    visual_summary=visual_summary,
+                    anchor_terms=clean_anchors,
+                    avoid_terms=clean_avoids,
+                )
+                retry_tokens = min(2000, max(520, 120 * len(retry_payload) + 260))
+                try:
+                    retry_txt, r_prov, r_model = _invoke_translation_llm(
+                        retry_prompt, llm_adapter=llm_adapter, max_tokens=retry_tokens
+                    )
+                    llm_calls += 1
+                    retry_map = _extract_json_any_dict(retry_txt)
+                    if retry_map:
+                        mapping.update(retry_map)
+                        content = content or retry_txt
+                        used_prov = r_prov or used_prov
+                        used_model = r_model or used_model
+                except (LLMAuthError, LLMCreditError, LLMDailyQuotaError, LLMModelNotFoundError):
+                    raise
+                except Exception as retry_exc:
+                    logger.warning(f"AI visual keyword missing-key retry failed: {retry_exc}")
+
             for shot, src_text, c_key, _part_idx, _part_total, focus_clause in chunk:
-                raw_q = mapping.get(shot.shot_id)
+                raw_q = _lookup_shot_mapping(mapping, shot.shot_id)
                 alts = _build_concrete_query_alternatives(
                     raw_q,
                     anchor_terms=clean_anchors,
@@ -904,16 +1021,36 @@ def generate_chapter_visual_keywords_ai(
                         "source": "ai",
                     })
                 else:
-                    ext_q = extract_short_search_query(focus_clause or src_text, visual_keywords=vis_terms)
+                    ext_q = extract_short_search_query(
+                        focus_clause or src_text,
+                        visual_keywords=vis_terms,
+                        topic_keywords=snap.get("topic_keywords"),
+                        required_subject_terms=snap.get("required_subject_terms"),
+                    )
                     shot.search_query = shot.search_query or ext_q
                     shot.search_query_source = "extraction"
-                    shot.search_query_reason = "ai_empty_mapping"
+                    if not str(content or "").strip():
+                        shot.search_query_reason = "ai_empty_response"
+                    elif not mapping:
+                        shot.search_query_reason = "ai_invalid_json"
+                    else:
+                        shot.search_query_reason = "ai_omitted_key"
                     if norm_lang == "en" and not shot.search_query_en:
                         shot.search_query_en = ext_q
                     updated += 1
             _save_ai_kw_cache(cache, cache_dir)
-        except (LLMAuthError, LLMCreditError, LLMDailyQuotaError, LLMModelNotFoundError):
-            raise
+        except LLMAuthError as exc:
+            for shot, *_ in chunk:
+                shot.search_query_reason = "ai_auth_error"
+            raise exc
+        except (LLMCreditError, LLMDailyQuotaError) as exc:
+            for shot, *_ in chunk:
+                shot.search_query_reason = "ai_quota_exceeded"
+            raise exc
+        except LLMModelNotFoundError as exc:
+            for shot, *_ in chunk:
+                shot.search_query_reason = "ai_model_unavailable"
+            raise exc
         except Exception as exc:
             llm_calls += 1
             fallback_used = True

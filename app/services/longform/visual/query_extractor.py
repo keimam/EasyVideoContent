@@ -150,6 +150,22 @@ def extract_short_search_query(
     # Remove any markdown or verification tags like [verify: ...] or [pause: ...]
     clean_text = re.sub(r"\[[^\]]+\]", "", raw)
 
+    # Identify non-visual character proper nouns (e.g. Mosaku, Minokichi) while preserving place names
+    proper_nouns: set[str] = set()
+    try:
+        from app.services.longform.visual.stock import extract_narration_proper_nouns
+        proper_nouns = extract_narration_proper_nouns(clean_text)
+    except Exception:
+        proper_nouns = set()
+
+    extra_filler = {
+        "awake", "crossed", "gone", "pulled", "shut", "lay", "fell", "felt",
+        "told", "watched", "spoke", "meant", "caught", "left", "kept", "turned",
+        "went", "came", "walked", "ran", "looked", "sat", "stood", "killed", "kill",
+        "eighteen", "west", "east", "north", "south",
+        "anyone", "something", "nothing", "everything", "away", "far", "near",
+    }
+
     # 2. Extract potential words
     tokens = re.findall(r"[A-Za-z0-9]+(?:'[a-z]+)?", clean_text)
     meaningful: List[str] = []
@@ -170,7 +186,7 @@ def extract_short_search_query(
         # Skip pure digits unless it's a 4-digit year like 1969 or decade like 90s
         if low.isdigit() and len(low) != 4:
             continue
-        if low in STOP_WORDS or low in GENERIC_WORDS:
+        if low in STOP_WORDS or low in GENERIC_WORDS or low in proper_nouns or low in extra_filler:
             continue
         if low not in [m.lower() for m in meaningful]:
             meaningful.append(tok.lower())
