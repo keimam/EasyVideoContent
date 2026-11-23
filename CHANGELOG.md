@@ -2,6 +2,14 @@
 
 Seluruh rilisan versi inti EasyFaceless Studio berakar dari satu konstanta `APP_VERSION` pada `app/services/branding/constants.py`.
 
+## [1.0.1] — Pembaruan Studio 1.0.1 (Tahap V101: Campur Sumber, Local Files, Gambar Eksternal & Preset Gambar AI)
+
+- **Peningkatan Local Files (`V0`, `V2`):** Pencocokan aset lokal kini membaca tag dari nama file dan subfolder melalui `score_candidate_relevance` + `search_with_diagnostics`; fallback file acak/daur ulang dipindahkan di balik opsi proyek `"Isi shot kosong dengan file lokal acak"` (default nonaktif) dengan hash `hashlib.sha1` deterministik; panel **Sumber Footage** kini menampilkan jumlah file lokal, tombol **Buka folder Local files**, uploader multi-file (dengan penolakan format tidak didukung & konfirmasi timpa/ganti nama), panduan singkat, serta pembaruan buku panduan.
+- **Mode Pencarian Proyek: Campur Terbaik vs Prioritas (`V1`):** Proyek baru default ke mode **Campur terbaik** (`mix_best`) sedangkan proyek lama mempertahankan **Prioritas** (`priority`) sampai diubah pengguna; mode Campur terbaik mencari seluruh sumber aktif secara paralel dengan rate-limiter per-provider *thread-safe*, anggaran 2 tier (ekskalasi hanya bila 0 kandidat), pemecah seri (`<= 0.02`) berdasarkan sumber paling jarang terpakai, pembatasan dominasi satu sumber (default maks. 60%) & pencegahan `>3` shot berturut-turut dari sumber yang sama bila alternatif relevan tersedia, pengunduhan sesuai `candidate.provider`, prioritas Local files yang lolos relevansi, serta ringkasan distribusi sumber.
+- **Jembatan Gambar Eksternal (`V3`):** Penambahan ekspor prompt (`.txt` dan `.csv` UTF-8) per cakupan shot terpilih/kosong/semua dan impor massal (`.png`, `.jpg`, `.jpeg`, `.webp`, `.mp4`) dengan pencocokan `chXX_shotYYY` berbatas kata atau nomor urut ekspor, pratinjau pemetaan yang dapat disunting, penguncian otomatis (`locked=True`) tahan *Cari semua*/*Otomatis*/*Perbarui kata kunci AI*, dan pencatatan di `credits.md`.
+- **Preset Penyedia Gambar & Uji 1 Gambar (`V4`):** Penambahan preset **Together AI** (`FLUX.1-schnell` dengan adaptor payload `width`/`height`/`aspect_ratio`/`steps`/`response_format`) dan **DeepInfra** (`FLUX-1-schnell`) plus **Kustom** tanpa menimpa API key maupun menyertakan Nebius (dihentikan 13 April 2026), tombol **Uji 1 gambar** beserta kategorisasi error aman, pencatatan hook minimal di `docs/longform/LONGFORM_CHANGES.md`, dan pembaruan panduan AI.
+- **CapCut 9.7.1 & Identitas Versi 1.0.1 (`V5`):** Menambahkan `"9.7.1"` pada `capcut_tested_versions` (tetap mempertahankan template `8.9.0`), menyelaraskan versi `1.0.1` pada satu konstanta termasuk `User-Agent`, stub launcher Windows, installer Inno Setup, dan manifest rilis `packaging/release/latest.json`.
+
 ## [1.0.0] — Rilis Studio 1.0.0 (Tahap 8C.1 – 8C.3 & R1)
 
 ### Tahap R1 (Persiapan Rilis v1.0.0, Google Drive, Kebersihan Proses & Panduan Uji)

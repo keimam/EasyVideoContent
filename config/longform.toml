@@ -8,8 +8,8 @@ max_size_gb = 10.0
 max_age_days = 30
 
 [capcut]
-# Daftar versi CapCut Desktop teruji kompatibilitas draft-nya (E3)
-tested_versions = ["8.9.0"]
+# Daftar versi CapCut Desktop teruji kompatibilitas draft-nya (E3, V5)
+tested_versions = ["8.9.0", "9.7.1"]
 download_url = "https://www.capcut.com/"
 
 [ai_video_pricing]

@@ -28,7 +28,7 @@ class LongformConfig:
     hardware_encoder: str = "auto"
     atomic_retry_count: int = 5
     atomic_retry_delay_seconds: float = 0.05
-    capcut_tested_versions: tuple[str, ...] = ("8.9.0",)
+    capcut_tested_versions: tuple[str, ...] = ("8.9.0", "9.7.1")
     capcut_download_url: str = "https://www.capcut.com/"
 
 
@@ -60,7 +60,7 @@ def load_longform_config(reload: bool = False) -> LongformConfig:
         "hardware_encoder": "auto",
         "atomic_retry_count": 5,
         "atomic_retry_delay_seconds": 0.05,
-        "capcut_tested_versions": ("8.9.0",),
+        "capcut_tested_versions": ("8.9.0", "9.7.1"),
         "capcut_download_url": "https://www.capcut.com/",
     }
 

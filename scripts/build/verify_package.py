@@ -386,6 +386,22 @@ def _check_http_endpoint(url: str, timeout: float = 5.0) -> Optional[str]:
         return f"HTTP request failed for {url}: {exc}"
 
 
+def _read_app_version_from_tree(root: Path) -> str:
+    const_py = root / "app" / "services" / "branding" / "constants.py"
+    if const_py.is_file():
+        m = re.search(r'^\s*APP_VERSION\s*=\s*"([^"]+)"', const_py.read_text(encoding="utf-8"), re.MULTILINE)
+        if m:
+            return m.group(1).strip()
+    return "1.0.1"
+
+
+def _next_patch_version(ver: str) -> str:
+    parts = [int(p) for p in re.findall(r"\d+", str(ver or "1.0.1"))[:3]]
+    while len(parts) < 3:
+        parts.append(0)
+    return f"{parts[0]}.{parts[1]}.{parts[2] + 1}"
+
+
 def _run_cdp_dom_check(
     browser_exe: str,
     base_url: str,
@@ -393,6 +409,7 @@ def _run_cdp_dom_check(
     expect_wizard: bool,
     expect_project_title: Optional[str] = None,
     expect_update_banner: Optional[bool] = None,
+    expected_update_version: Optional[str] = None,
 ) -> List[str]:
     errs: List[str] = []
     try:
@@ -481,8 +498,9 @@ def _run_cdp_dom_check(
                 errs.append(f"[{label}] Page content appeared underneath standalone wizard")
             if route == "/Long_Video" and (not expect_wizard) and expect_project_title and expect_project_title not in body:
                 errs.append(f"[{label}] Existing project '{expect_project_title}' missing on populated EFS_DATA_DIR")
-            if expect_update_banner is True and ("v1.0.1" not in body or ("Pembaruan Tersedia" not in body and "Update Available" not in body)):
-                errs.append(f"[{label}] Expected v1.0.1 update banner did not appear automatically")
+            exp_ver = str(expected_update_version or "1.0.2")
+            if expect_update_banner is True and (f"v{exp_ver}" not in body or ("Pembaruan Tersedia" not in body and "Update Available" not in body)):
+                errs.append(f"[{label}] Expected v{exp_ver} update banner did not appear automatically")
             if expect_update_banner is False and ("Pembaruan Tersedia" in body or "Update Available" in body):
                 errs.append(f"[{label}] Unexpected update banner appeared")
             return body
@@ -579,21 +597,24 @@ def _run_native_exe_smoke(staging: Path, browser_exe: Optional[str]) -> List[str
     if not exe_path.is_file():
         return [f"Missing native launcher executable for E11.5 smoke: {exe_path}"]
 
+    cur_ver = _read_app_version_from_tree(staging)
+    next_ver = _next_patch_version(cur_ver)
+
     u_dir = Path(tempfile.mkdtemp(prefix="efs_e11_exe_smoke_"))
     srv_pid: Optional[int] = None
     proc: Optional[subprocess.Popen] = None
     try:
-        (u_dir / ".efs_setup_complete.json").write_text('{"completed": true, "version": "1.0.0"}\n', encoding="utf-8")
+        (u_dir / ".efs_setup_complete.json").write_text(f'{{"completed": true, "version": "{cur_ver}"}}\n', encoding="utf-8")
         (u_dir / "config.toml").write_text('[ui]\nlanguage = "id"\n', encoding="utf-8")
-        manifest_path = u_dir / "latest_101.json"
+        manifest_path = u_dir / "latest_next.json"
         manifest_path.write_text(
             json.dumps(
                 {
-                    "version": "1.0.1",
-                    "download_url": "https://example.invalid/EasyFacelessStudio-Setup-1.0.1.exe",
+                    "version": next_ver,
+                    "download_url": f"https://example.invalid/EasyFacelessStudio-Setup-{next_ver}.exe",
                     "notes_id": "Perbaikan pembaruan & stabilitas.",
                     "notes_en": "Update reliability & stability fixes.",
-                    "released": "2026-11-20",
+                    "released": "2026-11-23",
                 }
             ),
             encoding="utf-8",
@@ -693,14 +714,14 @@ def _run_native_exe_smoke(staging: Path, browser_exe: Optional[str]) -> List[str
                             for _ in range(60):
                                 time.sleep(0.6)
                                 body = _eval(100 * idx, "document.body ? document.body.innerText : ''") or ""
-                                if "v1.0.1" in body and ("Pembaruan tersedia (v1.0.1)" in body or "Update available (v1.0.1)" in body):
+                                if f"v{next_ver}" in body and (f"Pembaruan tersedia (v{next_ver})" in body or f"Update available (v{next_ver})" in body):
                                     break
                             exc_cnt = _eval(100 * idx + 1, "document.querySelectorAll('[data-testid=\"stException\"]').length") or 0
                             if exc_cnt > 0:
                                 errs.append(f"[E11.5 native exe {route or '/'}] Found {exc_cnt} stException(s)")
-                            if "v1.0.1" not in body or ("Pembaruan Tersedia" not in body and "Update Available" not in body):
-                                errs.append(f"[E11.5 native exe {route or '/'}] Missing v1.0.1 update banner")
-                            if "Pembaruan tersedia (v1.0.1)" not in body and "Update available (v1.0.1)" not in body:
+                            if f"v{next_ver}" not in body or ("Pembaruan Tersedia" not in body and "Update Available" not in body):
+                                errs.append(f"[E11.5 native exe {route or '/'}] Missing v{next_ver} update banner")
+                            if f"Pembaruan tersedia (v{next_ver})" not in body and f"Update available (v{next_ver})" not in body:
                                 errs.append(f"[E11.5 native exe {route or '/'}] Missing sidebar update badge")
 
                         # Open About dialog from sidebar & click "Cek pembaruan sekarang"
@@ -741,14 +762,14 @@ def _run_native_exe_smoke(staging: Path, browser_exe: Optional[str]) -> List[str
                                     time.sleep(0.5)
                                     dlg_txt = _eval(303, "document.body ? document.body.innerText : ''") or ""
                                     if (
-                                        "v1.0.1" in dlg_txt
+                                        f"v{next_ver}" in dlg_txt
                                         and ("tersedia" in dlg_txt.lower() or "available" in dlg_txt.lower())
                                         and ("Unduh Pembaruan" in dlg_txt or "Download Update" in dlg_txt)
                                     ):
                                         check_ok = True
                                         break
                                 if not check_ok:
-                                    errs.append("[E11.5/E12.5 native exe] About update check did not report v1.0.1 + Download button")
+                                    errs.append(f"[E11.5/E12.5 native exe] About update check did not report v{next_ver} + Download button")
                                 if "Tutup dialog Pengaturan" in dlg_txt or "Close Settings" in dlg_txt:
                                     errs.append("[E12.5 native exe] About update check result still mentions Settings/Pengaturan")
                                 if "· build " not in dlg_txt:
@@ -877,11 +898,13 @@ def run_staged_smoke_test(staging: Path) -> List[str]:
                 errors.append(f"[{scenario_name}] Staged server.log stayed empty (0 bytes)")
             shutil.rmtree(data_dir, ignore_errors=True)
 
-    # E10.3: Live staged update-banner smoke checks (1.0.1 banner, 1.0.0 no banner, invalid URL graceful)
+    # E10.3: Live staged update-banner smoke checks (newer version banner, current version no banner, invalid URL graceful)
     if browser_exe:
+        _cur_ver = _read_app_version_from_tree(staging)
+        _next_ver = _next_patch_version(_cur_ver)
         for upd_label, manifest_payload, expect_banner in (
-            ("update_1_0_1", {"version": "1.0.1", "released": "2026-12-01", "notes_id": "Catatan smoke 1.0.1", "notes_en": "Smoke release 1.0.1", "download_url": "https://example.com/1.0.1.exe"}, True),
-            ("same_1_0_0", {"version": "1.0.0", "released": "2026-11-19"}, False),
+            ("update_next", {"version": _next_ver, "released": "2026-12-01", "notes_id": f"Catatan smoke {_next_ver}", "notes_en": f"Smoke release {_next_ver}", "download_url": f"https://example.com/{_next_ver}.exe"}, True),
+            ("same_cur", {"version": _cur_ver, "released": "2026-11-23"}, False),
             ("invalid_url", None, False),
         ):
             u_dir = Path(tempfile.mkdtemp(prefix=f"efs_smoke_upd_{upd_label}_"))
@@ -935,6 +958,7 @@ def run_staged_smoke_test(staging: Path) -> List[str]:
                             u_url,
                             expect_wizard=False,
                             expect_update_banner=expect_banner,
+                            expected_update_version=_next_ver,
                         )
                     )
             finally:

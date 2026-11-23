@@ -1,7 +1,7 @@
 {
-  "version": "1.0.0",
+  "version": "1.0.1",
   "released": "2026-11-23",
-  "notes_id": "Rilis pertama EasyFaceless Studio: buat video dokumenter 10–20 menit dari naskah sampai MP4 dan draft CapCut, sumber footage gratis dengan atribusi otomatis, wizard pengaturan awal, dan pemberitahuan pembaruan.",
-  "notes_en": "First release of EasyFaceless Studio: create 10–20 minute documentary videos from script to MP4 and CapCut draft, free footage sources with automatic attribution, a first-run setup wizard, and update notifications.",
-  "download_url": "https://drive.google.com/drive/folders/1IarZj2_gX5YwToUdpB1uTmhidwTSuicH?usp=drive_link"
+  "notes_id": "Pembaruan EasyFaceless Studio 1.0.1: mode Campur Terbaik paralel lintas sumber footage, pencocokan Local files lebih akurat dengan pengunggah multi-file, ekspor prompt & impor gambar massal untuk alat eksternal, preset gambar Together AI dan DeepInfra dengan Uji 1 gambar, serta dukungan CapCut 9.7.1.",
+  "notes_en": "EasyFaceless Studio 1.0.1 update: parallel Mix Best footage search across active sources, smarter Local files matching with multi-file upload, External Image Bridge prompt export and bulk import, Together AI and DeepInfra image presets with 1-image tester, and tested support for CapCut 9.7.1.",
+  "download_url": "GANTI_DENGAN_LINK_GOOGLE_DRIVE"
 }

@@ -112,16 +112,21 @@ def test_e2_update_checker_logic_throttle_offline_skip_and_banner(tmp_path: Path
     assert update_checker.is_newer_version("1.0.0", "1.0.0") is False
     assert update_checker.is_newer_version("0.9.9", "1.0.0") is False
 
-    # 2. Local file:/// manifest with newer version 1.0.1
+    # 2. Local file:/// manifest with newer version
+    from app.services.branding.constants import APP_VERSION
+    _p = [int(x) for x in APP_VERSION.split(".")[:3]]
+    _next1 = f"{_p[0]}.{_p[1]}.{_p[2] + 1}"
+    _next2 = f"{_p[0]}.{_p[1]}.{_p[2] + 2}"
+
     manifest_file = tmp_path / "latest.json"
     manifest_file.write_text(
         json.dumps({
-            "version": "1.0.1",
+            "version": _next1,
             "released": "2026-12-01",
             "notes_id": "Perbaikan baru ID",
             "notes_en": "New release EN",
-            "download_url": "https://example.com/setup-1.0.1.exe",
-            "min_supported": "1.0.0",
+            "download_url": f"https://example.com/setup-{_next1}.exe",
+            "min_supported": APP_VERSION,
         }),
         encoding="utf-8",
     )
@@ -132,21 +137,21 @@ def test_e2_update_checker_logic_throttle_offline_skip_and_banner(tmp_path: Path
     assert res1["checked_now"] is True
     assert res1["has_update"] is True
     assert res1["show_banner"] is True
-    assert res1["remote_version"] == "1.0.1"
+    assert res1["remote_version"] == _next1
 
     # 3. 24-hour throttle prevents re-checking after 3 hours
-    manifest_file.write_text(json.dumps({"version": "1.0.2"}), encoding="utf-8")
+    manifest_file.write_text(json.dumps({"version": _next2}), encoding="utf-8")
     res_3h = update_checker.check_for_updates(force=False, now=t0 + timedelta(hours=3))
     assert res_3h["checked_now"] is False
-    assert res_3h["remote_version"] == "1.0.1"
+    assert res_3h["remote_version"] == _next1
 
-    # After 25 hours -> runs fresh fetch and sees 1.0.2
+    # After 25 hours -> runs fresh fetch and sees _next2
     res_25h = update_checker.check_for_updates(force=False, now=t0 + timedelta(hours=25))
     assert res_25h["checked_now"] is True
-    assert res_25h["remote_version"] == "1.0.2"
+    assert res_25h["remote_version"] == _next2
 
     # 4. Same version -> has_update=False, show_banner=False
-    manifest_file.write_text(json.dumps({"version": "1.0.0"}), encoding="utf-8")
+    manifest_file.write_text(json.dumps({"version": APP_VERSION}), encoding="utf-8")
     res_same = update_checker.check_for_updates(force=True, now=t0 + timedelta(hours=26))
     assert res_same["has_update"] is False
     assert res_same["show_banner"] is False
@@ -158,14 +163,14 @@ def test_e2_update_checker_logic_throttle_offline_skip_and_banner(tmp_path: Path
     assert res_off["error"] is not None
     assert res_off["show_banner"] is False
 
-    # 6. Restore 1.0.1 & verify UI Banner + Skip Version button persistence
+    # 6. Restore _next1 & verify UI Banner + Skip Version button persistence
     manifest_file.write_text(
         json.dumps({
-            "version": "1.0.1",
+            "version": _next1,
             "released": "2026-12-01",
-            "notes_id": "Catatan uji versi 1.0.1",
-            "notes_en": "Test notes v1.0.1",
-            "download_url": "https://example.com/setup-1.0.1.exe",
+            "notes_id": f"Catatan uji versi {_next1}",
+            "notes_en": f"Test notes v{_next1}",
+            "download_url": f"https://example.com/setup-{_next1}.exe",
         }),
         encoding="utf-8",
     )
@@ -176,13 +181,13 @@ def test_e2_update_checker_logic_throttle_offline_skip_and_banner(tmp_path: Path
     at.run(timeout=45)
     assert not at.exception
     md_all = " ".join(m.value for m in at.markdown)
-    assert "v1.0.1" in md_all and "Catatan uji versi 1.0.1" in md_all
+    assert f"v{_next1}" in md_all and f"Catatan uji versi {_next1}" in md_all
 
     skip_btn = [b for b in at.button if b.key == "btn_upd_skip_home"]
     assert len(skip_btn) == 1
     skip_btn[0].click().run(timeout=20)
     assert not at.exception
-    assert update_checker.read_update_state().get("skipped_version") == "1.0.1"
+    assert update_checker.read_update_state().get("skipped_version") == _next1
     assert update_checker.get_active_update_banner() is None
 
     # 7. Auto check toggle disables automatic checks when force=False
@@ -708,13 +713,16 @@ def test_e10_update_checker_logging_sync_startup_and_settings_results(tmp_path: 
     sink_id = logger.add(lambda msg: log_lines.append(str(msg)), level="INFO")
     try:
         manifest_path = tmp_path / "latest_test.json"
+        from app.services.branding.constants import APP_VERSION
+        _parts = [int(p) for p in APP_VERSION.split(".")[:3]]
+        _next_ver = f"{_parts[0]}.{_parts[1]}.{_parts[2] + 1}"
         manifest_path.write_text(
             json.dumps({
-                "version": "1.0.1",
+                "version": _next_ver,
                 "released": "2026-12-01",
-                "notes_id": "Rilis uji 1.0.1",
-                "notes_en": "Test release 1.0.1",
-                "download_url": "https://example.com/1.0.1.exe",
+                "notes_id": f"Rilis uji {_next_ver}",
+                "notes_en": f"Test release {_next_ver}",
+                "download_url": f"https://example.com/{_next_ver}.exe",
             }),
             encoding="utf-8",
         )
@@ -723,8 +731,8 @@ def test_e10_update_checker_logging_sync_startup_and_settings_results(tmp_path: 
         # Startup check completes synchronously and immediately populates active banner
         assert update_checker.start_background_update_check() is True
         banner = update_checker.get_active_update_banner()
-        assert banner is not None and banner["remote_version"] == "1.0.1"
-        assert any("local_version=1.0.0" in ln and "remote_version=1.0.1" in ln and "decision=update_available" in ln for ln in log_lines)
+        assert banner is not None and banner["remote_version"] == _next_ver
+        assert any(f"local_version={APP_VERSION}" in ln and f"remote_version={_next_ver}" in ln and "decision=update_available" in ln for ln in log_lines)
 
         # Manual check inside Settings reports 'available', 'up_to_date', and 'failed + reason'
         at = AppTest.from_file(get_long_video_app_file())
@@ -732,16 +740,16 @@ def test_e10_update_checker_logging_sync_startup_and_settings_results(tmp_path: 
         at.run(timeout=30)
         assert not at.exception
 
-        # Available (1.0.1)
+        # Available (newer)
         at.button(key="btn_check_updates_general_settings").click().run(timeout=20)
         assert not at.exception
-        assert any("1.0.1" in el.value for el in at.info)
+        assert any(_next_ver in el.value for el in at.info)
 
-        # Up to date (1.0.0)
-        manifest_path.write_text(json.dumps({"version": "1.0.0"}), encoding="utf-8")
+        # Up to date (current APP_VERSION)
+        manifest_path.write_text(json.dumps({"version": APP_VERSION}), encoding="utf-8")
         at.button(key="btn_check_updates_general_settings").click().run(timeout=20)
         assert not at.exception
-        assert any("1.0.0" in el.value for el in at.success)
+        assert any(APP_VERSION in el.value for el in at.success)
         assert any("decision=up_to_date" in ln for ln in log_lines)
 
         # Failed + concise error reason (invalid URL)
@@ -786,15 +794,18 @@ def test_e11_empty_prod_url_friendly_errors_about_and_sidebar_badge(tmp_path: Pa
         assert res_404["error_kind"] == "http_404"
         assert any("decision=failed:" in ln for ln in log_lines)
 
-        # 3. Valid 1.0.1 manifest -> throttle & skipped_version logs + About dialog & sidebar badge UI
-        manifest_path = tmp_path / "latest_101.json"
+        # 3. Valid newer manifest -> throttle & skipped_version logs + About dialog & sidebar badge UI
+        from app.services.branding.constants import APP_VERSION
+        _p = [int(x) for x in APP_VERSION.split(".")[:3]]
+        _next_v = f"{_p[0]}.{_p[1]}.{_p[2] + 1}"
+        manifest_path = tmp_path / "latest_next.json"
         manifest_path.write_text(
             json.dumps({
-                "version": "1.0.1",
+                "version": _next_v,
                 "released": "2026-12-01",
                 "notes_id": "Catatan uji E11",
                 "notes_en": "E11 test notes",
-                "download_url": "https://example.com/1.0.1.exe",
+                "download_url": f"https://example.com/{_next_v}.exe",
             }),
             encoding="utf-8",
         )
@@ -823,11 +834,11 @@ def test_e11_empty_prod_url_friendly_errors_about_and_sidebar_badge(tmp_path: Pa
         after_info = "\n".join(i.value for i in at.info)
         assert "· build " in about_md
         assert "Catatan uji E11" in about_md
-        assert "v1.0.1" in after_info
+        assert f"v{_next_v}" in after_info
         assert "Pengaturan" not in after_info and "Settings" not in after_info
 
         # Skipped version logs decision=skipped_version on force=True
-        update_checker.skip_update_version("1.0.1")
+        update_checker.skip_update_version(_next_v)
         update_checker.check_for_updates(force=True)
         assert any("decision=skipped_version" in ln for ln in log_lines)
     finally:
@@ -1026,7 +1037,7 @@ def test_r1_release_url_friendly_404_make_latest_json_and_process_leak_guard(tmp
     assert committed_data["download_url"] == "GANTI_DENGAN_LINK_GOOGLE_DRIVE"
     assert (repo_root / "packaging" / "release" / "notes" / f"{APP_VERSION}.id.md").is_file()
     assert (repo_root / "packaging" / "release" / "notes" / f"{APP_VERSION}.en.md").is_file()
-    assert "Rilis pertama EasyFaceless Studio:" in committed_data["notes_id"]
+    assert "EasyFaceless Studio" in committed_data["notes_id"] and len(committed_data["notes_id"]) >= 30
 
     # Missing notes files for a version must fail cleanly
     with pytest.raises(FileNotFoundError):

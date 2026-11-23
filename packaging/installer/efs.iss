@@ -5,7 +5,7 @@
   #define MyAppName "EasyFaceless Studio"
 #endif
 #ifndef MyAppVersion
-  #define MyAppVersion "1.0.0"
+  #define MyAppVersion "1.0.1"
 #endif
 #ifndef MyAppPublisher
   #define MyAppPublisher "Naseh Ngulik"
@@ -14,7 +14,7 @@
   #define MyAppExeName "EasyFaceless Studio.exe"
 #endif
 #ifndef MyAppSetupBase
-  #define MyAppSetupBase "EasyFacelessStudio-Setup-1.0.0"
+  #define MyAppSetupBase "EasyFacelessStudio-Setup-1.0.1"
 #endif
 #ifndef MyStagingDir
   #define MyStagingDir "..\..\build\staging\EasyFaceless Studio"

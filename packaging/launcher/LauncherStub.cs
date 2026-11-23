@@ -13,8 +13,8 @@ using System.Windows.Forms;
 [assembly: AssemblyCompany("Naseh Ngulik")]
 [assembly: AssemblyProduct("EasyFaceless Studio")]
 [assembly: AssemblyCopyright("Copyright (c) 2026 Naseh Ngulik")]
-[assembly: AssemblyVersion("1.0.0.0")]
-[assembly: AssemblyFileVersion("1.0.0.0")]
+[assembly: AssemblyVersion("1.0.1.0")]
+[assembly: AssemblyFileVersion("1.0.1.0")]
 
 namespace EasyFacelessStudioLauncher
 {

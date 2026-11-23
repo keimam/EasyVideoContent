@@ -36,7 +36,7 @@ def test_branding_constants():
     assert APP_NAME == "EasyFaceless Studio"
     assert APP_SHORT == "EasyFaceless"
     assert APP_TAGLINE == "STUDIO"
-    assert APP_VERSION == "1.0.0"
+    assert APP_VERSION == "1.0.1"
     assert CORE_NAME == "MoneyPrinterTurbo"
     assert CORE_VERSION == "1.3.10"
     assert "v1.0" in VERSION_STRING
@@ -203,7 +203,7 @@ def test_apptest_branding_main_page(monkeypatch):
             "Sidebar must not render the old attribution box (C7)"
         )
         ver_btn = at.button(key="efs_btn_version_main")
-        assert ver_btn is not None and ver_btn.label == "v1.0.0"
+        assert ver_btn is not None and ver_btn.label == f"v{APP_VERSION}"
 
         # 3. 5 Sidebar navigation / setting items present
         page_link_labels = [str(pl.label) for pl in at.page_link]
@@ -235,7 +235,7 @@ def test_apptest_branding_long_video_page(tmp_path, monkeypatch):
         "Long Video sidebar must not render the old attribution box (C7)"
     )
     ver_btn = at.button(key="efs_btn_version_longform")
-    assert ver_btn is not None and ver_btn.label == "v1.0.0"
+    assert ver_btn is not None and ver_btn.label == f"v{APP_VERSION}"
 
     page_link_labels = [str(pl.label) for pl in at.page_link]
     button_labels = [str(b.label) for b in at.button]
@@ -473,7 +473,7 @@ def test_c7_about_dialog_contains_license_and_sidebar_version_opens_dialog(tmp_p
         assert not at.exception
         assert not any("MoneyPrinterTurbo" in str(m.value) for m in at.markdown)
         ver_btn = at.button(key="efs_btn_version_longform")
-        assert ver_btn is not None and ver_btn.label == "v1.0.0"
+        assert ver_btn is not None and ver_btn.label == f"v{APP_VERSION}"
 
         # 2. Clicking clickable version button opens About dialog with MIT attribution + LICENSE file content
         ver_btn.click().run(timeout=20)
@@ -594,8 +594,8 @@ def test_c3_c4_c5_help_dialog_docs_notices_and_repo_hygiene(tmp_path, monkeypatc
 
     repo_root = Path(__file__).resolve().parents[2]
 
-    # C5: Single source of version 1.0.0 & CHANGELOG.md present
-    assert APP_VERSION == "1.0.0"
+    # C5: Single source of version & CHANGELOG.md present
+    assert APP_VERSION == "1.0.1"
     assert longform_pkg.__version__ == APP_VERSION
     changelog = (repo_root / "CHANGELOG.md").read_text(encoding="utf-8")
     for marker in ("8C.1", "8B.2", "C6", "C7"):

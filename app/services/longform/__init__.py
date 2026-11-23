@@ -7,4 +7,4 @@ with presets, smart caching, resume capability, and atomic persistence.
 try:
     from app.services.branding.constants import APP_VERSION as __version__
 except Exception:
-    __version__ = "1.0.0"
+    __version__ = "1.0.1"
