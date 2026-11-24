@@ -609,3 +609,48 @@ class BaseVisualProvider(ABC):
     ) -> VisualAsset:
         """Download or materialize candidate into local asset file."""
         pass
+
+
+_IO_TELEMETRY_LOCK = threading.Lock()
+_IO_TELEMETRY: Dict[str, Any] = {
+    "search_cache_hits": {},
+    "search_http_requests": {},
+    "download_cache_hits": 0,
+    "download_misses": 0,
+}
+
+
+def reset_io_telemetry() -> None:
+    """Reset process-wide thread-safe visual search/download telemetry counters."""
+    with _IO_TELEMETRY_LOCK:
+        _IO_TELEMETRY["search_cache_hits"] = {}
+        _IO_TELEMETRY["search_http_requests"] = {}
+        _IO_TELEMETRY["download_cache_hits"] = 0
+        _IO_TELEMETRY["download_misses"] = 0
+
+
+def record_search_io(provider_key: str, *, cache_hit: bool) -> None:
+    """Record a visual provider search event (cache hit vs live network request)."""
+    pk = str(provider_key or "unknown").lower().strip()
+    bucket = "search_cache_hits" if cache_hit else "search_http_requests"
+    with _IO_TELEMETRY_LOCK:
+        counts = _IO_TELEMETRY[bucket]
+        counts[pk] = int(counts.get(pk, 0)) + 1
+
+
+def record_download_io(*, cache_hit: bool) -> None:
+    """Record a media download cache hit or miss."""
+    key = "download_cache_hits" if cache_hit else "download_misses"
+    with _IO_TELEMETRY_LOCK:
+        _IO_TELEMETRY[key] = int(_IO_TELEMETRY.get(key, 0)) + 1
+
+
+def snapshot_io_telemetry() -> Dict[str, Any]:
+    """Return a point-in-time copy of visual search/download telemetry counters."""
+    with _IO_TELEMETRY_LOCK:
+        return {
+            "search_cache_hits": dict(_IO_TELEMETRY["search_cache_hits"]),
+            "search_http_requests": dict(_IO_TELEMETRY["search_http_requests"]),
+            "download_cache_hits": int(_IO_TELEMETRY["download_cache_hits"]),
+            "download_misses": int(_IO_TELEMETRY["download_misses"]),
+        }

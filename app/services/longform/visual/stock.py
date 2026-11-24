@@ -33,6 +33,7 @@ from app.services.longform.visual.base import (
     VisualConfigurationError,
     VisualError,
     compute_file_content_hash,
+    record_search_io,
     respect_provider_rate_limit,
 )
 from app.services.longform.visual.cache import GlobalMediaCache
@@ -1065,6 +1066,7 @@ class StockVisualProvider(BaseVisualProvider):
         query_url = f"https://pixabay.com/api/videos/?{urllib.parse.urlencode(params)}"
         try:
             respect_provider_rate_limit("pixabay", 0.25)
+            record_search_io("pixabay", cache_hit=False)
             r = requests.get(query_url, proxies=config.proxy, timeout=30)
             if r.status_code != 200:
                 logger.warning(f"Pixabay direct query returned status {r.status_code}")
@@ -1253,6 +1255,7 @@ class StockVisualProvider(BaseVisualProvider):
                         )
                 else:
                     # Upstream fallback: app/services/material.py:507
+                    record_search_io("pixabay", cache_hit=False)
                     results = search_videos_pixabay(
                         search_term=query,
                         minimum_duration=min_sec,
@@ -1322,6 +1325,7 @@ class StockVisualProvider(BaseVisualProvider):
         # 2. Pexels search
         if (self.provider_name == "pexels" or (self.provider_name == "stock" and has_pexels)) and len(candidates) < limit:
             try:
+                record_search_io("pexels", cache_hit=False)
                 results = search_videos_pexels(
                     search_term=query,
                     minimum_duration=min_sec,
@@ -1386,6 +1390,7 @@ class StockVisualProvider(BaseVisualProvider):
         # 3. Coverr search
         if (self.provider_name == "coverr" or (self.provider_name == "stock" and has_coverr)) and len(candidates) < limit:
             try:
+                record_search_io("coverr", cache_hit=False)
                 results = search_videos_coverr(
                     search_term=query,
                     minimum_duration=min_sec,

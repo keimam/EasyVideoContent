@@ -11,9 +11,11 @@ V6: local provider is a full first-class real source (non-fake, no [FAKE] label,
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -42,6 +44,8 @@ from app.services.longform.visual.base import (
     invalidate_shot_thumbnail_cache,
     is_dev_or_test_mode,
     license_requires_attribution,
+    reset_io_telemetry,
+    snapshot_io_telemetry,
 )
 # Builder imported eagerly (pure FFmpeg subprocess, no upstream deps)
 from app.services.longform.visual.builder import (
@@ -101,6 +105,24 @@ class VisualService:
         self.cache = GlobalMediaCache()
         self.credits_manager = CreditsManager(self.project_dir)
         self.local_library = LocalLibraryManager(self.project_dir)
+        self._telemetry_lock = threading.Lock()
+        self._active_search_seconds: Optional[Dict[str, float]] = None
+        self._active_manifest_save_seconds: float = 0.0
+        self._active_manifest_save_count: int = 0
+
+    def _save_manifest_timed(self, manifest: ProjectManifest) -> None:
+        t0 = time.monotonic()
+        save_manifest(manifest, self.project_dir)
+        dt = time.monotonic() - t0
+        with self._telemetry_lock:
+            self._active_manifest_save_seconds += dt
+            self._active_manifest_save_count += 1
+
+    def _record_provider_search_time(self, prov_name: str, elapsed_sec: float) -> None:
+        pk = str(prov_name or "unknown").lower().strip()
+        with self._telemetry_lock:
+            if self._active_search_seconds is not None:
+                self._active_search_seconds[pk] = float(self._active_search_seconds.get(pk, 0.0)) + float(elapsed_sec)
 
     def get_provider(
         self,
@@ -692,6 +714,7 @@ class VisualService:
             err_txt: Optional[str] = None
             tier_cands: List[VisualCandidate] = []
             try:
+                _t_call0 = time.monotonic()
                 tier_cands, raw_cnt, rej_reasons = self._call_provider_search(
                     active_provider,
                     query=q_text,
@@ -713,6 +736,8 @@ class VisualService:
             except Exception as search_exc:
                 err_txt = str(search_exc)[:120]
                 logger.warning(f"Shot {shot.shot_id}: {prov_name} query '{q_text}' error: {err_txt}")
+            finally:
+                self._record_provider_search_time(prov_name, time.monotonic() - _t_call0)
 
             attempts.append({
                 "provider": prov_name,
@@ -1224,12 +1249,35 @@ class VisualService:
         )
         proj_lang = resolve_project_language(manifest)
 
+        # V1/A2.1: Initialize telemetry, source distribution & sequential tracking
+        reset_io_telemetry()
+        fetch_t0 = time.monotonic()
+        with self._telemetry_lock:
+            self._active_search_seconds = {}
+            self._active_manifest_save_seconds = 0.0
+            self._active_manifest_save_count = 0
+        anchor_seconds = 0.0
+        anchor_llm_calls = 0
+        ai_kw_seconds = 0.0
+        ai_kw_llm_calls = 0
+        ai_kw_retries = 0
+        ai_kw_cached = 0
+        translate_seconds = 0.0
+        search_wall_seconds = 0.0
+        asset_download_seconds = 0.0
+        ai_rel_seconds = 0.0
+        thumbnail_seconds = 0.0  # A2.1: Candidate thumbnails remain lazy (UI grid only)
+
         # F12: Generate/load cached project anchor & avoid terms once per project for non-fake fetch
         if effective_provider_name != "fake" and not getattr(manifest, "visual_anchor_terms", None):
+            _t_anc0 = time.monotonic()
             try:
-                ensure_project_visual_anchors(manifest)
+                anc_res = ensure_project_visual_anchors(manifest)
+                if isinstance(anc_res, dict) and anc_res.get("source") == "ai" and not anc_res.get("cached"):
+                    anchor_llm_calls += 1
             except Exception as exc:
                 logger.warning(f"Could not populate project visual anchors: {exc}")
+            anchor_seconds += time.monotonic() - _t_anc0
 
         proj_anchors = list(getattr(manifest, "visual_anchor_terms", []) or [])
         proj_avoids = list(getattr(manifest, "visual_avoid_terms", []) or [])
@@ -1255,8 +1303,7 @@ class VisualService:
         done_fetch_count = 0
         self._last_fetch_target_count = target_fetch_total
 
-        # V1: Initialize telemetry, source distribution & sequential tracking for Mix Best / Priority
-        fetch_t0 = time.monotonic()
+        # V1: Initialize source distribution & sequential tracking for Mix Best / Priority
         eff_search_mode = (
             str(getattr(manifest, "visual_search_mode", None) or "priority").lower().strip()
         )
@@ -1345,22 +1392,30 @@ class VisualService:
                         anchor_terms=proj_anchors,
                         avoid_terms=proj_avoids,
                     )
+                    ai_kw_seconds += float(kw_res.get("elapsed_seconds") or 0.0)
+                    ai_kw_llm_calls += int(kw_res.get("llm_calls") or 0)
+                    ai_kw_retries += int(kw_res.get("llm_retries") or 0)
+                    ai_kw_cached += int(kw_res.get("cached") or 0)
                     if kw_res.get("warning"):
                         translation_warnings.append(str(kw_res["warning"]))
                     if kw_res.get("fallback_used") and is_non_english_language(proj_lang):
+                        _t_tr0 = time.monotonic()
                         tr_res = translate_chapter_queries_to_english(
                             shots_needing_kw_gen,
                             preset_snapshot=preset_snap,
                             project_lang=proj_lang,
                         )
+                        translate_seconds += time.monotonic() - _t_tr0
                         if tr_res.get("warning"):
                             translation_warnings.append(str(tr_res["warning"]))
                 elif shots_needing_kw_gen and is_non_english_language(proj_lang):
+                    _t_tr0 = time.monotonic()
                     tr_res = translate_chapter_queries_to_english(
                         shots_needing_kw_gen,
                         preset_snapshot=preset_snap,
                         project_lang=proj_lang,
                     )
+                    translate_seconds += time.monotonic() - _t_tr0
                     if tr_res.get("warning"):
                         translation_warnings.append(str(tr_res["warning"]))
 
@@ -1406,6 +1461,7 @@ class VisualService:
                     or shot.visual_prompt
                     or "cinematic scene"
                 )
+                _t_sw0 = time.monotonic()
                 candidates, chosen_provider, chosen_query, attempts_log, fallback_reason = self._search_shot_across_providers(
                     shot,
                     manifest,
@@ -1419,6 +1475,7 @@ class VisualService:
                     initial_fallback_reason=global_fallback_reason,
                     search_mode=eff_search_mode if use_waterfall else "priority",
                 )
+                search_wall_seconds += time.monotonic() - _t_sw0
                 for att in attempts_log:
                     p_k = str(att.get("provider") or "unknown").lower().strip()
                     requests_by_provider[p_k] = requests_by_provider.get(p_k, 0) + 1
@@ -1529,7 +1586,9 @@ class VisualService:
                 dest_file = self.project_dir / rel_dest
 
                 logger.info(f"Fetching asset for {shot.shot_id} via {active_provider.name} (score: {selected_candidate.relevance_score:.2f}, {selected_candidate.rendition_name or 'std'})...")
+                _t_dl0 = time.monotonic()
                 asset = active_provider.fetch_asset(selected_candidate, dest_file)
+                asset_download_seconds += time.monotonic() - _t_dl0
                 asset_local = Path(getattr(asset, "local_path", None) or dest)
                 try:
                     rel_dest = asset_local.resolve().relative_to(self.project_dir.resolve()).as_posix()
@@ -1577,7 +1636,7 @@ class VisualService:
                     shot.status = ItemStatus.stale
                 else:
                     shot.status = ItemStatus.pending
-                save_manifest(manifest, self.project_dir)
+                self._save_manifest_timed(manifest)
                 if shot.shot_id in target_fetch_ids and target_fetch_total > 0:
                     done_fetch_count += 1
                     pct = _pct_start + ((done_fetch_count / target_fetch_total) * (_pct_end - _pct_start))
@@ -1616,13 +1675,15 @@ class VisualService:
                     is_indeterminate=True,
                     partial=True,
                 )
+            _t_air0 = time.monotonic()
             rel_stats = check_project_relevance(manifest, self.project_dir)
+            ai_rel_seconds += time.monotonic() - _t_air0
             logger.info(
                 f"AI relevance check completed for '{manifest.project_id}': "
                 f"checked={rel_stats.get('checked')}, cached={rel_stats.get('cached')}, "
                 f"ya={rel_stats.get('ya')}, tidak={rel_stats.get('tidak')}, ragu={rel_stats.get('ragu')}"
             )
-            save_manifest(manifest, self.project_dir)
+            self._save_manifest_timed(manifest)
 
         try:
             self.credits_manager.write_credits_markdown(manifest)
@@ -1639,9 +1700,43 @@ class VisualService:
                     dist_counts[sk] = dist_counts.get(sk, 0) + 1
                 if _sh.relevance_score is not None and float(_sh.relevance_score) > 0:
                     rel_scores.append(float(_sh.relevance_score))
+        io_snap = snapshot_io_telemetry()
+        with self._telemetry_lock:
+            search_sec_by_prov = {k: round(v, 3) for k, v in (self._active_search_seconds or {}).items()}
+            manifest_save_sec_fetch = round(self._active_manifest_save_seconds, 3)
+            manifest_save_cnt_fetch = int(self._active_manifest_save_count)
+            self._active_search_seconds = None
+
+        search_per_source: Dict[str, Dict[str, Any]] = {}
+        all_prov_keys = set(requests_by_provider.keys()) | set(search_sec_by_prov.keys()) | set(io_snap["search_cache_hits"].keys()) | set(io_snap["search_http_requests"].keys())
+        for pk in sorted(all_prov_keys):
+            search_per_source[pk] = {
+                "tier_attempts": int(requests_by_provider.get(pk, 0)),
+                "http_requests": int(io_snap["search_http_requests"].get(pk, 0)),
+                "cache_hits": int(io_snap["search_cache_hits"].get(pk, 0)),
+                "elapsed_seconds": float(search_sec_by_prov.get(pk, 0.0)),
+            }
+
+        fetch_elapsed = round(time.monotonic() - fetch_t0, 3)
         self._last_fetch_metrics = {
             "search_mode": eff_search_mode if use_waterfall else "single",
-            "elapsed_seconds": round(time.monotonic() - fetch_t0, 3),
+            "elapsed_seconds": fetch_elapsed,
+            "anchor_seconds": round(anchor_seconds, 3),
+            "anchor_llm_calls": anchor_llm_calls,
+            "ai_keywords_seconds": round(ai_kw_seconds, 3),
+            "ai_keywords_llm_calls": ai_kw_llm_calls,
+            "ai_keywords_retries": ai_kw_retries,
+            "ai_keywords_cached": ai_kw_cached,
+            "translate_seconds": round(translate_seconds, 3),
+            "search_wall_seconds": round(search_wall_seconds, 3),
+            "search_per_source": search_per_source,
+            "thumbnail_seconds": round(thumbnail_seconds, 3),
+            "asset_download_seconds": round(asset_download_seconds, 3),
+            "download_cache_hits": int(io_snap["download_cache_hits"]),
+            "download_misses": int(io_snap["download_misses"]),
+            "ai_relevance_seconds": round(ai_rel_seconds, 3),
+            "manifest_save_seconds_fetch": manifest_save_sec_fetch,
+            "manifest_save_count_fetch": manifest_save_cnt_fetch,
             "requests_total": sum(requests_by_provider.values()),
             "requests_by_provider": dict(requests_by_provider),
             "source_distribution": dist_counts,
@@ -1649,6 +1744,21 @@ class VisualService:
             "assigned_shots": sum(dist_counts.values()),
             "total_shots": len(all_shots_flat),
         }
+
+        logger.info(
+            f"[Visual Fetch Telemetry] project='{manifest.project_id}' mode={self._last_fetch_metrics['search_mode']} "
+            f"total={fetch_elapsed:.2f}s | anchors={anchor_seconds:.2f}s (llm={anchor_llm_calls}) | "
+            f"ai_keywords={ai_kw_seconds:.2f}s (llm={ai_kw_llm_calls}, retries={ai_kw_retries}, cached={ai_kw_cached}) | "
+            f"search_wall={search_wall_seconds:.2f}s | asset_download={asset_download_seconds:.2f}s "
+            f"(dl_cache_hit={io_snap['download_cache_hits']}, dl_miss={io_snap['download_misses']}) | "
+            f"thumbnails={thumbnail_seconds:.3f}s (lazy_ui) | manifest_save={manifest_save_sec_fetch:.2f}s ({manifest_save_cnt_fetch}x)"
+        )
+        if search_per_source:
+            prov_parts = [
+                f"{pk}:tiers={st['tier_attempts']},http={st['http_requests']},hit={st['cache_hits']},sec={st['elapsed_seconds']:.2f}s"
+                for pk, st in search_per_source.items()
+            ]
+            logger.info(f"[Visual Fetch Search Sources] {' | '.join(prov_parts)}")
 
         return manifest
 
@@ -1800,7 +1910,7 @@ class VisualService:
                 shot.rendered_clip = clip_rel
                 shot.status = ItemStatus.completed
                 invalidate_shot_thumbnail_cache(self.project_dir, shot.shot_id)
-                save_manifest(manifest, self.project_dir)
+                self._save_manifest_timed(manifest)
 
                 if target_build_total > 0:
                     pct = _pct_start + ((built_count / target_build_total) * (_pct_end - _pct_start))
@@ -2404,6 +2514,11 @@ class VisualService:
         if manifest is None:
             manifest = load_manifest(self.project_dir)
 
+        pipe_t0 = time.monotonic()
+        with self._telemetry_lock:
+            self._active_manifest_save_seconds = 0.0
+            self._active_manifest_save_count = 0
+
         stats: Dict[str, Any] = {
             "allocated_shots": 0,
             "fetched_count": 0,
@@ -2412,6 +2527,7 @@ class VisualService:
         }
 
         # Phase 1: Membagi shot (Shot Allocation) if 0 shots
+        alloc_t0 = time.monotonic()
         total_shots = sum(len(ch.shots) for ch in manifest.chapters)
         if total_shots == 0:
             update_job_phase(
@@ -2430,11 +2546,12 @@ class VisualService:
             print(f"\n[Visual Pipeline] Phase 1/3: Membagi shot untuk proyek '{manifest.project_id}'...")
             effective_fps = getattr(getattr(manifest, "encoder_settings", None), "fps", 25) or 25
             manifest = self.prepare_shots(manifest, fps=effective_fps)
-            save_manifest(manifest, self.project_dir)
+            self._save_manifest_timed(manifest)
             stats["allocated_shots"] = sum(len(ch.shots) for ch in manifest.chapters)
             print(f"  -> {stats['allocated_shots']} shot berhasil dialokasikan.")
         else:
             print(f"\n[Visual Pipeline] Phase 1/3: Shot sudah teralokasi ({total_shots} shot).")
+        alloc_seconds = round(time.monotonic() - alloc_t0, 3)
 
         if is_stop_requested(self.project_dir):
             print(f"\n[Visual Pipeline] Stop requested after shot allocation; exiting.")
@@ -2454,7 +2571,8 @@ class VisualService:
             _pct_start=0.0,
             _pct_end=45.0,
         )
-        save_manifest(manifest, self.project_dir)
+        fetch_metrics = dict(getattr(self, "_last_fetch_metrics", {}) or {})
+        self._save_manifest_timed(manifest)
 
         if is_stop_requested(self.project_dir):
             print(f"\n[Visual Pipeline] Stop requested after footage search; skipping clip building.")
@@ -2462,14 +2580,79 @@ class VisualService:
 
         # Phase 3: Menyusun klip (Build Clips)
         print(f"\n[Visual Pipeline] Phase 3/3: Menyusun klip visual untuk proyek '{manifest.project_id}'...")
+        with self._telemetry_lock:
+            self._active_manifest_save_seconds = 0.0
+            self._active_manifest_save_count = 0
+        build_t0 = time.monotonic()
         build_pct_start = 45.0 if getattr(self, "_last_fetch_target_count", 0) > 0 else 0.0
         manifest, build_stats = self.build_all(
             manifest,
             _pct_start=build_pct_start,
             _pct_end=99.0,
         )
-        save_manifest(manifest, self.project_dir)
+        self._save_manifest_timed(manifest)
+        build_wall_seconds = round(time.monotonic() - build_t0, 3)
         stats.update(build_stats)
+
+        with self._telemetry_lock:
+            manifest_save_build_sec = round(self._active_manifest_save_seconds, 3)
+            manifest_save_build_cnt = int(self._active_manifest_save_count)
+
+        total_pipeline_seconds = round(time.monotonic() - pipe_t0, 3)
+        total_manifest_save_seconds = round(
+            float(fetch_metrics.get("manifest_save_seconds_fetch", 0.0)) + manifest_save_build_sec,
+            3,
+        )
+        total_manifest_save_count = int(fetch_metrics.get("manifest_save_count_fetch", 0)) + manifest_save_build_cnt
+
+        pipeline_metrics: Dict[str, Any] = {
+            "project_id": manifest.project_id,
+            "total_seconds": total_pipeline_seconds,
+            "allocate_seconds": alloc_seconds,
+            "fetch_seconds": float(fetch_metrics.get("elapsed_seconds", 0.0)),
+            "anchor_seconds": float(fetch_metrics.get("anchor_seconds", 0.0)),
+            "anchor_llm_calls": int(fetch_metrics.get("anchor_llm_calls", 0)),
+            "ai_keywords_seconds": float(fetch_metrics.get("ai_keywords_seconds", 0.0)),
+            "ai_keywords_llm_calls": int(fetch_metrics.get("ai_keywords_llm_calls", 0)),
+            "ai_keywords_retries": int(fetch_metrics.get("ai_keywords_retries", 0)),
+            "ai_keywords_cached": int(fetch_metrics.get("ai_keywords_cached", 0)),
+            "translate_seconds": float(fetch_metrics.get("translate_seconds", 0.0)),
+            "search_wall_seconds": float(fetch_metrics.get("search_wall_seconds", 0.0)),
+            "search_per_source": fetch_metrics.get("search_per_source", {}),
+            "thumbnail_seconds": float(fetch_metrics.get("thumbnail_seconds", 0.0)),
+            "asset_download_seconds": float(fetch_metrics.get("asset_download_seconds", 0.0)),
+            "download_cache_hits": int(fetch_metrics.get("download_cache_hits", 0)),
+            "download_misses": int(fetch_metrics.get("download_misses", 0)),
+            "ai_relevance_seconds": float(fetch_metrics.get("ai_relevance_seconds", 0.0)),
+            "build_seconds": build_wall_seconds,
+            "ffmpeg_build_seconds": float(build_stats.get("total_build_seconds", 0.0)),
+            "built_count": int(build_stats.get("built_count", 0)),
+            "skipped_count": int(build_stats.get("skipped_count", 0)),
+            "manifest_save_seconds": total_manifest_save_seconds,
+            "manifest_save_count": total_manifest_save_count,
+            "source_distribution": fetch_metrics.get("source_distribution", {}),
+            "total_shots": int(fetch_metrics.get("total_shots", 0)),
+        }
+        stats["pipeline_metrics"] = pipeline_metrics
+        self._last_pipeline_metrics = pipeline_metrics
+
+        try:
+            metrics_file = self.project_dir / "visual_metrics.json"
+            metrics_tmp = metrics_file.with_suffix(".json.tmp")
+            metrics_tmp.write_text(json.dumps(pipeline_metrics, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(metrics_tmp, metrics_file)
+        except Exception as m_exc:
+            logger.debug(f"Could not save visual_metrics.json: {m_exc}")
+
+        logger.info(
+            f"[Visual Pipeline Summary] project='{manifest.project_id}' total={total_pipeline_seconds:.2f}s | "
+            f"alloc={alloc_seconds:.2f}s | fetch={pipeline_metrics['fetch_seconds']:.2f}s "
+            f"(ai_kw={pipeline_metrics['ai_keywords_seconds']:.2f}s/calls={pipeline_metrics['ai_keywords_llm_calls']}/ret={pipeline_metrics['ai_keywords_retries']}, "
+            f"search_wall={pipeline_metrics['search_wall_seconds']:.2f}s, "
+            f"download={pipeline_metrics['asset_download_seconds']:.2f}s, thumbs=0.000s) | "
+            f"build={build_wall_seconds:.2f}s (clips={pipeline_metrics['built_count']}, ffmpeg={pipeline_metrics['ffmpeg_build_seconds']:.2f}s) | "
+            f"manifest_save={total_manifest_save_seconds:.2f}s ({total_manifest_save_count}x)"
+        )
 
         return manifest, stats
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -759,6 +760,7 @@ def generate_chapter_visual_keywords_ai(
     force: bool = False,
 ) -> Dict[str, Any]:
     """Generate 2-3 concise 3-6 word concrete English visual queries per shot via 1 batch LLM call (F8/F12)."""
+    kw_t0 = time.monotonic()
     norm_lang = normalize_language_code(project_lang)
     snap = preset_snapshot or {}
     subj_terms = snap.get("required_subject_terms") or snap.get("topic_keywords") or []
@@ -774,6 +776,7 @@ def generate_chapter_visual_keywords_ai(
     tag_preserved = 0
     cached_hits = 0
     llm_calls = 0
+    llm_retries = 0
     warning: Optional[str] = None
     examples: List[Dict[str, str]] = []
 
@@ -859,6 +862,8 @@ def generate_chapter_visual_keywords_ai(
             "tag_preserved": tag_preserved,
             "cached": cached_hits,
             "llm_calls": 0,
+            "llm_retries": 0,
+            "elapsed_seconds": round(time.monotonic() - kw_t0, 3),
             "fallback_used": False,
             "warning": warning,
             "examples": examples,
@@ -901,6 +906,8 @@ def generate_chapter_visual_keywords_ai(
             "tag_preserved": tag_preserved,
             "cached": cached_hits,
             "llm_calls": 0,
+            "llm_retries": 0,
+            "elapsed_seconds": round(time.monotonic() - kw_t0, 3),
             "fallback_used": True,
             "warning": warn_msg,
             "examples": examples,
@@ -978,6 +985,7 @@ def generate_chapter_visual_keywords_ai(
                         retry_prompt, llm_adapter=llm_adapter, max_tokens=retry_tokens
                     )
                     llm_calls += 1
+                    llm_retries += 1
                     retry_map = _extract_json_any_dict(retry_txt)
                     if retry_map:
                         mapping.update(retry_map)
@@ -1088,6 +1096,8 @@ def generate_chapter_visual_keywords_ai(
         "tag_preserved": tag_preserved,
         "cached": cached_hits,
         "llm_calls": llm_calls,
+        "llm_retries": llm_retries,
+        "elapsed_seconds": round(time.monotonic() - kw_t0, 3),
         "fallback_used": fallback_used,
         "warning": warning,
         "examples": examples,

@@ -34,6 +34,7 @@ from app.services.longform.visual.base import (
     canonical_candidate_dedup_key,
     compute_file_content_hash,
     is_commercial_license_allowed,
+    record_search_io,
 )
 from app.services.longform.visual.cache import GlobalMediaCache, get_global_cache_dir
 from app.services.longform.visual.credits import CreditsManager
@@ -127,6 +128,7 @@ def cached_json_get(
             if age <= _SEARCH_CACHE_TTL_SECONDS:
                 data = json.loads(cache_file.read_text(encoding="utf-8"))
                 if isinstance(data, dict):
+                    record_search_io(provider_key, cache_hit=True)
                     return data
         except Exception:
             pass
@@ -143,6 +145,7 @@ def cached_json_get(
 
     for attempt in range(1, 3):
         _respect_rate_limit(provider_key, min_interval_sec=min_interval_sec)
+        record_search_io(provider_key, cache_hit=False)
         try:
             resp = requests.get(
                 url,

@@ -35,7 +35,7 @@ if sys.version_info >= (3, 11):
 else:
     import tomli as tomllib  # type: ignore
 
-from app.services.longform.visual.base import compute_file_content_hash
+from app.services.longform.visual.base import compute_file_content_hash, record_download_io
 
 
 def get_repo_root() -> Path:
@@ -334,6 +334,7 @@ class GlobalMediaCache:
 
         # Cache Hit
         if cached.is_file() and cached.stat().st_size > 0:
+            record_download_io(cache_hit=True)
             logger.debug(f"Global cache hit for URL: {url[:60]}... -> {cached.name}")
             # Update access time for LRU tracking
             try:
@@ -344,6 +345,7 @@ class GlobalMediaCache:
             return dest
 
         # Cache Miss: Download with retries
+        record_download_io(cache_hit=False)
         logger.info(f"Downloading media to global cache: {url[:80]}...")
         tmp_cached = self.cache_dir / f"{cached.name}.tmp.{uuid.uuid4().hex}"
         last_error = ""
