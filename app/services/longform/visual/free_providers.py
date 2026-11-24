@@ -50,7 +50,17 @@ _STATE_LOCK = threading.Lock()
 _PROVIDER_LOCKS: Dict[str, threading.Lock] = {}
 _LAST_REQUEST_TS: Dict[str, float] = {}
 _PROVIDER_COOLDOWN_UNTIL: Dict[str, float] = {}
+_PROVIDER_CONSECUTIVE_ERRORS: Dict[str, int] = {}
 _SEARCH_CACHE_TTL_SECONDS = 86400.0  # 24h polite search cache
+_TRANSIENT_COOLDOWN_SECONDS = 120.0
+_TRANSIENT_FAILURE_THRESHOLD = 2
+
+
+def reset_provider_circuit_breakers() -> None:
+    """Clear per-provider cooldowns and consecutive error counts (useful for tests)."""
+    with _STATE_LOCK:
+        _PROVIDER_COOLDOWN_UNTIL.clear()
+        _PROVIDER_CONSECUTIVE_ERRORS.clear()
 
 
 def _get_provider_lock(provider_key: str) -> threading.Lock:
@@ -113,10 +123,10 @@ def cached_json_get(
     *,
     cache: Optional[GlobalMediaCache] = None,
     headers: Optional[Dict[str, str]] = None,
-    timeout: int = 20,
+    timeout: int = 6,
     min_interval_sec: float = 0.35,
 ) -> Dict[str, Any]:
-    """Perform HTTP GET with User-Agent, rate-limit etiquette, 429 Retry-After, and 24h JSON cache."""
+    """Perform HTTP GET with User-Agent, rate-limit etiquette, 429/5xx cooldown circuit breaker, and 24h JSON cache."""
     media_cache = cache or GlobalMediaCache()
     cache_dir = _get_api_search_cache_dir(media_cache)
     key_raw = json.dumps({"p": provider_key, "u": url, "q": params or {}}, sort_keys=True)
@@ -141,7 +151,18 @@ def cached_json_get(
     with _STATE_LOCK:
         cooldown_until = _PROVIDER_COOLDOWN_UNTIL.get(provider_key, 0.0)
     if cooldown_until > time.time():
-        raise VisualError(f"{provider_key} rate-limited cooldown active ({int(cooldown_until - time.time())}s remaining)")
+        raise VisualError(f"{provider_key} cooldown active ({int(cooldown_until - time.time())}s remaining)")
+
+    def _note_transient_failure(detail: str) -> None:
+        with _STATE_LOCK:
+            cnt = int(_PROVIDER_CONSECUTIVE_ERRORS.get(provider_key, 0)) + 1
+            _PROVIDER_CONSECUTIVE_ERRORS[provider_key] = cnt
+            if cnt >= _TRANSIENT_FAILURE_THRESHOLD:
+                _PROVIDER_COOLDOWN_UNTIL[provider_key] = time.time() + _TRANSIENT_COOLDOWN_SECONDS
+                logger.warning(
+                    f"{provider_key} temporarily paused for {int(_TRANSIENT_COOLDOWN_SECONDS)}s "
+                    f"after {cnt} consecutive upstream timeout/5xx errors ({detail[:80]})"
+                )
 
     for attempt in range(1, 3):
         _respect_rate_limit(provider_key, min_interval_sec=min_interval_sec)
@@ -164,10 +185,17 @@ def cached_json_get(
                 wait_s = float(resp.headers.get("Retry-After") or 2.0)
                 time.sleep(min(wait_s, 5.0))
                 continue
+            if resp.status_code in (500, 502, 503, 504):
+                last_err = f"HTTP {resp.status_code} upstream gateway error"
+                _note_transient_failure(last_err)
+                # Fail fast on 502/503/504 without wasting another full timeout cycle
+                break
             resp.raise_for_status()
             payload = resp.json()
             if not isinstance(payload, dict):
                 payload = {"items": payload}
+            with _STATE_LOCK:
+                _PROVIDER_CONSECUTIVE_ERRORS[provider_key] = 0
             try:
                 tmp_c = cache_file.with_suffix(".tmp")
                 tmp_c.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
@@ -175,10 +203,18 @@ def cached_json_get(
             except Exception:
                 pass
             return payload
+        except requests.exceptions.Timeout as exc:
+            last_err = f"Timeout ({exc})"
+            _note_transient_failure(last_err)
+            # Fail fast on read/connect timeout instead of stalling another full timeout cycle
+            break
         except Exception as exc:
             last_err = str(exc)
+            if "timeout" in last_err.lower() or "504" in last_err or "503" in last_err:
+                _note_transient_failure(last_err)
+                break
             if attempt < 2:
-                time.sleep(1.0)
+                time.sleep(0.3)
 
     raise VisualError(f"{provider_key} API request failed: {last_err}")
 

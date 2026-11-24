@@ -398,6 +398,41 @@ def _render_project_load_error(project_id: str, exc: BaseException, tb_str: str 
         st.code(full_detail, language="text")
 
 
+def _get_visual_completion_duration_text(project_dir: Path, project_id: str) -> Optional[str]:
+    """Return localized visual pipeline completion duration banner text from visual_metrics.json or job_state."""
+    total_sec: Optional[float] = None
+    metrics_path = Path(project_dir) / "visual_metrics.json"
+    if metrics_path.is_file():
+        try:
+            data = json.loads(metrics_path.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and data.get("total_seconds") is not None:
+                total_sec = float(data["total_seconds"])
+        except Exception:
+            pass
+    if total_sec is None:
+        try:
+            st_job = jobs.get_job_state(project_id) or {}
+            if (
+                str(st_job.get("status") or "").lower() == "completed"
+                and str(st_job.get("step") or "").lower() in ("visual_pipeline", "visual_fetch")
+                and st_job.get("started_at")
+                and st_job.get("finished_at")
+            ):
+                dt0 = datetime.fromisoformat(str(st_job["started_at"]))
+                dt1 = datetime.fromisoformat(str(st_job["finished_at"]))
+                total_sec = max(0.0, (dt1 - dt0).total_seconds())
+        except Exception:
+            pass
+    if total_sec is None or total_sec < 0:
+        return None
+    secs_int = int(round(total_sec))
+    mins = secs_int // 60
+    rem = secs_int % 60
+    if mins > 0:
+        return t("visual_completed_duration", minutes=mins, seconds=rem)
+    return t("visual_completed_duration_secs", seconds=rem)
+
+
 # --- Job Monitor Widget with Fragment (D1) ---
 
 def _render_job_monitor_content(project_id: str, state: Dict[str, Any], current_step: Optional[str] = None, hide_completed: bool = False):
@@ -2741,7 +2776,13 @@ def render_visual_step_flow(
     with col_m4:
         render_metric_tile(t("metric_sources_used"), sources_str)
     if source_dist_items:
-        st.caption(t("source_distribution_summary", items=" • ".join(source_dist_items)))
+        dist_caption = t("source_distribution_summary", items=" • ".join(source_dist_items))
+        dur_caption = _get_visual_completion_duration_text(p_dir, project_id) if (not is_job_running and built_shots > 0) else None
+        st.caption(f"{dist_caption}  •  {dur_caption}" if dur_caption else dist_caption)
+    elif not is_job_running and built_shots > 0:
+        dur_caption = _get_visual_completion_duration_text(p_dir, project_id)
+        if dur_caption:
+            st.caption(dur_caption)
 
     if unready_vis_info["missing_count"] > 0:
         st.warning(t("vis_missing_summary_warn", missing=unready_vis_info["missing_count"]))

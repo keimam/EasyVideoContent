@@ -764,8 +764,20 @@ class VisualService:
                 f"Shot {shot.shot_id}: [{prov_name}] query '{q_text}' (cat={q_cat}) -> "
                 f"raw={raw_cnt}, valid={len(tier_cands or [])}, added={added_cnt}, accumulated={len(best_candidates)}"
             )
-            if err_txt and ("429" in err_txt or "rate" in err_txt.lower() or "403" in err_txt):
-                break
+            if err_txt:
+                err_low = err_txt.lower()
+                if (
+                    "429" in err_txt
+                    or "rate" in err_low
+                    or "403" in err_txt
+                    or "cooldown" in err_low
+                    or "504" in err_txt
+                    or "503" in err_txt
+                    or "502" in err_txt
+                    or "timed out" in err_low
+                    or "timeout" in err_low
+                ):
+                    break
             if raw_cnt == 0 and not err_txt:
                 zero_raw_streak += 1
                 if prov_name == "coverr" and zero_raw_streak >= 2:
@@ -983,7 +995,7 @@ class VisualService:
             def _run_parallel_phase(phase_slices: List[Tuple[str, BaseVisualProvider, List[Tuple[str, Optional[str]]]]]) -> None:
                 if not phase_slices:
                     return
-                max_workers = min(4, len(phase_slices))
+                max_workers = min(6, len(phase_slices))
                 with ThreadPoolExecutor(max_workers=max_workers) as pool_exec:
                     fut_map = {
                         pool_exec.submit(

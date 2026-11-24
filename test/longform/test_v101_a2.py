@@ -83,3 +83,82 @@ def test_a2_1_pipeline_phase_telemetry_recorded_and_lazy_thumbnails(tmp_path: Pa
     persisted = json.loads(metrics_file.read_text(encoding="utf-8"))
     assert persisted["project_id"] == "a21_telemetry"
     assert persisted["built_count"] == 1
+
+
+def test_a2_2_cached_json_get_fails_fast_and_opens_cooldown_on_504_or_timeout(tmp_path: Path, monkeypatch):
+    """A2.2: HTTP 504 / Timeout fails fast without retrying and opens 120s cooldown after 2 consecutive failures."""
+    from unittest.mock import MagicMock
+    import requests
+    from app.services.longform.visual.base import VisualError
+    from app.services.longform.visual.cache import GlobalMediaCache
+    from app.services.longform.visual.free_providers import cached_json_get, reset_provider_circuit_breakers
+
+    reset_provider_circuit_breakers()
+    cache = GlobalMediaCache(tmp_path / "cache")
+
+    calls = {"count": 0}
+    resp_504 = MagicMock()
+    resp_504.status_code = 504
+    resp_504.text = "Gateway Time-out"
+
+    def _fake_get(*a, **kw):
+        calls["count"] += 1
+        assert kw.get("timeout", 99) <= 8
+        if calls["count"] == 1:
+            return resp_504
+        raise requests.exceptions.ReadTimeout("read timed out")
+
+    monkeypatch.setattr("requests.get", _fake_get)
+
+    try:
+        # Call 1 -> 504 fails in 1 attempt (not 2)
+        try:
+            cached_json_get("openverse", "https://api.openverse.org/v1/images/", params={"q": "snow"}, cache=cache, min_interval_sec=0)
+            assert False, "Expected VisualError on 504"
+        except VisualError as exc:
+            assert "504" in str(exc)
+        assert calls["count"] == 1
+
+        # Call 2 -> ReadTimeout fails in 1 attempt and trips cooldown
+        try:
+            cached_json_get("openverse", "https://api.openverse.org/v1/images/", params={"q": "forest"}, cache=cache, min_interval_sec=0)
+            assert False, "Expected VisualError on ReadTimeout"
+        except VisualError as exc:
+            assert "Timeout" in str(exc)
+        assert calls["count"] == 2
+
+        # Call 3 -> skipped immediately via cooldown without calling requests.get!
+        try:
+            cached_json_get("openverse", "https://api.openverse.org/v1/images/", params={"q": "village"}, cache=cache, min_interval_sec=0)
+            assert False, "Expected cooldown VisualError"
+        except VisualError as exc:
+            assert "cooldown active" in str(exc).lower()
+        assert calls["count"] == 2
+    finally:
+        reset_provider_circuit_breakers()
+
+
+def test_a2_2_visual_completion_duration_banner_i18n(tmp_path: Path, monkeypatch):
+    """A2.2: Visual completion elapsed banner formats cleanly in ID and EN from visual_metrics.json."""
+    from app.services.longform.ui.components import _get_visual_completion_duration_text
+
+    proj_dir = tmp_path / "dur_proj"
+    proj_dir.mkdir(parents=True, exist_ok=True)
+    (proj_dir / "visual_metrics.json").write_text(json.dumps({"total_seconds": 165.4}), encoding="utf-8")
+
+    cur_lang = {"v": "id"}
+    monkeypatch.setattr("app.services.longform.ui.i18n.get_ui_language", lambda: cur_lang["v"])
+
+    txt_id = _get_visual_completion_duration_text(proj_dir, "dur_proj")
+    assert txt_id == "Selesai dalam 2 menit 45 detik"
+
+    cur_lang["v"] = "en"
+    txt_en = _get_visual_completion_duration_text(proj_dir, "dur_proj")
+    assert txt_en == "Completed in 2m 45s"
+
+    (proj_dir / "visual_metrics.json").write_text(json.dumps({"total_seconds": 42.0}), encoding="utf-8")
+    cur_lang["v"] = "id"
+    assert _get_visual_completion_duration_text(proj_dir, "dur_proj") == "Selesai dalam 42 detik"
+    cur_lang["v"] = "en"
+    assert _get_visual_completion_duration_text(proj_dir, "dur_proj") == "Completed in 42s"
+

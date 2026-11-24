@@ -915,10 +915,29 @@ def generate_chapter_visual_keywords_ai(
 
     # 3. Issue batched LLM calls in chunks of 10-20 shots (default 15) with per-shot caching
     llm_calls = 0
+    llm_retries = 0
     fallback_used = False
+    max_chapter_budget_sec = 30.0
     chunk_size = max(10, min(20, AI_KEYWORDS_BATCH_SIZE))
     for start_idx in range(0, len(pending), chunk_size):
         chunk = pending[start_idx : start_idx + chunk_size]
+        if llm_adapter is None and (time.monotonic() - kw_t0) >= max_chapter_budget_sec:
+            fallback_used = True
+            warning = warning or "Batas waktu kata kunci AI tercapai — memakai ekstraksi cepat."
+            for shot, src_text, _c_key, _p_i, _p_t, focus_clause in chunk:
+                ext_q = extract_short_search_query(
+                    focus_clause or src_text,
+                    visual_keywords=vis_terms,
+                    topic_keywords=snap.get("topic_keywords"),
+                    required_subject_terms=snap.get("required_subject_terms"),
+                )
+                shot.search_query = shot.search_query or ext_q
+                shot.search_query_source = "extraction"
+                shot.search_query_reason = "ai_budget_exceeded"
+                if norm_lang == "en" and not shot.search_query_en:
+                    shot.search_query_en = ext_q
+                updated += 1
+            continue
         payload_items: List[Dict[str, Any]] = []
         for shot, src_text, _c_key, part_idx, part_total, focus_clause in chunk:
             item: Dict[str, Any] = {
@@ -960,7 +979,8 @@ def generate_chapter_visual_keywords_ai(
                 if not alts:
                     missing_entries.append(entry)
 
-            if missing_entries and (len(missing_entries) < len(chunk) or not mapping):
+            within_retry_budget = (llm_adapter is not None) or ((time.monotonic() - kw_t0) < max_chapter_budget_sec)
+            if missing_entries and within_retry_budget and (len(missing_entries) < len(chunk) or not mapping):
                 retry_payload = []
                 for m_shot, m_txt, _ck, m_pi, m_pt, m_fc in missing_entries:
                     rit: Dict[str, Any] = {"id": m_shot.shot_id, "narration": m_txt}

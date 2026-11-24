@@ -1125,7 +1125,7 @@ class StockVisualProvider(BaseVisualProvider):
 
                 if not chosen_thumb:
                     for fb_k in ("small", "medium", "tiny", "large"):
-                        fb_r = vids.get(fb_k)
+                        fb_r = videos_dict.get(fb_k)
                         if isinstance(fb_r, dict) and fb_r.get("thumbnail"):
                             chosen_thumb = fb_r["thumbnail"]
                             break
