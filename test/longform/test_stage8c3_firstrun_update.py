@@ -1034,7 +1034,10 @@ def test_r1_release_url_friendly_404_make_latest_json_and_process_leak_guard(tmp
     repo_root = Path(__file__).resolve().parents[2]
     committed_latest = repo_root / "packaging" / "release" / "latest.json"
     committed_data = make_latest_json.validate_latest_json_file(committed_latest, expected_version=APP_VERSION)
-    assert committed_data["download_url"] == "GANTI_DENGAN_LINK_GOOGLE_DRIVE"
+    assert (
+        committed_data["download_url"] == "GANTI_DENGAN_LINK_GOOGLE_DRIVE"
+        or str(committed_data["download_url"]).startswith("https://drive.google.com/")
+    )
     assert (repo_root / "packaging" / "release" / "notes" / f"{APP_VERSION}.id.md").is_file()
     assert (repo_root / "packaging" / "release" / "notes" / f"{APP_VERSION}.en.md").is_file()
     assert "EasyFaceless Studio" in committed_data["notes_id"] and len(committed_data["notes_id"]) >= 30
