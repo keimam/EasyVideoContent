@@ -61,6 +61,8 @@ from app.services.longform.visual.fake import FakeVisualProvider
 from app.services.longform.visual.local import LocalLibraryManager, LocalVisualProvider
 from PIL import Image, ImageDraw
 
+MAX_PARALLEL_SOURCES = 4
+
 
 def _get_clip_frame_count(clip_path: Path) -> Optional[int]:
     """Read actual nb_frames from a rendered clip via ffprobe. Returns None on failure (V2)."""
@@ -1012,7 +1014,7 @@ class VisualService:
             def _run_parallel_phase(phase_slices: List[Tuple[str, BaseVisualProvider, List[Tuple[str, Optional[str]]]]]) -> None:
                 if not phase_slices:
                     return
-                max_workers = min(6, len(phase_slices))
+                max_workers = min(MAX_PARALLEL_SOURCES, len(phase_slices))
                 with ThreadPoolExecutor(max_workers=max_workers) as pool_exec:
                     fut_map = {
                         pool_exec.submit(

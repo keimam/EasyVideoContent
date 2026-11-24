@@ -429,3 +429,82 @@ def test_b3_network_profile_lambat_timeout_15_and_threshold_3_plus_default_norma
         reset_coverr_auth_block()
         reset_provider_circuit_breakers()
         lf_cfg.load_longform_config(reload=True)
+
+
+def test_b4_max_parallel_sources_caps_thread_pool_at_4(tmp_path: Path, monkeypatch):
+    """B4: With 6 active providers in mix_best mode, ThreadPoolExecutor is created with max_workers == 4."""
+    from concurrent.futures import ThreadPoolExecutor as RealThreadPoolExecutor
+    import app.services.longform.visual.service as svc_mod
+    from app.services.longform.visual.base import BaseVisualProvider, VisualAsset, VisualCandidate
+
+    assert svc_mod.MAX_PARALLEL_SOURCES == 4
+
+    observed_workers = []
+
+    class _RecordingExecutor(RealThreadPoolExecutor):
+        def __init__(self, max_workers=None, *a, **kw):
+            observed_workers.append(max_workers)
+            super().__init__(max_workers=max_workers, *a, **kw)
+
+    class _StubProvider(BaseVisualProvider):
+        def __init__(self, pname: str) -> None:
+            self._pname = pname
+
+        @property
+        def name(self) -> str:
+            return self._pname
+
+        @property
+        def is_fake(self) -> bool:
+            return False
+
+        def validate_credentials(self) -> None:
+            return None
+
+        def search_candidates(self, query, target_duration, limit=3, excluded_ids=None, **kwargs):
+            return [
+                VisualCandidate(
+                    candidate_id=f"{self._pname}_1",
+                    provider=self._pname,
+                    source_type="stock_image",
+                    url=f"https://example.com/{self._pname}_1.jpg",
+                    local_path=None,
+                    tags=["snow", "forest"],
+                    relevance_score=0.75,
+                )
+            ]
+
+        def fetch_asset(self, candidate, dest_path):
+            raise NotImplementedError
+
+    monkeypatch.setattr(svc_mod, "ThreadPoolExecutor", _RecordingExecutor)
+
+    shot = Shot(
+        shot_id="ch01_shot001",
+        chapter_index=1,
+        shot_index=1,
+        duration_seconds=3.0,
+        target_frames=75,
+        visual_prompt="snow forest",
+        search_query="snow forest",
+        search_query_en="snow forest",
+        search_query_source="ai",
+    )
+    manifest = ProjectManifest(
+        project_id="b4_proj",
+        title="B4 Pool Cap",
+        preset_id="umum.en",
+        preset_snapshot={"min_relevance_score": 0.35},
+        chapters=[Chapter(chapter_index=1, chapter_title="Ch1", shots=[shot])],
+        visual_search_mode="mix_best",
+    )
+    svc = VisualService(tmp_path / "b4_proj")
+    monkeypatch.setattr(svc, "get_provider", lambda pname, _m=None: _StubProvider(pname))
+
+    svc._search_shot_across_providers(
+        shot,
+        manifest,
+        providers_order=["pixabay", "coverr", "pexels", "wikimedia", "nasa", "openverse"],
+        search_mode="mix_best",
+    )
+    assert observed_workers == [4]
