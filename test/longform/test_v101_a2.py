@@ -218,3 +218,155 @@ def test_a2_3_sixty_percent_cap_and_zero_alternative_fallback():
     assert picked_sole.provider == "pixabay"
 
 
+class _FakeCol:
+    def __init__(self, st_parent):
+        self._st = st_parent
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def button(self, label, key=None, **kw):
+        return self._st.button(label, key=key, **kw)
+
+
+class _FakeSpinner:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+class _FakeStreamlit:
+    def __init__(self):
+        self.session_state = {}
+        self.clicked_keys = set()
+        self.errors = []
+        self.successes = []
+        self.selectbox_value = None
+
+    def selectbox(self, label, options=None, index=0, key=None, **kw):
+        if self.selectbox_value is not None:
+            val = self.selectbox_value
+        elif key and key in self.session_state:
+            val = self.session_state[key]
+        else:
+            val = (options or [""])[index]
+        if key:
+            self.session_state[key] = val
+        return val
+
+    def columns(self, n):
+        cnt = len(n) if isinstance(n, (list, tuple)) else int(n)
+        return [_FakeCol(self) for _ in range(cnt)]
+
+    def button(self, label, key=None, **kw):
+        return key in self.clicked_keys
+
+    def spinner(self, text):
+        return _FakeSpinner()
+
+    def success(self, msg):
+        self.successes.append(str(msg))
+
+    def error(self, msg):
+        self.errors.append(str(msg))
+
+    def image(self, *a, **kw):
+        pass
+
+    def rerun(self):
+        pass
+
+
+def test_a2_4_test_single_image_uses_unsaved_form_state_handles_401_no_secret_leak(monkeypatch):
+    """A2.4(a): Unsaved form URL + model + fake key in session_state sends request and handles 401 without key leak."""
+    from unittest.mock import MagicMock
+    import requests
+    from app.config import config as app_cfg
+    from app.services.longform.visual.image_presets import render_openai_image_preset_controls
+
+    monkeypatch.setitem(app_cfg.app, "openai_image_base_url", "")
+    monkeypatch.setitem(app_cfg.app, "openai_image_model", "")
+    monkeypatch.setitem(app_cfg.app, "openai_image_api_keys", [])
+    monkeypatch.setitem(app_cfg.app, "openai_image_size", "")
+
+    st_mock = _FakeStreamlit()
+    fake_secret = "sk-fake-secret-998877"
+    st_mock.session_state["openai_image_base_url_input"] = "https://api.deepinfra.com/v1/openai"
+    st_mock.session_state["openai_image_model_input"] = "black-forest-labs/FLUX-1-schnell"
+    st_mock.session_state["openai_image_api_keys_input"] = fake_secret
+    st_mock.session_state["openai_image_size_input"] = "1344x768"
+    st_mock.clicked_keys = {"btn_test_single_image_settings"}
+
+    seen = {}
+
+    def _fake_post(url, json=None, headers=None, **kw):
+        seen["url"] = url
+        seen["json"] = json
+        seen["headers"] = dict(headers or {})
+        resp = MagicMock()
+        resp.status_code = 401
+        resp.text = f"Unauthorized for Bearer {fake_secret}"
+        return resp
+
+    monkeypatch.setattr(requests, "post", _fake_post)
+
+    render_openai_image_preset_controls(st_module=st_mock, app_settings={})
+
+    assert seen["url"] == "https://api.deepinfra.com/v1/openai/images/generations"
+    assert seen["json"]["model"] == "black-forest-labs/FLUX-1-schnell"
+    assert seen["headers"].get("Authorization") == f"Bearer {fake_secret}"
+    res = st_mock.session_state.get("_openai_img_test_result")
+    assert isinstance(res, dict) and res["ok"] is False
+    assert res["category"] == "auth"
+    assert fake_secret not in res["message"]
+    assert st_mock.errors and fake_secret not in st_mock.errors[0]
+
+
+def test_a2_4_test_single_image_empty_url_returns_config_error(monkeypatch):
+    """A2.4(b): Empty URL in both form and saved config yields clean missing-URL error without crashing."""
+    from app.config import config as app_cfg
+    from app.services.longform.visual.image_presets import render_openai_image_preset_controls
+
+    monkeypatch.setitem(app_cfg.app, "openai_image_base_url", "")
+    monkeypatch.setitem(app_cfg.app, "openai_image_model", "flux-model")
+    monkeypatch.setitem(app_cfg.app, "openai_image_api_keys", [])
+
+    st_mock = _FakeStreamlit()
+    st_mock.session_state["openai_image_base_url_input"] = ""
+    st_mock.session_state["openai_image_model_input"] = "flux-model"
+    st_mock.clicked_keys = {"btn_test_single_image_settings"}
+
+    render_openai_image_preset_controls(st_module=st_mock, app_settings={})
+
+    res = st_mock.session_state.get("_openai_img_test_result")
+    assert isinstance(res, dict) and res["ok"] is False
+    assert res["category"] == "config"
+    assert "URL" in res["message"] or "url" in res["message"].lower()
+
+
+def test_a2_4_changing_preset_clears_stale_test_result(monkeypatch):
+    """A2.4(c): Changing preset, URL, key, or model clears stale _openai_img_test_result from session_state."""
+    from app.config import config as app_cfg
+    from app.services.longform.visual.image_presets import render_openai_image_preset_controls
+
+    monkeypatch.setitem(app_cfg.app, "openai_image_base_url", "https://api.deepinfra.com/v1/openai")
+    monkeypatch.setitem(app_cfg.app, "openai_image_model", "black-forest-labs/FLUX-1-schnell")
+    monkeypatch.setitem(app_cfg.app, "openai_image_api_keys", ["sk-fake-1"])
+
+    st_mock = _FakeStreamlit()
+    st_mock.selectbox_value = "deepinfra"
+    render_openai_image_preset_controls(st_module=st_mock, app_settings=dict(app_cfg.app))
+    st_mock.session_state["_openai_img_test_result"] = {"ok": False, "message": "Old DeepInfra error"}
+
+    # Switch preset -> stale result must be cleared automatically
+    st_mock.selectbox_value = "together"
+    render_openai_image_preset_controls(st_module=st_mock, app_settings=dict(app_cfg.app))
+    assert "_openai_img_test_result" not in st_mock.session_state
+
+
+

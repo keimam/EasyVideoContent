@@ -3062,7 +3062,25 @@ def render_visual_step_flow(
                 )
             )
         if has_ai_image and str(ai_readiness.get("backend") or "") == "openai_image":
-            from app.services.longform.visual.image_presets import test_single_openai_image
+            from app.config import config as _app_cfg
+            from app.services.longform.visual.image_presets import (
+                _openai_image_config_signature,
+                infer_image_preset_key,
+                resolve_active_openai_image_form_values,
+                test_single_openai_image,
+            )
+
+            lf_active = resolve_active_openai_image_form_values(
+                session_state=st.session_state,
+                runtime_cfg=_app_cfg.app,
+            )
+            lf_sig = _openai_image_config_signature(
+                infer_image_preset_key(lf_active.get("base_url")),
+                lf_active,
+            )
+            if st.session_state.get(f"lf_img_test_sig_{project_id}") not in (None, lf_sig):
+                st.session_state.pop(f"lf_img_test_res_{project_id}", None)
+            st.session_state[f"lf_img_test_sig_{project_id}"] = lf_sig
 
             if st.button(
                 t("btn_test_single_image"),
@@ -3070,7 +3088,12 @@ def render_visual_step_flow(
                 disabled=is_job_running,
             ):
                 with st.spinner(t("spinner_testing_single_image")):
-                    st.session_state[f"lf_img_test_res_{project_id}"] = test_single_openai_image()
+                    st.session_state[f"lf_img_test_res_{project_id}"] = test_single_openai_image(
+                        base_url=lf_active.get("base_url"),
+                        api_key=lf_active.get("api_key"),
+                        model=lf_active.get("model"),
+                        image_size=lf_active.get("image_size"),
+                    )
             lf_img_res = st.session_state.get(f"lf_img_test_res_{project_id}")
             if isinstance(lf_img_res, dict):
                 if lf_img_res.get("ok"):

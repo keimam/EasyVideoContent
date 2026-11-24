@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import re
 from typing import Any, Dict, List, Optional, Tuple
@@ -216,18 +217,26 @@ def test_single_openai_image(
     from app.config import config
 
     eff_lang = (lang or get_ui_language()).lower()
-    raw_base = (base_url if base_url is not None else config.app.get("openai_image_base_url", "")) or ""
-    raw_model = (model if model is not None else config.app.get("openai_image_model", "")) or ""
-    raw_size = (image_size if image_size is not None else config.app.get("openai_image_size", "")) or "1344x768"
+    raw_base = (
+        str(base_url).strip()
+        if str(base_url or "").strip()
+        else str(config.app.get("openai_image_base_url", "") or "").strip()
+    )
+    raw_model = (
+        str(model).strip()
+        if str(model or "").strip()
+        else str(config.app.get("openai_image_model", "") or "").strip()
+    )
+    raw_size = (
+        str(image_size).strip()
+        if str(image_size or "").strip()
+        else (str(config.app.get("openai_image_size", "") or "").strip() or "1344x768")
+    )
 
-    if api_key is None:
-        cfg_keys = config.app.get("openai_image_api_keys")
-        if isinstance(cfg_keys, (list, tuple)):
-            raw_key = next((str(k).strip() for k in cfg_keys if str(k or "").strip()), "")
-        else:
-            raw_key = str(cfg_keys or "").strip()
+    if str(api_key or "").strip():
+        raw_key = _extract_first_api_key(api_key)
     else:
-        raw_key = str(api_key).strip()
+        raw_key = _extract_first_api_key(config.app.get("openai_image_api_keys"))
 
     if not str(raw_base).strip():
         return {"ok": False, "category": "config", "message": t("img_test_err_missing_url", lang=eff_lang)}
@@ -309,6 +318,66 @@ def test_single_openai_image(
     }
 
 
+def _extract_first_api_key(raw_keys: Any) -> str:
+    """Return the first non-empty API key from list/tuple/comma-or-newline string."""
+    if isinstance(raw_keys, (list, tuple)):
+        tokens = [str(k).strip() for k in raw_keys if str(k or "").strip()]
+    else:
+        tokens = [tok.strip() for tok in re.split(r"[,;\r\n]+", str(raw_keys or "")) if tok.strip()]
+    return tokens[0] if tokens else ""
+
+
+def resolve_active_openai_image_form_values(
+    *,
+    session_state: Optional[Any] = None,
+    app_settings: Optional[Dict[str, Any]] = None,
+    runtime_cfg: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Optional[str]]:
+    """Resolve active openai_image fields from form session_state first, falling back to saved config (never '')."""
+    ss = session_state if isinstance(session_state, dict) or hasattr(session_state, "get") else {}
+    app_s = app_settings if isinstance(app_settings, dict) else {}
+    rt_s = runtime_cfg if isinstance(runtime_cfg, dict) else {}
+
+    def _pick_text(widget_key: str, cfg_key: str) -> Optional[str]:
+        for src_val in (ss.get(widget_key) if ss else None, app_s.get(cfg_key), rt_s.get(cfg_key)):
+            cleaned = str(src_val or "").strip()
+            if cleaned:
+                return cleaned
+        return None
+
+    def _pick_key() -> Optional[str]:
+        for src_val in (
+            ss.get("openai_image_api_keys_input") if ss else None,
+            app_s.get("openai_image_api_keys"),
+            rt_s.get("openai_image_api_keys"),
+        ):
+            tok = _extract_first_api_key(src_val)
+            if tok:
+                return tok
+        return None
+
+    return {
+        "base_url": _pick_text("openai_image_base_url_input", "openai_image_base_url"),
+        "api_key": _pick_key(),
+        "model": _pick_text("openai_image_model_input", "openai_image_model"),
+        "image_size": _pick_text("openai_image_size_input", "openai_image_size"),
+    }
+
+
+def _openai_image_config_signature(
+    preset_key: str,
+    vals: Dict[str, Optional[str]],
+) -> str:
+    raw = "|".join([
+        str(preset_key or ""),
+        str(vals.get("base_url") or ""),
+        str(vals.get("api_key") or ""),
+        str(vals.get("model") or ""),
+        str(vals.get("image_size") or ""),
+    ])
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+
+
 def render_openai_image_preset_controls(
     *,
     st_module: Any,
@@ -316,12 +385,17 @@ def render_openai_image_preset_controls(
     save_settings_fn: Optional[Any] = None,
     set_runtime_cfg_fn: Optional[Any] = None,
 ) -> None:
-    """Render preset dropdown and 1-image test UI inside upstream openai_image settings (V4)."""
+    """Render preset dropdown and 1-image test UI inside upstream openai_image settings (V4, A2.4)."""
     from app.config import config as _cfg
     from app.config.config import save_config as _save_cfg
 
     lang = get_ui_language()
-    inferred = infer_image_preset_key(app_settings.get("openai_image_base_url"))
+    active_vals = resolve_active_openai_image_form_values(
+        session_state=st_module.session_state,
+        app_settings=app_settings,
+        runtime_cfg=_cfg.app,
+    )
+    inferred = infer_image_preset_key(active_vals.get("base_url"))
     preset_keys = ["custom", "together", "deepinfra"]
 
     def _fmt(pk: str) -> str:
@@ -336,6 +410,12 @@ def render_openai_image_preset_controls(
         help=t("img_preset_select_help"),
         key="openai_image_preset_selector",
     )
+
+    cur_sig = _openai_image_config_signature(sel_preset, active_vals)
+    prev_sig = st_module.session_state.get("_openai_img_test_sig")
+    if prev_sig is not None and prev_sig != cur_sig:
+        st_module.session_state.pop("_openai_img_test_result", None)
+    st_module.session_state["_openai_img_test_sig"] = cur_sig
 
     col_p1, col_p2 = st_module.columns(2)
     with col_p1:
@@ -360,6 +440,16 @@ def render_openai_image_preset_controls(
             st_module.session_state["openai_image_base_url_input"] = applied["base_url"]
             st_module.session_state["openai_image_model_input"] = applied["model"]
             st_module.session_state["openai_image_size_input"] = applied["size"]
+            st_module.session_state.pop("_openai_img_test_result", None)
+            st_module.session_state["_openai_img_test_sig"] = _openai_image_config_signature(
+                sel_preset,
+                {
+                    "base_url": applied["base_url"] or None,
+                    "api_key": active_vals.get("api_key"),
+                    "model": applied["model"] or None,
+                    "image_size": applied["size"] or None,
+                },
+            )
             st_module.success(t("img_preset_applied_ok", name=_fmt(sel_preset)))
             st_module.rerun()
 
@@ -369,11 +459,17 @@ def render_openai_image_preset_controls(
             key="btn_test_single_image_settings",
             use_container_width=True,
         ):
+            test_vals = resolve_active_openai_image_form_values(
+                session_state=st_module.session_state,
+                app_settings=app_settings,
+                runtime_cfg=_cfg.app,
+            )
             with st_module.spinner(t("spinner_testing_single_image")):
                 res = test_single_openai_image(
-                    base_url=app_settings.get("openai_image_base_url"),
-                    model=app_settings.get("openai_image_model"),
-                    image_size=app_settings.get("openai_image_size"),
+                    base_url=test_vals.get("base_url"),
+                    api_key=test_vals.get("api_key"),
+                    model=test_vals.get("model"),
+                    image_size=test_vals.get("image_size"),
                 )
             st_module.session_state["_openai_img_test_result"] = res
 
