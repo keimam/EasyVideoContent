@@ -430,23 +430,28 @@ Daftar lengkap perubahan yang masih tersisa pada berkas asli upstream `MoneyPrin
 | `webui/Main.py` | 79–84 | ~21 baris | `try/except` memanggil `app.services.branding.hooks.init_main_page()` untuk `set_page_config` judul/ikon Studio, injeksi CSS tema gelap, dan sidebar terpadu (skip otomatis saat mode `_efs_settings_library_only`). | Kembalikan blok `st.set_page_config(...)` & `styles.css` upstream saat resolve conflict, lalu sisipkan kembali blok 5 baris `try/except init_main_page(...)`. |
 | `webui/Main.py` | 675 | +1 baris | `default_language="id"` pada `utils.resolve_ui_language(...)` agar bahasa bawaan Studio adalah Indonesia. | Tambahkan kembali argumen `default_language="id"` di panggilan `resolve_ui_language`. |
 | `webui/Main.py` | 1746–1775 | ~12 baris | `try/except` memanggil `render_brand_header()` untuk header merek *EasyFaceless Studio* + penyesuaian fallback C6 `"EasyFaceless Studio"`. | Pertahankan `_render_brand()` upstream, lalu sisipkan blok 6 baris `try/except render_brand_header(...) return` di awal fungsi. |
+| `webui/Main.py` | 1832–1849 | 18 baris (`+18`, `-36` vs upstream `1838`) | Di `_render_top_bar()`: `try/except` memanggil `render_top_language_selector(locales)` (sumber bahasa terpadu E9) dengan cadangan `st.selectbox` di cabang `except`. **Keterbatasan yang diketahui:** fallback `st.selectbox` pada cabang `except` tidak menyimpan ke `config` maupun memicu `st.rerun()` saat bahasa diganti. | Hapus blok `try/except render_top_language_selector(locales)` dan kembalikan `st.selectbox` asli `_render_top_bar()` di upstream. |
 | `webui/Main.py` | 3598–3603 | +6 baris | Hook `try/except` menampilkan catatan `prov_pexels_closed_note` saat pengguna memilih penyedia `pexels`. | Hapus blok 6 baris `if provider == "pexels": try: ... except Exception: pass` bila perlu, lalu sisipkan kembali setelah `_save_material_api_keys`. |
 | `webui/Main.py` | 4096–4106 | +11 baris | Hook `try/except` memanggil `render_openai_image_preset_controls(...)` (Together AI FLUX / DeepInfra FLUX / Custom preset + tombol tes 1 gambar; bersama import `from app.config.config import save_config as _save_cfg` di `image_presets.py`). | Hapus blok 11 baris `try: from app.services.longform.visual.image_presets import render_openai_image_preset_controls ... except Exception: pass` sebelum merge, lalu sisipkan kembali tepat di awal cabang `elif provider == "openai_image":`. |
+| `webui/Main.py` | 4250–4254 | +5 baris (`5+`, `0-` vs upstream `4255`) | Di `general_config_panel` (`_render_settings_dialog()`): `try/except` memanggil `render_settings_studio_controls()` (pemilih bahasa UI, profil koneksi B3, wizard ulang, cek pembaruan). | Hapus blok 5 baris `try: from app.services.branding.hooks import render_settings_studio_controls ... except Exception: pass` sebelum merge, lalu sisipkan tepat setelah `_render_general_settings(app_settings)`. |
+| `webui/Main.py` | 9014–9018 | 5 baris (`5+`, `1-` menggantikan `render_onboarding_tour()` upstream `9015`) | Di bawah tombol Generate (`_render_generation_controls()`): `try/except` memanggil `run_short_video_onboarding_tour(Tour)` menggantikan `render_onboarding_tour()`. | Hapus blok `try/except run_short_video_onboarding_tour(Tour)` lalu kembalikan panggilan tunggal `render_onboarding_tour(Tour)` upstream sebelum merge. |
 | `webui/Main.py` | 9509–9513 | ~5 baris | `try/except` memanggil `hooks.run_main_or_settings(...)` untuk menangani query `?open_settings=` dan mengeksekusi dialog Settings secara aman saat diimpor oleh halaman Video Panjang. | Gantikan panggilan tunggal `_render_application()` di akhir berkas dengan blok `try/except run_main_or_settings(...)` sepanjang 5 baris. |
 | `webui/i18n/id.json` | 343, 351, 460 | 6 baris (`3+`, `3-`) | Addendum C6: membersihkan `"MoneyPrinterTurbo"` menjadi `"EasyFaceless Studio"` pada pesan error preset/cadangan kunci dan OAuth ChatGPT. | Terima versi upstream bila perlu lalu jalankan ulang penggantian 3 key tersebut (diverifikasi oleh `test_c6_no_moneyprinter_or_mpt_in_ui_strings`). |
 | `webui/i18n/en.json` | 268..737 (12 key) | 24 baris (`12+`, `12-`) | Addendum C6: membersihkan `"MoneyPrinterTurbo"`/`"MPT"` pada prosa tips penyedia & pesan error UI (URL rujukan tetap utuh). | Terima versi upstream lalu bersihkan teks UI non-URL (otomatis terdeteksi oleh `test_c6_no_moneyprinter_or_mpt_in_ui_strings`). |
 | `.gitignore` | 38 (dst.) | +7 baris | Memastikan `test/longform/*.py`, `*.backup*.toml`, `*.log`, `**/_trash/`, dan folder uji sementara terkelola dengan benar. | Pertahankan tambahan aturan abaikan di akhir `.gitignore`. |
 
-> **Ringkasan diff upstream terkini (`git diff --stat v1.3.10 -- app/services webui/Main.py`):**
+> **Ringkasan diff upstream terkini (`git diff --stat v1.3.10` — V102 B6):**
 >
+> - `git diff --stat v1.3.10 -- app/services webui/Main.py`:
 > ```text
 > app/services/material.py |   6 +++
 > webui/Main.py            | 133 +++++++++++++++++++++++++----------------------
-> ... (ditambah 70 berkas baru terisolasi di app/services/branding/* & app/services/longform/*)
-> 72 files changed, 39603 insertions(+), 63 deletions(-)
+> ... (ditambah modul terisolasi di app/services/branding/* & app/services/longform/*)
+> 73 files changed, 40876 insertions(+), 63 deletions(-)
 > ```
->
-> Khusus berkas asli upstream: `app/services/material.py` (`+6` baris via 1 hook `try/except`) dan `webui/Main.py` (`133 +-`, yaitu `70+`/`63-` vs tag `v1.3.10`). Seluruh berkas `app/models/`, `app/config/`, dan `cli.py` tetap memiliki **0 perubahan upstream**.
+> - `git diff --stat -w v1.3.10 -- app/services/material.py webui/Main.py`: `2 files changed, 62 insertions(+), 49 deletions(-)` (`app/services/material.py`: `6+`; `webui/Main.py`: `105 +-`, yaitu `56+`/`49-` di luar normalisasi CRLF).
+> - `git diff --stat v1.3.10` (seluruh repo): `311 files changed, 73250 insertions(+), 689 deletions(-)`.
+> - Seluruh berkas `app/models/`, `app/config/`, dan `cli.py` tetap memiliki **0 perubahan** dibanding `v1.3.10`.
 
 
 
