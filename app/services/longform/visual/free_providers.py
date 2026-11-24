@@ -34,6 +34,7 @@ from app.services.longform.visual.base import (
     canonical_candidate_dedup_key,
     compute_file_content_hash,
     is_commercial_license_allowed,
+    record_provider_status_event,
     record_search_io,
 )
 from app.services.longform.visual.cache import GlobalMediaCache, get_global_cache_dir
@@ -104,6 +105,7 @@ def note_provider_transient_failure(provider_key: str, detail: str) -> bool:
     """
     pk = str(provider_key or "").lower().strip()
     _timeout_s, threshold, cooldown_s = get_active_network_circuit_params()
+    record_provider_status_event(pk, "timeout", error=detail)
     tripped = False
     with _STATE_LOCK:
         cnt = int(_PROVIDER_CONSECUTIVE_ERRORS.get(pk, 0)) + 1
@@ -115,6 +117,8 @@ def note_provider_transient_failure(provider_key: str, detail: str) -> bool:
                 f"{pk} temporarily paused for {int(cooldown_s)}s "
                 f"after {cnt} consecutive upstream timeout/5xx errors ({detail[:80]})"
             )
+    if tripped:
+        record_provider_status_event(pk, "cooldown_trip", error=detail)
     return tripped
 
 
@@ -220,6 +224,7 @@ def resilient_http_json_get(
                 last_err = f"HTTP {status} rate limit/challenge"
                 if "just a moment" in body_low or status == 403 or attempt >= 2:
                     trip_provider_cooldown(provider_key, 60.0)
+                    record_provider_status_event(provider_key, "cooldown_trip", error=last_err)
                     break
                 wait_s = float((getattr(resp, "headers", {}) or {}).get("Retry-After") or 2.0)
                 time.sleep(min(wait_s, 5.0))
@@ -233,6 +238,7 @@ def resilient_http_json_get(
             if not isinstance(payload, dict):
                 payload = {"items": payload}
             clear_provider_transient_errors(provider_key)
+            record_provider_status_event(provider_key, "ok")
             return payload
         except VisualError:
             raise
@@ -247,6 +253,8 @@ def resilient_http_json_get(
                 break
             if attempt < 2:
                 time.sleep(0.3)
+            else:
+                record_provider_status_event(provider_key, "error", error=last_err)
 
     raise VisualError(f"{provider_key} API request failed: {last_err}")
 

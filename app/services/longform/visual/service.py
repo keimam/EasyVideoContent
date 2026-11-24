@@ -45,6 +45,7 @@ from app.services.longform.visual.base import (
     is_dev_or_test_mode,
     license_requires_attribution,
     reset_io_telemetry,
+    sanitize_source_error,
     snapshot_io_telemetry,
 )
 # Builder imported eagerly (pure FFmpeg subprocess, no upstream deps)
@@ -1343,6 +1344,8 @@ class VisualService:
         source_usage_counts: Dict[str, int] = {}
         recent_sources: List[str] = []
         requests_by_provider: Dict[str, int] = {}
+        attempt_errors_by_provider: Dict[str, str] = {}
+        attempt_err_counts_by_provider: Dict[str, int] = {}
         for sh in all_shots_flat:
             if sh.shot_id not in target_fetch_ids and sh.actual_source:
                 sk = str(sh.actual_source).lower().strip()
@@ -1507,6 +1510,10 @@ class VisualService:
                 for att in attempts_log:
                     p_k = str(att.get("provider") or "unknown").lower().strip()
                     requests_by_provider[p_k] = requests_by_provider.get(p_k, 0) + 1
+                    att_err = sanitize_source_error(att.get("error"))
+                    if att_err:
+                        attempt_errors_by_provider[p_k] = att_err
+                        attempt_err_counts_by_provider[p_k] = attempt_err_counts_by_provider.get(p_k, 0) + 1
 
                 active_provider = chosen_provider or self.get_provider(shot_providers[0], manifest)
                 shot.search_attempts = attempts_log[-25:]
@@ -1745,6 +1752,45 @@ class VisualService:
                 "elapsed_seconds": float(search_sec_by_prov.get(pk, 0.0)),
             }
 
+        ev_map = io_snap.get("provider_status_events") or {}
+        source_status: Dict[str, Dict[str, Any]] = {}
+        status_keys = sorted(
+            all_prov_keys
+            | set(ev_map.keys())
+            | set(attempt_errors_by_provider.keys())
+        )
+        for pk in status_keys:
+            ev = ev_map.get(pk) or {}
+            cd_cnt = int(ev.get("cooldown") or 0)
+            to_cnt = int(ev.get("timeout") or 0)
+            auth_blk = bool(ev.get("auth_blocked", False))
+            last_err = sanitize_source_error(ev.get("last_error") or attempt_errors_by_provider.get(pk))
+            if pk == "coverr":
+                try:
+                    from app.services.longform.visual.coverr_client import get_coverr_auth_status
+
+                    c_auth = get_coverr_auth_status()
+                    if c_auth.get("auth_blocked"):
+                        auth_blk = True
+                        if not last_err:
+                            last_err = sanitize_source_error(c_auth.get("error") or "HTTP 403")
+                except Exception:
+                    pass
+            if last_err and not auth_blk and to_cnt == 0 and cd_cnt == 0:
+                low_e = last_err.lower()
+                if "auth_blocked" in low_e or "http 401" in low_e or "http 403" in low_e:
+                    auth_blk = True
+                elif "timeout" in low_e or "timed out" in low_e or "504" in low_e or "503" in low_e or "502" in low_e:
+                    to_cnt = max(1, int(attempt_err_counts_by_provider.get(pk, 1)))
+            is_ok = (not auth_blk) and (cd_cnt == 0) and (to_cnt == 0) and (not last_err)
+            source_status[pk] = {
+                "ok": is_ok,
+                "cooldown": cd_cnt,
+                "auth_blocked": auth_blk,
+                "timeout": to_cnt,
+                "last_error": last_err,
+            }
+
         fetch_elapsed = round(time.monotonic() - fetch_t0, 3)
         self._last_fetch_metrics = {
             "search_mode": eff_search_mode if use_waterfall else "single",
@@ -1758,6 +1804,7 @@ class VisualService:
             "translate_seconds": round(translate_seconds, 3),
             "search_wall_seconds": round(search_wall_seconds, 3),
             "search_per_source": search_per_source,
+            "source_status": source_status,
             "thumbnail_seconds": round(thumbnail_seconds, 3),
             "asset_download_seconds": round(asset_download_seconds, 3),
             "download_cache_hits": int(io_snap["download_cache_hits"]),
@@ -1772,6 +1819,24 @@ class VisualService:
             "assigned_shots": sum(dist_counts.values()),
             "total_shots": len(all_shots_flat),
         }
+
+        try:
+            metrics_file = self.project_dir / "visual_metrics.json"
+            existing_m: Dict[str, Any] = {}
+            if metrics_file.is_file():
+                try:
+                    existing_m = json.loads(metrics_file.read_text(encoding="utf-8"))
+                    if not isinstance(existing_m, dict):
+                        existing_m = {}
+                except Exception:
+                    existing_m = {}
+            existing_m["source_status"] = source_status
+            existing_m.setdefault("project_id", manifest.project_id)
+            metrics_tmp = metrics_file.with_suffix(".json.tmp")
+            metrics_tmp.write_text(json.dumps(existing_m, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(metrics_tmp, metrics_file)
+        except Exception:
+            pass
 
         logger.info(
             f"[Visual Fetch Telemetry] project='{manifest.project_id}' mode={self._last_fetch_metrics['search_mode']} "
@@ -2647,6 +2712,7 @@ class VisualService:
             "translate_seconds": float(fetch_metrics.get("translate_seconds", 0.0)),
             "search_wall_seconds": float(fetch_metrics.get("search_wall_seconds", 0.0)),
             "search_per_source": fetch_metrics.get("search_per_source", {}),
+            "source_status": fetch_metrics.get("source_status", {}),
             "thumbnail_seconds": float(fetch_metrics.get("thumbnail_seconds", 0.0)),
             "asset_download_seconds": float(fetch_metrics.get("asset_download_seconds", 0.0)),
             "download_cache_hits": int(fetch_metrics.get("download_cache_hits", 0)),

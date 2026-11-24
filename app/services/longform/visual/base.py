@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import threading
 import time
 from abc import ABC, abstractmethod
@@ -617,7 +618,41 @@ _IO_TELEMETRY: Dict[str, Any] = {
     "search_http_requests": {},
     "download_cache_hits": 0,
     "download_misses": 0,
+    "provider_status_events": {},
 }
+
+
+def sanitize_source_error(error_text: Optional[str], max_len: int = 120) -> Optional[str]:
+    """Redact API keys, Bearer tokens, and query secrets from provider errors and cap at 120 chars (B2)."""
+    if error_text is None:
+        return None
+    out = str(error_text).strip()
+    if not out:
+        return None
+    try:
+        from app.config import config as _cfg
+
+        for cfg_key in (
+            "coverr_api_keys",
+            "pixabay_api_keys",
+            "pexels_api_keys",
+            "openai_image_api_keys",
+        ):
+            raw = _cfg.app.get(cfg_key)
+            if isinstance(raw, (list, tuple)):
+                tokens = [str(x).strip() for x in raw if str(x or "").strip()]
+            else:
+                tokens = [t.strip() for t in re.split(r"[,;\r\n]+", str(raw or "")) if t.strip()]
+            for tok in tokens:
+                if len(tok) >= 4:
+                    out = out.replace(tok, "***")
+    except Exception:
+        pass
+    out = re.sub(r"(?i)bearer\s+[a-z0-9_\-\.]{4,}", "Bearer ***", out)
+    out = re.sub(r"(?i)([?&](?:key|api_key|token)=)[^&\s]+", r"\1***", out)
+    out = re.sub(r"(?i)\b(sk|key|cov|tgp|di|tok)-[a-z0-9_\-]{4,}", r"\1-***", out)
+    out = " ".join(out.splitlines()).strip()
+    return out[:max_len]
 
 
 def reset_io_telemetry() -> None:
@@ -627,6 +662,7 @@ def reset_io_telemetry() -> None:
         _IO_TELEMETRY["search_http_requests"] = {}
         _IO_TELEMETRY["download_cache_hits"] = 0
         _IO_TELEMETRY["download_misses"] = 0
+        _IO_TELEMETRY["provider_status_events"] = {}
 
 
 def record_search_io(provider_key: str, *, cache_hit: bool) -> None:
@@ -645,6 +681,38 @@ def record_download_io(*, cache_hit: bool) -> None:
         _IO_TELEMETRY[key] = int(_IO_TELEMETRY.get(key, 0)) + 1
 
 
+def record_provider_status_event(
+    provider_key: str,
+    event_kind: str,
+    *,
+    error: Optional[str] = None,
+) -> None:
+    """Record per-provider health event ('ok', 'cooldown_trip', 'auth_blocked', 'timeout', 'error') (B2)."""
+    pk = str(provider_key or "unknown").lower().strip()
+    safe_err = sanitize_source_error(error)
+    with _IO_TELEMETRY_LOCK:
+        bucket = _IO_TELEMETRY["provider_status_events"].setdefault(
+            pk,
+            {
+                "ok_count": 0,
+                "cooldown": 0,
+                "auth_blocked": False,
+                "timeout": 0,
+                "last_error": None,
+            },
+        )
+        if event_kind == "ok":
+            bucket["ok_count"] = int(bucket["ok_count"]) + 1
+        elif event_kind == "cooldown_trip":
+            bucket["cooldown"] = int(bucket["cooldown"]) + 1
+        elif event_kind == "auth_blocked":
+            bucket["auth_blocked"] = True
+        elif event_kind == "timeout":
+            bucket["timeout"] = int(bucket["timeout"]) + 1
+        if safe_err:
+            bucket["last_error"] = safe_err
+
+
 def snapshot_io_telemetry() -> Dict[str, Any]:
     """Return a point-in-time copy of visual search/download telemetry counters."""
     with _IO_TELEMETRY_LOCK:
@@ -653,4 +721,7 @@ def snapshot_io_telemetry() -> Dict[str, Any]:
             "search_http_requests": dict(_IO_TELEMETRY["search_http_requests"]),
             "download_cache_hits": int(_IO_TELEMETRY["download_cache_hits"]),
             "download_misses": int(_IO_TELEMETRY["download_misses"]),
+            "provider_status_events": {
+                k: dict(v) for k, v in _IO_TELEMETRY["provider_status_events"].items()
+            },
         }

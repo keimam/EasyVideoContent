@@ -11,7 +11,7 @@ from urllib.parse import urlsplit, urlunsplit
 from loguru import logger
 
 from app.config import config
-from app.services.longform.visual.base import VisualError
+from app.services.longform.visual.base import VisualError, record_provider_status_event
 from app.services.longform.visual.free_providers import resilient_http_json_get
 
 COVERR_SEARCH_URL = "https://api.coverr.co/videos"
@@ -153,6 +153,7 @@ def search_coverr_videos(
     auth_st = get_coverr_auth_status()
     if auth_st["auth_blocked"]:
         code = auth_st.get("status_code") or 403
+        record_provider_status_event("coverr", "auth_blocked", error=f"HTTP {code}")
         raise CoverrAuthBlockedError(
             f"Coverr auth_blocked (HTTP {code})",
             status_code=code,
@@ -177,6 +178,7 @@ def search_coverr_videos(
             _COVERR_AUTH_STATE["key_hash"] = key_hash
             _COVERR_AUTH_STATE["status_code"] = int(status_code)
             _COVERR_AUTH_STATE["error"] = f"HTTP {status_code}"
+        record_provider_status_event("coverr", "auth_blocked", error=f"HTTP {status_code}")
         logger.warning(
             f"Coverr auth_blocked after HTTP {status_code}; skipping Coverr for remainder of run ({safe_detail[:80]})"
         )

@@ -433,6 +433,51 @@ def _get_visual_completion_duration_text(project_dir: Path, project_id: str) -> 
     return t("visual_completed_duration_secs", seconds=rem)
 
 
+def _extract_short_reason_code(last_error: Optional[str]) -> str:
+    txt = str(last_error or "").strip()
+    m = re.search(r"\b(401|403|429|500|502|503|504)\b", txt)
+    if m:
+        return m.group(1)
+    if "timeout" in txt.lower() or "timed out" in txt.lower():
+        return "timeout"
+    return txt[:60] if txt else "error"
+
+
+def _get_visual_source_warnings(project_dir: Path) -> List[str]:
+    """Build localized warning lines for any visual source that failed or cooled down during last fetch (B2)."""
+    metrics_path = Path(project_dir) / "visual_metrics.json"
+    if not metrics_path.is_file():
+        return []
+    try:
+        data = json.loads(metrics_path.read_text(encoding="utf-8"))
+        src_status = data.get("source_status") if isinstance(data, dict) else None
+    except Exception:
+        return []
+    if not isinstance(src_status, dict):
+        return []
+
+    warnings: List[str] = []
+    for pk in sorted(src_status.keys()):
+        st_info = src_status.get(pk)
+        if not isinstance(st_info, dict):
+            continue
+        if st_info.get("ok", True) and not st_info.get("auth_blocked") and int(st_info.get("cooldown") or 0) == 0 and int(st_info.get("timeout") or 0) == 0:
+            continue
+        label = _format_visual_source_label(pk)
+        last_err = st_info.get("last_error")
+        reason = _extract_short_reason_code(last_err)
+        if st_info.get("auth_blocked"):
+            code = "401" if "401" in str(last_err or "") else "403"
+            warnings.append(t("visual_src_warn_auth_blocked", source=label, code=code))
+        elif int(st_info.get("cooldown") or 0) > 0:
+            warnings.append(t("visual_src_warn_cooldown", source=label, count=int(st_info["cooldown"]), reason=reason))
+        elif int(st_info.get("timeout") or 0) > 0:
+            warnings.append(t("visual_src_warn_timeout", source=label, count=int(st_info["timeout"]), reason=reason))
+        elif last_err:
+            warnings.append(t("visual_src_warn_error", source=label, reason=reason))
+    return warnings
+
+
 # --- Job Monitor Widget with Fragment (D1) ---
 
 def _render_job_monitor_content(project_id: str, state: Dict[str, Any], current_step: Optional[str] = None, hide_completed: bool = False):
@@ -2783,6 +2828,11 @@ def render_visual_step_flow(
         dur_caption = _get_visual_completion_duration_text(p_dir, project_id)
         if dur_caption:
             st.caption(dur_caption)
+
+    if not is_job_running:
+        src_warnings = _get_visual_source_warnings(p_dir)
+        if src_warnings:
+            st.warning("\n".join(f"- {w}" for w in src_warnings) if len(src_warnings) > 1 else src_warnings[0])
 
     if unready_vis_info["missing_count"] > 0:
         st.warning(t("vis_missing_summary_warn", missing=unready_vis_info["missing_count"]))
