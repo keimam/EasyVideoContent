@@ -15,6 +15,7 @@
 /**/.streamlit
 __pycache__
 logs/
+/.efs_update_state.json
 .efs_*.json
 
 node_modules

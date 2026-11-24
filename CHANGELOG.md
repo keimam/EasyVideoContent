@@ -2,6 +2,14 @@
 
 Seluruh rilisan versi inti EasyFaceless Studio berakar dari satu konstanta `APP_VERSION` pada `app/services/branding/constants.py`.
 
+## [Unreleased] — 1.0.2
+
+- **Coverr Henti Cepat Setelah `401`/`403` (`B1`):** Memindahkan pencarian Coverr ke klien milik longform (`app/services/longform/visual/coverr_client.py`) dengan parameter endpoint setara (`/videos`, `urls=true`, `filter=is_vertical:false`, `page_size`, `sort=popular`), tanpa mengunduh `urls.mp4_download` saat pencarian, memakai pemutus bersama pada `429`/`5xx`/timeout, serta menandai status proses `auth_blocked` setelah HTTP `401`/`403` pertama agar sisa run langsung melewatkan Coverr hingga API key berubah atau aplikasi dimulai ulang.
+- **Peringatan Sumber Visual Dilewati (`B2`):** Mencatat ringkasan kesehatan per sumber (`ok`, `cooldown`, `auth_blocked`, `timeout`, dan `last_error` ter-redaksi maks. 120 karakter) ke `source_status` di `visual_metrics.json`, serta menampilkan satu kotak peringatan terlokalisasi (`id` & `en`) di langkah Visual dekat ringkasan durasi selesai bila ada sumber tidak sehat.
+- **Profil Koneksi & Pemutus Dapat Diatur (`B3`):** Menambahkan pengaturan `network_profile` di konfigurasi longform (`normal`: timeout 6 dtk, ambang 2, jeda 120 dtk; `lambat`: timeout 15 dtk, ambang 3, jeda 60 dtk) beserta kontrolnya pada Pengaturan Studio (`render_settings_studio_controls`) yang dipakai oleh seluruh sumber gratis dan Coverr.
+- **Batas Thread Paralel Sumber Visual (`B4`):** Mengembalikan batas paralel mode Campur terbaik ke konstanta `MAX_PARALLEL_SOURCES = 4` di `visual/service.py`.
+- **API Key Gambar per Preset (`B5`):** Menambahkan penyimpanan key per preset (`openai_image_api_keys_by_preset`) dengan migrasi satu kali dari `openai_image_api_keys` berdasarkan `infer_image_preset_key(base_url)` sehingga pergantian Together AI ↔ DeepInfra ↔ Custom memisahkan key masing-masing preset tanpa menghilangkan key pengguna maupun membocorkannya pada pesan Uji 1 gambar.
+
 ## [1.0.1] — Pembaruan Studio 1.0.1 (Tahap V101: Campur Sumber, Local Files, Gambar Eksternal & Preset Gambar AI)
 
 - **Peningkatan Local Files (`V0`, `V2`):** Pencocokan aset lokal kini membaca tag dari nama file dan subfolder melalui `score_candidate_relevance` + `search_with_diagnostics`; fallback file acak/daur ulang dipindahkan di balik opsi proyek `"Isi shot kosong dengan file lokal acak"` (default nonaktif) dengan hash `hashlib.sha1` deterministik; panel **Sumber Footage** kini menampilkan jumlah file lokal, tombol **Buka folder Local files**, uploader multi-file (dengan penolakan format tidak didukung & konfirmasi timpa/ganti nama), panduan singkat, serta pembaruan buku panduan.

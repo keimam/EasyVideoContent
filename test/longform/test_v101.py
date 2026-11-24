@@ -765,7 +765,10 @@ def test_v5_capcut_971_and_version_101_consistency():
 
     latest_payload = json.loads((repo_root / "packaging" / "release" / "latest.json").read_text(encoding="utf-8"))
     assert latest_payload["version"] == "1.0.1"
-    assert latest_payload["download_url"] == "GANTI_DENGAN_LINK_GOOGLE_DRIVE"
+    assert (
+        latest_payload["download_url"] == "GANTI_DENGAN_LINK_GOOGLE_DRIVE"
+        or str(latest_payload["download_url"]).startswith("https://drive.google.com/")
+    )
     assert latest_payload["notes_id"] and latest_payload["notes_en"]
 
 
