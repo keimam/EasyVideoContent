@@ -770,6 +770,8 @@ class VisualService:
                     "429" in err_txt
                     or "rate" in err_low
                     or "403" in err_txt
+                    or "401" in err_txt
+                    or "auth_blocked" in err_low
                     or "cooldown" in err_low
                     or "504" in err_txt
                     or "503" in err_txt
@@ -912,6 +914,20 @@ class VisualService:
         for prov_name in ordered_providers:
             if is_stop_requested(self.project_dir):
                 break
+            if prov_name == "coverr":
+                from app.services.longform.visual.coverr_client import get_coverr_auth_status
+
+                c_auth = get_coverr_auth_status()
+                if c_auth.get("auth_blocked"):
+                    attempts_log.append({
+                        "provider": "coverr",
+                        "query": raw_query,
+                        "raw_count": 0,
+                        "accepted_count": 0,
+                        "rejected_reasons": [],
+                        "error": f"auth_blocked ({c_auth.get('error') or 'HTTP 403'})",
+                    })
+                    continue
             try:
                 active_provider = self.get_provider(prov_name, manifest)
                 if prov_name in ("fake", "local"):

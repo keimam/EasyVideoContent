@@ -56,6 +56,68 @@ _TRANSIENT_COOLDOWN_SECONDS = 120.0
 _TRANSIENT_FAILURE_THRESHOLD = 2
 
 
+def get_active_network_circuit_params() -> Tuple[int, int, float]:
+    """Return active (timeout_sec, failure_threshold, cooldown_seconds) from longform config (B3)."""
+    try:
+        from app.services.longform.config import get_network_profile_settings
+
+        prof = get_network_profile_settings()
+        return (
+            int(prof["timeout"]),
+            int(prof["failure_threshold"]),
+            float(prof["cooldown_seconds"]),
+        )
+    except Exception:
+        return (6, _TRANSIENT_FAILURE_THRESHOLD, _TRANSIENT_COOLDOWN_SECONDS)
+
+
+def check_provider_cooldown(provider_key: str) -> float:
+    """Return remaining cooldown seconds if provider is paused, else 0.0."""
+    pk = str(provider_key or "").lower().strip()
+    with _STATE_LOCK:
+        until = float(_PROVIDER_COOLDOWN_UNTIL.get(pk, 0.0) or 0.0)
+    rem = until - time.time()
+    return rem if rem > 0.0 else 0.0
+
+
+def trip_provider_cooldown(provider_key: str, duration_seconds: float) -> None:
+    """Place provider into temporary cooldown for duration_seconds."""
+    pk = str(provider_key or "").lower().strip()
+    with _STATE_LOCK:
+        _PROVIDER_COOLDOWN_UNTIL[pk] = max(
+            float(_PROVIDER_COOLDOWN_UNTIL.get(pk, 0.0) or 0.0),
+            time.time() + max(1.0, float(duration_seconds)),
+        )
+
+
+def clear_provider_transient_errors(provider_key: str) -> None:
+    """Reset consecutive transient error counter after a healthy response."""
+    pk = str(provider_key or "").lower().strip()
+    with _STATE_LOCK:
+        _PROVIDER_CONSECUTIVE_ERRORS[pk] = 0
+
+
+def note_provider_transient_failure(provider_key: str, detail: str) -> bool:
+    """Record a 5xx/timeout failure and open shared circuit breaker if threshold reached.
+
+    Returns True if cooldown was tripped on this call.
+    """
+    pk = str(provider_key or "").lower().strip()
+    _timeout_s, threshold, cooldown_s = get_active_network_circuit_params()
+    tripped = False
+    with _STATE_LOCK:
+        cnt = int(_PROVIDER_CONSECUTIVE_ERRORS.get(pk, 0)) + 1
+        _PROVIDER_CONSECUTIVE_ERRORS[pk] = cnt
+        if cnt >= threshold:
+            _PROVIDER_COOLDOWN_UNTIL[pk] = time.time() + cooldown_s
+            tripped = True
+            logger.warning(
+                f"{pk} temporarily paused for {int(cooldown_s)}s "
+                f"after {cnt} consecutive upstream timeout/5xx errors ({detail[:80]})"
+            )
+    return tripped
+
+
 def reset_provider_circuit_breakers() -> None:
     """Clear per-provider cooldowns and consecutive error counts (useful for tests)."""
     with _STATE_LOCK:
@@ -116,6 +178,79 @@ def _get_api_search_cache_dir(cache: GlobalMediaCache) -> Path:
     return d
 
 
+def resilient_http_json_get(
+    provider_key: str,
+    url: str,
+    params: Optional[Dict[str, Any]] = None,
+    *,
+    headers: Optional[Dict[str, str]] = None,
+    timeout: Optional[int] = None,
+    min_interval_sec: float = 0.35,
+    auth_fail_statuses: Tuple[int, ...] = (),
+    on_auth_failure: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """Shared HTTP JSON GET with rate limiting and 429/5xx/timeout circuit breaker (A2.2, B1, B3)."""
+    prof_timeout, _threshold, _cooldown_s = get_active_network_circuit_params()
+    eff_timeout = int(timeout) if timeout is not None else int(prof_timeout)
+
+    rem = check_provider_cooldown(provider_key)
+    if rem > 0.0:
+        raise VisualError(f"{provider_key} cooldown active ({int(rem)}s remaining)")
+
+    last_err = ""
+    for attempt in range(1, 3):
+        _respect_rate_limit(provider_key, min_interval_sec=min_interval_sec)
+        record_search_io(provider_key, cache_hit=False)
+        try:
+            resp = requests.get(
+                url,
+                params=params,
+                headers=headers,
+                proxies=getattr(config, "proxy", None),
+                timeout=eff_timeout,
+            )
+            status = int(getattr(resp, "status_code", 200))
+            if auth_fail_statuses and status in auth_fail_statuses:
+                last_err = f"HTTP {status} unauthorized/rejected"
+                if callable(on_auth_failure):
+                    on_auth_failure(status, last_err)
+                raise VisualError(f"{provider_key} API key rejected ({last_err})")
+            if status in (429, 403):
+                body_low = (getattr(resp, "text", "") or "")[:300].lower()
+                last_err = f"HTTP {status} rate limit/challenge"
+                if "just a moment" in body_low or status == 403 or attempt >= 2:
+                    trip_provider_cooldown(provider_key, 60.0)
+                    break
+                wait_s = float((getattr(resp, "headers", {}) or {}).get("Retry-After") or 2.0)
+                time.sleep(min(wait_s, 5.0))
+                continue
+            if status in (500, 502, 503, 504):
+                last_err = f"HTTP {status} upstream gateway error"
+                note_provider_transient_failure(provider_key, last_err)
+                break
+            resp.raise_for_status()
+            payload = resp.json()
+            if not isinstance(payload, dict):
+                payload = {"items": payload}
+            clear_provider_transient_errors(provider_key)
+            return payload
+        except VisualError:
+            raise
+        except requests.exceptions.Timeout as exc:
+            last_err = f"Timeout ({exc})"
+            note_provider_transient_failure(provider_key, last_err)
+            break
+        except Exception as exc:
+            last_err = str(exc)
+            if "timeout" in last_err.lower() or "504" in last_err or "503" in last_err:
+                note_provider_transient_failure(provider_key, last_err)
+                break
+            if attempt < 2:
+                time.sleep(0.3)
+
+    raise VisualError(f"{provider_key} API request failed: {last_err}")
+
+
 def cached_json_get(
     provider_key: str,
     url: str,
@@ -123,7 +258,7 @@ def cached_json_get(
     *,
     cache: Optional[GlobalMediaCache] = None,
     headers: Optional[Dict[str, str]] = None,
-    timeout: int = 6,
+    timeout: Optional[int] = None,
     min_interval_sec: float = 0.35,
 ) -> Dict[str, Any]:
     """Perform HTTP GET with User-Agent, rate-limit etiquette, 429/5xx cooldown circuit breaker, and 24h JSON cache."""
@@ -147,76 +282,21 @@ def cached_json_get(
     if headers:
         req_headers.update(headers)
 
-    last_err = ""
-    with _STATE_LOCK:
-        cooldown_until = _PROVIDER_COOLDOWN_UNTIL.get(provider_key, 0.0)
-    if cooldown_until > time.time():
-        raise VisualError(f"{provider_key} cooldown active ({int(cooldown_until - time.time())}s remaining)")
-
-    def _note_transient_failure(detail: str) -> None:
-        with _STATE_LOCK:
-            cnt = int(_PROVIDER_CONSECUTIVE_ERRORS.get(provider_key, 0)) + 1
-            _PROVIDER_CONSECUTIVE_ERRORS[provider_key] = cnt
-            if cnt >= _TRANSIENT_FAILURE_THRESHOLD:
-                _PROVIDER_COOLDOWN_UNTIL[provider_key] = time.time() + _TRANSIENT_COOLDOWN_SECONDS
-                logger.warning(
-                    f"{provider_key} temporarily paused for {int(_TRANSIENT_COOLDOWN_SECONDS)}s "
-                    f"after {cnt} consecutive upstream timeout/5xx errors ({detail[:80]})"
-                )
-
-    for attempt in range(1, 3):
-        _respect_rate_limit(provider_key, min_interval_sec=min_interval_sec)
-        record_search_io(provider_key, cache_hit=False)
-        try:
-            resp = requests.get(
-                url,
-                params=params,
-                headers=req_headers,
-                proxies=getattr(config, "proxy", None),
-                timeout=timeout,
-            )
-            if resp.status_code in (429, 403):
-                body_low = (resp.text or "")[:300].lower()
-                last_err = f"HTTP {resp.status_code} rate limit/challenge"
-                if "just a moment" in body_low or resp.status_code == 403 or attempt >= 2:
-                    with _STATE_LOCK:
-                        _PROVIDER_COOLDOWN_UNTIL[provider_key] = time.time() + 60.0
-                    break
-                wait_s = float(resp.headers.get("Retry-After") or 2.0)
-                time.sleep(min(wait_s, 5.0))
-                continue
-            if resp.status_code in (500, 502, 503, 504):
-                last_err = f"HTTP {resp.status_code} upstream gateway error"
-                _note_transient_failure(last_err)
-                # Fail fast on 502/503/504 without wasting another full timeout cycle
-                break
-            resp.raise_for_status()
-            payload = resp.json()
-            if not isinstance(payload, dict):
-                payload = {"items": payload}
-            with _STATE_LOCK:
-                _PROVIDER_CONSECUTIVE_ERRORS[provider_key] = 0
-            try:
-                tmp_c = cache_file.with_suffix(".tmp")
-                tmp_c.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-                os.replace(tmp_c, cache_file)
-            except Exception:
-                pass
-            return payload
-        except requests.exceptions.Timeout as exc:
-            last_err = f"Timeout ({exc})"
-            _note_transient_failure(last_err)
-            # Fail fast on read/connect timeout instead of stalling another full timeout cycle
-            break
-        except Exception as exc:
-            last_err = str(exc)
-            if "timeout" in last_err.lower() or "504" in last_err or "503" in last_err:
-                _note_transient_failure(last_err)
-                break
-            if attempt < 2:
-                time.sleep(0.3)
-
-    raise VisualError(f"{provider_key} API request failed: {last_err}")
+    payload = resilient_http_json_get(
+        provider_key,
+        url,
+        params=params,
+        headers=req_headers,
+        timeout=timeout,
+        min_interval_sec=min_interval_sec,
+    )
+    try:
+        tmp_c = cache_file.with_suffix(".tmp")
+        tmp_c.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp_c, cache_file)
+    except Exception:
+        pass
+    return payload
 
 
 def convert_video_to_h264_mp4(src_path: Path, dest_mp4: Path) -> Path:

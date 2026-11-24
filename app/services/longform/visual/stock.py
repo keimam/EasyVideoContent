@@ -39,7 +39,6 @@ from app.services.longform.visual.base import (
 from app.services.longform.visual.cache import GlobalMediaCache
 from app.services.longform.visual.credits import CreditsManager
 from app.services.material import (
-    search_videos_coverr,
     search_videos_pexels,
     search_videos_pixabay,
 )
@@ -1387,29 +1386,35 @@ class StockVisualProvider(BaseVisualProvider):
                 if isinstance(exc, VisualConfigurationError):
                     raise
 
-        # 3. Coverr search
+        # 3. Coverr search (B1: longform-owned client with 401/403 short-circuit & shared breaker)
         if (self.provider_name == "coverr" or (self.provider_name == "stock" and has_coverr)) and len(candidates) < limit:
+            from app.services.longform.visual.coverr_client import (
+                CoverrAuthBlockedError,
+                search_coverr_videos,
+            )
+
             try:
-                record_search_io("coverr", cache_hit=False)
-                results = search_videos_coverr(
+                coverr_items = search_coverr_videos(
                     search_term=query,
                     minimum_duration=min_sec,
-                    video_aspect=VideoAspect.landscape,
+                    video_aspect="landscape",
                 )
-                for item in results:
-                    s_info = getattr(item, "source_info", {}) or {}
-                    asset_id = s_info.get("asset_id") or str(abs(hash(item.url)))
+                raw_total_count += len(coverr_items)
+                for raw in coverr_items:
+                    s_info = raw.get("source_info") or {}
+                    asset_id = raw.get("asset_id") or s_info.get("asset_id") or str(abs(hash(raw["url"])))
                     cand_id = f"coverr_{asset_id}"
                     if cand_id in excluded or any(c.candidate_id == cand_id for c in candidates):
                         continue
 
-                    creator = s_info.get("creator") or {}
+                    creator = raw.get("creator") or s_info.get("creator") or {}
                     rendition = s_info.get("rendition") or {}
-                    rend_w = int(rendition.get("width") or 1920)
-                    rend_h = int(rendition.get("height") or 1080)
+                    rend_w = int(raw.get("width") or rendition.get("width") or 1920)
+                    rend_h = int(raw.get("height") or rendition.get("height") or 1080)
 
-                    tags = _extract_fallback_tags(query, s_info)
-                    is_valid, score, _ = score_candidate_relevance(
+                    raw_tags = raw.get("tags") or []
+                    tags = raw_tags if raw_tags else _extract_fallback_tags(query, s_info)
+                    is_valid, score, rej_reason = score_candidate_relevance(
                         candidate_tags=tags,
                         search_query=query,
                         visual_keywords=visual_keywords,
@@ -1425,6 +1430,7 @@ class StockVisualProvider(BaseVisualProvider):
                         recommended_visual_sources=rec_sources,
                     )
                     if not is_valid:
+                        rejected_reasons_log.append(rej_reason)
                         continue
 
                     candidates.append(
@@ -1432,21 +1438,27 @@ class StockVisualProvider(BaseVisualProvider):
                             candidate_id=cand_id,
                             provider="coverr",
                             source_type="stock_video",
-                            url=item.url,
+                            url=raw["url"],
                             local_path=None,
                             author=creator.get("name"),
-                            author_url=creator.get("url"),
-                            source_url=s_info.get("source_page"),
+                            author_url=creator.get("profile_page") or creator.get("url"),
+                            source_url=raw.get("source_page") or s_info.get("source_page"),
                             license="Coverr License",
                             width=rend_w,
                             height=rend_h,
-                            duration_seconds=float(getattr(item, "duration", target_duration) or target_duration),
+                            duration_seconds=float(raw.get("duration") or target_duration),
                             source_info=s_info,
                             tags=tags,
                             relevance_score=score,
                             rendition_name=f"coverr ({rend_w}x{rend_h})",
+                            title=raw.get("title"),
+                            thumbnail_url=raw.get("thumbnail_url"),
                         )
                     )
+            except (VisualConfigurationError, CoverrAuthBlockedError, VisualError) as exc:
+                if self.provider_name == "coverr" or isinstance(exc, VisualConfigurationError):
+                    raise
+                logger.warning(f"Coverr stock video search paused/error for query '{query}': {exc}")
             except Exception as exc:
                 logger.error(f"Coverr stock video search error for query '{query}': {exc}")
                 if isinstance(exc, VisualConfigurationError):
