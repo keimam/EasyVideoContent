@@ -59,3 +59,13 @@ def default_setup_completed_for_legacy_tests(monkeypatch, request):
     if any(tok in name for tok in ("wizard", "first_run", "onboarding_tour", "_e1_", "_e2_", "_e5_", "_e8_", "_e9_")):
         return
     monkeypatch.setattr("app.services.longform.first_run.is_setup_completed", lambda: True)
+
+
+@pytest.fixture(autouse=True)
+def reset_longform_config_cache_between_tests():
+    """Ensure LongformConfig global cache never leaks custom/slow profiles across tests."""
+    from app.services.longform import config as lf_cfg
+
+    lf_cfg._CONFIG_CACHE = None
+    yield
+    lf_cfg._CONFIG_CACHE = None

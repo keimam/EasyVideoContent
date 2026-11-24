@@ -660,10 +660,11 @@ def test_v4_image_presets_payload_adaptation_and_single_test_errors(monkeypatch)
     assert "deepinfra" in IMAGE_PROVIDER_PRESETS
     assert "custom" in IMAGE_PROVIDER_PRESETS
 
-    # Preset application NEVER overwrites existing API keys and ships zero default keys
+    # Preset application stores legacy key per-preset (never discarded) and ships zero default keys
     settings_dict = {"openai_image_api_keys": ["secret-user-key-9999"], "openai_image_base_url": ""}
     apply_image_provider_preset("together", settings_dict)
-    assert settings_dict["openai_image_api_keys"] == ["secret-user-key-9999"]
+    assert settings_dict["openai_image_api_keys_by_preset"] == {"custom": "secret-user-key-9999"}
+    assert settings_dict["openai_image_api_keys"] == []
     assert settings_dict["openai_image_base_url"] == "https://api.together.xyz/v1"
     assert settings_dict["openai_image_model"] == "black-forest-labs/FLUX.1-schnell"
     assert settings_dict["openai_image_size"] == "1344x768"

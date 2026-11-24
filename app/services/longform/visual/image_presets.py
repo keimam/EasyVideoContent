@@ -127,39 +127,96 @@ def adapt_openai_image_payload(
     return adapted
 
 
+def migrate_openai_image_api_keys_by_preset(
+    app_settings: Dict[str, Any],
+    *,
+    save_fn: Optional[Any] = None,
+    runtime_cfg: Optional[Dict[str, Any]] = None,
+) -> Dict[str, str]:
+    """One-time migration moving a single legacy openai_image_api_keys entry into per-preset dict (B5)."""
+    existing_map = app_settings.get("openai_image_api_keys_by_preset")
+    if isinstance(existing_map, dict):
+        cleaned = {
+            str(k).strip(): str(v).strip()
+            for k, v in existing_map.items()
+            if str(k or "").strip() and str(v or "").strip()
+        }
+        return cleaned
+
+    migrated: Dict[str, str] = {}
+    cur_key = _extract_first_api_key(app_settings.get("openai_image_api_keys"))
+    if cur_key:
+        target_preset = infer_image_preset_key(app_settings.get("openai_image_base_url"))
+        migrated[target_preset] = cur_key
+
+    app_settings["openai_image_api_keys_by_preset"] = dict(migrated)
+    if runtime_cfg is not None:
+        runtime_cfg["openai_image_api_keys_by_preset"] = dict(migrated)
+    if callable(save_fn):
+        save_fn("openai_image_api_keys_by_preset", dict(migrated))
+    return dict(migrated)
+
+
 def apply_image_provider_preset(
     preset_key: str,
     app_settings: Dict[str, Any],
     *,
     save_fn: Optional[Any] = None,
     runtime_cfg: Optional[Dict[str, Any]] = None,
+    active_api_key: Optional[str] = None,
+    previous_preset_key: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Apply preset Base URL, Model, and 16:9 Size WITHOUT touching existing API keys."""
+    """Apply preset Base URL/Model/Size while storing active key under old preset and loading new preset key (B5)."""
     if preset_key not in IMAGE_PROVIDER_PRESETS:
         raise ValueError(f"Unknown image preset: {preset_key}")
     preset = IMAGE_PROVIDER_PRESETS[preset_key]
 
-    # Backup existing API key untouched
-    existing_keys = app_settings.get("openai_image_api_keys")
+    by_preset = migrate_openai_image_api_keys_by_preset(
+        app_settings,
+        save_fn=save_fn,
+        runtime_cfg=runtime_cfg,
+    )
+    old_preset = (
+        str(previous_preset_key).strip()
+        if previous_preset_key and str(previous_preset_key).strip() in IMAGE_PROVIDER_PRESETS
+        else infer_image_preset_key(app_settings.get("openai_image_base_url"))
+    )
+    cur_active_key = (
+        _extract_first_api_key(active_api_key)
+        if active_api_key is not None
+        else _extract_first_api_key(app_settings.get("openai_image_api_keys"))
+    )
+    if cur_active_key:
+        by_preset[old_preset] = cur_active_key
+    elif active_api_key is not None and not cur_active_key and old_preset == preset_key:
+        by_preset.pop(old_preset, None)
+
+    loaded_key = str(by_preset.get(preset_key) or "").strip()
+    new_keys_list = [loaded_key] if loaded_key else []
+
     app_settings["openai_image_base_url"] = preset["base_url"]
     app_settings["openai_image_model"] = preset["model"]
     app_settings["openai_image_size"] = preset["size"]
-    if existing_keys is not None:
-        app_settings["openai_image_api_keys"] = existing_keys
+    app_settings["openai_image_api_keys_by_preset"] = dict(by_preset)
+    app_settings["openai_image_api_keys"] = list(new_keys_list)
 
     if runtime_cfg is not None:
         runtime_cfg["openai_image_base_url"] = preset["base_url"]
         runtime_cfg["openai_image_model"] = preset["model"]
         runtime_cfg["openai_image_size"] = preset["size"]
-        if existing_keys is not None:
-            runtime_cfg["openai_image_api_keys"] = existing_keys
+        runtime_cfg["openai_image_api_keys_by_preset"] = dict(by_preset)
+        runtime_cfg["openai_image_api_keys"] = list(new_keys_list)
 
     if callable(save_fn):
         save_fn("openai_image_base_url", preset["base_url"])
         save_fn("openai_image_model", preset["model"])
         save_fn("openai_image_size", preset["size"])
+        save_fn("openai_image_api_keys_by_preset", dict(by_preset))
+        save_fn("openai_image_api_keys", list(new_keys_list))
 
-    return dict(preset)
+    res = dict(preset)
+    res["loaded_api_key"] = loaded_key
+    return res
 
 
 def categorize_image_test_error(
@@ -390,6 +447,7 @@ def render_openai_image_preset_controls(
     from app.config.config import save_config as _save_cfg
 
     lang = get_ui_language()
+    migrate_openai_image_api_keys_by_preset(app_settings, runtime_cfg=_cfg.app)
     active_vals = resolve_active_openai_image_form_values(
         session_state=st_module.session_state,
         app_settings=app_settings,
@@ -397,6 +455,18 @@ def render_openai_image_preset_controls(
     )
     inferred = infer_image_preset_key(active_vals.get("base_url"))
     preset_keys = ["custom", "together", "deepinfra"]
+
+    # Keep current preset's non-empty active key synced in by_preset map without losing other presets
+    if active_vals.get("api_key"):
+        cur_map = dict(
+            app_settings.get("openai_image_api_keys_by_preset")
+            or _cfg.app.get("openai_image_api_keys_by_preset")
+            or {}
+        )
+        if cur_map.get(inferred) != active_vals["api_key"]:
+            cur_map[inferred] = str(active_vals["api_key"])
+            app_settings["openai_image_api_keys_by_preset"] = cur_map
+            _cfg.app["openai_image_api_keys_by_preset"] = dict(cur_map)
 
     def _fmt(pk: str) -> str:
         meta = IMAGE_PROVIDER_PRESETS[pk]
@@ -422,10 +492,10 @@ def render_openai_image_preset_controls(
         if st_module.button(
             t("btn_apply_image_preset"),
             key="btn_apply_openai_image_preset",
-            disabled=(sel_preset == "custom"),
+            disabled=(sel_preset == "custom" and inferred == "custom"),
             use_container_width=True,
         ):
-            def _save_key_val(k: str, v: str) -> None:
+            def _save_key_val(k: str, v: Any) -> None:
                 _cfg.app[k] = v
                 if callable(set_runtime_cfg_fn):
                     set_runtime_cfg_fn("app", k, v)
@@ -435,17 +505,21 @@ def render_openai_image_preset_controls(
                 app_settings,
                 save_fn=_save_key_val,
                 runtime_cfg=_cfg.app,
+                active_api_key=active_vals.get("api_key") or "",
+                previous_preset_key=inferred,
             )
             _save_cfg()
+            loaded_key = str(applied.get("loaded_api_key") or "")
             st_module.session_state["openai_image_base_url_input"] = applied["base_url"]
             st_module.session_state["openai_image_model_input"] = applied["model"]
             st_module.session_state["openai_image_size_input"] = applied["size"]
+            st_module.session_state["openai_image_api_keys_input"] = loaded_key
             st_module.session_state.pop("_openai_img_test_result", None)
             st_module.session_state["_openai_img_test_sig"] = _openai_image_config_signature(
                 sel_preset,
                 {
                     "base_url": applied["base_url"] or None,
-                    "api_key": active_vals.get("api_key"),
+                    "api_key": loaded_key or None,
                     "model": applied["model"] or None,
                     "image_size": applied["size"] or None,
                 },

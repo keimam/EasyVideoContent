@@ -428,7 +428,7 @@ def test_b3_network_profile_lambat_timeout_15_and_threshold_3_plus_default_norma
     finally:
         reset_coverr_auth_block()
         reset_provider_circuit_breakers()
-        lf_cfg.load_longform_config(reload=True)
+        lf_cfg._CONFIG_CACHE = None
 
 
 def test_b4_max_parallel_sources_caps_thread_pool_at_4(tmp_path: Path, monkeypatch):
@@ -508,3 +508,131 @@ def test_b4_max_parallel_sources_caps_thread_pool_at_4(tmp_path: Path, monkeypat
         search_mode="mix_best",
     )
     assert observed_workers == [4]
+
+
+def test_b5_per_preset_api_key_switch_preserves_and_isolates_keys(monkeypatch):
+    """B5(a): Together key -> switch to DeepInfra -> DeepInfra key box empty -> switch back -> Together key returns."""
+    from app.services.longform.visual.image_presets import render_openai_image_preset_controls
+
+    class _DummyCol:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    class _MockSt:
+        def __init__(self):
+            self.session_state = {}
+            self.clicked = set()
+            self.sel_value = "together"
+
+        def selectbox(self, label, options=None, index=0, key=None, **kw):
+            if key:
+                self.session_state[key] = self.sel_value
+            return self.sel_value
+
+        def columns(self, n):
+            cnt = len(n) if isinstance(n, (list, tuple)) else int(n)
+            return [_DummyCol() for _ in range(cnt)]
+
+        def button(self, label, key=None, disabled=False, **kw):
+            return (not disabled) and (key in self.clicked)
+
+        def spinner(self, *_a):
+            return _DummyCol()
+
+        def success(self, *_a):
+            pass
+
+        def error(self, *_a):
+            pass
+
+        def image(self, *_a, **_kw):
+            pass
+
+        def rerun(self):
+            pass
+
+    app_s = {
+        "openai_image_base_url": "https://api.together.xyz/v1",
+        "openai_image_model": "black-forest-labs/FLUX.1-schnell",
+        "openai_image_size": "1344x768",
+        "openai_image_api_keys": ["tgp-secret-together-111"],
+    }
+    monkeypatch.setitem(config.app, "openai_image_base_url", app_s["openai_image_base_url"])
+    monkeypatch.setitem(config.app, "openai_image_api_keys", list(app_s["openai_image_api_keys"]))
+    monkeypatch.delitem(config.app, "openai_image_api_keys_by_preset", raising=False)
+
+    st_ui = _MockSt()
+    st_ui.session_state["openai_image_base_url_input"] = "https://api.together.xyz/v1"
+    st_ui.session_state["openai_image_api_keys_input"] = "tgp-secret-together-111"
+
+    # 1. Switch to DeepInfra and apply preset -> DeepInfra starts empty, Together key preserved in dict
+    st_ui.sel_value = "deepinfra"
+    st_ui.clicked = {"btn_apply_openai_image_preset"}
+    render_openai_image_preset_controls(st_module=st_ui, app_settings=app_s)
+
+    assert app_s["openai_image_base_url"] == "https://api.deepinfra.com/v1/openai"
+    assert app_s["openai_image_api_keys"] == []
+    assert st_ui.session_state["openai_image_api_keys_input"] == ""
+    assert app_s["openai_image_api_keys_by_preset"]["together"] == "tgp-secret-together-111"
+
+    # 2. Switch back to Together and apply preset -> Together key returns cleanly
+    st_ui.sel_value = "together"
+    st_ui.clicked = {"btn_apply_openai_image_preset"}
+    render_openai_image_preset_controls(st_module=st_ui, app_settings=app_s)
+
+    assert app_s["openai_image_base_url"] == "https://api.together.xyz/v1"
+    assert app_s["openai_image_api_keys"] == ["tgp-secret-together-111"]
+    assert st_ui.session_state["openai_image_api_keys_input"] == "tgp-secret-together-111"
+
+
+def test_b5_legacy_single_key_migration_without_dict():
+    """B5(b): Legacy config without openai_image_api_keys_by_preset migrates key to inferred preset with zero loss."""
+    from app.services.longform.visual.image_presets import migrate_openai_image_api_keys_by_preset
+
+    legacy = {
+        "openai_image_base_url": "https://api.deepinfra.com/v1/openai",
+        "openai_image_api_keys": ["di-legacy-key-777"],
+    }
+    rt = dict(legacy)
+    saved = {}
+    migrated = migrate_openai_image_api_keys_by_preset(
+        legacy,
+        save_fn=lambda k, v: saved.setdefault(k, v),
+        runtime_cfg=rt,
+    )
+    assert migrated == {"deepinfra": "di-legacy-key-777"}
+    assert legacy["openai_image_api_keys_by_preset"] == {"deepinfra": "di-legacy-key-777"}
+    assert rt["openai_image_api_keys_by_preset"] == {"deepinfra": "di-legacy-key-777"}
+    assert saved["openai_image_api_keys_by_preset"] == {"deepinfra": "di-legacy-key-777"}
+
+
+def test_b5_redact_api_secrets_masks_key_in_single_image_test(monkeypatch):
+    """B5(c): redact_api_secrets and test_single_openai_image mask preset API keys on 401/403 failures."""
+    import requests
+    from app.services.longform.visual.image_presets import (
+        redact_api_secrets,
+        test_single_openai_image,
+    )
+
+    secret = "tgp-secret-mask-4455"
+    assert secret not in redact_api_secrets(f"Invalid Bearer {secret} key {secret}", secret)
+
+    def _fake_post(*a, **kw):
+        resp = MagicMock()
+        resp.status_code = 401
+        resp.text = f"Unauthorized token {secret}"
+        return resp
+
+    monkeypatch.setattr(requests, "post", _fake_post)
+    res = test_single_openai_image(
+        base_url="https://api.together.xyz/v1",
+        api_key=secret,
+        model="black-forest-labs/FLUX.1-schnell",
+        lang="id",
+    )
+    assert res["ok"] is False
+    assert res["category"] == "auth"
+    assert secret not in res["message"]
