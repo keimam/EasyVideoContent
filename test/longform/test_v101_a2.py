@@ -162,3 +162,59 @@ def test_a2_2_visual_completion_duration_banner_i18n(tmp_path: Path, monkeypatch
     cur_lang["v"] = "en"
     assert _get_visual_completion_duration_text(proj_dir, "dur_proj") == "Completed in 42s"
 
+
+def test_a2_3_sixty_percent_cap_and_zero_alternative_fallback():
+    """A2.3: 60% cap & 3-consec block Pixabay whenever alternatives exist, and fall back when Pixabay is sole passing source."""
+    from app.services.longform.visual.base import VisualCandidate
+
+    def _cand(prov: str, cid: str, score: float) -> VisualCandidate:
+        return VisualCandidate(
+            candidate_id=cid,
+            provider=prov,
+            source_type="stock_video" if prov == "pixabay" else "stock_image",
+            url=f"https://example.com/{prov}/{cid}",
+            local_path=None,
+            relevance_score=score,
+        )
+
+    order = ["pixabay", "coverr", "wikimedia", "nasa", "openverse"]
+    usage = {"pixabay": 13, "coverr": 4, "local": 4}  # 21 assigned so far out of 23 shots
+    recent = ["coverr", "coverr", "coverr", "pixabay"]
+
+    # Case 1: 14th Pixabay shot out of 23 (14/23 = 60.87% > 60%) WITH Wikimedia alternative -> MUST pick Wikimedia!
+    picked = VisualService._select_candidate_mix_best(
+        [_cand("pixabay", "pix_14", 0.96), _cand("wikimedia", "wiki_1", 0.688)],
+        providers_order=order,
+        source_usage_counts=usage,
+        recent_sources=recent,
+        total_project_shots=23,
+        max_source_share=0.6,
+        avoid_consecutive_same_source=True,
+    )
+    assert picked.provider == "wikimedia"
+
+    # Case 2: 3 consecutive Pixabay shots WITH lower-score Wikimedia alternative -> MUST break streak with Wikimedia!
+    picked_streak = VisualService._select_candidate_mix_best(
+        [_cand("pixabay", "pix_4", 0.82), _cand("wikimedia", "wiki_2", 0.418)],
+        providers_order=order,
+        source_usage_counts={"pixabay": 4},
+        recent_sources=["pixabay", "pixabay", "pixabay", "pixabay"],
+        total_project_shots=23,
+        max_source_share=0.6,
+        avoid_consecutive_same_source=True,
+    )
+    assert picked_streak.provider == "wikimedia"
+
+    # Case 3: 17th Pixabay shot out of 23 with ZERO passing alternatives -> MUST still return Pixabay rather than failing!
+    picked_sole = VisualService._select_candidate_mix_best(
+        [_cand("pixabay", "pix_17", 0.75)],
+        providers_order=order,
+        source_usage_counts={"pixabay": 16, "coverr": 4, "wikimedia": 2},
+        recent_sources=["pixabay", "pixabay", "pixabay"],
+        total_project_shots=23,
+        max_source_share=0.6,
+        avoid_consecutive_same_source=True,
+    )
+    assert picked_sole.provider == "pixabay"
+
+
