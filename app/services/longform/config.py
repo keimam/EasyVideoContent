@@ -19,6 +19,20 @@ except ImportError:
     toml = None
 
 
+NETWORK_PROFILES: dict[str, dict[str, int]] = {
+    "normal": {"timeout": 6, "failure_threshold": 2, "cooldown_seconds": 120},
+    "lambat": {"timeout": 15, "failure_threshold": 3, "cooldown_seconds": 60},
+}
+
+
+def normalize_network_profile(value: Any) -> str:
+    """Normalize configured network profile to 'normal' or 'lambat' (B3)."""
+    low = str(value or "").strip().lower()
+    if low in ("lambat", "slow"):
+        return "lambat"
+    return "normal"
+
+
 @dataclass(frozen=True)
 class LongformConfig:
     min_duration_seconds: int = 600
@@ -30,6 +44,7 @@ class LongformConfig:
     atomic_retry_delay_seconds: float = 0.05
     capcut_tested_versions: tuple[str, ...] = ("8.9.0", "9.7.1")
     capcut_download_url: str = "https://www.capcut.com/"
+    network_profile: str = "normal"
 
 
 _CONFIG_CACHE: LongformConfig | None = None
@@ -62,6 +77,7 @@ def load_longform_config(reload: bool = False) -> LongformConfig:
         "atomic_retry_delay_seconds": 0.05,
         "capcut_tested_versions": ("8.9.0", "9.7.1"),
         "capcut_download_url": "https://www.capcut.com/",
+        "network_profile": "normal",
     }
 
     if config_path.is_file() and toml is not None:
@@ -77,9 +93,14 @@ def load_longform_config(reload: bool = False) -> LongformConfig:
                     "hardware_encoder",
                     "atomic_retry_count",
                     "atomic_retry_delay_seconds",
+                    "network_profile",
                 ):
                     if key in section:
-                        defaults[key] = section[key]
+                        defaults[key] = (
+                            normalize_network_profile(section[key])
+                            if key == "network_profile"
+                            else section[key]
+                        )
                 cc_section = data.get("capcut")
                 if isinstance(cc_section, dict):
                     raw_vers = cc_section.get("tested_versions")
@@ -95,6 +116,75 @@ def load_longform_config(reload: bool = False) -> LongformConfig:
 
     _CONFIG_CACHE = LongformConfig(**defaults)
     return _CONFIG_CACHE
+
+
+def get_network_profile_settings(
+    profile: str | None = None,
+    *,
+    reload: bool = False,
+) -> dict[str, Any]:
+    """Return active HTTP timeout, failure threshold, and cooldown seconds for 'normal' or 'lambat' (B3)."""
+    if profile is None:
+        cfg = load_longform_config(reload=reload)
+        prof_key = normalize_network_profile(getattr(cfg, "network_profile", "normal"))
+    else:
+        prof_key = normalize_network_profile(profile)
+    params = NETWORK_PROFILES.get(prof_key, NETWORK_PROFILES["normal"])
+    return {
+        "profile": prof_key,
+        "timeout": int(params["timeout"]),
+        "failure_threshold": int(params["failure_threshold"]),
+        "cooldown_seconds": int(params["cooldown_seconds"]),
+    }
+
+
+def save_network_profile(
+    profile: str,
+    *,
+    config_path: Path | None = None,
+) -> str:
+    """Persist network_profile into user longform.toml while preserving base sections, and refresh cache (B3)."""
+    from app.services.longform import app_paths
+
+    norm = normalize_network_profile(profile)
+    target_path = config_path or (app_paths.get_data_dir(create=True) / "config" / "longform.toml")
+    target_path = Path(target_path)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+
+    base_path = app_paths.get_install_root() / "config" / "longform.toml"
+    data: dict[str, Any] = {}
+    if toml is not None:
+        if target_path.is_file():
+            try:
+                with open(target_path, "r", encoding="utf-8") as fp:
+                    loaded = toml.load(fp)
+                    if isinstance(loaded, dict):
+                        data = loaded
+            except Exception as exc:
+                logger.warning(f"Could not parse {target_path}: {exc}")
+        elif base_path.is_file():
+            try:
+                with open(base_path, "r", encoding="utf-8") as fp:
+                    loaded = toml.load(fp)
+                    if isinstance(loaded, dict):
+                        data = loaded
+            except Exception as exc:
+                logger.warning(f"Could not read base {base_path}: {exc}")
+
+        lf_sec = data.get("longform")
+        if not isinstance(lf_sec, dict):
+            lf_sec = {}
+            data["longform"] = lf_sec
+        lf_sec["network_profile"] = norm
+        serialized = toml.dumps(data)
+    else:
+        serialized = f'[longform]\nnetwork_profile = "{norm}"\n'
+
+    tmp_path = target_path.with_suffix(".toml.tmp")
+    tmp_path.write_text(serialized, encoding="utf-8")
+    os.replace(tmp_path, target_path)
+    load_longform_config(reload=True)
+    return norm
 
 
 _PRICING_DEFAULTS: dict[str, Any] = {

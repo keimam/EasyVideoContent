@@ -1,5 +1,9 @@
 # Longform video generation global configuration (Stage 4.2)
 
+[longform]
+# Profil timeout & pemutus sumber visual: "normal" (6s, ambang 2, jeda 120s) atau "lambat" (15s, ambang 3, jeda 60s)
+network_profile = "normal"
+
 [cache]
 # Maximum cache size in gigabytes before automatic LRU eviction occurs (default 10 GB)
 max_size_gb = 10.0

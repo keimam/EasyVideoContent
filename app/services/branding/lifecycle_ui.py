@@ -246,6 +246,33 @@ def render_settings_studio_controls(*, key_prefix: str = "settings") -> None:
         args=("settings_ui_language_select",),
     )
 
+    try:
+        from app.services.longform.config import (
+            get_network_profile_settings,
+            normalize_network_profile,
+            save_network_profile,
+        )
+
+        cur_prof = normalize_network_profile(get_network_profile_settings().get("profile"))
+        np_key = f"{key_prefix}_network_profile_select"
+        if st.session_state.get(np_key) not in ("normal", "lambat"):
+            st.session_state[np_key] = cur_prof
+
+        def _on_network_profile_change() -> None:
+            chosen = normalize_network_profile(st.session_state.get(np_key))
+            save_network_profile(chosen)
+
+        st.selectbox(
+            t("settings_network_profile_label"),
+            options=["normal", "lambat"],
+            format_func=lambda opt: t("settings_network_profile_lambat") if opt == "lambat" else t("settings_network_profile_normal"),
+            help=t("settings_network_profile_help"),
+            key=np_key,
+            on_change=_on_network_profile_change,
+        )
+    except Exception as exc:
+        logger.debug(f"Network profile setting control warning: {exc}")
+
     render_update_check_controls(key_prefix=key_prefix, include_wizard_rerun=True)
 
 

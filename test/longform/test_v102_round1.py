@@ -335,3 +335,97 @@ def test_b2_visual_step_renders_warning_for_auth_blocked_and_cooldown_sources(tm
     warn_en = "\n".join(str(w.value) for w in at2.warning)
     assert "Coverr skipped: API key rejected (403)" in warn_en
     assert "Openverse paused 2×" in warn_en
+
+
+def test_b3_network_profile_lambat_timeout_15_and_threshold_3_plus_default_normal(tmp_path: Path, monkeypatch):
+    """B3: Missing key defaults to 'normal'; profile 'lambat' passes timeout=15 to requests.get and trips cooldown on 3rd failure."""
+    import requests
+    from app.services.longform import app_paths, config as lf_cfg
+    from app.services.longform.visual.base import VisualError
+    from app.services.longform.visual.cache import GlobalMediaCache
+    from app.services.longform.visual.coverr_client import reset_coverr_auth_block, search_coverr_videos
+    from app.services.longform.visual.free_providers import (
+        cached_json_get,
+        reset_provider_circuit_breakers,
+    )
+
+    reset_coverr_auth_block()
+    reset_provider_circuit_breakers()
+    data_dir = tmp_path / "b3_data"
+    monkeypatch.setattr(app_paths, "get_data_dir", lambda create=False: data_dir)
+
+    # 1. Missing key defaults to 'normal'
+    legacy_cfg = tmp_path / "legacy_longform.toml"
+    legacy_cfg.write_text('[cache]\nmax_size_gb = 10.0\n', encoding="utf-8")
+    monkeypatch.setattr(lf_cfg, "get_config_file_path", lambda: legacy_cfg)
+    assert lf_cfg.get_network_profile_settings(reload=True) == {
+        "profile": "normal",
+        "timeout": 6,
+        "failure_threshold": 2,
+        "cooldown_seconds": 120,
+    }
+
+    # 2. Saving 'lambat' persists and preserves base config sections
+    user_cfg = data_dir / "config" / "longform.toml"
+    monkeypatch.setattr(lf_cfg, "get_config_file_path", lambda: user_cfg if user_cfg.is_file() else legacy_cfg)
+    saved_prof = lf_cfg.save_network_profile("lambat")
+    assert saved_prof == "lambat"
+    assert lf_cfg.get_network_profile_settings(reload=True) == {
+        "profile": "lambat",
+        "timeout": 15,
+        "failure_threshold": 3,
+        "cooldown_seconds": 60,
+    }
+    assert lf_cfg.load_longform_config().capcut_tested_versions == ("8.9.0", "9.7.1")
+
+    seen_timeouts = []
+
+    def _always_timeout(url, *a, **kw):
+        seen_timeouts.append(kw.get("timeout"))
+        raise requests.exceptions.ReadTimeout("slow network")
+
+    monkeypatch.setattr(requests, "get", _always_timeout)
+    monkeypatch.setitem(config.app, "coverr_api_keys", ["cov-test-key"])
+
+    cache = GlobalMediaCache(tmp_path / "b3_cache")
+    try:
+        # 3. Free provider uses timeout=15 and stays active through failures 1 & 2, trips on 3rd
+        for idx in range(3):
+            try:
+                cached_json_get(
+                    "openverse",
+                    "https://api.openverse.org/v1/images/",
+                    params={"q": f"term{idx}"},
+                    cache=cache,
+                    min_interval_sec=0,
+                )
+                assert False
+            except VisualError:
+                pass
+        assert seen_timeouts == [15, 15, 15]
+
+        # 4th call must hit cooldown (no requests.get call)
+        try:
+            cached_json_get(
+                "openverse",
+                "https://api.openverse.org/v1/images/",
+                params={"q": "term3"},
+                cache=cache,
+                min_interval_sec=0,
+            )
+            assert False
+        except VisualError as exc:
+            assert "cooldown active" in str(exc).lower()
+        assert len(seen_timeouts) == 3
+
+        # 4. Coverr (B1) also uses B3 timeout=15
+        try:
+            search_coverr_videos("snow", 3)
+            assert False
+        except VisualError:
+            pass
+        assert seen_timeouts[-1] == 15
+    finally:
+        reset_coverr_auth_block()
+        reset_provider_circuit_breakers()
+        lf_cfg.load_longform_config(reload=True)

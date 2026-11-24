@@ -1058,6 +1058,10 @@ ID_TRANSLATIONS: Dict[str, str] = {
     # --- E9: Language Selector in Settings ---
     "settings_ui_language_label": "Bahasa antarmuka aplikasi",
     "settings_ui_language_help": "Mengubah bahasa seluruh antarmuka EasyFaceless Studio (Video Panjang, Video Pendek, Pengaturan, dan Wizard).",
+    "settings_network_profile_label": "Profil koneksi sumber visual",
+    "settings_network_profile_normal": "Normal (timeout 6 dtk, jeda 120 dtk setelah 2 gagal)",
+    "settings_network_profile_lambat": "Lambat (timeout 15 dtk, jeda 60 dtk setelah 3 gagal)",
+    "settings_network_profile_help": "Pilih 'Lambat' bila koneksi internet lambat agar Wikimedia/NASA/Coverr tidak terlalu cepat dilewati.",
     # --- V101 V0/V1: Search Mode, Reorderable Priority, Diversity & Distribution ---
     "visual_search_mode_label": "Mode pencarian sumber footage (khusus proyek ini)",
     "visual_search_mode_mix_best": "Campur terbaik (skor relevansi tertinggi lintas sumber)",
@@ -2199,6 +2203,10 @@ EN_TRANSLATIONS: Dict[str, str] = {
     # --- E9: Language Selector in Settings ---
     "settings_ui_language_label": "Application display language",
     "settings_ui_language_help": "Changes the display language across EasyFaceless Studio (Long Video, Short Video, Settings, and Wizard).",
+    "settings_network_profile_label": "Visual source connection profile",
+    "settings_network_profile_normal": "Normal (6s timeout, pause 120s after 2 failures)",
+    "settings_network_profile_lambat": "Slow (15s timeout, pause 60s after 3 failures)",
+    "settings_network_profile_help": "Choose 'Slow' on slower internet connections so Wikimedia/NASA/Coverr are not skipped too quickly.",
     # --- V101 V0/V1: Search Mode, Reorderable Priority, Diversity & Distribution ---
     "visual_search_mode_label": "Footage search mode (this project)",
     "visual_search_mode_mix_best": "Mix best (highest relevance score across active sources)",
