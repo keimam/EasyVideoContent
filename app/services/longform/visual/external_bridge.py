@@ -118,16 +118,18 @@ def validate_external_prompt(
     has_inline_char_clause = bool(re.search(r"Characters:\s*[^;\n]+\([^)]+\)", str(prompt_text or "")))
     has_locked_chars = bool(locked_chars) or has_inline_char_clause
 
-    # Inspect scene body excluding Avoid / Style / Setting / Characters tail so bible avoid terms do not trigger false alarms
+    # Inspect scene body excluding labeled metadata clauses so Style/Setting/Avoid terms do not trigger false alarms
     if scene_en is not None:
         check_body = str(scene_en)
     else:
-        check_body = re.split(
-            r"\b(?:Characters:|Location:|Continuity:|Setting:|Style:|Palette(?:\s*&\s*lighting)?:|Avoid:)\b",
-            str(prompt_text or ""),
-            maxsplit=1,
+        raw_p = str(prompt_text or "")
+        raw_p = re.sub(
+            r"\b(?:Style|Setting|World|Characters|Location|Continuity|Palette(?:\s*&\s*lighting)?|Avoid):\s*[^.\n]+(?:\.|$)",
+            " ",
+            raw_p,
             flags=re.IGNORECASE,
-        )[0]
+        )
+        check_body = raw_p.strip()
 
     covered_aliases: set[str] = set()
     for lc in locked_chars:
@@ -254,28 +256,29 @@ def compose_shot_external_prompt(
         else:
             world_text = base_world or ov_era
 
-    segments: List[str] = [f"{scene_clean}."]
+    segments: List[str] = []
+    if str(bible.style or "").strip():
+        segments.append(f"Style: {str(bible.style).strip().rstrip('.')}.")
+    if world_text:
+        segments.append(f"Setting: {world_text.rstrip('.')}.")
+    segments.append(f"{scene_clean}.")
     if resolved_chars:
         char_clauses = [
             f"{c.name} ({c.description})" if str(c.description or "").strip() else c.name
             for c in resolved_chars
         ]
-        segments.append(f"Characters: {'; '.join(char_clauses)}.")
+        segments.append(f"Characters: {'; '.join(char_clauses).rstrip('.')}.")
     if loc_obj is not None:
-        loc_desc = str(loc_obj.description or loc_obj.name or "").strip()
+        loc_desc = str(loc_obj.description or loc_obj.name or "").strip().rstrip(".")
         if loc_desc:
             segments.append(f"Location: {loc_desc}.")
     if cont_str:
-        segments.append(f"Continuity: {cont_str}.")
-    if world_text:
-        segments.append(f"Setting: {world_text}.")
-    if str(bible.style or "").strip():
-        segments.append(f"Style: {str(bible.style).strip()}.")
+        segments.append(f"Continuity: {cont_str.rstrip('.')}.")
     if str(bible.palette_lighting or "").strip():
-        segments.append(f"Palette & lighting: {str(bible.palette_lighting).strip()}.")
+        segments.append(f"Palette: {str(bible.palette_lighting).strip().rstrip('.')}.")
     segments.append(f"{aspect_ratio} widescreen.")
     if str(bible.avoid or "").strip():
-        segments.append(f"Avoid: {str(bible.avoid).strip()}.")
+        segments.append(f"Avoid: {str(bible.avoid).strip().rstrip('.')}.")
 
     prompt_en = " ".join(segments)
     lock_warn = validate_external_prompt(
