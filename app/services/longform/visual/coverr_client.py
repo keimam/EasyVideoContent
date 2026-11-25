@@ -11,10 +11,16 @@ from urllib.parse import urlsplit, urlunsplit
 from loguru import logger
 
 from app.config import config
-from app.services.longform.visual.base import VisualError, record_provider_status_event
-from app.services.longform.visual.free_providers import resilient_http_json_get
+from app.services.longform.visual.base import VisualError, record_provider_status_event, sanitize_source_error
+from app.services.longform.visual.free_providers import (
+    clear_provider_cooldown,
+    get_active_network_circuit_params,
+    resilient_http_json_get,
+    trip_provider_cooldown,
+)
 
 COVERR_SEARCH_URL = "https://api.coverr.co/videos"
+_COVERR_RATE_LIMIT_MAX_STRIKES = 3
 
 _COVERR_AUTH_LOCK = threading.Lock()
 _COVERR_AUTH_STATE: Dict[str, Any] = {
@@ -22,6 +28,10 @@ _COVERR_AUTH_STATE: Dict[str, Any] = {
     "key_hash": "",
     "status_code": None,
     "error": None,
+    "has_succeeded": False,
+    "rate_limited": False,
+    "consecutive_403_after_200": 0,
+    "run_paused": False,
 }
 
 
@@ -55,29 +65,55 @@ def redact_coverr_secret(text: str, api_key: str = "") -> str:
     return out
 
 
+def _sync_key_hash_locked(key_hash: str) -> bool:
+    """Sync active key hash; reset state (and return True) if switching away from a prior key."""
+    prev_hash = str(_COVERR_AUTH_STATE.get("key_hash") or "")
+    if prev_hash != key_hash:
+        switched_from_real_key = bool(prev_hash)
+        _COVERR_AUTH_STATE["blocked"] = False
+        _COVERR_AUTH_STATE["key_hash"] = key_hash
+        _COVERR_AUTH_STATE["status_code"] = None
+        _COVERR_AUTH_STATE["error"] = None
+        _COVERR_AUTH_STATE["has_succeeded"] = False
+        _COVERR_AUTH_STATE["rate_limited"] = False
+        _COVERR_AUTH_STATE["consecutive_403_after_200"] = 0
+        _COVERR_AUTH_STATE["run_paused"] = False
+        return switched_from_real_key
+    return False
+
+
 def reset_coverr_auth_block() -> None:
-    """Clear process-level Coverr auth_blocked state (for tests or key reset)."""
+    """Clear process-level Coverr auth_blocked and rate_limited state (for tests or key reset)."""
     with _COVERR_AUTH_LOCK:
         _COVERR_AUTH_STATE["blocked"] = False
         _COVERR_AUTH_STATE["key_hash"] = ""
         _COVERR_AUTH_STATE["status_code"] = None
         _COVERR_AUTH_STATE["error"] = None
+        _COVERR_AUTH_STATE["has_succeeded"] = False
+        _COVERR_AUTH_STATE["rate_limited"] = False
+        _COVERR_AUTH_STATE["consecutive_403_after_200"] = 0
+        _COVERR_AUTH_STATE["run_paused"] = False
+    clear_provider_cooldown("coverr")
 
 
 def get_coverr_auth_status() -> Dict[str, Any]:
-    """Return current Coverr process-level auth status, auto-clearing if API key changed."""
+    """Return current Coverr process-level auth/rate-limit status, auto-clearing if API key changed."""
     key_hash = _hash_key(_extract_coverr_api_key())
+    switched = False
     with _COVERR_AUTH_LOCK:
-        if _COVERR_AUTH_STATE["blocked"] and _COVERR_AUTH_STATE["key_hash"] != key_hash:
-            _COVERR_AUTH_STATE["blocked"] = False
-            _COVERR_AUTH_STATE["key_hash"] = ""
-            _COVERR_AUTH_STATE["status_code"] = None
-            _COVERR_AUTH_STATE["error"] = None
-        return {
+        switched = _sync_key_hash_locked(key_hash)
+        res = {
             "auth_blocked": bool(_COVERR_AUTH_STATE["blocked"]),
+            "rate_limited": bool(_COVERR_AUTH_STATE["rate_limited"]),
+            "run_paused": bool(_COVERR_AUTH_STATE["run_paused"]),
+            "has_succeeded": bool(_COVERR_AUTH_STATE["has_succeeded"]),
+            "consecutive_403": int(_COVERR_AUTH_STATE["consecutive_403_after_200"] or 0),
             "status_code": _COVERR_AUTH_STATE["status_code"],
             "error": _COVERR_AUTH_STATE["error"],
         }
+    if switched:
+        clear_provider_cooldown("coverr")
+    return res
 
 
 def is_coverr_auth_blocked() -> bool:
@@ -153,11 +189,17 @@ def search_coverr_videos(
     auth_st = get_coverr_auth_status()
     if auth_st["auth_blocked"]:
         code = auth_st.get("status_code") or 403
-        record_provider_status_event("coverr", "auth_blocked", error=f"HTTP {code}")
+        err_msg = auth_st.get("error") or f"HTTP {code}"
+        record_provider_status_event("coverr", "auth_blocked", error=err_msg, max_len=200)
         raise CoverrAuthBlockedError(
             f"Coverr auth_blocked (HTTP {code})",
             status_code=code,
         )
+    if auth_st.get("run_paused"):
+        code = auth_st.get("status_code") or 403
+        err_msg = auth_st.get("error") or f"HTTP {code}"
+        record_provider_status_event("coverr", "rate_limited", error=err_msg, max_len=200)
+        raise VisualError(f"Coverr rate_limited paused for remainder of run (HTTP {code})")
 
     aspect_low = str(video_aspect or "landscape").lower().strip()
     params: Dict[str, Any] = {
@@ -171,17 +213,54 @@ def search_coverr_videos(
     elif "square" not in aspect_low and "1:1" not in aspect_low:
         params["filter"] = "is_vertical:false"
 
-    def _on_auth_fail(status_code: int, detail: str) -> None:
-        safe_detail = redact_coverr_secret(detail, api_key)
+    def _on_auth_fail(status_code: int, detail: str) -> str:
+        raw_txt = str(detail or "").strip()
+        if raw_txt and not raw_txt.lower().startswith(f"http {status_code}"):
+            combined = f"HTTP {status_code}: {raw_txt}"
+        else:
+            combined = raw_txt or f"HTTP {status_code}"
+        redacted = redact_coverr_secret(combined, api_key)
+        safe_snippet = sanitize_source_error(redacted, max_len=200) or f"HTTP {status_code}"
+
         with _COVERR_AUTH_LOCK:
-            _COVERR_AUTH_STATE["blocked"] = True
-            _COVERR_AUTH_STATE["key_hash"] = key_hash
-            _COVERR_AUTH_STATE["status_code"] = int(status_code)
-            _COVERR_AUTH_STATE["error"] = f"HTTP {status_code}"
-        record_provider_status_event("coverr", "auth_blocked", error=f"HTTP {status_code}")
+            _sync_key_hash_locked(key_hash)
+            has_succeeded = bool(_COVERR_AUTH_STATE.get("has_succeeded"))
+            if int(status_code) == 403 and has_succeeded:
+                strikes = int(_COVERR_AUTH_STATE.get("consecutive_403_after_200") or 0) + 1
+                _COVERR_AUTH_STATE["consecutive_403_after_200"] = strikes
+                _COVERR_AUTH_STATE["blocked"] = False
+                _COVERR_AUTH_STATE["rate_limited"] = True
+                _COVERR_AUTH_STATE["status_code"] = 403
+                _COVERR_AUTH_STATE["error"] = safe_snippet
+                paused_run = strikes >= _COVERR_RATE_LIMIT_MAX_STRIKES
+                _COVERR_AUTH_STATE["run_paused"] = paused_run
+                outcome = "rate_limited"
+            else:
+                strikes = 0
+                paused_run = False
+                _COVERR_AUTH_STATE["blocked"] = True
+                _COVERR_AUTH_STATE["rate_limited"] = False
+                _COVERR_AUTH_STATE["status_code"] = int(status_code)
+                _COVERR_AUTH_STATE["error"] = safe_snippet
+                outcome = "auth_blocked"
+
+        if outcome == "rate_limited":
+            _t, _th, cooldown_s = get_active_network_circuit_params()
+            trip_provider_cooldown("coverr", cooldown_s)
+            record_provider_status_event("coverr", "rate_limited", error=safe_snippet, max_len=200)
+            record_provider_status_event("coverr", "cooldown_trip", error=safe_snippet, max_len=200)
+            logger.warning(
+                f"Coverr rate_limited after HTTP 403 "
+                f"(attempt {strikes}/{_COVERR_RATE_LIMIT_MAX_STRIKES}, cooldown={int(cooldown_s)}s"
+                f"{', paused for remainder of run' if paused_run else ''}): {safe_snippet}"
+            )
+            return "rate_limited"
+
+        record_provider_status_event("coverr", "auth_blocked", error=safe_snippet, max_len=200)
         logger.warning(
-            f"Coverr auth_blocked after HTTP {status_code}; skipping Coverr for remainder of run ({safe_detail[:80]})"
+            f"Coverr auth_blocked after HTTP {status_code}; skipping Coverr for remainder of run ({safe_snippet})"
         )
+        return "auth_blocked"
 
     headers = {"Authorization": f"Bearer {api_key}"}
     try:
@@ -196,10 +275,20 @@ def search_coverr_videos(
             on_auth_failure=_on_auth_fail,
         )
     except VisualError as exc:
-        if _COVERR_AUTH_STATE.get("blocked") and _COVERR_AUTH_STATE.get("key_hash") == key_hash:
+        with _COVERR_AUTH_LOCK:
+            is_blocked = bool(_COVERR_AUTH_STATE.get("blocked") and _COVERR_AUTH_STATE.get("key_hash") == key_hash)
             code = _COVERR_AUTH_STATE.get("status_code")
+        if is_blocked:
             raise CoverrAuthBlockedError(redact_coverr_secret(str(exc), api_key), status_code=code) from exc
         raise VisualError(redact_coverr_secret(str(exc), api_key)) from exc
+
+    with _COVERR_AUTH_LOCK:
+        _sync_key_hash_locked(key_hash)
+        _COVERR_AUTH_STATE["has_succeeded"] = True
+        _COVERR_AUTH_STATE["rate_limited"] = False
+        _COVERR_AUTH_STATE["consecutive_403_after_200"] = 0
+        _COVERR_AUTH_STATE["run_paused"] = False
+        _COVERR_AUTH_STATE["error"] = None
 
     hits = payload.get("hits") if isinstance(payload, dict) else None
     if not isinstance(hits, list):

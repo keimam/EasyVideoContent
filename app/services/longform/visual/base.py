@@ -686,10 +686,11 @@ def record_provider_status_event(
     event_kind: str,
     *,
     error: Optional[str] = None,
+    max_len: int = 120,
 ) -> None:
-    """Record per-provider health event ('ok', 'cooldown_trip', 'auth_blocked', 'timeout', 'error') (B2)."""
+    """Record per-provider health event ('ok', 'cooldown_trip', 'auth_blocked', 'rate_limited', 'timeout', 'error') (B2, A1.1)."""
     pk = str(provider_key or "unknown").lower().strip()
-    safe_err = sanitize_source_error(error)
+    safe_err = sanitize_source_error(error, max_len=max_len)
     with _IO_TELEMETRY_LOCK:
         bucket = _IO_TELEMETRY["provider_status_events"].setdefault(
             pk,
@@ -697,6 +698,7 @@ def record_provider_status_event(
                 "ok_count": 0,
                 "cooldown": 0,
                 "auth_blocked": False,
+                "rate_limited": False,
                 "timeout": 0,
                 "last_error": None,
             },
@@ -707,6 +709,8 @@ def record_provider_status_event(
             bucket["cooldown"] = int(bucket["cooldown"]) + 1
         elif event_kind == "auth_blocked":
             bucket["auth_blocked"] = True
+        elif event_kind == "rate_limited":
+            bucket["rate_limited"] = True
         elif event_kind == "timeout":
             bucket["timeout"] = int(bucket["timeout"]) + 1
         if safe_err:

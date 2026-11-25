@@ -129,6 +129,14 @@ def reset_provider_circuit_breakers() -> None:
         _PROVIDER_CONSECUTIVE_ERRORS.clear()
 
 
+def clear_provider_cooldown(provider_key: str) -> None:
+    """Clear active cooldown and error streak for a single provider (e.g. on API key change)."""
+    pk = str(provider_key or "").lower().strip()
+    with _STATE_LOCK:
+        _PROVIDER_COOLDOWN_UNTIL.pop(pk, None)
+        _PROVIDER_CONSECUTIVE_ERRORS.pop(pk, None)
+
+
 def _get_provider_lock(provider_key: str) -> threading.Lock:
     with _STATE_LOCK:
         lk = _PROVIDER_LOCKS.get(provider_key)
@@ -214,16 +222,21 @@ def resilient_http_json_get(
                 timeout=eff_timeout,
             )
             status = int(getattr(resp, "status_code", 200))
+            raw_text = getattr(resp, "text", None)
+            body_text = raw_text if isinstance(raw_text, str) else ""
             if auth_fail_statuses and status in auth_fail_statuses:
-                last_err = f"HTTP {status} unauthorized/rejected"
+                last_err = body_text.strip() or f"HTTP {status} unauthorized/rejected"
+                auth_outcome = None
                 if callable(on_auth_failure):
-                    on_auth_failure(status, last_err)
-                raise VisualError(f"{provider_key} API key rejected ({last_err})")
+                    auth_outcome = on_auth_failure(status, body_text)
+                if auth_outcome == "rate_limited":
+                    raise VisualError(f"{provider_key} rate_limited (HTTP {status})")
+                raise VisualError(f"{provider_key} API key rejected (HTTP {status})")
             if status in (429, 403):
-                body_low = (getattr(resp, "text", "") or "")[:300].lower()
+                body_low = body_text[:300].lower()
                 last_err = f"HTTP {status} rate limit/challenge"
                 if "just a moment" in body_low or status == 403 or attempt >= 2:
-                    trip_provider_cooldown(provider_key, 60.0)
+                    trip_provider_cooldown(provider_key, _cooldown_s)
                     record_provider_status_event(provider_key, "cooldown_trip", error=last_err)
                     break
                 wait_s = float((getattr(resp, "headers", {}) or {}).get("Retry-After") or 2.0)

@@ -461,7 +461,13 @@ def _get_visual_source_warnings(project_dir: Path) -> List[str]:
         st_info = src_status.get(pk)
         if not isinstance(st_info, dict):
             continue
-        if st_info.get("ok", True) and not st_info.get("auth_blocked") and int(st_info.get("cooldown") or 0) == 0 and int(st_info.get("timeout") or 0) == 0:
+        if (
+            st_info.get("ok", True)
+            and not st_info.get("auth_blocked")
+            and not st_info.get("rate_limited")
+            and int(st_info.get("cooldown") or 0) == 0
+            and int(st_info.get("timeout") or 0) == 0
+        ):
             continue
         label = _format_visual_source_label(pk)
         last_err = st_info.get("last_error")
@@ -469,6 +475,8 @@ def _get_visual_source_warnings(project_dir: Path) -> List[str]:
         if st_info.get("auth_blocked"):
             code = "401" if "401" in str(last_err or "") else "403"
             warnings.append(t("visual_src_warn_auth_blocked", source=label, code=code))
+        elif st_info.get("rate_limited"):
+            warnings.append(t("visual_src_warn_rate_limited", source=label))
         elif int(st_info.get("cooldown") or 0) > 0:
             warnings.append(t("visual_src_warn_cooldown", source=label, count=int(st_info["cooldown"]), reason=reason))
         elif int(st_info.get("timeout") or 0) > 0:
