@@ -2631,8 +2631,11 @@ def _render_external_image_bridge_section(
     )
     from app.services.longform.visual.external_bridge import (
         apply_bulk_external_import,
+        compose_shot_external_prompt,
         export_external_image_prompts,
+        get_bulk_import_count_mismatch,
         plan_bulk_external_import,
+        plan_bulk_external_import_from_folder,
     )
     from app.services.longform.visual.scene_continuity import ExternalPromptGenerationError
     from app.services.longform.visual.visual_bible import (
@@ -3064,16 +3067,62 @@ def _render_external_image_bridge_section(
         with col_imp:
             st.markdown(f"**{t('ext_import_heading')}**")
             st.caption(t("ext_import_hint"))
+
+            folder_state_key = f"ext_folder_plan_{project_id}"
+            imp_f1, imp_f2 = st.columns([2, 1])
+            with imp_f1:
+                folder_input = st.text_input(
+                    t("ext_import_folder_label"),
+                    disabled=eff_disabled,
+                    key=f"in_ext_folder_{project_id}",
+                )
+            with imp_f2:
+                sort_mode = st.selectbox(
+                    t("ext_import_sort_label"),
+                    options=["created", "name"],
+                    format_func=lambda s: t("ext_import_sort_created") if s == "created" else t("ext_import_sort_name"),
+                    disabled=eff_disabled,
+                    key=f"sel_ext_sort_{project_id}",
+                )
+            if st.button(
+                t("btn_ext_read_folder"),
+                disabled=eff_disabled,
+                key=f"btn_ext_read_folder_{project_id}",
+            ):
+                if folder_input.strip():
+                    try:
+                        f_rows = plan_bulk_external_import_from_folder(
+                            manifest,
+                            folder_input.strip(),
+                            sort_by=sort_mode,
+                        )
+                        st.session_state[folder_state_key] = f_rows
+                        st.info(t("ext_import_folder_loaded", count=len(f_rows), sort=sort_mode))
+                    except Exception as exc:
+                        st.error(t("ext_import_folder_err", err=str(exc)[:160]))
+                        st.session_state.pop(folder_state_key, None)
+
             ext_uploads = st.file_uploader(
                 t("ext_import_uploader"),
                 accept_multiple_files=True,
                 disabled=eff_disabled,
                 key=f"up_ext_bulk_{project_id}",
             )
+            plan_rows: List[Dict[str, Any]] = []
             if ext_uploads:
                 raw_files = [(uf.name, uf.getvalue()) for uf in ext_uploads]
                 plan_rows = plan_bulk_external_import(manifest, raw_files)
+            elif isinstance(st.session_state.get(folder_state_key), list):
+                plan_rows = st.session_state[folder_state_key]
+
+            if plan_rows:
                 st.markdown(f"**{t('ext_import_preview_heading')}**")
+
+                mismatch = get_bulk_import_count_mismatch(manifest, plan_rows)
+                if mismatch is not None:
+                    st.warning(
+                        t("ext_import_count_mismatch", files=mismatch[0], prompts=mismatch[1])
+                    )
 
                 unmatched_names = [
                     r["filename"] for r in plan_rows
@@ -3088,6 +3137,7 @@ def _render_external_image_bridge_section(
                         )
                     )
 
+                ch_lookup = {ch.chapter_index: ch for ch in manifest.chapters}
                 shot_select_opts = [""] + all_shot_ids
                 edited_mappings: List[Dict[str, Any]] = []
                 for r in plan_rows:
@@ -3095,6 +3145,16 @@ def _render_external_image_bridge_section(
                     mc1, mc2 = st.columns([1.3, 1.7])
                     with mc1:
                         st.caption(f"**{r['filename']}**")
+                        ext_low = str(r.get("ext") or "").lower()
+                        if r.get("supported") and ext_low in (".png", ".jpg", ".jpeg", ".webp"):
+                            img_data = r.get("content")
+                            if img_data is None and r.get("source_path") and Path(r["source_path"]).is_file():
+                                try:
+                                    img_data = Path(r["source_path"]).read_bytes()
+                                except Exception:
+                                    img_data = None
+                            if img_data:
+                                st.image(img_data, width=110)
                         if not r["supported"]:
                             st.error(r["error"])
                     with mc2:
@@ -3109,6 +3169,14 @@ def _render_external_image_bridge_section(
                                 label_visibility="collapsed",
                                 key=f"sel_ext_map_{project_id}_{r_idx}_{r['filename']}",
                             )
+                            if chosen_sid and chosen_sid in shot_map:
+                                sh_target = shot_map[chosen_sid]
+                                comp_sn = compose_shot_external_prompt(
+                                    manifest,
+                                    ch_lookup.get(sh_target.chapter_index),
+                                    sh_target,
+                                )["prompt_en"][:80]
+                                st.caption(t("ext_import_prompt_preview", snippet=comp_sn))
                             edited_mappings.append({**r, "matched_shot_id": chosen_sid or None})
 
                 if st.button(
@@ -3124,6 +3192,7 @@ def _render_external_image_bridge_section(
                         with st.spinner(t("spinner_applying_external")):
                             app_res = apply_bulk_external_import(p_dir, manifest, to_apply, rebuild=True)
                         if app_res["applied_shots"]:
+                            st.session_state.pop(folder_state_key, None)
                             st.success(t("ext_import_applied_ok", count=len(app_res["applied_shots"])))
                             time.sleep(0.4)
                             st.rerun()

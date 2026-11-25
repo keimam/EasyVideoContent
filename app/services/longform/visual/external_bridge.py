@@ -52,6 +52,46 @@ GENERIC_SUBJECT_TOKENS = (
 # Exact word/delimiter boundaries prevent 'ch01_shot001' matching 'ch01_shot0010'
 _SHOT_ID_EXACT_RE = re.compile(r"(?:^|[^a-z0-9])(ch\d+_shot\d+)(?=$|[^a-z0-9])", re.IGNORECASE)
 _TRAILING_SEQ_RE = re.compile(r"(?:^|[_\-\s#()])0*(\d+)(?:[_\-\s()]*)$")
+_BROWSER_DUP_RE = re.compile(r"^(.*?)\s*\((\d+)\)\s*$")
+
+
+def _detect_browser_duplicate_positions(
+    stems: Sequence[str],
+    shot_lookup: Dict[str, str],
+) -> Dict[int, int]:
+    """Detect Chrome/browser duplicate downloads sharing one base name (FA1.6).
+
+    When all non-shot_id stems share the same base name (and at least one carries `(n)`),
+    maps:
+      - `base.ext` -> 1-based position 1
+      - `base (n).ext` -> 1-based position n + 1
+    Returns {row_index: 1_based_seq}.
+    """
+    candidates: List[Tuple[int, str, Optional[int]]] = []
+    for idx, stem in enumerate(stems):
+        if not stem:
+            continue
+        exact_hits = _SHOT_ID_EXACT_RE.findall(stem)
+        if exact_hits and any(tok.lower() in shot_lookup for tok in exact_hits):
+            continue
+        m_dup = _BROWSER_DUP_RE.match(stem)
+        if m_dup:
+            base = m_dup.group(1).strip().lower()
+            candidates.append((idx, base, int(m_dup.group(2))))
+        else:
+            candidates.append((idx, stem.strip().lower(), None))
+
+    if len(candidates) < 2:
+        return {}
+    bases = {b for _i, b, _n in candidates if b}
+    has_dup_suffix = any(n is not None for _i, _b, n in candidates)
+    if len(bases) != 1 or not has_dup_suffix:
+        return {}
+
+    pos_map: Dict[int, int] = {}
+    for idx, _b, dup_num in candidates:
+        pos_map[idx] = 1 if dup_num is None else (dup_num + 1)
+    return pos_map
 
 
 def _extract_visual_style(manifest: ProjectManifest) -> str:
@@ -551,17 +591,39 @@ def match_external_filename_to_shot(
     return None, "unmatched"
 
 
+def _target_export_pool(manifest: ProjectManifest) -> List[str]:
+    all_shots = _iter_project_shots(manifest)
+    shot_lookup = {s.shot_id.lower(): s.shot_id for s in all_shots}
+    export_order = [
+        sid for sid in (getattr(manifest, "last_prompt_export_shot_ids", None) or [])
+        if sid.lower() in shot_lookup
+    ]
+    return export_order if export_order else [s.shot_id for s in all_shots]
+
+
 def plan_bulk_external_import(
     manifest: ProjectManifest,
     files: Sequence[Tuple[str, bytes]],
+    *,
+    source_paths: Optional[Sequence[Optional[str]]] = None,
+    positional_fallback: bool = False,
 ) -> List[Dict[str, Any]]:
-    """Build editable mapping rows for uploaded external images/videos (V3)."""
+    """Build editable mapping rows for uploaded or folder-read external images/videos (V3, FA1.6)."""
     rows: List[Dict[str, Any]] = []
     supported_str = ", ".join(sorted(EXTERNAL_IMPORT_EXTENSIONS))
 
+    all_shots = _iter_project_shots(manifest)
+    shot_lookup = {s.shot_id.lower(): s.shot_id for s in all_shots}
+    target_pool = _target_export_pool(manifest)
+
+    stems = [Path(Path(str(raw_name or "")).name).stem for raw_name, _c in files]
+    browser_seq_map = _detect_browser_duplicate_positions(stems, shot_lookup)
+
+    pos_counter = 0
     for idx, (raw_name, content) in enumerate(files):
         clean_name = Path(str(raw_name or "")).name
         ext = Path(clean_name).suffix.lower()
+        src_p = str(source_paths[idx]) if (source_paths is not None and idx < len(source_paths) and source_paths[idx]) else None
         supported = bool(clean_name and ext in EXTERNAL_IMPORT_EXTENSIONS)
         if not supported:
             rows.append({
@@ -574,10 +636,29 @@ def plan_bulk_external_import(
                 "match_reason": "unsupported_format",
                 "size_bytes": len(content or b""),
                 "content": content,
+                "source_path": src_p,
             })
             continue
 
-        matched_sid, reason = match_external_filename_to_shot(clean_name, manifest)
+        pos_counter += 1
+        # Priority 1: exact chXX_shotYYY token
+        exact_hits = _SHOT_ID_EXACT_RE.findall(Path(clean_name).stem)
+        if exact_hits:
+            matched_sid, reason = match_external_filename_to_shot(clean_name, manifest)
+        elif idx in browser_seq_map:
+            seq_idx = browser_seq_map[idx]
+            if 1 <= seq_idx <= len(target_pool):
+                matched_sid = target_pool[seq_idx - 1]
+                reason = "browser_duplicate_sequence"
+            else:
+                matched_sid = None
+                reason = "unmatched"
+        else:
+            matched_sid, reason = match_external_filename_to_shot(clean_name, manifest)
+            if matched_sid is None and positional_fallback and 1 <= pos_counter <= len(target_pool):
+                matched_sid = target_pool[pos_counter - 1]
+                reason = "folder_order"
+
         rows.append({
             "index": idx,
             "filename": clean_name,
@@ -588,9 +669,58 @@ def plan_bulk_external_import(
             "match_reason": reason,
             "size_bytes": len(content or b""),
             "content": content,
+            "source_path": src_p,
         })
 
     return rows
+
+
+def plan_bulk_external_import_from_folder(
+    manifest: ProjectManifest,
+    folder_path: str | Path,
+    *,
+    sort_by: str = "created",
+) -> List[Dict[str, Any]]:
+    """Read supported media files non-recursively from a local folder in read-only mode (FA1.6)."""
+    folder = Path(str(folder_path or "")).expanduser()
+    if not folder.is_dir():
+        raise FileNotFoundError(f"Folder not found: {folder}")
+
+    entries: List[Tuple[Path, float, float]] = []
+    for item in folder.iterdir():
+        if not item.is_file():
+            continue
+        if item.suffix.lower() not in EXTERNAL_IMPORT_EXTENSIONS:
+            continue
+        st_res = item.stat()
+        entries.append((item, float(st_res.st_mtime), float(st_res.st_ctime)))
+
+    if str(sort_by or "created").strip().lower() == "name":
+        entries.sort(key=lambda t: t[0].name.lower())
+    else:
+        entries.sort(key=lambda t: (t[1], t[2], t[0].name.lower()))
+
+    files_arg: List[Tuple[str, Optional[bytes]]] = [(p.name, None) for p, _mt, _ct in entries]
+    src_paths = [str(p.resolve()) for p, _mt, _ct in entries]
+    return plan_bulk_external_import(
+        manifest,
+        files_arg,  # type: ignore[arg-type]
+        source_paths=src_paths,
+        positional_fallback=True,
+    )
+
+
+def get_bulk_import_count_mismatch(
+    manifest: ProjectManifest,
+    plan_rows: Sequence[Dict[str, Any]],
+) -> Optional[Tuple[int, int]]:
+    """Return (supported_file_count, expected_prompt_count) when counts differ, else None (FA1.6)."""
+    supported_cnt = sum(1 for r in plan_rows if r.get("supported", False))
+    expected_pool = _target_export_pool(manifest)
+    expected_cnt = len(expected_pool)
+    if expected_cnt > 0 and supported_cnt != expected_cnt:
+        return (supported_cnt, expected_cnt)
+    return None
 
 
 def apply_bulk_external_import(
