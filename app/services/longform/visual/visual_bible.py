@@ -136,12 +136,13 @@ def sanitize_palette_lighting(raw_palette: str) -> str:
     time_alt = "|".join(sorted(PALETTE_TIME_LIGHT_WORDS, key=len, reverse=True))
     out = re.sub(
         rf"\b(?:soft|warm|cold|bright|dim|pale|harsh|golden|dramatic)?\s*(?:{time_alt})\s*(?:light|lighting|glow|rays)?\b",
-        "",
+        " ",
         out,
         flags=re.IGNORECASE,
     )
-    out = re.sub(rf"\b(?:{time_alt})\b", "", out, flags=re.IGNORECASE)
-    out = re.sub(r"\bwith\s+and\b|\bwith\s*(?:,|$)", "", out, flags=re.IGNORECASE)
+    out = re.sub(rf"\b(?:{time_alt})\b", " ", out, flags=re.IGNORECASE)
+    out = re.sub(r"\bwith\s+and\b|\bwith\s*(?:,|$)", " ", out, flags=re.IGNORECASE)
+    out = re.sub(r"\s+,", ",", out)
     out = re.sub(r"\s*,\s*,+", ", ", out)
     out = re.sub(r"\s{2,}", " ", out).strip(" ,;-")
     if len(out) < 8 or not re.search(r"[a-z]{3,}", out, re.I):
