@@ -288,6 +288,52 @@ def _iter_project_shots(manifest: ProjectManifest) -> List[Shot]:
     return [sh for ch in (manifest.chapters or []) for sh in (ch.shots or [])]
 
 
+def _format_visual_context_txt_block(bible: VisualBible) -> str:
+    """Format the top KONTEKS VISUAL header block for .txt prompt exports (F5)."""
+    lines: List[str] = ["=== KONTEKS VISUAL ==="]
+    lines.append(f"World: {bible.world or '-'}")
+    lines.append(f"Style: {bible.style or '-'}")
+    lines.append(f"Palette & Lighting: {bible.palette_lighting or '-'}")
+    if bible.characters:
+        lines.append("Characters:")
+        for c in bible.characters:
+            alias_str = f" [aliases: {', '.join(c.aliases)}]" if c.aliases else ""
+            lines.append(f"  - {c.id} ({c.name}): {c.description}{alias_str}")
+    else:
+        lines.append("Characters: (none / documentary)")
+    if bible.locations:
+        lines.append("Locations:")
+        for loc in bible.locations:
+            lines.append(f"  - {loc.id} ({loc.name}): {loc.description}")
+    if bible.chapter_overrides:
+        lines.append("Chapter Overrides:")
+        for ov in bible.chapter_overrides:
+            lines.append(f"  - Chapter {ov.chapter_index}: world={ov.world or '-'}; era={ov.era or '-'}")
+    if bible.avoid:
+        lines.append(f"Avoid: {bible.avoid}")
+    return "\n".join(lines)
+
+
+def _format_scene_heading(scene_id: str, composed: Dict[str, Any], bible: VisualBible) -> str:
+    """Format readable scene header e.g. '== Scene ch01_scene03: dusk, forest clearing ==' (F5)."""
+    cont_obj = composed.get("continuity_obj")
+    loc_id = str(composed.get("location_id") or "").strip()
+    loc_label = ""
+    if loc_id:
+        loc_obj = next((loc for loc in (bible.locations or []) if loc.id == loc_id), None)
+        loc_label = loc_obj.name if (loc_obj and loc_obj.name) else loc_id
+    summary_parts: List[str] = []
+    if cont_obj and str(cont_obj.time_of_day or "").strip():
+        summary_parts.append(str(cont_obj.time_of_day).strip())
+    if loc_label:
+        summary_parts.append(loc_label)
+    if cont_obj and str(cont_obj.weather or "").strip():
+        summary_parts.append(str(cont_obj.weather).strip())
+    if summary_parts:
+        return f"== Scene {scene_id}: {', '.join(summary_parts)} =="
+    return f"== Scene {scene_id} =="
+
+
 def export_external_image_prompts(
     manifest: ProjectManifest,
     project_dir: Path | str,
@@ -331,14 +377,19 @@ def export_external_image_prompts(
         allow_llm=use_llm,
     )
 
+    eff_bible = manifest.visual_bible or build_template_visual_bible(manifest)
     ch_map = {ch.chapter_index: ch for ch in (manifest.chapters or [])}
     visual_style = _extract_visual_style(manifest)
     aspect_ratio = str(getattr(manifest, "aspect_ratio", None) or "16:9")
 
     rows: List[Dict[str, Any]] = []
-    txt_blocks: List[str] = []
+    txt_sections: List[str] = []
+    if target_shots:
+        txt_sections.append(_format_visual_context_txt_block(eff_bible))
+
     warning_count = 0
     unlocked_char_count = 0
+    last_scene_id: Optional[str] = None
 
     for sh in target_shots:
         narr_full = VisualService._get_shot_narration_text(manifest, sh)
@@ -364,16 +415,38 @@ def export_external_image_prompts(
             "visual_style": visual_style or "-",
         }
         rows.append(row)
-        txt_blocks.append(f"[{sh.shot_id}] ({row['duration_seconds']:.1f}s | {aspect_ratio})\n{composed['prompt_en']}")
+        if composed["scene_id"] != last_scene_id:
+            txt_sections.append(_format_scene_heading(composed["scene_id"], composed, eff_bible))
+            last_scene_id = composed["scene_id"]
+        txt_sections.append(f"[{sh.shot_id}] ({row['duration_seconds']:.1f}s | {aspect_ratio})\n{composed['prompt_en']}")
 
     csv_buf = io.StringIO()
     writer = csv.writer(csv_buf, lineterminator="\n")
-    writer.writerow(["shot_id", "duration_seconds", "narration_snippet", "prompt_en", "aspect_ratio", "visual_style"])
+    writer.writerow([
+        "shot_id",
+        "duration_seconds",
+        "narration_snippet",
+        "scene_id",
+        "scene_en",
+        "characters_in_shot",
+        "location_id",
+        "continuity",
+        "lock_warning",
+        "prompt_en",
+        "aspect_ratio",
+        "visual_style",
+    ])
     for r in rows:
         writer.writerow([
             r["shot_id"],
             f"{r['duration_seconds']:.2f}",
             r["narration_snippet"],
+            r["scene_id"],
+            r["scene_en"],
+            r["characters_in_shot"],
+            r["location_id"],
+            r["continuity"],
+            r["lock_warning"],
             r["prompt_en"],
             r["aspect_ratio"],
             r["visual_style"],
@@ -388,7 +461,7 @@ def export_external_image_prompts(
         "unlocked_char_count": unlocked_char_count,
         "shot_ids": [r["shot_id"] for r in rows],
         "rows": rows,
-        "txt": ("\n\n".join(txt_blocks) + "\n") if txt_blocks else "",
+        "txt": ("\n\n".join(txt_sections) + "\n") if txt_sections else "",
         "csv": csv_buf.getvalue(),
     }
 
