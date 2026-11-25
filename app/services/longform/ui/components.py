@@ -2601,6 +2601,476 @@ def _resolve_ordered_selected_sources(enabled_map: Dict[str, bool], manifest: Pr
     return [p for p in _get_project_source_order(manifest) if enabled_map.get(p, False)]
 
 
+def _rows_from_editor_value(value: Any) -> List[Dict[str, Any]]:
+    if value is None:
+        return []
+    if hasattr(value, "to_dict"):
+        try:
+            return [dict(r) for r in value.to_dict("records")]
+        except Exception:
+            return []
+    if isinstance(value, list):
+        return [dict(r) for r in value if isinstance(r, dict)]
+    return []
+
+
+def _render_external_image_bridge_section(
+    manifest: ProjectManifest,
+    p_dir: Path,
+    *,
+    project_id: str,
+    is_job_running: bool = False,
+) -> None:
+    """Render External Images (Flow, etc.) expander with Visual Bible editor, scene-grouped preview & bulk import (V3, F4)."""
+    from app.services.longform.llm_adapter import get_llm_readiness
+    from app.services.longform.schema import (
+        SceneContinuity,
+        VisualBible,
+        VisualBibleCharacter,
+        VisualBibleLocation,
+    )
+    from app.services.longform.visual.external_bridge import (
+        apply_bulk_external_import,
+        export_external_image_prompts,
+        plan_bulk_external_import,
+    )
+    from app.services.longform.visual.visual_bible import (
+        build_template_visual_bible,
+        ensure_project_visual_bible,
+    )
+
+    exp_cache_key = f"ext_export_payload_{project_id}"
+    all_shots = [s for ch in manifest.chapters for s in ch.shots]
+    all_shot_ids = [s.shot_id for s in all_shots]
+    shot_map = {s.shot_id: s for s in all_shots}
+
+    with st.expander(t("expander_external_bridge"), expanded=False):
+        # --- F4 Top: Visual Context (Konteks Visual) ---
+        st.markdown(f"**{t('ext_vb_heading')}**")
+        cur_vb = manifest.visual_bible or build_template_visual_bible(manifest)
+        vb_col_a, vb_col_b = st.columns([2, 1])
+        with vb_col_a:
+            st.caption(t("ext_vb_source_caption", source=cur_vb.source or "template"))
+        with vb_col_b:
+            if st.button(
+                t("ext_vb_generate_ai_btn"),
+                key=f"btn_ext_vb_ai_{project_id}",
+                disabled=is_job_running,
+            ):
+                try:
+                    with st.spinner(t("ext_vb_ai_spinner")):
+                        vb_res = ensure_project_visual_bible(manifest, force=True, allow_llm=True)
+                    save_manifest(manifest, p_dir)
+                    gen_vb = vb_res["visual_bible"]
+                    for wk in (
+                        f"ext_vb_world_{project_id}",
+                        f"ext_vb_style_{project_id}",
+                        f"ext_vb_palette_{project_id}",
+                        f"ext_vb_avoid_{project_id}",
+                        f"ext_vb_chars_{project_id}",
+                        f"ext_vb_locs_{project_id}",
+                    ):
+                        st.session_state.pop(wk, None)
+                    st.success(
+                        t(
+                            "ext_vb_ai_ok",
+                            chars=len(gen_vb.characters),
+                            locs=len(gen_vb.locations),
+                        )
+                    )
+                    st.rerun()
+                except Exception as exc:
+                    st.warning(t("ext_vb_ai_fail", err=str(exc)[:180]))
+
+        vb_c1, vb_c2 = st.columns(2)
+        with vb_c1:
+            ed_world = st.text_input(
+                t("ext_vb_world_label"),
+                value=cur_vb.world,
+                disabled=is_job_running,
+                key=f"ext_vb_world_{project_id}",
+            )
+            ed_palette = st.text_input(
+                t("ext_vb_palette_label"),
+                value=cur_vb.palette_lighting,
+                disabled=is_job_running,
+                key=f"ext_vb_palette_{project_id}",
+            )
+        with vb_c2:
+            ed_style = st.text_input(
+                t("ext_vb_style_label"),
+                value=cur_vb.style,
+                disabled=is_job_running,
+                key=f"ext_vb_style_{project_id}",
+            )
+            ed_avoid = st.text_input(
+                t("ext_vb_avoid_label"),
+                value=cur_vb.avoid,
+                disabled=is_job_running,
+                key=f"ext_vb_avoid_{project_id}",
+            )
+
+        char_rows = [
+            {
+                "id": c.id,
+                "name": c.name,
+                "description": c.description,
+                "aliases": ", ".join(c.aliases or []),
+                "role": c.role,
+            }
+            for c in (cur_vb.characters or [])
+        ]
+        if not char_rows:
+            char_rows = [{"id": "", "name": "", "description": "", "aliases": "", "role": ""}]
+        st.markdown(f"**{t('ext_vb_chars_label')}**")
+        ed_chars_raw = st.data_editor(
+            char_rows,
+            num_rows="dynamic",
+            use_container_width=True,
+            disabled=is_job_running,
+            key=f"ext_vb_chars_{project_id}",
+        )
+
+        loc_rows = [
+            {"id": loc.id, "name": loc.name, "description": loc.description}
+            for loc in (cur_vb.locations or [])
+        ]
+        if not loc_rows:
+            loc_rows = [{"id": "", "name": "", "description": ""}]
+        st.markdown(f"**{t('ext_vb_locs_label')}**")
+        ed_locs_raw = st.data_editor(
+            loc_rows,
+            num_rows="dynamic",
+            use_container_width=True,
+            disabled=is_job_running,
+            key=f"ext_vb_locs_{project_id}",
+        )
+
+        if st.button(
+            t("ext_vb_save_btn"),
+            key=f"btn_ext_vb_save_{project_id}",
+            disabled=is_job_running,
+        ):
+            parsed_chars: List[VisualBibleCharacter] = []
+            for idx, r in enumerate(_rows_from_editor_value(ed_chars_raw), start=1):
+                c_name = str(r.get("name") or "").strip()
+                c_desc = str(r.get("description") or "").strip()
+                c_id = str(r.get("id") or "").strip()
+                if not (c_id or c_name or c_desc):
+                    continue
+                if not c_id:
+                    c_id = re.sub(r"[^a-z0-9_]+", "_", (c_name or f"char_{idx}").lower()).strip("_") or f"char_{idx}"
+                parsed_chars.append(
+                    VisualBibleCharacter(
+                        id=c_id,
+                        name=c_name or c_id,
+                        description=c_desc,
+                        aliases=r.get("aliases") or "",
+                        role=str(r.get("role") or "").strip(),
+                    )
+                )
+            parsed_locs: List[VisualBibleLocation] = []
+            for idx, r in enumerate(_rows_from_editor_value(ed_locs_raw), start=1):
+                l_name = str(r.get("name") or "").strip()
+                l_desc = str(r.get("description") or "").strip()
+                l_id = str(r.get("id") or "").strip()
+                if not (l_id or l_name or l_desc):
+                    continue
+                if not l_id:
+                    l_id = re.sub(r"[^a-z0-9_]+", "_", (l_name or f"loc_{idx}").lower()).strip("_") or f"loc_{idx}"
+                parsed_locs.append(
+                    VisualBibleLocation(id=l_id, name=l_name or l_id, description=l_desc)
+                )
+            manifest.visual_bible = VisualBible(
+                world=ed_world,
+                style=ed_style,
+                palette_lighting=ed_palette,
+                characters=parsed_chars,
+                locations=parsed_locs,
+                chapter_overrides=list(cur_vb.chapter_overrides or []),
+                avoid=ed_avoid,
+                source="manual",
+            )
+            save_manifest(manifest, p_dir)
+            if isinstance(st.session_state.get(exp_cache_key), dict):
+                prev_ids = st.session_state[exp_cache_key].get("shot_ids") or []
+                if prev_ids:
+                    st.session_state[exp_cache_key] = export_external_image_prompts(
+                        manifest,
+                        p_dir,
+                        scope="selected",
+                        selected_shot_ids=prev_ids,
+                        auto_prepare_llm=False,
+                    )
+            st.success(t("ext_vb_saved_ok"))
+
+        st.divider()
+
+        # --- Export & Bulk Import columns ---
+        col_exp, col_imp = st.columns(2)
+        with col_exp:
+            st.markdown(f"**{t('ext_export_heading')}**")
+            cur_sel_sid = st.session_state.get(f"selected_shot_{project_id}")
+            exp_scope = st.radio(
+                t("ext_export_scope_label"),
+                options=["missing_visual", "selected", "all"],
+                index=0,
+                format_func=lambda s: {
+                    "missing_visual": t("ext_scope_missing"),
+                    "selected": t("ext_scope_selected"),
+                    "all": t("ext_scope_all"),
+                }[s],
+                key=f"rad_ext_scope_{project_id}",
+            )
+            chosen_sids: List[str] = []
+            if exp_scope == "selected":
+                dflt_sids = [cur_sel_sid] if (cur_sel_sid and cur_sel_sid in all_shot_ids) else (all_shot_ids[:1])
+                chosen_sids = st.multiselect(
+                    t("ext_export_select_shots"),
+                    options=all_shot_ids,
+                    default=dflt_sids,
+                    key=f"ms_ext_sids_{project_id}",
+                )
+
+            llm_readiness = get_llm_readiness()
+            llm_ready = bool(llm_readiness.get("configured")) and not bool(llm_readiness.get("is_invalid"))
+            use_ai_scene = st.checkbox(
+                t("ext_export_use_ai"),
+                value=llm_ready,
+                disabled=is_job_running or not llm_ready,
+                key=f"chk_ext_ai_{project_id}",
+            )
+
+            if st.button(
+                t("btn_prepare_prompt_export"),
+                key=f"btn_ext_prepare_{project_id}",
+                disabled=is_job_running,
+            ):
+                res_exp = export_external_image_prompts(
+                    manifest,
+                    p_dir,
+                    scope=exp_scope,
+                    selected_shot_ids=chosen_sids,
+                    auto_prepare_llm=bool(use_ai_scene),
+                )
+                st.session_state[exp_cache_key] = res_exp
+
+            cached_exp = st.session_state.get(exp_cache_key)
+            if isinstance(cached_exp, dict) and cached_exp.get("count", 0) > 0:
+                st.success(t("ext_export_ready", count=cached_exp["count"]))
+                if cached_exp.get("warning_count", 0) > 0:
+                    st.warning(
+                        t(
+                            "ext_validator_summary_warn",
+                            count=cached_exp["warning_count"],
+                            char_count=cached_exp.get("unlocked_char_count", 0),
+                        )
+                    )
+                st.download_button(
+                    t("btn_download_prompts_txt"),
+                    data=cached_exp["txt"],
+                    file_name=f"{project_id}_prompts.txt",
+                    mime="text/plain",
+                    key=f"dl_ext_txt_{project_id}",
+                )
+                st.download_button(
+                    t("btn_download_prompts_csv"),
+                    data=cached_exp["csv"].encode("utf-8"),
+                    file_name=f"{project_id}_prompts.csv",
+                    mime="text/csv",
+                    key=f"dl_ext_csv_{project_id}",
+                )
+
+                # --- F4 Scene-grouped Editable Preview ---
+                st.markdown(f"**{t('ext_preview_heading')}**")
+                eff_vb = manifest.visual_bible or build_template_visual_bible(manifest)
+                char_opts = [c.id for c in (eff_vb.characters or [])]
+                loc_opts = [""] + [loc.id for loc in (eff_vb.locations or [])]
+
+                rows_by_scene: Dict[str, List[Dict[str, Any]]] = {}
+                scene_order: List[str] = []
+                for row in cached_exp.get("rows") or []:
+                    sc_id = str(row.get("scene_id") or "scene01")
+                    if sc_id not in rows_by_scene:
+                        rows_by_scene[sc_id] = []
+                        scene_order.append(sc_id)
+                    rows_by_scene[sc_id].append(row)
+
+                scene_edits: Dict[str, SceneContinuity] = {}
+                shot_edits: Dict[str, Tuple[List[str], str]] = {}
+
+                for sc_id in scene_order:
+                    sc_rows = rows_by_scene[sc_id]
+                    first_sh = shot_map.get(sc_rows[0]["shot_id"])
+                    sc_cont = (first_sh.continuity if first_sh and first_sh.continuity else SceneContinuity())
+                    sc_loc = (first_sh.location_id if first_sh and first_sh.location_id else (sc_cont.location_id or ""))
+                    if sc_loc not in loc_opts:
+                        sc_loc = ""
+
+                    with st.container(border=True):
+                        st.markdown(f"**{t('ext_scene_group_title', scene_id=sc_id, count=len(sc_rows))}**")
+                        sc1, sc2 = st.columns(2)
+                        with sc1:
+                            ed_sc_loc = st.selectbox(
+                                t("ext_scene_location_label"),
+                                options=loc_opts,
+                                index=loc_opts.index(sc_loc),
+                                key=f"sel_sc_loc_{project_id}_{sc_id}",
+                            )
+                            time_opts = ["", "dawn", "day", "dusk", "night"]
+                            cur_tod = sc_cont.time_of_day if sc_cont.time_of_day in time_opts else ""
+                            ed_sc_tod = st.selectbox(
+                                t("ext_scene_time_label"),
+                                options=time_opts,
+                                index=time_opts.index(cur_tod),
+                                key=f"sel_sc_tod_{project_id}_{sc_id}",
+                            )
+                            ed_sc_weather = st.text_input(
+                                t("ext_scene_weather_label"),
+                                value=sc_cont.weather,
+                                key=f"in_sc_weather_{project_id}_{sc_id}",
+                            )
+                        with sc2:
+                            ed_sc_light = st.text_input(
+                                t("ext_scene_lighting_label"),
+                                value=sc_cont.lighting,
+                                key=f"in_sc_light_{project_id}_{sc_id}",
+                            )
+                            ed_sc_props = st.text_input(
+                                t("ext_scene_props_label"),
+                                value=", ".join(sc_cont.props or []),
+                                key=f"in_sc_props_{project_id}_{sc_id}",
+                            )
+                            ed_sc_cstate = st.text_input(
+                                t("ext_scene_cstate_label"),
+                                value=sc_cont.character_state,
+                                key=f"in_sc_cstate_{project_id}_{sc_id}",
+                            )
+
+                        scene_edits[sc_id] = SceneContinuity(
+                            location_id=ed_sc_loc or None,
+                            time_of_day=ed_sc_tod,
+                            weather=ed_sc_weather,
+                            lighting=ed_sc_light,
+                            props=ed_sc_props,
+                            character_state=ed_sc_cstate,
+                        )
+
+                        for row in sc_rows:
+                            sid = row["shot_id"]
+                            sh_obj = shot_map.get(sid)
+                            cur_chars = [c for c in (sh_obj.characters_in_shot if sh_obj else []) if c in char_opts]
+                            st.caption(f"`{sid}` — {row['narration_snippet']}")
+                            ed_sh_chars = st.multiselect(
+                                t("ext_shot_chars_label"),
+                                options=char_opts,
+                                default=cur_chars,
+                                key=f"ms_sh_chars_{project_id}_{sid}",
+                            )
+                            ed_sh_scene_en = st.text_input(
+                                t("ext_shot_scene_en_label"),
+                                value=row.get("scene_en") or "",
+                                key=f"in_sh_scene_{project_id}_{sid}",
+                            )
+                            shot_edits[sid] = (ed_sh_chars, ed_sh_scene_en)
+                            st.code(row["prompt_en"], language=None)
+                            if row.get("lock_warning"):
+                                st.warning(row["lock_warning"])
+
+                if st.button(
+                    t("btn_ext_apply_preview"),
+                    key=f"btn_ext_apply_preview_{project_id}",
+                    disabled=is_job_running,
+                ):
+                    for sc_id, new_cont in scene_edits.items():
+                        for sh_obj in all_shots:
+                            if (sh_obj.scene_id or "") == sc_id:
+                                sh_obj.location_id = new_cont.location_id
+                                sh_obj.continuity = new_cont.model_copy(deep=True)
+                    for sid, (new_chars, new_scene_en) in shot_edits.items():
+                        sh_obj = shot_map.get(sid)
+                        if sh_obj is not None:
+                            sh_obj.characters_in_shot = list(new_chars)
+                            sh_obj.scene_en = new_scene_en
+                    save_manifest(manifest, p_dir)
+                    st.session_state[exp_cache_key] = export_external_image_prompts(
+                        manifest,
+                        p_dir,
+                        scope="selected",
+                        selected_shot_ids=cached_exp["shot_ids"],
+                        auto_prepare_llm=False,
+                    )
+                    st.success(t("ext_preview_updated_ok"))
+                    st.rerun()
+
+        with col_imp:
+            st.markdown(f"**{t('ext_import_heading')}**")
+            st.caption(t("ext_import_hint"))
+            ext_uploads = st.file_uploader(
+                t("ext_import_uploader"),
+                accept_multiple_files=True,
+                disabled=is_job_running,
+                key=f"up_ext_bulk_{project_id}",
+            )
+            if ext_uploads:
+                raw_files = [(uf.name, uf.getvalue()) for uf in ext_uploads]
+                plan_rows = plan_bulk_external_import(manifest, raw_files)
+                st.markdown(f"**{t('ext_import_preview_heading')}**")
+
+                unmatched_names = [
+                    r["filename"] for r in plan_rows
+                    if (not r["supported"]) or (not r["matched_shot_id"])
+                ]
+                if unmatched_names:
+                    st.warning(
+                        t(
+                            "ext_import_unmatched_warn",
+                            count=len(unmatched_names),
+                            names=", ".join(unmatched_names),
+                        )
+                    )
+
+                shot_select_opts = [""] + all_shot_ids
+                edited_mappings: List[Dict[str, Any]] = []
+                for r in plan_rows:
+                    r_idx = r["index"]
+                    mc1, mc2 = st.columns([1.3, 1.7])
+                    with mc1:
+                        st.caption(f"**{r['filename']}**")
+                        if not r["supported"]:
+                            st.error(r["error"])
+                    with mc2:
+                        if r["supported"]:
+                            cur_sid = r["matched_shot_id"] or ""
+                            d_idx = shot_select_opts.index(cur_sid) if cur_sid in shot_select_opts else 0
+                            chosen_sid = st.selectbox(
+                                t("ext_import_col_target"),
+                                options=shot_select_opts,
+                                index=d_idx,
+                                format_func=lambda s: t("ext_import_skip_opt") if s == "" else s,
+                                label_visibility="collapsed",
+                                key=f"sel_ext_map_{project_id}_{r_idx}_{r['filename']}",
+                            )
+                            edited_mappings.append({**r, "matched_shot_id": chosen_sid or None})
+
+                if st.button(
+                    t("btn_apply_external_import"),
+                    type="primary",
+                    disabled=is_job_running,
+                    key=f"btn_ext_apply_{project_id}",
+                ):
+                    to_apply = [m for m in edited_mappings if m.get("matched_shot_id")]
+                    if not to_apply:
+                        st.warning(t("ext_import_nothing_selected"))
+                    else:
+                        with st.spinner(t("spinner_applying_external")):
+                            app_res = apply_bulk_external_import(p_dir, manifest, to_apply, rebuild=True)
+                        if app_res["applied_shots"]:
+                            st.success(t("ext_import_applied_ok", count=len(app_res["applied_shots"])))
+                            time.sleep(0.4)
+                            st.rerun()
+
+
 def render_visual_step_flow(
     project_id: str,
     p_dir: Path,
@@ -3187,141 +3657,14 @@ def render_visual_step_flow(
                 )
             )
 
-    # --- V3: External Image Bridge (Export prompts & bulk import) ---
+    # --- V3 + V102 F4: External Image Bridge (Visual Context, Export prompts & bulk import) ---
     if total_shots > 0:
-        from app.services.longform.visual.external_bridge import (
-            EXTERNAL_IMPORT_EXTENSIONS,
-            apply_bulk_external_import,
-            export_external_image_prompts,
-            plan_bulk_external_import,
+        _render_external_image_bridge_section(
+            manifest,
+            p_dir,
+            project_id=project_id,
+            is_job_running=is_job_running,
         )
-
-        with st.expander(t("expander_external_bridge"), expanded=False):
-            col_exp, col_imp = st.columns(2)
-            all_shot_ids = [s.shot_id for ch in manifest.chapters for s in ch.shots]
-
-            with col_exp:
-                st.markdown(f"**{t('ext_export_heading')}**")
-                cur_sel_sid = st.session_state.get(f"selected_shot_{project_id}")
-                exp_scope = st.radio(
-                    t("ext_export_scope_label"),
-                    options=["missing_visual", "selected", "all"],
-                    index=0,
-                    format_func=lambda s: {
-                        "missing_visual": t("ext_scope_missing"),
-                        "selected": t("ext_scope_selected"),
-                        "all": t("ext_scope_all"),
-                    }[s],
-                    key=f"rad_ext_scope_{project_id}",
-                )
-                chosen_sids: List[str] = []
-                if exp_scope == "selected":
-                    dflt_sids = [cur_sel_sid] if (cur_sel_sid and cur_sel_sid in all_shot_ids) else (all_shot_ids[:1])
-                    chosen_sids = st.multiselect(
-                        t("ext_export_select_shots"),
-                        options=all_shot_ids,
-                        default=dflt_sids,
-                        key=f"ms_ext_sids_{project_id}",
-                    )
-
-                exp_cache_key = f"ext_export_payload_{project_id}"
-                if st.button(
-                    t("btn_prepare_prompt_export"),
-                    key=f"btn_ext_prepare_{project_id}",
-                    disabled=is_job_running,
-                ):
-                    res_exp = export_external_image_prompts(
-                        manifest,
-                        p_dir,
-                        scope=exp_scope,
-                        selected_shot_ids=chosen_sids,
-                    )
-                    st.session_state[exp_cache_key] = res_exp
-
-                cached_exp = st.session_state.get(exp_cache_key)
-                if isinstance(cached_exp, dict) and cached_exp.get("count", 0) > 0:
-                    st.success(t("ext_export_ready", count=cached_exp["count"]))
-                    st.download_button(
-                        t("btn_download_prompts_txt"),
-                        data=cached_exp["txt"],
-                        file_name=f"{project_id}_prompts.txt",
-                        mime="text/plain",
-                        key=f"dl_ext_txt_{project_id}",
-                    )
-                    st.download_button(
-                        t("btn_download_prompts_csv"),
-                        data=cached_exp["csv"].encode("utf-8"),
-                        file_name=f"{project_id}_prompts.csv",
-                        mime="text/csv",
-                        key=f"dl_ext_csv_{project_id}",
-                    )
-
-            with col_imp:
-                st.markdown(f"**{t('ext_import_heading')}**")
-                st.caption(t("ext_import_hint"))
-                ext_uploads = st.file_uploader(
-                    t("ext_import_uploader"),
-                    accept_multiple_files=True,
-                    disabled=is_job_running,
-                    key=f"up_ext_bulk_{project_id}",
-                )
-                if ext_uploads:
-                    raw_files = [(uf.name, uf.getvalue()) for uf in ext_uploads]
-                    plan_rows = plan_bulk_external_import(manifest, raw_files)
-                    st.markdown(f"**{t('ext_import_preview_heading')}**")
-
-                    unmatched_names = [
-                        r["filename"] for r in plan_rows
-                        if (not r["supported"]) or (not r["matched_shot_id"])
-                    ]
-                    if unmatched_names:
-                        st.warning(
-                            t(
-                                "ext_import_unmatched_warn",
-                                count=len(unmatched_names),
-                                names=", ".join(unmatched_names),
-                            )
-                        )
-
-                    shot_select_opts = [""] + all_shot_ids
-                    edited_mappings: List[Dict[str, Any]] = []
-                    for r in plan_rows:
-                        r_idx = r["index"]
-                        mc1, mc2 = st.columns([1.3, 1.7])
-                        with mc1:
-                            st.caption(f"**{r['filename']}**")
-                            if not r["supported"]:
-                                st.error(r["error"])
-                        with mc2:
-                            if r["supported"]:
-                                cur_sid = r["matched_shot_id"] or ""
-                                d_idx = shot_select_opts.index(cur_sid) if cur_sid in shot_select_opts else 0
-                                chosen_sid = st.selectbox(
-                                    t("ext_import_col_target"),
-                                    options=shot_select_opts,
-                                    index=d_idx,
-                                    format_func=lambda s: t("ext_import_skip_opt") if s == "" else s,
-                                    label_visibility="collapsed",
-                                    key=f"sel_ext_map_{project_id}_{r_idx}_{r['filename']}",
-                                )
-                                edited_mappings.append({**r, "matched_shot_id": chosen_sid or None})
-
-                    if st.button(
-                        t("btn_apply_external_import"),
-                        type="primary",
-                        disabled=is_job_running,
-                        key=f"btn_ext_apply_{project_id}",
-                    ):
-                        to_apply = [m for m in edited_mappings if m.get("matched_shot_id")]
-                        if not to_apply:
-                            st.warning(t("ext_import_nothing_selected"))
-                        else:
-                            with st.spinner(t("spinner_applying_external")):
-                                app_res = apply_bulk_external_import(p_dir, manifest, to_apply, rebuild=True)
-                            if app_res["applied_shots"]:
-                                st.success(t("ext_import_applied_ok", count=len(app_res["applied_shots"])))
-                                time.sleep(0.4)
-                                st.rerun()
 
     if needs_review_count > 0 and ai_vid_providers:
         if st.button(
