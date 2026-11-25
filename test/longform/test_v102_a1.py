@@ -424,3 +424,51 @@ def test_a1_1c_visual_ui_distinguishes_auth_blocked_and_rate_limited_messages(tm
     warn_rl_en = "\n".join(str(w.value) for w in at_rl_en.warning)
     assert "Coverr temporarily paused: usage limit (403) reached." in warn_rl_en
     assert "API key rejected" not in warn_rl_en
+
+
+def test_a1_2_settings_studio_network_profile_control_saves_lambat_timeout_15(tmp_path: Path, monkeypatch):
+    """A1.2 (B3.2): Pengaturan Studio renders settings_network_profile_label and selecting 'lambat' calls save_network_profile('lambat') -> timeout == 15."""
+    from app.services.longform import app_paths, config as lf_cfg, first_run
+    from app.services.longform.ui.i18n import t
+
+    data_dir = (tmp_path / "a12_data").resolve()
+    data_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("EFS_DATA_DIR", str(data_dir))
+    monkeypatch.setattr(app_paths, "get_data_dir", lambda create=False: data_dir)
+    monkeypatch.setattr("app.services.longform.update_checker.start_background_update_check", lambda *a, **kw: False)
+    monkeypatch.setattr("app.services.version_checker.get_available_update", lambda *a, **kw: None)
+    lf_cfg._CONFIG_CACHE = None
+    first_run.mark_setup_completed(skipped=False)
+    monkeypatch.setitem(config.ui, "language", "id")
+
+    saved_calls: list[str] = []
+    orig_save = lf_cfg.save_network_profile
+
+    def _spy_save(profile: str, *, config_path: Path | None = None) -> str:
+        saved_calls.append(profile)
+        return orig_save(profile, config_path=config_path)
+
+    monkeypatch.setattr(lf_cfg, "save_network_profile", _spy_save)
+
+    main_file = str(Path(__file__).resolve().parents[2] / "webui" / "Main.py")
+    at_main = AppTest.from_file(main_file, default_timeout=40)
+    at_main.run(timeout=40)
+    assert not at_main.exception
+
+    # Open Settings dialog / Pengaturan Umum -> Pengaturan Studio
+    at_main.button(key="open_settings_dialog_button").click().run(timeout=30)
+    assert not at_main.exception
+
+    np_boxes = [sb for sb in at_main.selectbox if sb.key == "general_settings_network_profile_select"]
+    assert len(np_boxes) == 1
+    assert np_boxes[0].label == t("settings_network_profile_label")
+    assert np_boxes[0].value == "normal"
+    assert lf_cfg.get_network_profile_settings()["timeout"] == 6
+
+    np_boxes[0].set_value("lambat").run(timeout=30)
+    assert not at_main.exception
+    assert "lambat" in saved_calls
+    assert lf_cfg.get_network_profile_settings()["timeout"] == 15
+    assert lf_cfg.get_network_profile_settings()["profile"] == "lambat"
+    assert [sb for sb in at_main.selectbox if sb.key == "general_settings_network_profile_select"][0].value == "lambat"
+
