@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from loguru import logger
 
-from app.services.longform.schema import ItemStatus, ProjectManifest, Shot
+from app.services.longform.schema import Chapter, ItemStatus, ProjectManifest, SceneContinuity, Shot, VisualBible
 from app.services.longform.shot import compute_shot_hash
 from app.services.longform.store import save_manifest
 from app.services.longform.visual.base import (
@@ -20,10 +20,32 @@ from app.services.longform.visual.base import (
 )
 from app.services.longform.visual.builder import ShotClipBuilder
 from app.services.longform.visual.credits import CreditsManager
+from app.services.longform.visual.scene_continuity import (
+    _match_characters_by_aliases,
+    assign_scenes_and_prompts_for_shots,
+)
 from app.services.longform.visual.service import VisualService
+from app.services.longform.visual.visual_bible import (
+    build_template_visual_bible,
+    ensure_project_visual_bible,
+)
 
 EXTERNAL_IMPORT_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".mp4"}
 EXTERNAL_ATTRIBUTION_TEXT = "Gambar dibuat pengguna dengan alat eksternal"
+GENERIC_SUBJECT_TOKENS = (
+    "the witch",
+    "child",
+    "children",
+    "kid",
+    "boy",
+    "girl",
+    "you",
+    "she",
+    "he",
+    "woman",
+    "man",
+    "person",
+)
 
 # Exact word/delimiter boundaries prevent 'ch01_shot001' matching 'ch01_shot0010'
 _SHOT_ID_EXACT_RE = re.compile(r"(?:^|[^a-z0-9])(ch\d+_shot\d+)(?=$|[^a-z0-9])", re.IGNORECASE)
@@ -31,11 +53,224 @@ _TRAILING_SEQ_RE = re.compile(r"(?:^|[_\-\s#()])0*(\d+)(?:[_\-\s()]*)$")
 
 
 def _extract_visual_style(manifest: ProjectManifest) -> str:
+    if getattr(manifest, "visual_bible", None) and str(manifest.visual_bible.style or "").strip():
+        return str(manifest.visual_bible.style).strip()
     snap = manifest.preset_snapshot or {}
     vis = snap.get("visual") if isinstance(snap, dict) else None
     if isinstance(vis, dict):
         return str(vis.get("style") or "").strip()
     return str(snap.get("style") or "").strip() if isinstance(snap, dict) else ""
+
+
+def format_continuity_clause(continuity: Optional[SceneContinuity]) -> str:
+    """Format a SceneContinuity object deterministically so every shot in the same scene matches word-for-word (F3)."""
+    if continuity is None:
+        return ""
+    parts: List[str] = []
+    if str(continuity.time_of_day or "").strip():
+        parts.append(f"time: {str(continuity.time_of_day).strip()}")
+    if str(continuity.weather or "").strip():
+        parts.append(f"weather: {str(continuity.weather).strip()}")
+    if str(continuity.lighting or "").strip():
+        parts.append(f"lighting: {str(continuity.lighting).strip()}")
+    if continuity.props:
+        props_clean = [str(p).strip() for p in continuity.props if str(p or "").strip()]
+        if props_clean:
+            parts.append(f"props: {', '.join(props_clean)}")
+    if str(continuity.character_state or "").strip():
+        parts.append(f"state: {str(continuity.character_state).strip()}")
+    return "; ".join(parts)
+
+
+def _replace_untethered_second_person(scene_en: str, locked_chars: List[Any]) -> str:
+    """Replace bare POV 'you'/'your' in fallback scene text when a locked character is present."""
+    if not scene_en or len(locked_chars) != 1:
+        return scene_en
+    c = locked_chars[0]
+    name = str(getattr(c, "name", "") or "").strip()
+    if not name:
+        return scene_en
+    out = re.sub(r"\byour\b", f"{name}'s", scene_en, flags=re.IGNORECASE)
+    out = re.sub(r"\byourself\b", name, out, flags=re.IGNORECASE)
+    out = re.sub(r"\byou\b", name, out, flags=re.IGNORECASE)
+    return out
+
+
+def validate_external_prompt(
+    prompt_text: str,
+    *,
+    scene_en: Optional[str] = None,
+    locked_character_ids: Optional[Sequence[str]] = None,
+    bible: Optional[VisualBible] = None,
+) -> str:
+    """Inspect an external prompt for unlocked generic human subjects or missing world/style (F3, F6c, F6j).
+
+    Returns empty string when valid, or a warning string prefixed with '⚠'.
+    """
+    issues: List[str] = []
+
+    char_map = {c.id: c for c in (bible.characters if bible else [])}
+    locked_ids = [str(cid).strip() for cid in (locked_character_ids or []) if str(cid or "").strip()]
+    locked_chars = [char_map[cid] for cid in locked_ids if cid in char_map and str(char_map[cid].description or "").strip()]
+
+    has_inline_char_clause = bool(re.search(r"Characters:\s*[^;\n]+\([^)]+\)", str(prompt_text or "")))
+    has_locked_chars = bool(locked_chars) or has_inline_char_clause
+
+    # Inspect scene body excluding Avoid / Style / Setting / Characters tail so bible avoid terms do not trigger false alarms
+    if scene_en is not None:
+        check_body = str(scene_en)
+    else:
+        check_body = re.split(
+            r"\b(?:Characters:|Location:|Continuity:|Setting:|Style:|Palette(?:\s*&\s*lighting)?:|Avoid:)\b",
+            str(prompt_text or ""),
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0]
+
+    covered_aliases: set[str] = set()
+    for lc in locked_chars:
+        covered_aliases.add(lc.name.lower().strip())
+        for a in lc.aliases or []:
+            clean_a = re.sub(r"\([^)]*\)", "", str(a)).strip().lower()
+            if clean_a:
+                covered_aliases.add(clean_a)
+
+    found_generic: List[str] = []
+    for tok in GENERIC_SUBJECT_TOKENS:
+        if has_locked_chars and tok in covered_aliases:
+            continue
+        pat = r"(?<![a-z0-9])" + re.escape(tok) + r"(?![a-z0-9])"
+        if re.search(pat, check_body, flags=re.IGNORECASE):
+            found_generic.append(tok)
+
+    if locked_ids and not locked_chars:
+        issues.append("tokoh belum memiliki deskripsi fisik lengkap")
+    elif found_generic and not has_locked_chars:
+        issues.append(f"subjek umum belum mengunci tokoh ({', '.join(found_generic[:3])})")
+    elif found_generic and any(t == "the witch" or t not in covered_aliases for t in found_generic):
+        # Flag additional generic actors mentioned in scene_en who were not covered by locked characters
+        extra = [t for t in found_generic if t not in covered_aliases]
+        if extra and not has_inline_char_clause:
+            issues.append(f"subjek umum belum mengunci tokoh ({', '.join(extra[:3])})")
+
+    has_world = bool(
+        (bible and str(bible.world or "").strip())
+        or re.search(r"\b(?:Setting|World):\s*\S+", str(prompt_text or ""), re.IGNORECASE)
+    )
+    has_style = bool(
+        (bible and str(bible.style or "").strip())
+        or re.search(r"\bStyle:\s*\S+", str(prompt_text or ""), re.IGNORECASE)
+    )
+    if not has_world or not has_style:
+        missing_ws = []
+        if not has_world:
+            missing_ws.append("world")
+        if not has_style:
+            missing_ws.append("style")
+        issues.append(f"konteks belum lengkap ({'/'.join(missing_ws)})")
+
+    if not issues:
+        return ""
+    return "⚠ " + "; ".join(issues)
+
+
+def compose_shot_external_prompt(
+    manifest: ProjectManifest,
+    chapter: Optional[Chapter],
+    shot: Shot,
+) -> Dict[str, Any]:
+    """Deterministically compose a self-contained external image prompt from scene + locked bible fields (F3)."""
+    bible = manifest.visual_bible or build_template_visual_bible(manifest)
+    aspect_ratio = str(getattr(manifest, "aspect_ratio", None) or "16:9")
+
+    char_map = {c.id: c for c in (bible.characters or [])}
+    loc_map = {loc.id: loc for loc in (bible.locations or [])}
+
+    narr_raw = VisualService._get_shot_narration_text(manifest, shot)
+    char_ids = list(getattr(shot, "characters_in_shot", None) or [])
+    if not char_ids and bible.characters and narr_raw:
+        char_ids = _match_characters_by_aliases(str(shot.scene_en or narr_raw), bible)
+
+    resolved_chars = [char_map[cid] for cid in char_ids if cid in char_map]
+    scene_en = str(getattr(shot, "scene_en", None) or "").strip()
+    if not scene_en:
+        scene_en = str(
+            narr_raw
+            or getattr(shot, "search_query_en", None)
+            or shot.search_query
+            or shot.visual_prompt
+            or "Visual scene matching narration"
+        ).strip()
+    scene_en = _replace_untethered_second_person(scene_en, resolved_chars)
+    scene_clean = scene_en.rstrip(" .")
+
+    eff_loc_id = getattr(shot, "location_id", None) or (
+        shot.continuity.location_id if getattr(shot, "continuity", None) else None
+    )
+    loc_obj = loc_map.get(eff_loc_id) if eff_loc_id else None
+
+    eff_cont = getattr(shot, "continuity", None)
+    cont_str = format_continuity_clause(eff_cont)
+
+    ch_idx = chapter.chapter_index if chapter is not None else shot.chapter_index
+    ch_ov = next((ov for ov in (bible.chapter_overrides or []) if ov.chapter_index == ch_idx), None)
+    world_parts: List[str] = []
+    if str(bible.world or "").strip():
+        world_parts.append(str(bible.world).strip())
+    if ch_ov is not None:
+        ov_world = str(ch_ov.world or "").strip()
+        ov_era = str(ch_ov.era or "").strip()
+        if ov_world and ov_world.lower() not in (world_parts[0].lower() if world_parts else ""):
+            world_parts.append(ov_world)
+        if ov_era and ov_era.lower() not in " ".join(world_parts).lower():
+            world_parts.append(ov_era)
+    world_text = ", ".join(world_parts)
+
+    segments: List[str] = [f"{scene_clean}."]
+    if resolved_chars:
+        char_clauses = [
+            f"{c.name} ({c.description})" if str(c.description or "").strip() else c.name
+            for c in resolved_chars
+        ]
+        segments.append(f"Characters: {'; '.join(char_clauses)}.")
+    if loc_obj is not None:
+        loc_desc = str(loc_obj.description or loc_obj.name or "").strip()
+        if loc_desc:
+            segments.append(f"Location: {loc_desc}.")
+    if cont_str:
+        segments.append(f"Continuity: {cont_str}.")
+    if world_text:
+        segments.append(f"Setting: {world_text}.")
+    if str(bible.style or "").strip():
+        segments.append(f"Style: {str(bible.style).strip()}.")
+    if str(bible.palette_lighting or "").strip():
+        segments.append(f"Palette & lighting: {str(bible.palette_lighting).strip()}.")
+    segments.append(f"{aspect_ratio} widescreen.")
+    if str(bible.avoid or "").strip():
+        segments.append(f"Avoid: {str(bible.avoid).strip()}.")
+
+    prompt_en = " ".join(segments)
+    lock_warn = validate_external_prompt(
+        prompt_en,
+        scene_en=scene_en,
+        locked_character_ids=char_ids,
+        bible=bible,
+    )
+    missing_char_lock = bool(lock_warn and "mengunci tokoh" in lock_warn)
+
+    return {
+        "shot_id": shot.shot_id,
+        "scene_id": getattr(shot, "scene_id", None) or f"ch{ch_idx:02d}_scene01",
+        "scene_en": scene_en,
+        "characters_in_shot": char_ids,
+        "location_id": eff_loc_id or "",
+        "continuity": cont_str,
+        "continuity_obj": eff_cont,
+        "lock_warning": lock_warn,
+        "has_lock_warning": bool(lock_warn),
+        "missing_character_lock": missing_char_lock,
+        "prompt_en": prompt_en,
+    }
 
 
 def _shot_is_missing_visual(shot: Shot, project_dir: Path) -> bool:
@@ -59,8 +294,12 @@ def export_external_image_prompts(
     *,
     scope: str = "all",
     selected_shot_ids: Optional[Sequence[str]] = None,
+    auto_prepare_llm: bool = False,
+    llm_adapter: Optional[Any] = None,
+    cache_dir: Optional[Path] = None,
+    force_prepare: bool = False,
 ) -> Dict[str, Any]:
-    """Build .txt and UTF-8 .csv prompt exports and persist last exported shot order (V3)."""
+    """Build .txt and UTF-8 .csv prompt exports with visual_bible, scenes, continuity & lock validation (V3, F1-F5)."""
     p_dir = Path(project_dir).resolve()
     sel_set = {str(x).strip() for x in (selected_shot_ids or []) if str(x).strip()}
     eff_scope = str(scope or "all").strip().lower()
@@ -73,34 +312,59 @@ def export_external_image_prompts(
     else:
         target_shots = all_shots
 
+    use_llm = bool(auto_prepare_llm or llm_adapter is not None)
+    if manifest.visual_bible is None:
+        ensure_project_visual_bible(
+            manifest,
+            cache_dir=cache_dir,
+            llm_adapter=llm_adapter,
+            force=False,
+            allow_llm=use_llm,
+        )
+
+    assign_scenes_and_prompts_for_shots(
+        manifest,
+        target_shot_ids=[s.shot_id for s in target_shots],
+        llm_adapter=llm_adapter,
+        cache_dir=cache_dir,
+        force=force_prepare,
+        allow_llm=use_llm,
+    )
+
+    ch_map = {ch.chapter_index: ch for ch in (manifest.chapters or [])}
     visual_style = _extract_visual_style(manifest)
     aspect_ratio = str(getattr(manifest, "aspect_ratio", None) or "16:9")
 
     rows: List[Dict[str, Any]] = []
     txt_blocks: List[str] = []
+    warning_count = 0
+    unlocked_char_count = 0
 
     for sh in target_shots:
         narr_full = VisualService._get_shot_narration_text(manifest, sh)
         narr_snip = (narr_full[:140] + "...") if len(narr_full) > 140 else narr_full
-        base_en = str(
-            getattr(sh, "search_query_en", None)
-            or sh.search_query
-            or sh.visual_prompt
-            or "cinematic documentary scene"
-        ).strip()
-        style_suffix = f", {visual_style}" if visual_style and visual_style.lower() not in base_en.lower() else ""
-        prompt_en = f"{base_en}{style_suffix}, {aspect_ratio} widescreen, photographic documentary still"
+        composed = compose_shot_external_prompt(manifest, ch_map.get(sh.chapter_index), sh)
+        if composed["has_lock_warning"]:
+            warning_count += 1
+        if composed["missing_character_lock"]:
+            unlocked_char_count += 1
 
         row = {
             "shot_id": sh.shot_id,
             "duration_seconds": round(float(sh.duration_seconds), 2),
             "narration_snippet": narr_snip,
-            "prompt_en": prompt_en,
+            "scene_id": composed["scene_id"],
+            "scene_en": composed["scene_en"],
+            "characters_in_shot": ", ".join(composed["characters_in_shot"]),
+            "location_id": composed["location_id"],
+            "continuity": composed["continuity"],
+            "lock_warning": composed["lock_warning"],
+            "prompt_en": composed["prompt_en"],
             "aspect_ratio": aspect_ratio,
             "visual_style": visual_style or "-",
         }
         rows.append(row)
-        txt_blocks.append(f"[{sh.shot_id}] ({row['duration_seconds']:.1f}s | {aspect_ratio})\n{prompt_en}")
+        txt_blocks.append(f"[{sh.shot_id}] ({row['duration_seconds']:.1f}s | {aspect_ratio})\n{composed['prompt_en']}")
 
     csv_buf = io.StringIO()
     writer = csv.writer(csv_buf, lineterminator="\n")
@@ -120,6 +384,8 @@ def export_external_image_prompts(
 
     return {
         "count": len(rows),
+        "warning_count": warning_count,
+        "unlocked_char_count": unlocked_char_count,
         "shot_ids": [r["shot_id"] for r in rows],
         "rows": rows,
         "txt": ("\n\n".join(txt_blocks) + "\n") if txt_blocks else "",
