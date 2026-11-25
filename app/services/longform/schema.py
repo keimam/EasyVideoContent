@@ -133,6 +133,52 @@ class VisualSpec(BaseModel):
         return _assert_relative_path(value, info.field_name)
 
 
+class SceneContinuity(BaseModel):
+    """Effective scene continuity status inherited across sequential shots in a scene (F2)."""
+
+    location_id: Optional[str] = None
+    time_of_day: str = ""
+    weather: str = ""
+    lighting: str = ""
+    props: List[str] = Field(default_factory=list)
+    character_state: str = ""
+
+    model_config = {"extra": "ignore", "validate_assignment": True}
+
+    @field_validator("location_id", mode="before")
+    @classmethod
+    def coerce_opt_loc(cls, value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        txt = str(value).strip()
+        return txt or None
+
+    @field_validator("time_of_day", "weather", "lighting", mode="before")
+    @classmethod
+    def coerce_str_field(cls, value: Any) -> str:
+        return "" if value is None else str(value).strip()
+
+    @field_validator("character_state", mode="before")
+    @classmethod
+    def coerce_char_state(cls, value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, (list, tuple)):
+            return ", ".join(str(x).strip() for x in value if str(x or "").strip())
+        return str(value).strip()
+
+    @field_validator("props", mode="before")
+    @classmethod
+    def coerce_props(cls, value: Any) -> List[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [x.strip() for x in re.split(r"[,;\n]+", value) if x.strip()]
+        if isinstance(value, (list, tuple)):
+            return [str(x).strip() for x in value if str(x or "").strip()]
+        return []
+
+
 class Shot(BaseModel):
     """A visual shot unit (4.2), formed by 1 or more sentence segments."""
 
@@ -181,6 +227,11 @@ class Shot(BaseModel):
     attribution_license: Optional[str] = None
     attribution_url: Optional[str] = None
     requires_attribution: bool = False
+    scene_id: Optional[str] = None
+    scene_en: Optional[str] = None
+    characters_in_shot: List[str] = Field(default_factory=list)
+    location_id: Optional[str] = None
+    continuity: Optional[SceneContinuity] = None
     status: ItemStatus = ItemStatus.pending
 
     model_config = {"extra": "forbid", "validate_assignment": True}
@@ -190,7 +241,7 @@ class Shot(BaseModel):
     def coerce_none_text(cls, value: Any) -> str:
         return "" if value is None else str(value)
 
-    @field_validator("segment_indices", "candidates", "tags", "search_queries_en", "search_attempts", mode="before")
+    @field_validator("segment_indices", "candidates", "tags", "search_queries_en", "search_attempts", "characters_in_shot", mode="before")
     @classmethod
     def coerce_none_list(cls, value: Any) -> list:
         return [] if value is None else value
