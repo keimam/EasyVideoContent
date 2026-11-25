@@ -491,6 +491,13 @@ def export_external_image_prompts(
     manifest.last_prompt_export_shot_ids = [r["shot_id"] for r in rows]
     save_manifest(manifest, p_dir)
 
+    bulk_lines = [
+        " ".join(str(r["prompt_en"] or "").splitlines()).strip()
+        for r in rows
+        if str(r.get("prompt_en") or "").strip()
+    ]
+    bulk_txt = "\n".join(bulk_lines)
+
     return {
         "count": len(rows),
         "warning_count": warning_count,
@@ -498,6 +505,8 @@ def export_external_image_prompts(
         "shot_ids": [r["shot_id"] for r in rows],
         "rows": rows,
         "txt": ("\n\n".join(txt_sections) + "\n") if txt_sections else "",
+        "bulk_txt": bulk_txt,
+        "bulk_line_count": len(bulk_lines),
         "csv": csv_buf.getvalue(),
     }
 

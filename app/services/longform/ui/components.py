@@ -2925,6 +2925,19 @@ def _render_external_image_bridge_section(
                     mime="text/csv",
                     key=f"dl_ext_csv_{project_id}",
                 )
+                bulk_str = str(cached_exp.get("bulk_txt") or "")
+                bulk_cnt = int(cached_exp.get("bulk_line_count") or (len(bulk_str.splitlines()) if bulk_str else 0))
+                b_col1, b_col2 = st.columns([2.4, 1.0])
+                with b_col1:
+                    st.download_button(
+                        t("btn_download_prompts_bulk"),
+                        data=bulk_str.encode("utf-8"),
+                        file_name=f"{project_id}_prompts_bulk.txt",
+                        mime="text/plain",
+                        key=f"dl_ext_bulk_{project_id}",
+                    )
+                with b_col2:
+                    st.caption(t("ext_bulk_line_count", count=bulk_cnt))
 
                 # --- F4 Scene-grouped Editable Preview ---
                 st.markdown(f"**{t('ext_preview_heading')}**")
