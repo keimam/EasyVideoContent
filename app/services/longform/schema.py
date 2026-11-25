@@ -353,6 +353,98 @@ class ScriptOutline(BaseModel):
         return v
 
 
+class VisualBibleCharacter(BaseModel):
+    """Locked recurring character profile inside project visual_bible (F1)."""
+
+    id: str
+    name: str = ""
+    aliases: List[str] = Field(default_factory=list)
+    role: str = ""
+    description: str = ""
+
+    model_config = {"extra": "ignore", "validate_assignment": True}
+
+    @field_validator("id", "name", "role", "description", mode="before")
+    @classmethod
+    def coerce_str_fields(cls, value: Any) -> str:
+        return "" if value is None else str(value).strip()
+
+    @field_validator("aliases", mode="before")
+    @classmethod
+    def coerce_aliases(cls, value: Any) -> List[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [x.strip() for x in re.split(r"[,;\n]+", value) if x.strip()]
+        if isinstance(value, (list, tuple)):
+            return [str(x).strip() for x in value if str(x or "").strip()]
+        return []
+
+
+class VisualBibleLocation(BaseModel):
+    """Locked recurring location description inside project visual_bible (F1)."""
+
+    id: str
+    name: str = ""
+    description: str = ""
+
+    model_config = {"extra": "ignore", "validate_assignment": True}
+
+    @field_validator("id", "name", "description", mode="before")
+    @classmethod
+    def coerce_str_fields(cls, value: Any) -> str:
+        return "" if value is None else str(value).strip()
+
+
+class VisualBibleChapterOverride(BaseModel):
+    """Per-chapter setting/era override for anthologies or documentaries across eras (F1)."""
+
+    chapter_index: int
+    world: str = ""
+    era: str = ""
+
+    model_config = {"extra": "ignore", "validate_assignment": True}
+
+    @field_validator("world", "era", mode="before")
+    @classmethod
+    def coerce_str_fields(cls, value: Any) -> str:
+        return "" if value is None else str(value).strip()
+
+
+class VisualBible(BaseModel):
+    """Project-wide visual consistency context for external image prompts (F1)."""
+
+    world: str = ""
+    style: str = ""
+    palette_lighting: str = ""
+    characters: List[VisualBibleCharacter] = Field(default_factory=list)
+    locations: List[VisualBibleLocation] = Field(default_factory=list)
+    chapter_overrides: List[VisualBibleChapterOverride] = Field(default_factory=list)
+    avoid: str = ""
+    source: Optional[str] = None
+
+    model_config = {"extra": "ignore", "validate_assignment": True}
+
+    @field_validator("world", "style", "palette_lighting", mode="before")
+    @classmethod
+    def coerce_text(cls, value: Any) -> str:
+        return "" if value is None else str(value).strip()
+
+    @field_validator("avoid", mode="before")
+    @classmethod
+    def coerce_avoid(cls, value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, (list, tuple)):
+            return ", ".join(str(x).strip() for x in value if str(x or "").strip())
+        return str(value).strip()
+
+    @field_validator("characters", "locations", "chapter_overrides", mode="before")
+    @classmethod
+    def coerce_lists(cls, value: Any) -> list:
+        return [] if value is None else value
+
+
 CURRENT_SCHEMA_VERSION = "1.1.0"
 SUPPORTED_SCHEMA_VERSIONS = {"1.0.0", "1.1.0"}
 
@@ -375,6 +467,7 @@ class ProjectManifest(BaseModel):
     visual_anchor_terms: List[str] = Field(default_factory=list)
     visual_avoid_terms: List[str] = Field(default_factory=list)
     visual_summary: Optional[str] = None
+    visual_bible: Optional[VisualBible] = None
     # V0/V1/V3 visual search & external bridge settings on manifest.
     # Note: schema default stays "priority" so legacy saved manifests preserve Prioritas behavior;
     # create_project() sets "mix_best" for newly created projects.
