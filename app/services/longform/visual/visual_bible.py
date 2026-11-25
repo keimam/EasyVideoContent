@@ -13,6 +13,7 @@ from app.services.longform.hashing import hash_string, normalize_text
 from app.services.longform.llm_adapter import (
     LLMAdapter,
     LLMCreditError,
+    LLMDailyQuotaError,
     LLMModelNotFoundError,
     get_llm_readiness,
 )
@@ -382,6 +383,7 @@ def ensure_project_visual_bible(
     llm_adapter: Optional[LLMAdapter] = None,
     force: bool = False,
     allow_llm: bool = True,
+    raise_on_error: bool = False,
 ) -> Dict[str, Any]:
     """Load, generate (with active LLM + JSON recovery), or template-build `manifest.visual_bible` (F1)."""
     if not force and manifest.visual_bible is not None:
@@ -460,12 +462,14 @@ def ensure_project_visual_bible(
                 "provider": prov,
                 "model": model_name,
             }
-        except (LLMCreditError, LLMModelNotFoundError):
+        except (LLMCreditError, LLMDailyQuotaError, LLMModelNotFoundError):
             raise
         except Exception as exc:
             last_err = exc
             logger.warning(f"VisualBible LLM attempt {attempt + 1} failed: {exc}")
 
+    if raise_on_error and last_err is not None:
+        raise last_err
     logger.warning(f"VisualBible falling back to template after LLM failure: {last_err}")
     manifest.visual_bible = fallback_bible
     return {

@@ -344,6 +344,8 @@ def export_external_image_prompts(
     llm_adapter: Optional[Any] = None,
     cache_dir: Optional[Path] = None,
     force_prepare: bool = False,
+    progress_callback: Optional[Any] = None,
+    raise_on_llm_error: bool = False,
 ) -> Dict[str, Any]:
     """Build .txt and UTF-8 .csv prompt exports with visual_bible, scenes, continuity & lock validation (V3, F1-F5)."""
     p_dir = Path(project_dir).resolve()
@@ -366,6 +368,7 @@ def export_external_image_prompts(
             llm_adapter=llm_adapter,
             force=False,
             allow_llm=use_llm,
+            raise_on_error=bool(use_llm and raise_on_llm_error),
         )
 
     assign_scenes_and_prompts_for_shots(
@@ -375,6 +378,8 @@ def export_external_image_prompts(
         cache_dir=cache_dir,
         force=force_prepare,
         allow_llm=use_llm,
+        progress_callback=progress_callback,
+        raise_on_error=bool(use_llm and raise_on_llm_error),
     )
 
     eff_bible = manifest.visual_bible or build_template_visual_bible(manifest)

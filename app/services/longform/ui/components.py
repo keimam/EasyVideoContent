@@ -2634,17 +2634,35 @@ def _render_external_image_bridge_section(
         export_external_image_prompts,
         plan_bulk_external_import,
     )
+    from app.services.longform.visual.scene_continuity import ExternalPromptGenerationError
     from app.services.longform.visual.visual_bible import (
         build_template_visual_bible,
         ensure_project_visual_bible,
     )
 
     exp_cache_key = f"ext_export_payload_{project_id}"
+    busy_key = f"ext_busy_action_{project_id}"
+    req_key = f"ext_prepare_req_{project_id}"
+    notice_key = f"ext_notice_{project_id}"
+    busy_action = st.session_state.get(busy_key)
+    eff_disabled = bool(is_job_running or busy_action)
+
     all_shots = [s for ch in manifest.chapters for s in ch.shots]
     all_shot_ids = [s.shot_id for s in all_shots]
     shot_map = {s.shot_id: s for s in all_shots}
 
     with st.expander(t("expander_external_bridge"), expanded=False):
+        status_slot = st.empty()
+        last_notice = st.session_state.pop(notice_key, None) if not busy_action else None
+        if isinstance(last_notice, dict) and last_notice.get("text"):
+            lvl = last_notice.get("level", "info")
+            if lvl == "error":
+                st.error(last_notice["text"])
+            elif lvl == "warning":
+                st.warning(last_notice["text"])
+            elif lvl == "success":
+                st.success(last_notice["text"])
+
         # --- F4 Top: Visual Context (Konteks Visual) ---
         st.markdown(f"**{t('ext_vb_heading')}**")
         cur_vb = manifest.visual_bible or build_template_visual_bible(manifest)
@@ -2655,58 +2673,36 @@ def _render_external_image_bridge_section(
             if st.button(
                 t("ext_vb_generate_ai_btn"),
                 key=f"btn_ext_vb_ai_{project_id}",
-                disabled=is_job_running,
+                disabled=eff_disabled,
             ):
-                try:
-                    with st.spinner(t("ext_vb_ai_spinner")):
-                        vb_res = ensure_project_visual_bible(manifest, force=True, allow_llm=True)
-                    save_manifest(manifest, p_dir)
-                    gen_vb = vb_res["visual_bible"]
-                    for wk in (
-                        f"ext_vb_world_{project_id}",
-                        f"ext_vb_style_{project_id}",
-                        f"ext_vb_palette_{project_id}",
-                        f"ext_vb_avoid_{project_id}",
-                        f"ext_vb_chars_{project_id}",
-                        f"ext_vb_locs_{project_id}",
-                    ):
-                        st.session_state.pop(wk, None)
-                    st.success(
-                        t(
-                            "ext_vb_ai_ok",
-                            chars=len(gen_vb.characters),
-                            locs=len(gen_vb.locations),
-                        )
-                    )
-                    st.rerun()
-                except Exception as exc:
-                    st.warning(t("ext_vb_ai_fail", err=str(exc)[:180]))
+                st.session_state[busy_key] = "ai_bible"
+                st.rerun()
 
         vb_c1, vb_c2 = st.columns(2)
         with vb_c1:
             ed_world = st.text_input(
                 t("ext_vb_world_label"),
                 value=cur_vb.world,
-                disabled=is_job_running,
+                disabled=eff_disabled,
                 key=f"ext_vb_world_{project_id}",
             )
             ed_palette = st.text_input(
                 t("ext_vb_palette_label"),
                 value=cur_vb.palette_lighting,
-                disabled=is_job_running,
+                disabled=eff_disabled,
                 key=f"ext_vb_palette_{project_id}",
             )
         with vb_c2:
             ed_style = st.text_input(
                 t("ext_vb_style_label"),
                 value=cur_vb.style,
-                disabled=is_job_running,
+                disabled=eff_disabled,
                 key=f"ext_vb_style_{project_id}",
             )
             ed_avoid = st.text_input(
                 t("ext_vb_avoid_label"),
                 value=cur_vb.avoid,
-                disabled=is_job_running,
+                disabled=eff_disabled,
                 key=f"ext_vb_avoid_{project_id}",
             )
 
@@ -2727,7 +2723,7 @@ def _render_external_image_bridge_section(
             char_rows,
             num_rows="dynamic",
             use_container_width=True,
-            disabled=is_job_running,
+            disabled=eff_disabled,
             key=f"ext_vb_chars_{project_id}",
         )
 
@@ -2742,14 +2738,14 @@ def _render_external_image_bridge_section(
             loc_rows,
             num_rows="dynamic",
             use_container_width=True,
-            disabled=is_job_running,
+            disabled=eff_disabled,
             key=f"ext_vb_locs_{project_id}",
         )
 
         if st.button(
             t("ext_vb_save_btn"),
             key=f"btn_ext_vb_save_{project_id}",
-            disabled=is_job_running,
+            disabled=eff_disabled,
         ):
             parsed_chars: List[VisualBibleCharacter] = []
             for idx, r in enumerate(_rows_from_editor_value(ed_chars_raw), start=1):
@@ -2837,23 +2833,22 @@ def _render_external_image_bridge_section(
             use_ai_scene = st.checkbox(
                 t("ext_export_use_ai"),
                 value=llm_ready,
-                disabled=is_job_running or not llm_ready,
+                disabled=eff_disabled or not llm_ready,
                 key=f"chk_ext_ai_{project_id}",
             )
 
             if st.button(
                 t("btn_prepare_prompt_export"),
                 key=f"btn_ext_prepare_{project_id}",
-                disabled=is_job_running,
+                disabled=eff_disabled,
             ):
-                res_exp = export_external_image_prompts(
-                    manifest,
-                    p_dir,
-                    scope=exp_scope,
-                    selected_shot_ids=chosen_sids,
-                    auto_prepare_llm=bool(use_ai_scene),
-                )
-                st.session_state[exp_cache_key] = res_exp
+                st.session_state[req_key] = {
+                    "scope": exp_scope,
+                    "selected_shot_ids": list(chosen_sids),
+                    "use_ai": bool(use_ai_scene),
+                }
+                st.session_state[busy_key] = "prepare"
+                st.rerun()
 
             cached_exp = st.session_state.get(exp_cache_key)
             if isinstance(cached_exp, dict) and cached_exp.get("count", 0) > 0:
@@ -2980,7 +2975,7 @@ def _render_external_image_bridge_section(
                 if st.button(
                     t("btn_ext_apply_preview"),
                     key=f"btn_ext_apply_preview_{project_id}",
-                    disabled=is_job_running,
+                    disabled=eff_disabled,
                 ):
                     for sc_id, new_cont in scene_edits.items():
                         for sh_obj in all_shots:
@@ -3009,7 +3004,7 @@ def _render_external_image_bridge_section(
             ext_uploads = st.file_uploader(
                 t("ext_import_uploader"),
                 accept_multiple_files=True,
-                disabled=is_job_running,
+                disabled=eff_disabled,
                 key=f"up_ext_bulk_{project_id}",
             )
             if ext_uploads:
@@ -3056,7 +3051,7 @@ def _render_external_image_bridge_section(
                 if st.button(
                     t("btn_apply_external_import"),
                     type="primary",
-                    disabled=is_job_running,
+                    disabled=eff_disabled,
                     key=f"btn_ext_apply_{project_id}",
                 ):
                     to_apply = [m for m in edited_mappings if m.get("matched_shot_id")]
@@ -3069,6 +3064,96 @@ def _render_external_image_bridge_section(
                             st.success(t("ext_import_applied_ok", count=len(app_res["applied_shots"])))
                             time.sleep(0.4)
                             st.rerun()
+
+        if busy_action in ("ai_bible", "prepare"):
+            try:
+                if busy_action == "ai_bible":
+                    with status_slot.status(t("ext_status_running_ai_bible"), expanded=True):
+                        vb_res = ensure_project_visual_bible(
+                            manifest,
+                            force=True,
+                            allow_llm=True,
+                            raise_on_error=True,
+                        )
+                        save_manifest(manifest, p_dir)
+                        gen_vb = vb_res["visual_bible"]
+                        for wk in (
+                            f"ext_vb_world_{project_id}",
+                            f"ext_vb_style_{project_id}",
+                            f"ext_vb_palette_{project_id}",
+                            f"ext_vb_avoid_{project_id}",
+                            f"ext_vb_chars_{project_id}",
+                            f"ext_vb_locs_{project_id}",
+                        ):
+                            st.session_state.pop(wk, None)
+                        st.session_state[notice_key] = {
+                            "level": "success",
+                            "text": t(
+                                "ext_vb_ai_ok",
+                                chars=len(gen_vb.characters),
+                                locs=len(gen_vb.locations),
+                            ),
+                        }
+                else:
+                    req_opts = st.session_state.get(req_key) or {}
+                    with status_slot.status(t("ext_status_running_prepare"), expanded=True) as st_box:
+                        pbar = st.progress(0.0)
+                        ptext = st.empty()
+
+                        def _on_prog(info: Dict[str, Any]) -> None:
+                            total_b = max(1, int(info.get("total_batches") or 1))
+                            idx_b = max(1, int(info.get("batch_index") or 1))
+                            frac = min(1.0, max(0.0, (idx_b - (1 if info.get("stage") == "starting" else 0)) / total_b))
+                            pbar.progress(frac)
+                            msg = t(
+                                "ext_batch_progress_label",
+                                idx=idx_b,
+                                total=total_b,
+                                start=info.get("shot_start", 1),
+                                end=info.get("shot_end", 1),
+                                eta=info.get("eta_seconds", 0),
+                            )
+                            ptext.caption(msg)
+                            st_box.update(label=msg)
+
+                        res_exp = export_external_image_prompts(
+                            manifest,
+                            p_dir,
+                            scope=req_opts.get("scope", "missing_visual"),
+                            selected_shot_ids=req_opts.get("selected_shot_ids", []),
+                            auto_prepare_llm=bool(req_opts.get("use_ai", False)),
+                            progress_callback=_on_prog,
+                            raise_on_llm_error=True,
+                        )
+                        pbar.progress(1.0)
+                        st.session_state[exp_cache_key] = res_exp
+                        st.session_state[notice_key] = {
+                            "level": "success",
+                            "text": t("ext_export_ready", count=res_exp.get("count", 0)),
+                        }
+            except ExternalPromptGenerationError as exc:
+                msg_key = {
+                    "quota": "ext_batch_fail_quota",
+                    "timeout": "ext_batch_fail_timeout",
+                    "invalid_json": "ext_batch_fail_json",
+                }.get(exc.reason, "ext_batch_fail_generic")
+                st.session_state[notice_key] = {
+                    "level": "error",
+                    "text": t(
+                        msg_key,
+                        done=exc.completed_batches,
+                        total=exc.total_batches,
+                        err=str(exc)[:180],
+                    ),
+                }
+            except Exception as exc:
+                st.session_state[notice_key] = {
+                    "level": "error",
+                    "text": t("ext_vb_ai_fail", err=str(exc)[:180]),
+                }
+            finally:
+                st.session_state.pop(busy_key, None)
+            st.rerun()
 
 
 def render_visual_step_flow(

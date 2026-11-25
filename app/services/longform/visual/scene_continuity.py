@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from loguru import logger
 
@@ -13,6 +14,7 @@ from app.services.longform.hashing import hash_string, normalize_text
 from app.services.longform.llm_adapter import (
     LLMAdapter,
     LLMCreditError,
+    LLMDailyQuotaError,
     LLMModelNotFoundError,
     get_llm_readiness,
 )
@@ -30,6 +32,23 @@ from app.services.longform.visual.keyword_translator import _invoke_translation_
 SCENE_BATCH_SIZE = 15
 _SEARCH_TAG_RE = re.compile(r"\[search\s*:[^\]]*\]", re.IGNORECASE)
 _VALID_TIMES = {"dawn", "day", "dusk", "night"}
+
+
+class ExternalPromptGenerationError(RuntimeError):
+    """Structured batch failure allowing UI to explain reason and resume from cached batches (FA1.1)."""
+
+    def __init__(
+        self,
+        reason: str,
+        message: str,
+        *,
+        completed_batches: int = 0,
+        total_batches: int = 0,
+    ) -> None:
+        super().__init__(message)
+        self.reason = reason
+        self.completed_batches = completed_batches
+        self.total_batches = total_batches
 
 
 def _scene_cache_file(cache_dir: Optional[Path] = None) -> Path:
@@ -384,6 +403,19 @@ def _apply_fallback_chapter_continuity(chapter: Chapter, target_set: set[str], b
             sh.continuity = SceneContinuity()
 
 
+def _classify_batch_failure(exc: Exception) -> str:
+    if isinstance(exc, (LLMCreditError, LLMDailyQuotaError)):
+        return "quota"
+    low = str(exc or "").lower()
+    if any(tok in low for tok in ("quota", "credit", "402", "insufficient", "limit exceeded")):
+        return "quota"
+    if any(tok in low for tok in ("timeout", "timed out", "read timed out")):
+        return "timeout"
+    if any(tok in low for tok in ("json", "empty scene batch")):
+        return "invalid_json"
+    return "error"
+
+
 def assign_scenes_and_prompts_for_shots(
     manifest: ProjectManifest,
     *,
@@ -392,8 +424,10 @@ def assign_scenes_and_prompts_for_shots(
     cache_dir: Optional[Path] = None,
     force: bool = False,
     allow_llm: bool = True,
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    raise_on_error: bool = False,
 ) -> Dict[str, Any]:
-    """Assign continuous scene_id, characters_in_shot, location_id, continuity, and scene_en per shot (F2, F3)."""
+    """Assign continuous scene_id, characters_in_shot, location_id, continuity, and scene_en per shot (F2, F3, FA1.1)."""
     all_shots = [sh for ch in (manifest.chapters or []) for sh in (ch.shots or [])]
     if not all_shots:
         return {"source": "empty", "llm_calls": 0, "cache_hits": 0, "shot_count": 0}
@@ -422,35 +456,59 @@ def assign_scenes_and_prompts_for_shots(
     cache = _load_scene_cache(cache_path)
     llm_calls = 0
     cache_hits = 0
-    cache_dirty = False
     used_source = "ai"
 
+    # Pre-plan active chapters & total batches for accurate progress & ETA reporting (FA1.1)
+    planned_chapters: List[Tuple[Chapter, List[Tuple[Shot, str]], List[List[Tuple[int, Shot, str]]]]] = []
+    total_batches = 0
     for ch in manifest.chapters or []:
         ch_shots_sorted = sorted(ch.shots or [], key=lambda s: (s.shot_index, s.shot_id))
         ch_narrs: List[Tuple[Shot, str]] = [(sh, _shot_narration_text(ch, sh)) for sh in ch_shots_sorted]
         if not ch_narrs:
             continue
-
-        # Even if user exports a subset, walk full chapter sequentially in batches of 15 so continuity never breaks
         needs_compute = force or any(
             (sh.shot_id in target_set) and (not sh.scene_en or not sh.scene_id)
             for sh, _ in ch_narrs
         )
         if not needs_compute:
             continue
-
-        prev_state: Dict[str, Any] = {}
+        ch_batches: List[List[Tuple[int, Shot, str]]] = []
         for start in range(0, len(ch_narrs), SCENE_BATCH_SIZE):
             slice_items = ch_narrs[start:start + SCENE_BATCH_SIZE]
-            batch_indexed = [(start + idx, sh, narr) for idx, (sh, narr) in enumerate(slice_items)]
-            batch_tuples = [(ch, sh, narr) for sh, narr in slice_items]
+            ch_batches.append([(start + idx, sh, narr) for idx, (sh, narr) in enumerate(slice_items)])
+        total_batches += len(ch_batches)
+        planned_chapters.append((ch, ch_narrs, ch_batches))
+
+    completed_batches = 0
+    live_durations: List[float] = []
+    global_shot_offset = 0
+
+    for ch, ch_narrs, ch_batches in planned_chapters:
+        prev_state: Dict[str, Any] = {}
+        for batch_indexed in ch_batches:
+            batch_tuples = [(ch, sh, narr) for _gi, sh, narr in batch_indexed]
+            shot_start = global_shot_offset + batch_indexed[0][0] + 1
+            shot_end = global_shot_offset + batch_indexed[-1][0] + 1
 
             sig_parts = [
                 f"{sh.shot_id}:{sh.shot_hash or ''}:{hash_string(narr)}"
-                for sh, narr in slice_items
+                for _gi, sh, narr in batch_indexed
             ]
             prev_sig = hash_string(json.dumps(prev_state, sort_keys=True))
             batch_key = hash_string(f"v102_f2_batch|ch{ch.chapter_index}|{bible_sig}|{prev_sig}|{'|'.join(sig_parts)}")
+
+            if callable(progress_callback):
+                avg_sec = (sum(live_durations) / len(live_durations)) if live_durations else 12.0
+                rem_batches = max(0, total_batches - completed_batches)
+                progress_callback({
+                    "batch_index": completed_batches + 1,
+                    "total_batches": total_batches,
+                    "shot_start": shot_start,
+                    "shot_end": shot_end,
+                    "total_shots": len(target_set),
+                    "eta_seconds": int(round(avg_sec * rem_batches)),
+                    "stage": "starting",
+                })
 
             llm_items: Optional[List[Dict[str, Any]]] = None
             if not force and isinstance(cache.get(batch_key), dict) and isinstance(cache[batch_key].get("items"), list):
@@ -460,6 +518,7 @@ def assign_scenes_and_prompts_for_shots(
                 prompt = _build_scene_batch_prompt(manifest, ch, batch_indexed, ch_narrs, prev_state)
                 parsed_items: List[Dict[str, Any]] = []
                 last_exc: Optional[Exception] = None
+                t_b0 = time.monotonic()
                 for attempt in range(2):
                     try:
                         llm_calls += 1
@@ -472,31 +531,67 @@ def assign_scenes_and_prompts_for_shots(
                         if parsed_items:
                             break
                         last_exc = ValueError("Empty scene batch JSON from LLM")
-                    except (LLMCreditError, LLMModelNotFoundError):
+                    except (LLMCreditError, LLMDailyQuotaError, LLMModelNotFoundError) as exc:
+                        last_exc = exc
+                        if raise_on_error:
+                            reason = _classify_batch_failure(exc)
+                            raise ExternalPromptGenerationError(
+                                reason,
+                                str(exc),
+                                completed_batches=completed_batches,
+                                total_batches=total_batches,
+                            ) from exc
                         raise
                     except Exception as exc:
                         last_exc = exc
                         logger.warning(f"Scene batch ch{ch.chapter_index} attempt {attempt + 1} failed: {exc}")
 
                 if parsed_items:
+                    live_durations.append(max(1.0, time.monotonic() - t_b0))
                     llm_items = parsed_items
+                    # Persist batch immediately so mid-run failures preserve completed batches in cache (FA1.1)
                     cache[batch_key] = {"items": parsed_items}
-                    cache_dirty = True
+                    _save_scene_cache(cache_path, cache)
                 else:
+                    if raise_on_error:
+                        err_obj = last_exc or ValueError("Empty scene batch JSON from LLM")
+                        reason = _classify_batch_failure(err_obj)
+                        raise ExternalPromptGenerationError(
+                            reason,
+                            str(err_obj),
+                            completed_batches=completed_batches,
+                            total_batches=total_batches,
+                        )
                     logger.warning(f"Scene batch ch{ch.chapter_index} falling back deterministically: {last_exc}")
                     used_source = "fallback"
-                    _apply_fallback_chapter_continuity(ch, {sh.shot_id for sh, _ in slice_items}, bible)
+                    _apply_fallback_chapter_continuity(ch, {sh.shot_id for _gi, sh, _narr in batch_indexed}, bible)
                     prev_state = {}
+                    completed_batches += 1
                     continue
 
             prev_state = _apply_batch_continuity(batch_tuples, llm_items, bible, prev_state)
+            completed_batches += 1
 
-    if cache_dirty:
-        _save_scene_cache(cache_path, cache)
+            if callable(progress_callback):
+                avg_sec = (sum(live_durations) / len(live_durations)) if live_durations else 10.0
+                rem_batches = max(0, total_batches - completed_batches)
+                progress_callback({
+                    "batch_index": completed_batches,
+                    "total_batches": total_batches,
+                    "shot_start": shot_start,
+                    "shot_end": shot_end,
+                    "total_shots": len(target_set),
+                    "eta_seconds": int(round(avg_sec * rem_batches)),
+                    "stage": "done",
+                })
+
+        global_shot_offset += len(ch_narrs)
 
     return {
         "source": used_source,
         "llm_calls": llm_calls,
         "cache_hits": cache_hits,
         "shot_count": len(target_set),
+        "total_batches": total_batches,
+        "completed_batches": completed_batches,
     }
