@@ -27,30 +27,77 @@ from app.services.longform.schema import (
 from app.services.longform.visual.cache import get_global_cache_dir
 from app.services.longform.visual.keyword_translator import _invoke_translation_llm
 
-_PERIOD_KEYWORDS = (
-    "folklore",
-    "folktale",
-    "fairy tale",
-    "myth",
-    "mythology",
-    "legend",
-    "dongeng",
-    "legenda",
-    "cerita rakyat",
-    "medieval",
-    "ancient",
-    "century",
-    "abad",
-    "kingdom",
-    "kerajaan",
-    "empire",
-    "peasant",
-    "feudal",
-    "victorian",
-    "dynasty",
-    "historical",
-    "sejarah",
+STYLE_MODE_OPTIONS = ("realistic", "illustration", "painting", "custom")
+STYLE_MODE_BASE_TEXTS: Dict[str, str] = {
+    "realistic": "photorealistic cinematic film still, 35mm, natural light, realistic skin and fabric textures, period-accurate costumes and architecture",
+    "illustration": "detailed storybook illustration",
+    "painting": "oil painting, visible brushwork",
+    "custom": "",
+}
+REALISTIC_AVOID_TERMS = (
+    "illustration",
+    "painting",
+    "drawing",
+    "cartoon",
+    "anime",
+    "CGI",
+    "3D render",
 )
+ARTISTIC_CONFLICT_AVOID_TOKENS = (
+    "illustration",
+    "drawing",
+    "painting",
+    "digital painting",
+    "watercolor",
+    "sketch",
+)
+
+
+def normalize_style_mode(value: Any) -> str:
+    low = str(value or "realistic").strip().lower()
+    mapping = {
+        "realistic": "realistic",
+        "realistis": "realistic",
+        "realistis sinematik": "realistic",
+        "cinematic realistic": "realistic",
+        "illustration": "illustration",
+        "ilustrasi": "illustration",
+        "painting": "painting",
+        "lukisan": "painting",
+        "custom": "custom",
+        "kustom": "custom",
+    }
+    return mapping.get(low, "custom" if low else "realistic")
+
+
+def reconcile_avoid_with_style(avoid_text: str, style_mode: str) -> str:
+    """Keep Avoid terms strictly consistent with chosen style_mode (FA1.2)."""
+    mode = normalize_style_mode(style_mode)
+    raw_items = [x.strip() for x in re.split(r"[,;\n]+", str(avoid_text or "")) if x.strip()]
+
+    if mode in ("illustration", "painting"):
+        filtered: List[str] = []
+        for item in raw_items:
+            low = item.lower()
+            if any(tok in low for tok in ARTISTIC_CONFLICT_AVOID_TOKENS):
+                continue
+            filtered.append(item)
+        raw_items = filtered
+    elif mode == "realistic":
+        existing_low = {x.lower() for x in raw_items}
+        for req_term in REALISTIC_AVOID_TERMS:
+            if req_term.lower() not in existing_low:
+                raw_items.append(req_term)
+                existing_low.add(req_term.lower())
+
+    dedup: List[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        low = item.lower()
+        if low not in seen:
+            seen.add(low)
+            dedup.append(item)
+    return ", ".join(dedup)
 
 
 def _visual_bible_cache_file(cache_dir: Optional[Path] = None) -> Path:
@@ -117,29 +164,12 @@ def _preset_style_from_manifest(manifest: ProjectManifest) -> str:
     return ""
 
 
-def _is_period_or_folklore_context(manifest: ProjectManifest, script_text: str) -> bool:
-    snap = manifest.preset_snapshot or {}
-    combined = " ".join(
-        [
-            str(manifest.title or ""),
-            str(manifest.topic or ""),
-            str(manifest.preset_id or ""),
-            str(manifest.sub_niche_focus or ""),
-            str(manifest.visual_summary or ""),
-            str(snap.get("name") or "") if isinstance(snap, dict) else "",
-            " ".join(str(x) for x in (manifest.visual_anchor_terms or [])),
-            script_text[:2500],
-        ]
-    ).lower()
-    return any(kw in combined for kw in _PERIOD_KEYWORDS)
-
-
-def build_template_visual_bible(manifest: ProjectManifest) -> VisualBible:
-    """Build an editable template VisualBible when LLM is unavailable (F1 fallback)."""
-    snap = manifest.preset_snapshot or {}
-    script_text = collect_project_script_text(manifest, max_chars=4000)
-    is_period = _is_period_or_folklore_context(manifest, script_text)
-
+def build_template_visual_bible(
+    manifest: ProjectManifest,
+    *,
+    style_mode: Optional[str] = None,
+) -> VisualBible:
+    """Build an editable template VisualBible when LLM is unavailable (F1, FA1.2)."""
     topic = str(manifest.topic or manifest.title or "").strip()
     anchors = [str(a).strip() for a in (manifest.visual_anchor_terms or []) if str(a).strip()]
     avoids = [str(a).strip() for a in (manifest.visual_avoid_terms or []) if str(a).strip()]
@@ -154,35 +184,43 @@ def build_template_visual_bible(manifest: ProjectManifest) -> VisualBible:
     world = " — ".join(world_parts) if world_parts else "Documentary scene consistent with project narration"
 
     preset_style = _preset_style_from_manifest(manifest)
-    if preset_style:
-        style = preset_style
-    elif is_period:
-        style = "painterly historical storybook illustration, richly textured brushwork, period-authentic architecture and attire"
+    if style_mode is not None:
+        eff_mode = normalize_style_mode(style_mode)
+    elif preset_style:
+        low_ps = preset_style.lower()
+        if "paint" in low_ps:
+            eff_mode = "painting"
+        elif "illustrat" in low_ps:
+            eff_mode = "illustration"
+        elif "photo" in low_ps or "realistic" in low_ps or "35mm" in low_ps:
+            eff_mode = "realistic"
+        else:
+            eff_mode = "custom"
     else:
-        style = "cinematic documentary photography, sharp natural depth of field, authentic environmental realism"
+        eff_mode = "realistic"
 
-    if is_period:
-        palette_lighting = "earthy natural tones, warm candlelit interior vs cool twilight exterior contrast"
+    if style_mode is not None:
+        style = STYLE_MODE_BASE_TEXTS.get(eff_mode) or preset_style or STYLE_MODE_BASE_TEXTS["realistic"]
     else:
-        palette_lighting = "cohesive natural documentary color grading, atmospheric directional lighting"
+        style = preset_style or STYLE_MODE_BASE_TEXTS.get(eff_mode) or STYLE_MODE_BASE_TEXTS["realistic"]
+
+    palette_lighting = "cohesive atmospheric color tones and mood without fixed time of day"
 
     avoid_pool: List[str] = list(avoids)
     for item in ("text", "watermark", "logo", "UI overlay", "collage"):
         if item.lower() not in {x.lower() for x in avoid_pool}:
             avoid_pool.append(item)
-    if is_period:
-        for anachronism in ("modern buildings", "cars", "electric lights", "plastic", "modern clothing", "smartphones"):
-            if anachronism.lower() not in {x.lower() for x in avoid_pool}:
-                avoid_pool.append(anachronism)
+    avoid_str = reconcile_avoid_with_style(", ".join(avoid_pool), eff_mode)
 
     return VisualBible(
         world=world,
+        style_mode=eff_mode,
         style=style,
         palette_lighting=palette_lighting,
         characters=[],
         locations=[],
         chapter_overrides=[],
-        avoid=", ".join(avoid_pool),
+        avoid=avoid_str,
         source="template",
     )
 
@@ -231,18 +269,57 @@ def _extract_json_object(raw_text: str) -> Dict[str, Any]:
     return {}
 
 
-def _coerce_visual_bible(raw: Dict[str, Any], *, fallback: VisualBible, source: str = "ai") -> VisualBible:
+def _coerce_style_preserving_mode(raw_style: str, style_mode: str, fallback_style: str) -> str:
+    """Keep AI style elaboration compatible with chosen style_mode without medium drift (FA1.2)."""
+    mode = normalize_style_mode(style_mode)
+    base = STYLE_MODE_BASE_TEXTS.get(mode, "")
+    candidate = str(raw_style or "").strip()
+    if mode == "custom":
+        return candidate or fallback_style
+    if not candidate:
+        return base or fallback_style
+    low = candidate.lower()
+    if mode == "realistic":
+        if any(tok in low for tok in ("illustration", "painting", "watercolor", "cartoon", "anime", "drawing")):
+            return base
+        if "photorealistic" not in low and "35mm" not in low and "film still" not in low:
+            return f"{base}, {candidate}"
+        return candidate
+    if mode == "illustration":
+        if any(tok in low for tok in ("photorealistic", "film still", "35mm")):
+            return base
+        if "illustrat" not in low:
+            return f"{base}, {candidate}"
+        return candidate
+    if mode == "painting":
+        if any(tok in low for tok in ("photorealistic", "film still", "35mm")):
+            return base
+        if "paint" not in low:
+            return f"{base}, {candidate}"
+        return candidate
+    return candidate
+
+
+def _coerce_visual_bible(
+    raw: Dict[str, Any],
+    *,
+    fallback: VisualBible,
+    source: str = "ai",
+    style_mode: Optional[str] = None,
+) -> VisualBible:
+    eff_mode = normalize_style_mode(style_mode or fallback.style_mode)
     world = str(raw.get("world") or "").strip() or fallback.world
-    style = str(raw.get("style") or "").strip() or fallback.style
+    style = _coerce_style_preserving_mode(str(raw.get("style") or ""), eff_mode, fallback.style)
     palette_lighting = str(raw.get("palette_lighting") or "").strip() or fallback.palette_lighting
 
     avoid_val = raw.get("avoid")
     if isinstance(avoid_val, list):
-        avoid = ", ".join(str(x).strip() for x in avoid_val if str(x or "").strip())
+        avoid_raw = ", ".join(str(x).strip() for x in avoid_val if str(x or "").strip())
     else:
-        avoid = str(avoid_val or "").strip()
-    if not avoid:
-        avoid = fallback.avoid
+        avoid_raw = str(avoid_val or "").strip()
+    if not avoid_raw:
+        avoid_raw = fallback.avoid
+    avoid = reconcile_avoid_with_style(avoid_raw, eff_mode)
 
     chars: List[VisualBibleCharacter] = []
     seen_cids: set[str] = set()
@@ -316,6 +393,7 @@ def _coerce_visual_bible(raw: Dict[str, Any], *, fallback: VisualBible, source: 
 
     return VisualBible(
         world=world,
+        style_mode=eff_mode,
         style=style,
         palette_lighting=palette_lighting,
         characters=chars,
@@ -326,10 +404,16 @@ def _coerce_visual_bible(raw: Dict[str, Any], *, fallback: VisualBible, source: 
     )
 
 
-def _build_visual_bible_llm_prompt(manifest: ProjectManifest, script_text: str) -> str:
+def _build_visual_bible_llm_prompt(
+    manifest: ProjectManifest,
+    script_text: str,
+    *,
+    style_mode: str = "realistic",
+) -> str:
     snap = manifest.preset_snapshot or {}
     preset_name = str(snap.get("name") or manifest.preset_id or "").strip() if isinstance(snap, dict) else ""
-    preset_style = _preset_style_from_manifest(manifest)
+    eff_mode = normalize_style_mode(style_mode)
+    base_style = STYLE_MODE_BASE_TEXTS.get(eff_mode) or _preset_style_from_manifest(manifest)
     anchors = ", ".join(str(x) for x in (manifest.visual_anchor_terms or []))
     avoids = ", ".join(str(x) for x in (manifest.visual_avoid_terms or []))
     ch_titles = "; ".join(f"Ch{ch.chapter_index}: {ch.chapter_title}" for ch in (manifest.chapters or []) if ch.chapter_title)
@@ -340,7 +424,8 @@ def _build_visual_bible_llm_prompt(manifest: ProjectManifest, script_text: str) 
         f"Project title: {manifest.title}\n"
         f"Topic: {manifest.topic or manifest.title}\n"
         f"Preset/Niche: {preset_name} ({manifest.preset_id})\n"
-        + (f"Preset style hint: {preset_style}\n" if preset_style else "")
+        f"Chosen style_mode: {eff_mode}\n"
+        + (f"Base style text (preserve this medium, only enrich compatible details): {base_style}\n" if base_style else "")
         + (f"Visual summary: {manifest.visual_summary}\n" if manifest.visual_summary else "")
         + (f"Visual anchors: {anchors}\n" if anchors else "")
         + (f"Existing avoid terms: {avoids}\n" if avoids else "")
@@ -350,13 +435,12 @@ def _build_visual_bible_llm_prompt(manifest: ProjectManifest, script_text: str) 
         + "\n\nRules (strict):\n"
         "1. NEVER invent characters that do not appear in the script.\n"
         "2. Derive each character's gender, age, hair, outfit (with specific colors), and one distinguishing detail from the script or well-known source tale.\n"
-        "   - If the script uses second-person POV ('you', 'your') for an identifiable protagonist from a known tale/biography, commit to their true gender/identity rather than leaving them gender-neutral, and include POV pronouns ('you', 'your', etc.) in `aliases`.\n"
         "   - Primary entry age MUST reflect the current main timeline, NOT a flashback.\n"
-        "   - If a character appears at a distinctly younger/older age in a flashback, create a separate entry (e.g. `<id>_child8`) with flashback-marked aliases (e.g. `you (eight years old flashback)`, `child (flashback)`).\n"
+        "   - If a character appears at a distinctly younger/older age in a flashback, create a separate entry.\n"
         "3. If the script is a documentary/explainer without recurring people (e.g. machines, vehicles, science, geopolitics), set `\"characters\": []` and maintain visual consistency through `world`, `style`, `palette_lighting`, `locations`, and `chapter_overrides` (`chapter_index`, `world`, `era`) when chapters move across eras or regions.\n"
-        "4. Match `style` strictly to niche & era: folklore, mythology, or pre-photography history MUST use a period illustration/painting style (NEVER modern photography); modern documentary, technology, or science uses authentic documentary/cinematic photography.\n"
+        f"4. STRICTLY respect the user's chosen `style_mode` ({eff_mode}). Do NOT switch medium (e.g. do NOT change photorealistic film still into illustration/painting, and do NOT change illustration/painting into photography). Only refine compatible visual details.\n"
         "5. `locations` lists recurring places used across multiple shots with concrete architectural/environmental details.\n"
-        "6. `avoid` is a comma-separated English list of anachronisms/distractors to forbid (e.g. modern buildings, cars, electric lights, plastic, modern clothing, text, watermark for historical stories).\n"
+        "6. `avoid` MUST be consistent with `style` (never put artistic terms inside `avoid` that contradict `style`). Include anachronisms/distractors like `modern buildings, cars, electric lights, plastic, modern clothing, text, watermark` when historically appropriate.\n"
         "\nReturn ONLY valid JSON matching this schema:\n"
         "{\n"
         '  "world": "place and historical era/setting in English",\n'
@@ -384,8 +468,9 @@ def ensure_project_visual_bible(
     force: bool = False,
     allow_llm: bool = True,
     raise_on_error: bool = False,
+    style_mode: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Load, generate (with active LLM + JSON recovery), or template-build `manifest.visual_bible` (F1)."""
+    """Load, generate (with active LLM + JSON recovery), or template-build `manifest.visual_bible` (F1, FA1.2)."""
     if not force and manifest.visual_bible is not None:
         return {
             "visual_bible": manifest.visual_bible,
@@ -393,19 +478,29 @@ def ensure_project_visual_bible(
             "cached": False,
         }
 
-    fallback_bible = build_template_visual_bible(manifest)
+    eff_mode = normalize_style_mode(
+        style_mode if style_mode is not None else (manifest.visual_bible.style_mode if manifest.visual_bible else "realistic")
+    )
+    fallback_bible = build_template_visual_bible(
+        manifest,
+        style_mode=(style_mode if style_mode is not None else None),
+    )
+    if style_mode is None and manifest.visual_bible is None:
+        eff_mode = fallback_bible.style_mode
+
     script_text = collect_project_script_text(manifest)
     sig_raw = "|".join(
         [
             str(manifest.title or "").strip().lower(),
             str(manifest.topic or "").strip().lower(),
             str(manifest.preset_id or "").strip().lower(),
+            eff_mode,
             str(manifest.visual_summary or "").strip().lower(),
             ",".join(str(x).lower() for x in (manifest.visual_anchor_terms or [])),
             hash_string(normalize_text(script_text)),
         ]
     )
-    c_key = hash_string(f"v102_f1_vb|{sig_raw}")
+    c_key = hash_string(f"v102_fa1_vb|{sig_raw}")
     cache_path = _visual_bible_cache_file(cache_dir)
     cache = _load_cache(cache_path)
 
@@ -434,7 +529,7 @@ def ensure_project_visual_bible(
             "cached": False,
         }
 
-    prompt = _build_visual_bible_llm_prompt(manifest, script_text)
+    prompt = _build_visual_bible_llm_prompt(manifest, script_text, style_mode=eff_mode)
     last_err: Optional[Exception] = None
     for attempt in range(2):
         try:
@@ -446,7 +541,7 @@ def ensure_project_visual_bible(
             parsed = _extract_json_object(raw_content)
             if not parsed or (not parsed.get("world") and not parsed.get("style")):
                 raise ValueError("LLM VisualBible JSON missing required world/style fields")
-            vb = _coerce_visual_bible(parsed, fallback=fallback_bible, source="ai")
+            vb = _coerce_visual_bible(parsed, fallback=fallback_bible, source="ai", style_mode=eff_mode)
             manifest.visual_bible = vb
             cache[c_key] = {
                 "bible": vb.model_dump(mode="json"),

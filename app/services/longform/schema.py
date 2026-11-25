@@ -463,9 +463,10 @@ class VisualBibleChapterOverride(BaseModel):
 
 
 class VisualBible(BaseModel):
-    """Project-wide visual consistency context for external image prompts (F1)."""
+    """Project-wide visual consistency context for external image prompts (F1, FA1.2)."""
 
     world: str = ""
+    style_mode: str = "realistic"
     style: str = ""
     palette_lighting: str = ""
     characters: List[VisualBibleCharacter] = Field(default_factory=list)
@@ -475,6 +476,24 @@ class VisualBible(BaseModel):
     source: Optional[str] = None
 
     model_config = {"extra": "ignore", "validate_assignment": True}
+
+    @field_validator("style_mode", mode="before")
+    @classmethod
+    def coerce_style_mode(cls, value: Any) -> str:
+        low = str(value or "realistic").strip().lower()
+        mapping = {
+            "realistic": "realistic",
+            "realistis": "realistic",
+            "realistis sinematik": "realistic",
+            "cinematic realistic": "realistic",
+            "illustration": "illustration",
+            "ilustrasi": "illustration",
+            "painting": "painting",
+            "lukisan": "painting",
+            "custom": "custom",
+            "kustom": "custom",
+        }
+        return mapping.get(low, "custom" if low else "realistic")
 
     @field_validator("world", "style", "palette_lighting", mode="before")
     @classmethod

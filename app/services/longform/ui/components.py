@@ -2636,8 +2636,12 @@ def _render_external_image_bridge_section(
     )
     from app.services.longform.visual.scene_continuity import ExternalPromptGenerationError
     from app.services.longform.visual.visual_bible import (
+        STYLE_MODE_BASE_TEXTS,
+        STYLE_MODE_OPTIONS,
         build_template_visual_bible,
         ensure_project_visual_bible,
+        normalize_style_mode,
+        reconcile_avoid_with_style,
     )
 
     exp_cache_key = f"ext_export_payload_{project_id}"
@@ -2677,6 +2681,27 @@ def _render_external_image_bridge_section(
             ):
                 st.session_state[busy_key] = "ai_bible"
                 st.rerun()
+
+        cur_mode = normalize_style_mode(getattr(cur_vb, "style_mode", "realistic"))
+        sm_key = f"ext_vb_style_mode_{project_id}"
+        if st.session_state.get(sm_key) not in STYLE_MODE_OPTIONS:
+            st.session_state[sm_key] = cur_mode
+
+        def _on_ext_style_mode_change() -> None:
+            new_m = normalize_style_mode(st.session_state.get(sm_key))
+            if new_m != "custom" and STYLE_MODE_BASE_TEXTS.get(new_m):
+                st.session_state[f"ext_vb_style_{project_id}"] = STYLE_MODE_BASE_TEXTS[new_m]
+            cur_av = st.session_state.get(f"ext_vb_avoid_{project_id}", cur_vb.avoid)
+            st.session_state[f"ext_vb_avoid_{project_id}"] = reconcile_avoid_with_style(cur_av, new_m)
+
+        ed_style_mode = st.selectbox(
+            t("ext_vb_style_mode_label"),
+            options=list(STYLE_MODE_OPTIONS),
+            format_func=lambda m: t(f"ext_vb_style_mode_{m}"),
+            disabled=eff_disabled,
+            key=sm_key,
+            on_change=_on_ext_style_mode_change,
+        )
 
         vb_c1, vb_c2 = st.columns(2)
         with vb_c1:
@@ -2779,12 +2804,13 @@ def _render_external_image_bridge_section(
                 )
             manifest.visual_bible = VisualBible(
                 world=ed_world,
+                style_mode=ed_style_mode,
                 style=ed_style,
                 palette_lighting=ed_palette,
                 characters=parsed_chars,
                 locations=parsed_locs,
                 chapter_overrides=list(cur_vb.chapter_overrides or []),
-                avoid=ed_avoid,
+                avoid=reconcile_avoid_with_style(ed_avoid, ed_style_mode),
                 source="manual",
             )
             save_manifest(manifest, p_dir)
@@ -3069,16 +3095,19 @@ def _render_external_image_bridge_section(
             try:
                 if busy_action == "ai_bible":
                     with status_slot.status(t("ext_status_running_ai_bible"), expanded=True):
+                        sel_mode = normalize_style_mode(st.session_state.get(sm_key, cur_mode))
                         vb_res = ensure_project_visual_bible(
                             manifest,
                             force=True,
                             allow_llm=True,
                             raise_on_error=True,
+                            style_mode=sel_mode,
                         )
                         save_manifest(manifest, p_dir)
                         gen_vb = vb_res["visual_bible"]
                         for wk in (
                             f"ext_vb_world_{project_id}",
+                            f"ext_vb_style_mode_{project_id}",
                             f"ext_vb_style_{project_id}",
                             f"ext_vb_palette_{project_id}",
                             f"ext_vb_avoid_{project_id}",

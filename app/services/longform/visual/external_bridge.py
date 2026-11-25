@@ -169,6 +169,24 @@ def validate_external_prompt(
             missing_ws.append("style")
         issues.append(f"konteks belum lengkap ({'/'.join(missing_ws)})")
 
+    if bible and str(bible.style or "").strip() and str(bible.avoid or "").strip():
+        style_low = str(bible.style).lower()
+        avoid_terms = [x.strip().lower() for x in re.split(r"[,;\n]+", str(bible.avoid)) if x.strip()]
+        conflicts: List[str] = []
+        for av in avoid_terms:
+            # Check exact avoid phrase OR its meaningful tokens (>= 4 chars) inside Style
+            if re.search(r"(?<![a-z0-9])" + re.escape(av) + r"(?![a-z0-9])", style_low):
+                conflicts.append(av)
+                continue
+            for tok in re.findall(r"[a-z0-9]{4,}", av):
+                if tok not in {"modern", "realistic", "film", "still", "light", "look", "style"} and re.search(
+                    r"(?<![a-z0-9])" + re.escape(tok) + r"(?![a-z0-9])", style_low
+                ):
+                    conflicts.append(tok)
+                    break
+        if conflicts:
+            issues.append(f"kata Avoid muncul di Style ({', '.join(dict.fromkeys(conflicts))})")
+
     if not issues:
         return ""
     return "⚠ " + "; ".join(issues)
