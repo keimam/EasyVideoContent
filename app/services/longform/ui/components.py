@@ -2639,9 +2639,11 @@ def _render_external_image_bridge_section(
         STYLE_MODE_BASE_TEXTS,
         STYLE_MODE_OPTIONS,
         build_template_visual_bible,
+        clean_world_slug_prefix,
         ensure_project_visual_bible,
         normalize_style_mode,
         reconcile_avoid_with_style,
+        validate_visual_bible,
     )
 
     exp_cache_key = f"ext_export_payload_{project_id}"
@@ -2738,11 +2740,26 @@ def _render_external_image_bridge_section(
                 "description": c.description,
                 "aliases": ", ".join(c.aliases or []),
                 "role": c.role,
+                "variant_of": str(getattr(c, "variant_of", None) or ""),
             }
             for c in (cur_vb.characters or [])
         ]
         if not char_rows:
-            char_rows = [{"id": "", "name": "", "description": "", "aliases": "", "role": ""}]
+            char_rows = [{"id": "", "name": "", "description": "", "aliases": "", "role": "", "variant_of": ""}]
+
+        pov_opts = [""] + [c.id for c in (cur_vb.characters or [])]
+        cur_pov = str(getattr(cur_vb, "pov_character_id", None) or "").strip()
+        if cur_pov not in pov_opts:
+            cur_pov = ""
+        ed_pov_id = st.selectbox(
+            t("ext_vb_pov_label"),
+            options=pov_opts,
+            index=pov_opts.index(cur_pov),
+            format_func=lambda cid: t("ext_vb_pov_none") if cid == "" else cid,
+            disabled=eff_disabled,
+            key=f"ext_vb_pov_{project_id}",
+        )
+
         st.markdown(f"**{t('ext_vb_chars_label')}**")
         ed_chars_raw = st.data_editor(
             char_rows,
@@ -2788,6 +2805,7 @@ def _render_external_image_bridge_section(
                         description=c_desc,
                         aliases=r.get("aliases") or "",
                         role=str(r.get("role") or "").strip(),
+                        variant_of=str(r.get("variant_of") or "").strip() or None,
                     )
                 )
             parsed_locs: List[VisualBibleLocation] = []
@@ -2802,29 +2820,35 @@ def _render_external_image_bridge_section(
                 parsed_locs.append(
                     VisualBibleLocation(id=l_id, name=l_name or l_id, description=l_desc)
                 )
-            manifest.visual_bible = VisualBible(
-                world=ed_world,
+            candidate_vb = VisualBible(
+                world=clean_world_slug_prefix(ed_world, project_id=project_id),
                 style_mode=ed_style_mode,
                 style=ed_style,
                 palette_lighting=ed_palette,
+                pov_character_id=ed_pov_id or None,
                 characters=parsed_chars,
                 locations=parsed_locs,
                 chapter_overrides=list(cur_vb.chapter_overrides or []),
                 avoid=reconcile_avoid_with_style(ed_avoid, ed_style_mode),
                 source="manual",
             )
-            save_manifest(manifest, p_dir)
-            if isinstance(st.session_state.get(exp_cache_key), dict):
-                prev_ids = st.session_state[exp_cache_key].get("shot_ids") or []
-                if prev_ids:
-                    st.session_state[exp_cache_key] = export_external_image_prompts(
-                        manifest,
-                        p_dir,
-                        scope="selected",
-                        selected_shot_ids=prev_ids,
-                        auto_prepare_llm=False,
-                    )
-            st.success(t("ext_vb_saved_ok"))
+            vb_errs = validate_visual_bible(candidate_vb)
+            if vb_errs:
+                st.error(t("ext_vb_validation_err", errs="; ".join(vb_errs)))
+            else:
+                manifest.visual_bible = candidate_vb
+                save_manifest(manifest, p_dir)
+                if isinstance(st.session_state.get(exp_cache_key), dict):
+                    prev_ids = st.session_state[exp_cache_key].get("shot_ids") or []
+                    if prev_ids:
+                        st.session_state[exp_cache_key] = export_external_image_prompts(
+                            manifest,
+                            p_dir,
+                            scope="selected",
+                            selected_shot_ids=prev_ids,
+                            auto_prepare_llm=False,
+                        )
+                st.success(t("ext_vb_saved_ok"))
 
         st.divider()
 
@@ -3110,6 +3134,7 @@ def _render_external_image_bridge_section(
                             f"ext_vb_style_mode_{project_id}",
                             f"ext_vb_style_{project_id}",
                             f"ext_vb_palette_{project_id}",
+                            f"ext_vb_pov_{project_id}",
                             f"ext_vb_avoid_{project_id}",
                             f"ext_vb_chars_{project_id}",
                             f"ext_vb_locs_{project_id}",

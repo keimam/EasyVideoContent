@@ -101,20 +101,35 @@ def _match_characters_by_aliases(text: str, bible: Optional[VisualBible]) -> Lis
         for tok in ("years old", "when you were", "when she was", "when he was", "childhood", "flashback", "memory", "younger")
     )
 
-    matched_ids: List[str] = []
-    # Sort characters so flashback-specific entries are evaluated cleanly when flashback markers exist
     ordered_chars = list(bible.characters)
     if is_flashback_ctx:
         ordered_chars.sort(
-            key=lambda c: (0 if ("flashback" in c.role.lower() or "child" in c.id.lower() or "young" in c.id.lower()) else 1)
+            key=lambda c: (0 if (c.variant_of or "flashback" in c.role.lower() or "child" in c.id.lower() or "young" in c.id.lower()) else 1)
         )
 
+    matched_ids: List[str] = []
+    # Map base_id -> flashback variant IDs so flashbacks cleanly pick variant_of entries (FA1.3)
+    flashback_variants = {
+        c.variant_of: c.id
+        for c in bible.characters
+        if getattr(c, "variant_of", None)
+    }
+
+    pov_id = str(getattr(bible, "pov_character_id", None) or "").strip()
+    if pov_id and re.search(r"(?<![a-z0-9])(?:you|your|yourself)(?![a-z0-9])", low_text):
+        eff_pov = flashback_variants.get(pov_id, pov_id) if is_flashback_ctx else pov_id
+        if any(c.id == eff_pov for c in bible.characters) and eff_pov not in matched_ids:
+            matched_ids.append(eff_pov)
+
     for ch in ordered_chars:
-        is_fb_char = "flashback" in ch.role.lower() or any("flashback" in a.lower() for a in ch.aliases)
+        is_fb_char = bool(ch.variant_of) or "flashback" in ch.role.lower() or any("flashback" in a.lower() for a in ch.aliases)
         if is_fb_char and not is_flashback_ctx:
             continue
         # Skip adult version of same base character if a flashback counterpart already matched
-        if is_flashback_ctx and not is_fb_char and any(mid.startswith(ch.id) or ch.id.startswith(mid.split("_child")[0]) for mid in matched_ids):
+        if is_flashback_ctx and not is_fb_char and any(
+            (mid == flashback_variants.get(ch.id)) or mid.startswith(ch.id) or ch.id.startswith(mid.split("_child")[0])
+            for mid in matched_ids
+        ):
             continue
 
         terms = [ch.name] + [
@@ -342,8 +357,9 @@ def _build_scene_batch_prompt(
     if bible and bible.chapter_overrides:
         ch_ov = next((ov for ov in bible.chapter_overrides if ov.chapter_index == chapter.chapter_index), None)
 
+    pov_id = str(getattr(bible, "pov_character_id", None) or "").strip() if bible else ""
     chars_payload = [
-        {"id": c.id, "name": c.name, "aliases": c.aliases, "role": c.role, "description": c.description}
+        {"id": c.id, "name": c.name, "aliases": c.aliases, "role": c.role, "variant_of": c.variant_of or "", "description": c.description}
         for c in (bible.characters if bible else [])
     ]
     locs_payload = [
@@ -364,22 +380,27 @@ def _build_scene_batch_prompt(
             }
         )
 
+    eff_world_ctx = (
+        f"{ch_ov.world} ({ch_ov.era})" if (ch_ov and str(ch_ov.world or "").strip()) else world
+    )
     return (
         "You are a visual continuity supervisor breaking narration shots into continuous visual scenes for an image generator.\n"
-        f"Project world: {world}\n"
-        + (f"Chapter setting override: world={ch_ov.world}, era={ch_ov.era}\n" if ch_ov else "")
+        f"Active world/setting: {eff_world_ctx}\n"
+        + (f"Second-person POV character ('you'/'your'): {pov_id}\n" if pov_id else "")
         + f"Chapter {chapter.chapter_index}: {chapter.chapter_title}\n"
         + f"Available characters (JSON): {json.dumps(chars_payload, ensure_ascii=False)}\n"
         + f"Available locations (JSON): {json.dumps(locs_payload, ensure_ascii=False)}\n"
         + f"Final scene state carried from previous batch: {json.dumps(prev_state or {}, ensure_ascii=False)}\n"
         + f"Current shot batch (JSON): {json.dumps(shots_payload, ensure_ascii=False)}\n\n"
         "Continuity & prompt rules (strict):\n"
-        "1. Keep consecutive shots in the SAME `scene_id` (inheriting location_id, time_of_day, weather, lighting, props, character_state) unless the narration moves to a new location, changes time of day (e.g. night -> dawn), or enters/exits a flashback.\n"
+        "1. Keep consecutive shots in the SAME `scene_id` (inheriting location_id, time_of_day, weather, lighting, props, character_state) unless the narration moves to a new location (e.g. exterior -> interior), changes time of day (e.g. night -> dawn), or enters/exits a flashback.\n"
         "2. Inherit carried `props` and `character_state` from the previous shot/batch across shots until the narration explicitly states an item was dropped, discarded, buried, put away permanently, or the character's condition changes.\n"
-        "3. Populate `characters_in_shot` ONLY with exact `id` values from Available characters (if Available characters is empty, always return `[]`). When a shot is a flashback to a younger age, pick the flashback character `id` instead of the present-age `id`.\n"
-        "4. Write `scene_en` as ONE concrete visual English sentence derived from that shot's `narration` showing action, setting, and framing.\n"
+        "   - Record important objects WITH their owner in `props` (e.g. `\"Harriot's brass compass\"`, `\"Elena's carved wooden doll\"`). NEVER invent transferring a prop to a different character in `scene_en` or `props` unless narration states a handoff.\n"
+        "3. Resolve pronouns (`she`, `he`, `her`, `him`, `they`, `you`, `your`) PER SHOT from surrounding narrative context and populate `characters_in_shot` ONLY with exact `id` values from Available characters (if Available characters is empty, always return `[]`). When a shot is a flashback to a younger age, pick the `variant_of`/flashback character `id` instead of the present-age `id`.\n"
+        "4. Match `location_id` strictly to whether the action is indoors (`…_interior`) or outdoors (`…_exterior`) using exact IDs from Available locations.\n"
+        "5. Write `scene_en` as ONE concrete visual English sentence derived from that shot's `narration` showing action, setting, and framing.\n"
         "   - Inside `scene_en`, refer to recurring characters by their exact `name` (or clear concrete subject); avoid leaving generic standalone words like 'child', 'boy', 'girl', 'you', 'she', 'he', 'woman', 'man', 'person' untethered when a locked character is present.\n"
-        "5. `time_of_day` must be one of `\"dawn\"`, `\"day\"`, `\"dusk\"`, `\"night\"`, or `\"\"`.\n"
+        "6. `time_of_day` must be one of `\"dawn\"`, `\"day\"`, `\"dusk\"`, `\"night\"`, or `\"\"`.\n"
         "\nReturn ONLY strict JSON:\n"
         '{"shots": [{"shot_id": "...", "scene_id": "ch01_scene01", "location_id": "", "time_of_day": "", "weather": "", "lighting": "", "props": [], "character_state": "", "characters_in_shot": [], "scene_en": "..."}]}\n'
     )

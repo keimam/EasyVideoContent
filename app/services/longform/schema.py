@@ -404,13 +404,22 @@ class ScriptOutline(BaseModel):
         return v
 
 
+def _clean_world_slug_prefix(raw: Any) -> str:
+    txt = "" if raw is None else str(raw).strip()
+    if not txt:
+        return ""
+    cleaned = re.sub(r"^[a-z0-9]+(?:_[a-z0-9]+)+\s*(?:—|--|-|:)\s*", "", txt)
+    return cleaned.strip() or txt
+
+
 class VisualBibleCharacter(BaseModel):
-    """Locked recurring character profile inside project visual_bible (F1)."""
+    """Locked recurring character profile inside project visual_bible (F1, FA1.3)."""
 
     id: str
     name: str = ""
     aliases: List[str] = Field(default_factory=list)
     role: str = ""
+    variant_of: Optional[str] = None
     description: str = ""
 
     model_config = {"extra": "ignore", "validate_assignment": True}
@@ -419,6 +428,14 @@ class VisualBibleCharacter(BaseModel):
     @classmethod
     def coerce_str_fields(cls, value: Any) -> str:
         return "" if value is None else str(value).strip()
+
+    @field_validator("variant_of", mode="before")
+    @classmethod
+    def coerce_variant_of(cls, value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        txt = str(value).strip()
+        return txt or None
 
     @field_validator("aliases", mode="before")
     @classmethod
@@ -463,12 +480,13 @@ class VisualBibleChapterOverride(BaseModel):
 
 
 class VisualBible(BaseModel):
-    """Project-wide visual consistency context for external image prompts (F1, FA1.2)."""
+    """Project-wide visual consistency context for external image prompts (F1, FA1.2, FA1.3)."""
 
     world: str = ""
     style_mode: str = "realistic"
     style: str = ""
     palette_lighting: str = ""
+    pov_character_id: Optional[str] = None
     characters: List[VisualBibleCharacter] = Field(default_factory=list)
     locations: List[VisualBibleLocation] = Field(default_factory=list)
     chapter_overrides: List[VisualBibleChapterOverride] = Field(default_factory=list)
@@ -476,6 +494,19 @@ class VisualBible(BaseModel):
     source: Optional[str] = None
 
     model_config = {"extra": "ignore", "validate_assignment": True}
+
+    @field_validator("world", mode="before")
+    @classmethod
+    def coerce_world_no_slug(cls, value: Any) -> str:
+        return _clean_world_slug_prefix(value)
+
+    @field_validator("pov_character_id", mode="before")
+    @classmethod
+    def coerce_pov_char(cls, value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        txt = str(value).strip()
+        return txt or None
 
     @field_validator("style_mode", mode="before")
     @classmethod
@@ -495,7 +526,7 @@ class VisualBible(BaseModel):
         }
         return mapping.get(low, "custom" if low else "realistic")
 
-    @field_validator("world", "style", "palette_lighting", mode="before")
+    @field_validator("style", "palette_lighting", mode="before")
     @classmethod
     def coerce_text(cls, value: Any) -> str:
         return "" if value is None else str(value).strip()

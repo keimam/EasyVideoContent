@@ -52,6 +52,134 @@ ARTISTIC_CONFLICT_AVOID_TOKENS = (
     "sketch",
 )
 
+FORBIDDEN_CHARACTER_ALIASES = frozenset({
+    "you", "your", "yours", "yourself",
+    "he", "him", "his", "himself",
+    "she", "her", "hers", "herself",
+    "they", "them", "their", "theirs", "themselves",
+    "i", "me", "my", "mine", "myself",
+    "we", "us", "our", "ours",
+    "it", "its", "one", "someone", "anyone", "nobody",
+    "protagonist", "antagonist", "hero", "heroine", "character",
+    "man", "woman", "child", "children", "kid", "girl", "boy",
+    "old man", "old woman", "young man", "young woman", "elder", "person", "people",
+    "sister", "brother", "mother", "father", "mom", "dad", "parent",
+    "grandmother", "grandfather", "witch",
+})
+
+PALETTE_TIME_LIGHT_WORDS = frozenset({
+    "dawn", "sunrise", "morning", "noon", "midday", "afternoon",
+    "sunset", "dusk", "twilight", "evening", "night", "midnight",
+    "sun", "sunlight", "sunbeam", "daylight", "moon", "moonlight",
+    "starlight", "candlelit", "candlelight", "overhead",
+})
+
+
+def _normalize_alias_token(alias: str) -> str:
+    txt = re.sub(r"\([^)]*\)", "", str(alias or "")).strip().lower()
+    txt = re.sub(r"^(?:the|a|an)\s+", "", txt).strip()
+    return txt
+
+
+def is_forbidden_character_alias(alias: str) -> bool:
+    norm = _normalize_alias_token(alias)
+    if not norm:
+        return True
+    return norm in FORBIDDEN_CHARACTER_ALIASES
+
+
+def filter_valid_character_aliases(aliases: Any, *, existing_global: Optional[set[str]] = None) -> List[str]:
+    """Keep only concrete non-pronoun/non-generic aliases and prevent cross-character duplicates (FA1.3)."""
+    if isinstance(aliases, str):
+        raw_list = [x.strip() for x in re.split(r"[,;\n]+", aliases) if x.strip()]
+    elif isinstance(aliases, (list, tuple)):
+        raw_list = [str(x).strip() for x in aliases if str(x or "").strip()]
+    else:
+        return []
+    out: List[str] = []
+    seen_local: set[str] = set()
+    for a in raw_list:
+        if is_forbidden_character_alias(a):
+            continue
+        low = a.lower().strip()
+        if low in seen_local:
+            continue
+        if existing_global is not None and low in existing_global:
+            continue
+        seen_local.add(low)
+        if existing_global is not None:
+            existing_global.add(low)
+        out.append(a)
+    return out
+
+
+def clean_world_slug_prefix(world_text: str, *, project_id: Optional[str] = None) -> str:
+    """Strip snake_case project slug prefix (e.g. 'proj_slug — ...') from world string (FA1.3)."""
+    txt = str(world_text or "").strip()
+    if not txt:
+        return ""
+    if project_id:
+        pid_esc = re.escape(str(project_id).strip())
+        if pid_esc:
+            txt = re.sub(rf"^{pid_esc}\s*(?:—|--|-|:)\s*", "", txt, flags=re.IGNORECASE).strip()
+    txt = re.sub(r"^[a-z0-9]+(?:_[a-z0-9]+)+\s*(?:—|--|-|:)\s*", "", txt).strip()
+    return txt
+
+
+def sanitize_palette_lighting(raw_palette: str) -> str:
+    """Remove time-of-day and specific light-source tokens from palette_lighting (FA1.3)."""
+    txt = str(raw_palette or "").strip()
+    if not txt:
+        return "cohesive atmospheric color tones and moody emotional tone"
+    out = txt
+    # Remove phrases like "with moonlight and snowstorm lighting" or "with soft dawn light"
+    time_alt = "|".join(sorted(PALETTE_TIME_LIGHT_WORDS, key=len, reverse=True))
+    out = re.sub(
+        rf"\b(?:soft|warm|cold|bright|dim|pale|harsh|golden|dramatic)?\s*(?:{time_alt})\s*(?:light|lighting|glow|rays)?\b",
+        "",
+        out,
+        flags=re.IGNORECASE,
+    )
+    out = re.sub(rf"\b(?:{time_alt})\b", "", out, flags=re.IGNORECASE)
+    out = re.sub(r"\bwith\s+and\b|\bwith\s*(?:,|$)", "", out, flags=re.IGNORECASE)
+    out = re.sub(r"\s*,\s*,+", ", ", out)
+    out = re.sub(r"\s{2,}", " ", out).strip(" ,;-")
+    if len(out) < 8 or not re.search(r"[a-z]{3,}", out, re.I):
+        return "cohesive muted color palette and tense atmospheric mood"
+    return out
+
+
+def validate_visual_bible(bible: VisualBible) -> List[str]:
+    """Validate VisualBible quality rules (FA1.3): no pronoun/generic/duplicate aliases, no time words in palette, clean world."""
+    errors: List[str] = []
+    if re.match(r"^[a-z0-9]+(?:_[a-z0-9]+)+\s*(?:—|--|-|:)", str(bible.world or "").strip()):
+        errors.append("world masih diawali slug proyek")
+
+    pal_low = str(bible.palette_lighting or "").lower()
+    bad_time = [w for w in sorted(PALETTE_TIME_LIGHT_WORDS) if re.search(rf"(?<![a-z0-9]){re.escape(w)}(?![a-z0-9])", pal_low)]
+    if bad_time:
+        errors.append(f"palette_lighting memuat kata waktu/cahaya ({', '.join(bad_time[:3])})")
+
+    alias_owners: Dict[str, List[str]] = {}
+    for ch in bible.characters or []:
+        bad_aliases = [a for a in (ch.aliases or []) if is_forbidden_character_alias(a)]
+        if bad_aliases:
+            errors.append(f"tokoh '{ch.id}' memakai alias kata ganti/umum ({', '.join(bad_aliases[:3])})")
+        for a in ch.aliases or []:
+            low = str(a).strip().lower()
+            if not low:
+                continue
+            alias_owners.setdefault(low, [])
+            if ch.id not in alias_owners[low]:
+                alias_owners[low].append(ch.id)
+
+    dups = {a: owners for a, owners in alias_owners.items() if len(owners) > 1}
+    if dups:
+        dup_desc = ", ".join(f"'{a}' ({'/'.join(owners)})" for a, owners in list(dups.items())[:3])
+        errors.append(f"alias ganda dipakai lebih dari satu tokoh: {dup_desc}")
+
+    return errors
+
 
 def normalize_style_mode(value: Any) -> str:
     low = str(value or "realistic").strip().lower()
@@ -175,13 +303,14 @@ def build_template_visual_bible(
     avoids = [str(a).strip() for a in (manifest.visual_avoid_terms or []) if str(a).strip()]
 
     world_parts: List[str] = []
-    if topic:
-        world_parts.append(topic)
+    clean_topic = clean_world_slug_prefix(topic, project_id=manifest.project_id)
+    if clean_topic and clean_topic.lower() != str(manifest.project_id or "").lower():
+        world_parts.append(clean_topic)
     if manifest.visual_summary:
         world_parts.append(str(manifest.visual_summary).strip())
     elif anchors:
         world_parts.append(", ".join(anchors[:6]))
-    world = " — ".join(world_parts) if world_parts else "Documentary scene consistent with project narration"
+    world = clean_world_slug_prefix(" — ".join(world_parts), project_id=manifest.project_id) or "Historical or documentary setting consistent with project narration"
 
     preset_style = _preset_style_from_manifest(manifest)
     if style_mode is not None:
@@ -204,7 +333,7 @@ def build_template_visual_bible(
     else:
         style = preset_style or STYLE_MODE_BASE_TEXTS.get(eff_mode) or STYLE_MODE_BASE_TEXTS["realistic"]
 
-    palette_lighting = "cohesive atmospheric color tones and mood without fixed time of day"
+    palette_lighting = "cohesive atmospheric color tones and emotional mood"
 
     avoid_pool: List[str] = list(avoids)
     for item in ("text", "watermark", "logo", "UI overlay", "collage"):
@@ -306,11 +435,13 @@ def _coerce_visual_bible(
     fallback: VisualBible,
     source: str = "ai",
     style_mode: Optional[str] = None,
+    project_id: Optional[str] = None,
 ) -> VisualBible:
     eff_mode = normalize_style_mode(style_mode or fallback.style_mode)
-    world = str(raw.get("world") or "").strip() or fallback.world
+    world = clean_world_slug_prefix(str(raw.get("world") or ""), project_id=project_id) or fallback.world
     style = _coerce_style_preserving_mode(str(raw.get("style") or ""), eff_mode, fallback.style)
-    palette_lighting = str(raw.get("palette_lighting") or "").strip() or fallback.palette_lighting
+    raw_pal = str(raw.get("palette_lighting") or "").strip()
+    palette_lighting = sanitize_palette_lighting(raw_pal) if raw_pal else fallback.palette_lighting
 
     avoid_val = raw.get("avoid")
     if isinstance(avoid_val, list):
@@ -323,6 +454,7 @@ def _coerce_visual_bible(
 
     chars: List[VisualBibleCharacter] = []
     seen_cids: set[str] = set()
+    used_aliases_global: set[str] = set()
     raw_chars = raw.get("characters")
     if isinstance(raw_chars, list):
         for idx, item in enumerate(raw_chars, start=1):
@@ -336,22 +468,23 @@ def _coerce_visual_bible(
             while cid in seen_cids:
                 cid = f"{cid}_{idx}"
             seen_cids.add(cid)
-            aliases_raw = item.get("aliases") or []
-            if isinstance(aliases_raw, str):
-                aliases = [x.strip() for x in re.split(r"[,;\n]+", aliases_raw) if x.strip()]
-            elif isinstance(aliases_raw, list):
-                aliases = [str(x).strip() for x in aliases_raw if str(x or "").strip()]
-            else:
-                aliases = []
+            aliases = filter_valid_character_aliases(item.get("aliases"), existing_global=used_aliases_global)
+            variant_of = str(item.get("variant_of") or "").strip() or None
             chars.append(
                 VisualBibleCharacter(
                     id=cid,
                     name=name or cid,
                     aliases=aliases,
                     role=str(item.get("role") or "").strip(),
+                    variant_of=variant_of,
                     description=desc,
                 )
             )
+
+    pov_char_id = str(raw.get("pov_character_id") or "").strip() or None
+    if pov_char_id and pov_char_id not in seen_cids:
+        matched_pov = next((c.id for c in chars if c.name.lower() == pov_char_id.lower()), None)
+        pov_char_id = matched_pov
 
     locs: List[VisualBibleLocation] = []
     seen_lids: set[str] = set()
@@ -386,7 +519,7 @@ def _coerce_visual_bible(
                 c_idx = int(item.get("chapter_index"))
             except (TypeError, ValueError):
                 continue
-            w = str(item.get("world") or "").strip()
+            w = clean_world_slug_prefix(str(item.get("world") or ""), project_id=project_id)
             e = str(item.get("era") or "").strip()
             if w or e:
                 overrides.append(VisualBibleChapterOverride(chapter_index=c_idx, world=w, era=e))
@@ -396,6 +529,7 @@ def _coerce_visual_bible(
         style_mode=eff_mode,
         style=style,
         palette_lighting=palette_lighting,
+        pov_character_id=pov_char_id,
         characters=chars,
         locations=locs,
         chapter_overrides=overrides,
@@ -436,24 +570,30 @@ def _build_visual_bible_llm_prompt(
         "1. NEVER invent characters that do not appear in the script.\n"
         "2. Derive each character's gender, age, hair, outfit (with specific colors), and one distinguishing detail from the script or well-known source tale.\n"
         "   - Primary entry age MUST reflect the current main timeline, NOT a flashback.\n"
-        "   - If a character appears at a distinctly younger/older age in a flashback, create a separate entry.\n"
+        "   - If a character appears at a distinctly younger/older age in a flashback, create a separate entry with `\"variant_of\": \"<base_character_id>\"` and age-appropriate visual traits.\n"
+        "   - `aliases` MUST contain ONLY proper names, nicknames, or specific titles. NEVER put pronouns (`you`, `your`, `he`, `him`, `his`, `she`, `her`, `they`, `them`, `i`, `me`) or generic words (`sister`, `brother`, `man`, `woman`, `child`, `girl`, `boy`, `old woman`, `witch`, `protagonist`) into `aliases`, and NEVER assign the same alias to more than one character.\n"
+        "   - If narration uses second-person POV (`you`, `your`) for an identifiable main character, set top-level `\"pov_character_id\"` to that character's `id` (otherwise `\"\"`).\n"
         "3. If the script is a documentary/explainer without recurring people (e.g. machines, vehicles, science, geopolitics), set `\"characters\": []` and maintain visual consistency through `world`, `style`, `palette_lighting`, `locations`, and `chapter_overrides` (`chapter_index`, `world`, `era`) when chapters move across eras or regions.\n"
         f"4. STRICTLY respect the user's chosen `style_mode` ({eff_mode}). Do NOT switch medium (e.g. do NOT change photorealistic film still into illustration/painting, and do NOT change illustration/painting into photography). Only refine compatible visual details.\n"
-        "5. `locations` lists recurring places used across multiple shots with concrete architectural/environmental details.\n"
-        "6. `avoid` MUST be consistent with `style` (never put artistic terms inside `avoid` that contradict `style`). Include anachronisms/distractors like `modern buildings, cars, electric lights, plastic, modern clothing, text, watermark` when historically appropriate.\n"
+        "5. `world` MUST state a concrete geographic/cultural place AND historical era/time period, NEVER a raw project ID/slug.\n"
+        "6. `palette_lighting` MUST describe ONLY colors and emotional mood (e.g. `muted earth tones and cold slate greys, tense somber atmosphere`). NEVER include time-of-day or directional light words (`dawn`, `noon`, `night`, `dusk`, `sun`, `sunlight`, `moonlight`, `candlelit`) — lighting & time come strictly from Continuity.\n"
+        "7. `locations`: whenever a setting has both inside and outside scenes, split it into TWO separate entries (`<place>_interior` and `<place>_exterior`) with concrete architectural details.\n"
+        "8. `avoid` MUST be consistent with `style` (never put artistic terms inside `avoid` that contradict `style`). Include anachronisms/distractors like `modern buildings, cars, electric lights, plastic, modern clothing, text, watermark` when historically appropriate.\n"
         "\nReturn ONLY valid JSON matching this schema:\n"
         "{\n"
-        '  "world": "place and historical era/setting in English",\n'
+        '  "world": "place and historical era/setting in English (never a project slug)",\n'
         '  "style": "cohesive visual art/camera style for this project",\n'
-        '  "palette_lighting": "color palette and dominant lighting mood",\n'
+        '  "palette_lighting": "color tones and emotional atmosphere ONLY (no dawn/noon/night/sun/moonlight)",\n'
+        '  "pov_character_id": "character id addressed as second-person you, or empty string",\n'
         '  "characters": [\n'
-        '    {"id": "snake_case_id", "name": "Name", "aliases": ["name", "you", "pronoun"], "role": "protagonist", "description": "gender, age, hair, colored outfit, one distinguishing trait"}\n'
+        '    {"id": "snake_case_id", "name": "Name", "aliases": ["Proper Name", "Nickname"], "role": "protagonist", "variant_of": "", "description": "gender, age, hair, colored outfit, one distinguishing trait"}\n'
         "  ],\n"
         '  "locations": [\n'
-        '    {"id": "snake_case_location_id", "name": "Location Name", "description": "fixed environmental and architectural description"}\n'
+        '    {"id": "place_exterior", "name": "Location Exterior", "description": "fixed outdoor architectural/environmental details"},\n'
+        '    {"id": "place_interior", "name": "Location Interior", "description": "fixed indoor architectural/furniture details"}\n'
         "  ],\n"
         '  "chapter_overrides": [\n'
-        '    {"chapter_index": 1, "world": "optional chapter setting", "era": "optional era"}\n'
+        '    {"chapter_index": 1, "world": "optional replacement chapter setting", "era": "optional era"}\n'
         "  ],\n"
         '  "avoid": "comma-separated items to exclude"\n'
         "}\n"
@@ -541,7 +681,13 @@ def ensure_project_visual_bible(
             parsed = _extract_json_object(raw_content)
             if not parsed or (not parsed.get("world") and not parsed.get("style")):
                 raise ValueError("LLM VisualBible JSON missing required world/style fields")
-            vb = _coerce_visual_bible(parsed, fallback=fallback_bible, source="ai", style_mode=eff_mode)
+            vb = _coerce_visual_bible(
+                parsed,
+                fallback=fallback_bible,
+                source="ai",
+                style_mode=eff_mode,
+                project_id=manifest.project_id,
+            )
             manifest.visual_bible = vb
             cache[c_key] = {
                 "bible": vb.model_dump(mode="json"),

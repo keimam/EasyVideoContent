@@ -27,7 +27,9 @@ from app.services.longform.visual.scene_continuity import (
 from app.services.longform.visual.service import VisualService
 from app.services.longform.visual.visual_bible import (
     build_template_visual_bible,
+    clean_world_slug_prefix,
     ensure_project_visual_bible,
+    validate_visual_bible,
 )
 
 EXTERNAL_IMPORT_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".mp4"}
@@ -187,6 +189,14 @@ def validate_external_prompt(
         if conflicts:
             issues.append(f"kata Avoid muncul di Style ({', '.join(dict.fromkeys(conflicts))})")
 
+    if bible is not None:
+        # Check palette_lighting for time/light tokens (FA1.3) - keep alias checks via validate_visual_bible directly when editing
+        vb_pal_issues = [
+            msg for msg in validate_visual_bible(bible)
+            if "palette_lighting" in msg or "slug proyek" in msg
+        ]
+        issues.extend(vb_pal_issues)
+
     if not issues:
         return ""
     return "⚠ " + "; ".join(issues)
@@ -232,17 +242,17 @@ def compose_shot_external_prompt(
 
     ch_idx = chapter.chapter_index if chapter is not None else shot.chapter_index
     ch_ov = next((ov for ov in (bible.chapter_overrides or []) if ov.chapter_index == ch_idx), None)
-    world_parts: List[str] = []
-    if str(bible.world or "").strip():
-        world_parts.append(str(bible.world).strip())
-    if ch_ov is not None:
-        ov_world = str(ch_ov.world or "").strip()
+    base_world = clean_world_slug_prefix(str(bible.world or "").strip(), project_id=manifest.project_id)
+    if ch_ov is not None and str(ch_ov.world or "").strip():
+        eff_world = clean_world_slug_prefix(str(ch_ov.world).strip(), project_id=manifest.project_id)
         ov_era = str(ch_ov.era or "").strip()
-        if ov_world and ov_world.lower() not in (world_parts[0].lower() if world_parts else ""):
-            world_parts.append(ov_world)
-        if ov_era and ov_era.lower() not in " ".join(world_parts).lower():
-            world_parts.append(ov_era)
-    world_text = ", ".join(world_parts)
+        world_text = f"{eff_world}, {ov_era}" if (ov_era and ov_era.lower() not in eff_world.lower()) else eff_world
+    else:
+        ov_era = str(ch_ov.era or "").strip() if ch_ov is not None else ""
+        if base_world and ov_era and ov_era.lower() not in base_world.lower():
+            world_text = f"{base_world}, {ov_era}"
+        else:
+            world_text = base_world or ov_era
 
     segments: List[str] = [f"{scene_clean}."]
     if resolved_chars:
