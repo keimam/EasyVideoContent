@@ -77,6 +77,11 @@ def block_real_llm_and_network_calls(request, tmp_path: Path):
         "poll_available_update",
         lambda *_a, **_kw: upstream_ver.UpdateCheckSnapshot(complete=True),
     )
+    if "update_check" not in request.node.name:
+        guard_mp.setattr(
+            "app.services.longform.update_checker.start_background_update_check",
+            lambda *_a, **_kw: False,
+        )
 
     orig_generate = upstream_llm._generate_response
     orig_bounded_sdk = LLMAdapter._call_bounded_sdk
@@ -126,16 +131,24 @@ def block_real_llm_and_network_calls(request, tmp_path: Path):
     clear_provider_pause()
 
     lf_cfg._CONFIG_CACHE = None
-    failover_override_active = {"saved": False}
+    failover_override_active = {"saved": False, "chain": []}
     orig_get_failover = lf_cfg.get_llm_failover_chain
     orig_save_failover = lf_cfg.save_llm_failover_chain
 
-    def _isolated_save_failover(*args, **kwargs):
+    def _isolated_save_failover(chain, *, config_path=None):
         failover_override_active["saved"] = True
-        return orig_save_failover(*args, **kwargs)
+        use_isolated = config_path is None and not os.environ.get("EFS_DATA_DIR", "").strip()
+        target = (tmp_path / "isolated_longform.toml") if use_isolated else config_path
+        res = orig_save_failover(chain, config_path=target)
+        failover_override_active["chain"] = list(res)
+        return res
 
     def _isolated_get_failover(*, reload: bool = False):
-        if not failover_override_active["saved"] and not os.environ.get("EFS_DATA_DIR", "").strip():
+        if failover_override_active["saved"]:
+            if not os.environ.get("EFS_DATA_DIR", "").strip():
+                return list(failover_override_active["chain"])
+            return orig_get_failover(reload=reload)
+        if not os.environ.get("EFS_DATA_DIR", "").strip():
             return []
         return orig_get_failover(reload=reload)
 
