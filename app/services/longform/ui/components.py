@@ -843,7 +843,7 @@ def _render_delete_project_dialog(*, on_deleted_redirect_home: bool = False) -> 
             submitted = st.form_submit_button(
                 t("btn_confirm_delete_project"),
                 type="primary",
-                use_container_width=True,
+                width="stretch",
             )
 
         if submitted:
@@ -882,7 +882,7 @@ def _render_delete_project_dialog(*, on_deleted_redirect_home: bool = False) -> 
         if st.button(
             t("btn_cancel_dialog"),
             key=f"btn_dlg_canc_del_{pid}",
-            use_container_width=True,
+            width="stretch",
         ):
             st.session_state["confirm_delete_project_id"] = None
             st.rerun()
@@ -904,7 +904,7 @@ def _render_trash_management_view(trashed_items: List[Dict[str, Any]]) -> None:
             t("btn_empty_trash"),
             key="btn_open_empty_trash_dlg",
             type="secondary",
-            use_container_width=True,
+            width="stretch",
         ):
             st.session_state["confirm_empty_trash_open"] = True
 
@@ -924,7 +924,7 @@ def _render_trash_management_view(trashed_items: List[Dict[str, Any]]) -> None:
                     )
                 )
             with c_rest:
-                if st.button(t("btn_restore_project"), key=f"btn_restore_{t_id}", use_container_width=True):
+                if st.button(t("btn_restore_project"), key=f"btn_restore_{t_id}", width="stretch"):
                     try:
                         res = restore_trashed_project(t_id)
                         st.success(t("restore_project_success", title=res["title"]))
@@ -933,7 +933,7 @@ def _render_trash_management_view(trashed_items: List[Dict[str, Any]]) -> None:
                     except Exception as exc:
                         _render_friendly_error(t("err_restore_project_friendly"), exc)
             with c_perm:
-                if st.button(t("btn_perm_delete_project"), key=f"btn_perm_del_{t_id}", use_container_width=True):
+                if st.button(t("btn_perm_delete_project"), key=f"btn_perm_del_{t_id}", width="stretch"):
                     try:
                         res = permanently_delete_trashed_project(t_id)
                         st.success(t("perm_delete_success", title=res["title"], mb=f"{res['mb_freed']:.2f}"))
@@ -952,7 +952,7 @@ def _render_trash_management_view(trashed_items: List[Dict[str, Any]]) -> None:
                     t("btn_confirm_empty_trash"),
                     type="primary",
                     key="btn_conf_empty_trash",
-                    use_container_width=True,
+                    width="stretch",
                 ):
                     try:
                         res = empty_trash()
@@ -966,7 +966,7 @@ def _render_trash_management_view(trashed_items: List[Dict[str, Any]]) -> None:
                     except Exception as exc:
                         _render_friendly_error(t("err_delete_project_friendly"), exc)
             with col_e2:
-                if st.button(t("btn_cancel_dialog"), key="btn_canc_empty_trash", use_container_width=True):
+                if st.button(t("btn_cancel_dialog"), key="btn_canc_empty_trash", width="stretch"):
                     st.session_state["confirm_empty_trash_open"] = False
                     st.rerun()
 
@@ -1012,7 +1012,7 @@ def render_home_page():
             )
         with col_s_btn:
             # Preserves compatibility for test_stage7_g_fixes.py line 205
-            if st.button(t("btn_new_project"), key="btn_toggle_new_proj", use_container_width=True):
+            if st.button(t("btn_new_project"), key="btn_toggle_new_proj", width="stretch"):
                 st.session_state["focus_new_project"] = True
 
     # Niche Management Section (shown when toggled from sidebar or button)
@@ -1053,7 +1053,7 @@ def render_home_page():
         with col_btn:
             st.write("")
             st.write("")
-            submitted = st.button(t("btn_create_project"), type="primary", use_container_width=True, key="btn_create_project_submit")
+            submitted = st.button(t("btn_create_project"), type="primary", width="stretch", key="btn_create_project_submit")
 
         # Expander "Pengaturan lanjutan"
         with st.expander(t("expander_advanced_settings"), expanded=False):
@@ -1365,16 +1365,16 @@ def render_home_page():
                     st.button(
                         t("btn_open_project"),
                         key=f"btn_open_{folder_key}",
-                        use_container_width=True,
+                        width="stretch",
                         on_click=open_project_state,
                         args=(folder_key,),
                     )
                 with col_card_more:
-                    with st.popover("⋯", help=t("popover_more_help"), use_container_width=True):
+                    with st.popover("⋯", help=t("popover_more_help"), width="stretch"):
                         if st.button(
                             t("btn_delete_project"),
                             key=f"btn_del_card_{folder_key}",
-                            use_container_width=True,
+                            width="stretch",
                         ):
                             st.session_state["confirm_delete_project_id"] = folder_key
                             st.rerun()
@@ -1385,7 +1385,7 @@ def render_home_page():
                         if st.button(
                             t("btn_open_output_folder"),
                             key=f"btn_card_output_{folder_key}",
-                            use_container_width=True,
+                            width="stretch",
                         ):
                             out_target = (p_dir / "export") if (p_dir / "export").is_dir() else p_dir
                             _safe_open_path(out_target, is_folder=True)
@@ -1393,7 +1393,7 @@ def render_home_page():
                         if st.button(
                             t("btn_open_credits_md"),
                             key=f"btn_card_credits_{folder_key}",
-                            use_container_width=True,
+                            width="stretch",
                         ):
                             from app.services.branding.lifecycle_ui import show_credits_dialog
                             show_credits_dialog(p_dir, folder_key)
@@ -1481,7 +1481,7 @@ def render_project_page(project_id: str):
         st.write("")
         col_auto_btn, col_opt_btn = st.columns([4, 1])
         with col_auto_btn:
-            with st.popover(f"▷ {t('btn_auto_run_until_done')}", use_container_width=True):
+            with st.popover(f"▷ {t('btn_auto_run_until_done')}", width="stretch"):
                 st.markdown(f"**{t('auto_pipeline_title')}**")
                 st.caption(t("auto_pipeline_desc"))
                 auto_with_capcut = st.checkbox(t("auto_include_capcut"), value=False, key=f"auto_cc_{project_id}")
@@ -1518,7 +1518,7 @@ def render_project_page(project_id: str):
                     if st.button(
                         t("btn_open_provider_settings"),
                         key=f"btn_auto_open_prov_{project_id}",
-                        use_container_width=True,
+                        width="stretch",
                     ):
                         _open_mpt_settings_dialog("stock")
 
@@ -1529,7 +1529,7 @@ def render_project_page(project_id: str):
                 if is_review_paused:
                     phase_msg = f" ({job_state.get('phase')})" if job_state.get("phase") else ""
                     st.warning(t("auto_review_paused_warn", phase=phase_msg))
-                    if st.button(t("btn_resume_auto_skip"), key=f"btn_resume_auto_{project_id}", disabled=(is_job_running or auto_missing_vis_src), type="primary", use_container_width=True):
+                    if st.button(t("btn_resume_auto_skip"), key=f"btn_resume_auto_{project_id}", disabled=(is_job_running or auto_missing_vis_src), type="primary", width="stretch"):
                         auto_args = ["pipeline", "auto", project_id, "--skip-review-check"]
                         if auto_providers_csv:
                             auto_args.extend(["--providers", auto_providers_csv])
@@ -1541,11 +1541,11 @@ def render_project_page(project_id: str):
                         _start_job_safe(project_id, "pipeline_auto", cmd, sleep_after=0.5)
                 elif not script_done:
                     st.caption(t("auto_need_script_caption"))
-                    st.button(f"▷ {t('btn_auto_run_until_done')}", disabled=True, key=f"btn_auto_dis_{project_id}", use_container_width=True)
+                    st.button(f"▷ {t('btn_auto_run_until_done')}", disabled=True, key=f"btn_auto_dis_{project_id}", width="stretch")
                 elif all_done and not auto_with_capcut:
-                    st.button(t("status_done"), disabled=True, key=f"btn_auto_done_{project_id}", use_container_width=True)
+                    st.button(t("status_done"), disabled=True, key=f"btn_auto_done_{project_id}", width="stretch")
                 else:
-                    if st.button(f"▷ {t('btn_auto_run_until_done')}", disabled=(is_job_running or auto_missing_vis_src), type="primary", key=f"btn_start_auto_{project_id}", use_container_width=True):
+                    if st.button(f"▷ {t('btn_auto_run_until_done')}", disabled=(is_job_running or auto_missing_vis_src), type="primary", key=f"btn_start_auto_{project_id}", width="stretch"):
                         auto_args = ["pipeline", "auto", project_id]
                         if auto_providers_csv:
                             auto_args.extend(["--providers", auto_providers_csv])
@@ -1559,7 +1559,7 @@ def render_project_page(project_id: str):
                         _start_job_safe(project_id, "pipeline_auto", cmd, sleep_after=0.5)
 
         with col_opt_btn:
-            with st.popover("⋯", help=t("popover_project_settings_help"), use_container_width=True):
+            with st.popover("⋯", help=t("popover_project_settings_help"), width="stretch"):
                 st.markdown(f"**{t('popover_project_settings_title')}**")
                 all_presets = list_presets()
                 preset_options = sorted(all_presets.keys())
@@ -1585,7 +1585,7 @@ def render_project_page(project_id: str):
                 if st.button(
                     t("btn_delete_project"),
                     key=f"btn_del_proj_{project_id}",
-                    use_container_width=True,
+                    width="stretch",
                 ):
                     st.session_state["confirm_delete_project_id"] = project_id
                     st.rerun()
@@ -1689,7 +1689,7 @@ def render_project_page(project_id: str):
                 is_selected,
             )
             st.markdown(card_html, unsafe_allow_html=True)
-            if st.button(f"{step_labels[k]}\n{badge}", key=f"stepper_btn_{k}_{project_id}", type=btn_type, use_container_width=True):
+            if st.button(f"{step_labels[k]}\n{badge}", key=f"stepper_btn_{k}_{project_id}", type=btn_type, width="stretch"):
                 st.session_state[session_key] = k
                 st.rerun()
 
@@ -1756,7 +1756,7 @@ def render_project_page(project_id: str):
                 t("btn_save_project_anchors"),
                 key=f"btn_save_proj_anchors_{project_id}",
                 disabled=is_job_running,
-                use_container_width=True,
+                width="stretch",
             ):
                 manifest.visual_anchor_terms = _clean_term_list(txt_anchors)
                 manifest.visual_avoid_terms = _clean_term_list(txt_avoids)
@@ -1769,7 +1769,7 @@ def render_project_page(project_id: str):
                 t("btn_regen_project_anchors"),
                 key=f"btn_regen_proj_anchors_{project_id}",
                 disabled=is_job_running,
-                use_container_width=True,
+                width="stretch",
             ):
                 try:
                     ensure_project_visual_anchors(manifest, force=True)
@@ -1835,7 +1835,7 @@ def render_script_step_flow(
     with col_act:
         st.write("")
         if status == "selesai":
-            if st.button(t("btn_proceed_voice"), type="primary", key=f"btn_next_voice_{project_id}", use_container_width=True):
+            if st.button(t("btn_proceed_voice"), type="primary", key=f"btn_next_voice_{project_id}", width="stretch"):
                 st.session_state[f"active_step_{project_id}"] = "voice"
                 st.rerun()
 
@@ -1959,18 +1959,18 @@ def render_script_step_flow(
                         t("btn_check_or_quota"),
                         key=f"btn_or_quota_{project_id}",
                         disabled=(not llm_ok or is_job_running),
-                        use_container_width=True,
+                        width="stretch",
                     ):
                         q_data, q_err = fetch_openrouter_key_quota()
                         st.session_state[f"or_quota_res_{project_id}"] = (q_data, q_err)
             else:
                 col_llm_test, col_llm_cfg = st.columns(2)
             with col_llm_test:
-                if st.button(t("btn_test_llm_connection"), key=f"btn_test_llm_{project_id}", disabled=(not llm_ok or is_job_running), use_container_width=True):
+                if st.button(t("btn_test_llm_connection"), key=f"btn_test_llm_{project_id}", disabled=(not llm_ok or is_job_running), width="stretch"):
                     ok_conn, conn_msg, conn_lat = test_llm_connection()
                     st.session_state[f"llm_conn_res_{project_id}"] = (ok_conn, conn_msg, conn_lat)
             with col_llm_cfg:
-                if st.button(t("btn_change_llm_provider"), key=f"btn_chg_llm_{project_id}", use_container_width=True):
+                if st.button(t("btn_change_llm_provider"), key=f"btn_chg_llm_{project_id}", width="stretch"):
                     _open_mpt_settings_dialog("llm")
 
             if active_prov_id == "openrouter":
@@ -2162,7 +2162,7 @@ def render_script_step_flow(
                 new_ch_text = st.text_area(t("field_chapter_narration_text"), value=ch_paras, height=180, key=f"ch_txt_{project_id}_{sel_ch_idx}")
                 col_ch_save, col_ch_rewrite = st.columns(2)
                 with col_ch_save:
-                    if st.button(t("btn_save_chapter"), key=f"btn_save_ch_{project_id}_{sel_ch_idx}", use_container_width=True):
+                    if st.button(t("btn_save_chapter"), key=f"btn_save_ch_{project_id}_{sel_ch_idx}", width="stretch"):
                         if new_ch_text.strip():
                             ch_file = p_dir / "script" / f"chapter_{sel_ch_idx:02d}.md"
                             ch_file.parent.mkdir(parents=True, exist_ok=True)
@@ -2176,7 +2176,7 @@ def render_script_step_flow(
                         t("btn_rewrite_chapter"),
                         disabled=rewrite_disabled,
                         key=f"btn_rewrite_ch_{project_id}_{sel_ch_idx}",
-                        use_container_width=True,
+                        width="stretch",
                     ):
                         provider_arg = ["--provider", "fake"] if st.session_state.get(f"fake_toggle_{project_id}", False) else []
                         cmd = jobs.build_longform_cli_command(
@@ -2228,22 +2228,22 @@ def render_voice_step_flow(
     with col_act:
         st.write("")
         if is_job_running:
-            st.button(t("btn_running_voice"), disabled=True, type="primary", use_container_width=True)
+            st.button(t("btn_running_voice"), disabled=True, type="primary", width="stretch")
         elif status == "selesai":
-            if st.button(t("btn_proceed_visual"), type="primary", key=f"btn_next_visual_{project_id}", use_container_width=True):
+            if st.button(t("btn_proceed_visual"), type="primary", key=f"btn_next_visual_{project_id}", width="stretch"):
                 st.session_state[f"active_step_{project_id}"] = "visual"
                 st.rerun()
         elif status == "terhenti":
-            if st.button(t("btn_resume_voice"), type="primary", key=f"btn_resume_voice_{project_id}", use_container_width=True):
+            if st.button(t("btn_resume_voice"), type="primary", key=f"btn_resume_voice_{project_id}", width="stretch"):
                 cmd = jobs.build_longform_cli_command("audio", "synth", project_id)
                 _start_job_safe(project_id, "audio_synthesize", cmd)
         elif status == "perlu_diperbarui":
-            if st.button(t("btn_stale_voice"), type="primary", key=f"btn_stale_voice_{project_id}", use_container_width=True):
+            if st.button(t("btn_stale_voice"), type="primary", key=f"btn_stale_voice_{project_id}", width="stretch"):
                 cmd = jobs.build_longform_cli_command("audio", "synth", project_id)
                 _start_job_safe(project_id, "audio_synthesize", cmd)
         else:  # belum
             btn_disabled = bool(len(manifest.chapters) == 0) or is_job_running
-            if st.button(t("btn_start_voice"), type="primary", disabled=btn_disabled, key=f"btn_start_voice_{project_id}", use_container_width=True):
+            if st.button(t("btn_start_voice"), type="primary", disabled=btn_disabled, key=f"btn_start_voice_{project_id}", width="stretch"):
                 cmd = jobs.build_longform_cli_command("audio", "synth", project_id)
                 _start_job_safe(project_id, "audio_synthesize", cmd)
 
@@ -2270,7 +2270,7 @@ def render_voice_step_flow(
             )
         with col_tcfg:
             st.write("")
-            if st.button(t("btn_open_tts_settings"), key=f"btn_tts_settings_{project_id}", use_container_width=True):
+            if st.button(t("btn_open_tts_settings"), key=f"btn_tts_settings_{project_id}", width="stretch"):
                 _open_mpt_settings_dialog("general")
 
         if not provider_has_word_timings(sel_tts_provider):
@@ -3535,15 +3535,15 @@ def render_visual_step_flow(
     with col_act:
         st.write("")
         if is_job_running:
-            st.button(t("visual_btn_running"), disabled=True, type="primary", key=f"btn_running_vis_{project_id}", use_container_width=True)
+            st.button(t("visual_btn_running"), disabled=True, type="primary", key=f"btn_running_vis_{project_id}", width="stretch")
         else:
             st_val = step_info["status"]
             if st_val == "selesai":
-                if st.button(t("visual_btn_proceed_render"), type="primary", key=f"btn_next_render_{project_id}", use_container_width=True):
+                if st.button(t("visual_btn_proceed_render"), type="primary", key=f"btn_next_render_{project_id}", width="stretch"):
                     st.session_state[f"active_step_{project_id}"] = "render"
                     st.rerun()
             elif st_val == "terhenti":
-                if st.button(t("visual_btn_resume"), type="primary", disabled=start_vis_blocked, key=f"btn_resume_vis_{project_id}", use_container_width=True):
+                if st.button(t("visual_btn_resume"), type="primary", disabled=start_vis_blocked, key=f"btn_resume_vis_{project_id}", width="stretch"):
                     vis_args = ["visual", "pipeline", project_id]
                     if target_prov:
                         vis_args.extend(["--provider", target_prov])
@@ -3553,7 +3553,7 @@ def render_visual_step_flow(
                         vis_args.append("--check-ai-relevance")
                     _start_job_safe(project_id, "visual_pipeline", jobs.build_longform_cli_command(*vis_args))
             elif st_val == "perlu_diperbarui":
-                if st.button(t("visual_btn_rebuild_stale"), type="primary", disabled=start_vis_blocked, key=f"btn_update_vis_{project_id}", use_container_width=True):
+                if st.button(t("visual_btn_rebuild_stale"), type="primary", disabled=start_vis_blocked, key=f"btn_update_vis_{project_id}", width="stretch"):
                     vis_args = ["visual", "pipeline", project_id]
                     if target_prov:
                         vis_args.extend(["--provider", target_prov])
@@ -3578,7 +3578,7 @@ def render_visual_step_flow(
                     else:
                         st.caption(t("visual_prereq_voice"))
 
-                if st.button(t("visual_btn_start"), type="primary", disabled=btn_disabled, key=f"btn_start_vis_{project_id}", use_container_width=True):
+                if st.button(t("visual_btn_start"), type="primary", disabled=btn_disabled, key=f"btn_start_vis_{project_id}", width="stretch"):
                     vis_args = ["visual", "pipeline", project_id]
                     if target_prov:
                         vis_args.extend(["--provider", target_prov])
@@ -3598,7 +3598,7 @@ def render_visual_step_flow(
             if st.button(
                 t("btn_open_provider_settings"),
                 key=f"btn_vis_open_prov_{project_id}",
-                use_container_width=True,
+                width="stretch",
             ):
                 _open_mpt_settings_dialog("stock")
 
@@ -3779,7 +3779,7 @@ def render_visual_step_flow(
             if st.button(
                 t("btn_open_local_folder"),
                 key=f"btn_open_local_lib_{project_id}",
-                use_container_width=True,
+                width="stretch",
             ):
                 if open_path_in_os(loc_mgr.library_dir, is_folder=True):
                     st.toast(t("local_folder_opened_ok", path=str(loc_mgr.library_dir)))
@@ -4085,7 +4085,7 @@ def render_visual_step_flow(
                 type="primary",
                 key=f"btn_run_ai_kw_{project_id}",
                 disabled=is_job_running or kw_est["unlocked_shots"] == 0,
-                use_container_width=True,
+                width="stretch",
             ):
                 try:
                     with st.spinner(t("job_step_visual_ai_keywords")):
@@ -4263,7 +4263,7 @@ def render_visual_step_flow(
                                     btn_lbl,
                                     key=f"btn_sh_{project_id}_{shot.shot_id}",
                                     type="primary" if is_active_shot else "secondary",
-                                    use_container_width=True,
+                                    width="stretch",
                                 ):
                                     st.session_state[f"selected_shot_{project_id}"] = shot.shot_id
                                     st.rerun()
@@ -4286,7 +4286,7 @@ def render_visual_step_flow(
                     with col_lock:
                         is_locked = getattr(target_shot, "locked", False)
                         lock_lbl = t("btn_unlock_shot") if is_locked else t("btn_lock_shot")
-                        if st.button(lock_lbl, key=f"btn_lock_toggle_{project_id}_{target_shot.shot_id}", use_container_width=True):
+                        if st.button(lock_lbl, key=f"btn_lock_toggle_{project_id}_{target_shot.shot_id}", width="stretch"):
                             vis_svc = VisualService(p_dir)
                             vis_svc.set_lock(manifest, target_shot.shot_id, not is_locked)
                             save_manifest(manifest, p_dir)
@@ -4298,7 +4298,7 @@ def render_visual_step_flow(
                         if prev_p and prev_p.is_file() and prev_p.suffix.lower() in (".mp4", ".mov", ".mkv", ".webm"):
                             st.video(str(prev_p))
                         elif prev_p and prev_p.is_file():
-                            st.image(str(prev_p), use_container_width=True)
+                            st.image(str(prev_p), width="stretch")
                         elif det_vst.get("is_missing_visual"):
                             st.warning(t("shot_no_visual_notice"))
                         else:
@@ -4576,7 +4576,7 @@ def render_visual_step_flow(
                                         with st.container(border=True):
                                             c_thumb = get_candidate_thumbnail_path(p_dir, cand)
                                             if c_thumb and c_thumb.is_file():
-                                                st.image(str(c_thumb), use_container_width=True)
+                                                st.image(str(c_thumb), width="stretch")
                                             else:
                                                 st.caption(t("cand_thumb_fallback"))
 
@@ -4588,11 +4588,11 @@ def render_visual_step_flow(
                                             c_url = cand.get("url") or cand.get("source_url")
                                             btn_col1, btn_col2 = st.columns(2)
                                             with btn_col1:
-                                                if c_url and st.button(t("btn_preview"), key=f"btn_prev_cand_{project_id}_{target_shot.shot_id}_{orig_idx}", use_container_width=True):
+                                                if c_url and st.button(t("btn_preview"), key=f"btn_prev_cand_{project_id}_{target_shot.shot_id}_{orig_idx}", width="stretch"):
                                                     st.session_state[f"preview_cand_url_{project_id}"] = c_url
                                                     st.rerun()
                                             with btn_col2:
-                                                if st.button(t("btn_use_this"), key=f"btn_apply_cand_{project_id}_{target_shot.shot_id}_{orig_idx}", type="primary", use_container_width=True):
+                                                if st.button(t("btn_use_this"), key=f"btn_apply_cand_{project_id}_{target_shot.shot_id}_{orig_idx}", type="primary", width="stretch"):
                                                     with st.spinner(t("spinner_applying_cand")):
                                                         try:
                                                             vis_svc = VisualService(p_dir)
@@ -4632,7 +4632,7 @@ def render_visual_step_flow(
                             ),
                             key=f"sel_p_{project_id}_{target_shot.shot_id}",
                         )
-                        if st.button(t("btn_search_apply_footage"), key=f"btn_srch_apply_{project_id}_{target_shot.shot_id}", use_container_width=True):
+                        if st.button(t("btn_search_apply_footage"), key=f"btn_srch_apply_{project_id}_{target_shot.shot_id}", width="stretch"):
                             with st.spinner(t("spinner_searching_footage")):
                                 try:
                                     eff_prompt = q_input
@@ -4674,7 +4674,7 @@ def render_visual_step_flow(
                             key=f"up_f_{project_id}_{target_shot.shot_id}",
                         )
                         if uploaded_f:
-                            if st.button(t("btn_upload_apply_footage"), key=f"btn_up_apply_{project_id}_{target_shot.shot_id}", use_container_width=True):
+                            if st.button(t("btn_upload_apply_footage"), key=f"btn_up_apply_{project_id}_{target_shot.shot_id}", width="stretch"):
                                 with st.spinner(t("spinner_uploading_footage")):
                                     try:
                                         mgr = LocalLibraryManager(p_dir)
@@ -4779,7 +4779,7 @@ def render_visual_step_flow(
                                 type="primary",
                                 disabled=is_job_running or not aiv_prompt.strip(),
                                 key=f"btn_gen_aiv_{project_id}_{target_shot.shot_id}",
-                                use_container_width=True,
+                                width="stretch",
                             ):
                                 st.session_state[f"ai_video_confirm_batch_{project_id}"] = False
                                 st.session_state[f"ai_video_confirm_single_{project_id}"] = {
@@ -4843,7 +4843,7 @@ def render_visual_step_flow(
                         t("btn_confirm_generate"),
                         type="primary",
                         key=f"btn_dlg_conf_aiv_{project_id}",
-                        use_container_width=True,
+                        width="stretch",
                     ):
                         req_copy = dict(single_req)
                         st.session_state[f"ai_video_confirm_single_{project_id}"] = None
@@ -4869,7 +4869,7 @@ def render_visual_step_flow(
                     if st.button(
                         t("btn_cancel_dialog"),
                         key=f"btn_dlg_canc_aiv_{project_id}",
-                        use_container_width=True,
+                        width="stretch",
                     ):
                         st.session_state[f"ai_video_confirm_single_{project_id}"] = None
                         st.rerun()
@@ -4948,7 +4948,7 @@ def render_visual_step_flow(
                         type="primary",
                         disabled=exceeds or b_plan["count"] == 0,
                         key=f"btn_dlg_conf_batch_aiv_{project_id}",
-                        use_container_width=True,
+                        width="stretch",
                     ):
                         st.session_state[f"ai_video_confirm_batch_{project_id}"] = False
                         cmd = jobs.build_longform_cli_command(
@@ -4969,7 +4969,7 @@ def render_visual_step_flow(
                     if st.button(
                         t("btn_cancel_dialog"),
                         key=f"btn_dlg_canc_batch_aiv_{project_id}",
-                        use_container_width=True,
+                        width="stretch",
                     ):
                         st.session_state[f"ai_video_confirm_batch_{project_id}"] = False
                         st.rerun()
@@ -5057,7 +5057,7 @@ def _render_missing_visual_confirmation(
                 t("btn_search_again_first"),
                 type="primary",
                 key=f"btn_{mode}_search_first_{project_id}",
-                use_container_width=True,
+                width="stretch",
             ):
                 st.session_state[confirm_key] = False
                 st.session_state[f"active_step_{project_id}"] = "visual"
@@ -5067,7 +5067,7 @@ def _render_missing_visual_confirmation(
                 t("btn_continue_neutral"),
                 type="secondary",
                 key=f"btn_{mode}_continue_neutral_{project_id}",
-                use_container_width=True,
+                width="stretch",
             ):
                 st.session_state[confirm_key] = False
                 _start_job_safe(
@@ -5080,7 +5080,7 @@ def _render_missing_visual_confirmation(
             if st.button(
                 t("btn_cancel_confirm"),
                 key=f"btn_{mode}_cancel_confirm_{project_id}",
-                use_container_width=True,
+                width="stretch",
             ):
                 st.session_state[confirm_key] = False
                 st.rerun()
@@ -5295,7 +5295,7 @@ def render_render_step_flow(
         sub_prev_path = st.session_state.get(f"sub_prev_img_{project_id}")
         if sub_prev_path and Path(sub_prev_path).is_file():
             st.markdown(t("subtitle_preview_heading"))
-            st.image(sub_prev_path, use_container_width=True)
+            st.image(sub_prev_path, width="stretch")
             if st.button(t("btn_close_sub_preview"), key=f"btn_close_sub_prev_{project_id}"):
                 st.session_state.pop(f"sub_prev_img_{project_id}", None)
                 st.rerun()
@@ -5344,15 +5344,15 @@ def render_render_step_flow(
 
         col_a1, col_a2, col_a3 = st.columns(3)
         with col_a1:
-            if st.button(t("btn_open_system_player"), key=f"btn_play_sys_{project_id}", use_container_width=True):
+            if st.button(t("btn_open_system_player"), key=f"btn_play_sys_{project_id}", width="stretch"):
                 if final_vid_path:
                     _safe_open_path(final_vid_path)
         with col_a2:
-            if st.button(t("btn_open_output_folder"), key=f"btn_open_exp_{project_id}", use_container_width=True):
+            if st.button(t("btn_open_output_folder"), key=f"btn_open_exp_{project_id}", width="stretch"):
                 out_target = final_vid_path.parent if final_vid_path else (p_dir / "export")
                 _safe_open_path(out_target, is_folder=True)
         with col_a3:
-            if st.button(t("btn_open_credits_md"), key=f"btn_open_credits_done_{project_id}", use_container_width=True):
+            if st.button(t("btn_open_credits_md"), key=f"btn_open_credits_done_{project_id}", width="stretch"):
                 from app.services.branding.lifecycle_ui import show_credits_dialog
                 show_credits_dialog(p_dir, project_id)
 
@@ -5366,11 +5366,11 @@ def render_render_step_flow(
                     data=srt_data,
                     file_name=f"{project_id}_subtitles.srt",
                     mime="text/plain",
-                    use_container_width=True,
+                    width="stretch",
                     key=f"dl_srt_{project_id}",
                 )
             else:
-                st.button(t("btn_sub_not_ready"), disabled=True, use_container_width=True, key=f"dl_srt_dis_{project_id}")
+                st.button(t("btn_sub_not_ready"), disabled=True, width="stretch", key=f"dl_srt_dis_{project_id}")
         with col_a4:
             if yt_path.is_file():
                 yt_data = yt_path.read_text(encoding="utf-8", errors="replace")
@@ -5379,16 +5379,16 @@ def render_render_step_flow(
                     data=yt_data,
                     file_name=f"{project_id}_youtube_chapters.txt",
                     mime="text/plain",
-                    use_container_width=True,
+                    width="stretch",
                     key=f"dl_yt_{project_id}",
                 )
             else:
-                st.button(t("btn_yt_not_ready"), disabled=True, use_container_width=True, key=f"dl_yt_dis_{project_id}")
+                st.button(t("btn_yt_not_ready"), disabled=True, width="stretch", key=f"dl_yt_dis_{project_id}")
 
         if yt_text:
             st.markdown(f"**{t('youtube_chapters_title')}**")
             st.code(yt_text, language="text")
-            if st.button(t("btn_copy_timestamps"), key=f"btn_copy_yt_{project_id}", use_container_width=True):
+            if st.button(t("btn_copy_timestamps"), key=f"btn_copy_yt_{project_id}", width="stretch"):
                 st.toast(t("btn_copied_timestamps"))
 
         with st.expander(t("expander_render_again"), expanded=False):
@@ -5416,7 +5416,7 @@ def render_render_step_flow(
                 disabled=(not can_render or is_job_running),
                 type="primary",
                 key=f"btn_render_main_{project_id}",
-                use_container_width=True,
+                width="stretch",
             ):
                 if st_val == "selesai":
                     st.session_state[f"active_step_{project_id}"] = "capcut"
@@ -5470,13 +5470,13 @@ def render_render_step_flow(
 
             col_a1, col_a2, col_a3, col_a4, col_a5 = st.columns(5)
             with col_a1:
-                if st.button(t("btn_open_system_player"), key=f"btn_play_sys_{project_id}", use_container_width=True):
+                if st.button(t("btn_open_system_player"), key=f"btn_play_sys_{project_id}", width="stretch"):
                     _safe_open_path(final_vid_path)
             with col_a2:
-                if st.button(t("btn_open_output_folder"), key=f"btn_open_exp_{project_id}", use_container_width=True):
+                if st.button(t("btn_open_output_folder"), key=f"btn_open_exp_{project_id}", width="stretch"):
                     _safe_open_path(final_vid_path.parent, is_folder=True)
             with col_a3:
-                if st.button(t("btn_open_credits_md"), key=f"btn_open_credits_rend_{project_id}", use_container_width=True):
+                if st.button(t("btn_open_credits_md"), key=f"btn_open_credits_rend_{project_id}", width="stretch"):
                     from app.services.branding.lifecycle_ui import show_credits_dialog
                     show_credits_dialog(p_dir, project_id)
             with col_a4:
@@ -5488,11 +5488,11 @@ def render_render_step_flow(
                         data=srt_data,
                         file_name=f"{project_id}_subtitles.srt",
                         mime="text/plain",
-                        use_container_width=True,
+                        width="stretch",
                         key=f"dl_srt_{project_id}",
                     )
                 else:
-                    st.button(t("btn_sub_not_ready"), disabled=True, use_container_width=True, key=f"dl_srt_dis_{project_id}")
+                    st.button(t("btn_sub_not_ready"), disabled=True, width="stretch", key=f"dl_srt_dis_{project_id}")
             with col_a5:
                 if yt_path.is_file():
                     yt_data = yt_path.read_text(encoding="utf-8", errors="replace")
@@ -5501,11 +5501,11 @@ def render_render_step_flow(
                         data=yt_data,
                         file_name=f"{project_id}_youtube_chapters.txt",
                         mime="text/plain",
-                        use_container_width=True,
+                        width="stretch",
                         key=f"dl_yt_{project_id}",
                     )
                 else:
-                    st.button(t("btn_yt_not_ready"), disabled=True, use_container_width=True, key=f"dl_yt_dis_{project_id}")
+                    st.button(t("btn_yt_not_ready"), disabled=True, width="stretch", key=f"dl_yt_dis_{project_id}")
 
             if vid_size_mb < 200.0:
                 st.video(str(final_vid_path.resolve()))
@@ -5613,7 +5613,7 @@ def render_capcut_step_flow(
             st.caption(_get_step_subtitle("capcut", step_info["status"], is_job_running))
         with col_cc_btn:
             st.write("")
-            if st.button(t("btn_recheck"), key=f"btn_recheck_capcut_{project_id}", use_container_width=True):
+            if st.button(t("btn_recheck"), key=f"btn_recheck_capcut_{project_id}", width="stretch"):
                 st.rerun()
 
         from app.services.branding.lifecycle_ui import format_capcut_status_text
@@ -5660,7 +5660,7 @@ def render_capcut_step_flow(
             disabled=(not can_export or is_job_running),
             type="primary",
             key=f"btn_capcut_main_{project_id}",
-            use_container_width=True,
+            width="stretch",
         ):
             from app.services.longform.visual.base import inspect_project_missing_visuals
             vis_unready = inspect_project_missing_visuals(p_dir, manifest)
@@ -5685,7 +5685,7 @@ def render_capcut_step_flow(
         )
 
         if draft_info:
-            if st.button(t("btn_open_draft_folder"), key=f"btn_open_draft_{project_id}", use_container_width=True):
+            if st.button(t("btn_open_draft_folder"), key=f"btn_open_draft_{project_id}", width="stretch"):
                 _safe_open_path(draft_dir_path, is_folder=True)
 
         with st.expander(t("capcut_expander_subtitle_size"), expanded=False):
@@ -5709,7 +5709,7 @@ def render_capcut_step_flow(
                 disabled=(not can_export or is_job_running),
                 type="primary",
                 key=f"btn_capcut_main_{project_id}",
-                use_container_width=True,
+                width="stretch",
             ):
                 from app.services.longform.visual.base import inspect_project_missing_visuals
                 vis_unready = inspect_project_missing_visuals(p_dir, manifest)

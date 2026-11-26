@@ -252,7 +252,7 @@ def render_help_dialog_body() -> None:
                     st.markdown(val)
                 elif kind == "image":
                     try:
-                        st.image(val, caption=alt or None, use_container_width=True)
+                        st.image(val, caption=alt or None, width="stretch")
                     except Exception:
                         if alt:
                             st.caption(alt)
@@ -266,11 +266,11 @@ def render_help_dialog_body() -> None:
                         st.button(
                             f"📄 {rel_lbl}",
                             key=f"efs_help_jump_{idx}_{rel_target}",
-                            use_container_width=True,
+                            width="stretch",
                             on_click=_on_help_jump,
                             args=(rel_target, doc_lang),
                         )
 
     st.divider()
-    if st.button(t("dialog_close"), key="btn_close_help_dialog", use_container_width=True):
+    if st.button(t("dialog_close"), key="btn_close_help_dialog", width="stretch"):
         st.rerun()

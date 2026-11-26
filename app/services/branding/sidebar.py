@@ -72,7 +72,7 @@ def _render_about_dialog_body():
     )
     with st.expander(t("about_dialog_view_license"), expanded=False):
         st.code(license_text, language="text")
-    if st.button(t("dialog_close"), key="btn_close_about_dialog", use_container_width=True):
+    if st.button(t("dialog_close"), key="btn_close_about_dialog", width="stretch"):
         st.rerun()
 
 
@@ -155,10 +155,10 @@ def _render_exit_app_dialog_body():
 
     col_cancel, col_ok = st.columns(2)
     with col_cancel:
-        if st.button(t("exit_app_btn_cancel"), key="btn_exit_app_cancel", use_container_width=True):
+        if st.button(t("exit_app_btn_cancel"), key="btn_exit_app_cancel", width="stretch"):
             st.rerun()
     with col_ok:
-        if st.button(t("exit_app_btn_confirm"), key="btn_exit_app_confirm", type="primary", use_container_width=True):
+        if st.button(t("exit_app_btn_confirm"), key="btn_exit_app_confirm", type="primary", width="stretch"):
             request_app_shutdown(stop_running_jobs=True)
             st.success(t("exit_app_goodbye"))
             st.stop()
@@ -225,7 +225,7 @@ def _render_niche_dialog_body():
     st.markdown("---")
     act_col1, act_col2 = st.columns([1.6, 1])
     with act_col1:
-        if st.button(t("niche_btn_open_manager"), key="btn_open_niche_manager", type="primary", use_container_width=True):
+        if st.button(t("niche_btn_open_manager"), key="btn_open_niche_manager", type="primary", width="stretch"):
             st.session_state["show_niche_mgmt"] = True
             try:
                 st.switch_page("pages/1_🎬_Long_Video.py")
@@ -233,7 +233,7 @@ def _render_niche_dialog_body():
                 pass
             st.rerun()
     with act_col2:
-        if st.button(t("dialog_close"), key="btn_close_niche_dialog", use_container_width=True):
+        if st.button(t("dialog_close"), key="btn_close_niche_dialog", width="stretch"):
             st.rerun()
 
 
@@ -568,7 +568,7 @@ def render_brand_sidebar(current_page: str = "main"):
                 key="efs_btn_lv_home_reset",
                 icon=":material/movie:",
                 type="secondary",
-                use_container_width=True,
+                width="stretch",
                 help=lv_help,
                 on_click=_reset_lv_project_cb,
             )
@@ -588,7 +588,7 @@ def render_brand_sidebar(current_page: str = "main"):
                 key=f"efs_btn_lv_{current_page}",
                 icon=":material/movie:",
                 type="primary" if is_lv else "secondary",
-                use_container_width=True,
+                width="stretch",
                 help=lv_help,
                 on_click=_reset_lv_project_cb,
             ):
@@ -616,7 +616,7 @@ def render_brand_sidebar(current_page: str = "main"):
                 key=f"efs_btn_main_{current_page}",
                 icon=":material/bolt:",
                 type="primary" if is_main else "secondary",
-                use_container_width=True,
+                width="stretch",
                 help=main_help,
             ):
                 if not is_main:
@@ -633,7 +633,7 @@ def render_brand_sidebar(current_page: str = "main"):
             t("nav_manage_niche"),
             key=f"efs_btn_niche_{current_page}",
             icon=":material/category:",
-            use_container_width=True,
+            width="stretch",
             help=t("nav_manage_niche_help"),
         ):
             show_niche_dialog()
@@ -643,7 +643,7 @@ def render_brand_sidebar(current_page: str = "main"):
             t("nav_ai_settings"),
             key=f"efs_btn_settings_ai_{current_page}",
             icon=":material/tune:",
-            use_container_width=True,
+            width="stretch",
             help=t("nav_ai_settings_help"),
         ):
             st.session_state["settings_dialog_open"] = True
@@ -655,7 +655,7 @@ def render_brand_sidebar(current_page: str = "main"):
             t("nav_cache_storage"),
             key=f"efs_btn_settings_cache_{current_page}",
             icon=":material/cleaning_services:",
-            use_container_width=True,
+            width="stretch",
             help=t("nav_cache_storage_help"),
         ):
             st.session_state["settings_dialog_open"] = True
@@ -667,7 +667,7 @@ def render_brand_sidebar(current_page: str = "main"):
             t("nav_help"),
             key=f"efs_btn_help_{current_page}",
             icon=":material/help:",
-            use_container_width=True,
+            width="stretch",
             help=t("nav_help_tooltip"),
         ):
             show_help_dialog()
@@ -700,7 +700,7 @@ def render_brand_sidebar(current_page: str = "main"):
             t("nav_about"),
             key=f"efs_btn_about_{current_page}",
             icon=":material/info:",
-            use_container_width=True,
+            width="stretch",
             help=t("nav_about_help"),
         ):
             show_about_dialog()
@@ -709,7 +709,7 @@ def render_brand_sidebar(current_page: str = "main"):
             t("nav_exit_app"),
             key=f"efs_btn_exit_app_{current_page}",
             icon=":material/power_settings_new:",
-            use_container_width=True,
+            width="stretch",
             help=t("nav_exit_app_help"),
         ):
             show_exit_app_dialog()

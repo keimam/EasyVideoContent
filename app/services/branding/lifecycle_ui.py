@@ -57,7 +57,7 @@ def _render_download_update_button(*, download_url: str, key: str) -> None:
         t("btn_update_download"),
         type="primary",
         key=key,
-        use_container_width=True,
+        width="stretch",
         disabled=not bool(download_url),
     ):
         platform_utils.open_url_in_browser(download_url)
@@ -94,7 +94,7 @@ def render_update_banner(*, key_prefix: str = "home") -> None:
             if st.button(
                 t("btn_update_later"),
                 key=f"btn_upd_later_{key_prefix}",
-                use_container_width=True,
+                width="stretch",
             ):
                 st.session_state["efs_update_dismissed_session"] = remote_ver
                 st.rerun()
@@ -102,7 +102,7 @@ def render_update_banner(*, key_prefix: str = "home") -> None:
             if st.button(
                 t("btn_update_skip"),
                 key=f"btn_upd_skip_{key_prefix}",
-                use_container_width=True,
+                width="stretch",
             ):
                 update_checker.skip_update_version(remote_ver)
                 st.rerun()
@@ -145,7 +145,7 @@ def render_update_check_controls(*, key_prefix: str = "settings", include_wizard
             if st.button(
                 t("btn_check_updates_now"),
                 key=f"btn_check_updates_{key_prefix}",
-                use_container_width=True,
+                width="stretch",
             ):
                 res = update_checker.check_for_updates(force=True)
                 if res.get("has_update"):
@@ -155,7 +155,7 @@ def render_update_check_controls(*, key_prefix: str = "settings", include_wizard
             if st.button(
                 t("btn_run_wizard_again"),
                 key=f"btn_rerun_wizard_{key_prefix}",
-                use_container_width=True,
+                width="stretch",
             ):
                 first_run.reset_setup_marker()
                 st.session_state["efs_wizard_skipped_session"] = False
@@ -170,7 +170,7 @@ def render_update_check_controls(*, key_prefix: str = "settings", include_wizard
         if st.button(
             t("btn_check_updates_now"),
             key=f"btn_check_updates_{key_prefix}",
-            use_container_width=True,
+            width="stretch",
         ):
             res = update_checker.check_for_updates(force=True)
             if res.get("has_update"):
@@ -212,11 +212,11 @@ def _render_update_release_dialog_body(banner: Dict[str, Any]) -> None:
     with c_dl:
         _render_download_update_button(download_url=download_url, key="btn_upd_dlg_download")
     with c_skip:
-        if st.button(t("btn_update_skip"), key="btn_upd_dlg_skip", use_container_width=True):
+        if st.button(t("btn_update_skip"), key="btn_upd_dlg_skip", width="stretch"):
             update_checker.skip_update_version(remote_ver)
             st.rerun()
     with c_close:
-        if st.button(t("dialog_close"), key="btn_upd_dlg_close", use_container_width=True):
+        if st.button(t("dialog_close"), key="btn_upd_dlg_close", width="stretch"):
             st.rerun()
 
 
@@ -317,7 +317,7 @@ def render_first_run_wizard(*, key_prefix: str = "home") -> bool:
             st.caption(t("wizard_subtitle"))
         with col_skip:
             st.write("")
-            if st.button(t("wizard_btn_skip"), key=f"btn_wiz_skip_{key_prefix}", use_container_width=True):
+            if st.button(t("wizard_btn_skip"), key=f"btn_wiz_skip_{key_prefix}", width="stretch"):
                 first_run.mark_setup_completed(skipped=True)
                 st.session_state["efs_wizard_skipped_session"] = True
                 st.session_state.pop("efs_wizard_force_open", None)
@@ -368,7 +368,7 @@ def render_first_run_wizard(*, key_prefix: str = "home") -> bool:
                 st.markdown(f"#### {t('wizard_sys_heading')}")
                 st.caption(t("wizard_sys_desc"))
             with col_s_btn:
-                if st.button(t("wizard_btn_recheck_sys"), key=f"btn_wiz_recheck_{key_prefix}", use_container_width=True):
+                if st.button(t("wizard_btn_recheck_sys"), key=f"btn_wiz_recheck_{key_prefix}", width="stretch"):
                     st.session_state.pop("efs_wizard_specs", None)
                     st.rerun()
 
@@ -437,7 +437,7 @@ def render_first_run_wizard(*, key_prefix: str = "home") -> bool:
             )
             col_sv, col_tc, col_qt = st.columns(3)
             with col_sv:
-                if st.button(t("wizard_btn_save_or_key"), key=f"btn_wiz_save_or_{key_prefix}", use_container_width=True):
+                if st.button(t("wizard_btn_save_or_key"), key=f"btn_wiz_save_or_{key_prefix}", width="stretch"):
                     cleaned_or = new_or_key.strip()
                     config.app["openrouter_api_key"] = cleaned_or
                     if cleaned_or:
@@ -447,7 +447,7 @@ def render_first_run_wizard(*, key_prefix: str = "home") -> bool:
                     config.save_config()
                     st.success(t("wizard_or_key_saved"))
             with col_tc:
-                if st.button(t("wizard_btn_test_or"), key=f"btn_wiz_test_or_{key_prefix}", use_container_width=True):
+                if st.button(t("wizard_btn_test_or"), key=f"btn_wiz_test_or_{key_prefix}", width="stretch"):
                     if new_or_key.strip() != cur_or_key:
                         config.app["openrouter_api_key"] = new_or_key.strip()
                         if new_or_key.strip():
@@ -458,7 +458,7 @@ def render_first_run_wizard(*, key_prefix: str = "home") -> bool:
                     ok, msg, lat = test_llm_connection()
                     st.session_state["efs_wiz_or_test"] = (ok, msg, lat)
             with col_qt:
-                if st.button(t("wizard_btn_quota_or"), key=f"btn_wiz_quota_or_{key_prefix}", use_container_width=True):
+                if st.button(t("wizard_btn_quota_or"), key=f"btn_wiz_quota_or_{key_prefix}", width="stretch"):
                     if new_or_key.strip() != cur_or_key:
                         config.app["openrouter_api_key"] = new_or_key.strip()
                         config.save_config()
@@ -592,7 +592,7 @@ def render_first_run_wizard(*, key_prefix: str = "home") -> bool:
                     t("wizard_btn_create_sample"),
                     type="primary",
                     key=f"btn_wiz_finish_sample_{key_prefix}",
-                    use_container_width=True,
+                    width="stretch",
                 ):
                     pid, _ = first_run.create_starter_sample_project(lang=cur_lang)
                     first_run.mark_setup_completed(skipped=False, extra={"created_sample_project": pid})
@@ -607,7 +607,7 @@ def render_first_run_wizard(*, key_prefix: str = "home") -> bool:
                 if st.button(
                     t("wizard_btn_finish_only"),
                     key=f"btn_wiz_finish_only_{key_prefix}",
-                    use_container_width=True,
+                    width="stretch",
                 ):
                     first_run.mark_setup_completed(skipped=False)
                     st.session_state.pop("efs_wizard_force_open", None)
@@ -621,12 +621,12 @@ def render_first_run_wizard(*, key_prefix: str = "home") -> bool:
         col_prev, col_mid, col_next = st.columns([1, 2, 1])
         with col_prev:
             if step > 1:
-                if st.button(t("wizard_btn_prev"), key=f"btn_wiz_prev_{key_prefix}", use_container_width=True):
+                if st.button(t("wizard_btn_prev"), key=f"btn_wiz_prev_{key_prefix}", width="stretch"):
                     st.session_state["efs_wizard_step"] = step - 1
                     st.rerun()
         with col_next:
             if step < 6:
-                if st.button(t("wizard_btn_next"), type="primary", key=f"btn_wiz_next_{key_prefix}", use_container_width=True):
+                if st.button(t("wizard_btn_next"), type="primary", key=f"btn_wiz_next_{key_prefix}", width="stretch"):
                     st.session_state["efs_wizard_step"] = step + 1
                     st.rerun()
 
@@ -646,14 +646,14 @@ def _render_credits_dialog_body(project_dir: Path, project_id: str) -> None:
 
     if not credits_path.is_file():
         st.warning(t("credits_file_missing"))
-        if st.button(t("dialog_close"), key=f"btn_credits_close_missing_{project_id}", use_container_width=True):
+        if st.button(t("dialog_close"), key=f"btn_credits_close_missing_{project_id}", width="stretch"):
             st.rerun()
         return
 
     content = credits_path.read_text(encoding="utf-8", errors="replace")
     col_c1, col_c2 = st.columns(2)
     with col_c1:
-        if st.button(t("credits_btn_copy"), type="primary", key=f"btn_credits_copy_{project_id}", use_container_width=True):
+        if st.button(t("credits_btn_copy"), type="primary", key=f"btn_credits_copy_{project_id}", width="stretch"):
             copied = platform_utils.copy_text_to_clipboard(content)
             st.session_state[f"_credits_copy_state_{project_id}"] = "ok" if copied else "fallback"
     with col_c2:
@@ -662,7 +662,7 @@ def _render_credits_dialog_body(project_dir: Path, project_id: str) -> None:
             data=content,
             file_name=f"{project_id}_credits.md",
             mime="text/markdown",
-            use_container_width=True,
+            width="stretch",
             key=f"btn_credits_dl_{project_id}",
         )
 

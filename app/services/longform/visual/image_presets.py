@@ -493,7 +493,7 @@ def render_openai_image_preset_controls(
             t("btn_apply_image_preset"),
             key="btn_apply_openai_image_preset",
             disabled=(sel_preset == "custom" and inferred == "custom"),
-            use_container_width=True,
+            width="stretch",
         ):
             def _save_key_val(k: str, v: Any) -> None:
                 _cfg.app[k] = v
@@ -531,7 +531,7 @@ def render_openai_image_preset_controls(
         if st_module.button(
             t("btn_test_single_image"),
             key="btn_test_single_image_settings",
-            use_container_width=True,
+            width="stretch",
         ):
             test_vals = resolve_active_openai_image_form_values(
                 session_state=st_module.session_state,
