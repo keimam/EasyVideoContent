@@ -342,7 +342,11 @@ def render_settings_studio_controls(*, key_prefix: str = "settings") -> None:
                         detail = t("settings_failover_needs_model")
                     elif code_s == "invalid_key":
                         icon = "⚠️"
-                        detail = t("settings_failover_invalid_key")
+                        detail = (
+                            t("settings_failover_invalid_key_gemini")
+                            if ("gemini" in pid_s or "google" in pid_s)
+                            else t("settings_failover_invalid_key")
+                        )
                     else:
                         icon = "⚠️"
                         detail = t("settings_failover_no_key")
@@ -368,11 +372,19 @@ def render_settings_studio_controls(*, key_prefix: str = "settings") -> None:
                         )
                     )
                 else:
+                    tr_status = str(tr.get("status") or "")
+                    clean_m = sanitize_error(str(tr.get("message") or ""))[:140]
+                    if tr_status == "invalid_key_format":
+                        disp_msg = t("settings_failover_test_fmt_invalid", msg=clean_m)
+                    elif tr_status == "auth_rejected":
+                        disp_msg = t("settings_failover_test_auth_rejected", msg=clean_m)
+                    else:
+                        disp_msg = clean_m
                     st.warning(
                         t(
                             "settings_failover_test_fail",
                             label=tr.get("label") or tr.get("provider"),
-                            msg=sanitize_error(str(tr.get("message") or ""))[:140],
+                            msg=disp_msg,
                         )
                     )
     except Exception as exc:

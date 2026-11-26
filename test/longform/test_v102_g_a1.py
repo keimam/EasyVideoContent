@@ -162,3 +162,41 @@ def test_ga1_3_flashback_variant_strips_relative_age_and_carried_objects():
     assert "young woman" not in low2 and "early 20s" not in low2
     assert "doll" not in low2 and "lantern" not in low2
     assert "braided auburn hair" in low2 and "wool shawl" in low2
+
+
+def test_ga1_4_invalid_key_format_vs_server_auth_rejected_and_ui_copy(monkeypatch):
+    """GA1.4: Settings & Uji semua distinguish invalid key format vs server 401/403 without rejecting valid custom keys."""
+    from unittest.mock import patch
+
+    from app.services.longform.llm_adapter import (
+        get_llm_readiness,
+        get_provider_chain_status,
+        test_all_llm_providers as run_test_all,
+    )
+    from app.services.longform.ui.i18n import EN_TRANSLATIONS, ID_TRANSLATIONS
+
+    # 1. Invalid Gemini prefix -> format error, no server call made
+    monkeypatch.setitem(config.app, "llm_provider", "openrouter")
+    monkeypatch.setitem(config.app, "openrouter_api_key", "custom-valid-provider-token-without-sk-prefix")
+    monkeypatch.setitem(config.app, "gemini_api_key", "not-a-gemini-key")
+
+    # Lightweight format heuristic must NOT reject a valid server key for non-Gemini providers
+    assert get_llm_readiness("openrouter")["configured"] is True
+
+    statuses = {s["provider"]: s for s in get_provider_chain_status(["openrouter", "gemini"])}
+    assert statuses["gemini"]["status"] == "invalid_key"
+    assert "Key Gemini tidak dikenali, cek kembali di Google AI Studio" in statuses["gemini"]["message"]
+    assert ID_TRANSLATIONS["settings_failover_invalid_key_gemini"] == "Key Gemini tidak dikenali, cek kembali di Google AI Studio"
+    assert "settings_failover_invalid_key_gemini" in EN_TRANSLATIONS
+
+    # 2. Uji semua distinguishes invalid_key_format (gemini, skipped before network) vs auth_rejected (openrouter 401)
+    with patch(
+        "app.services.longform.llm_adapter.test_llm_provider",
+        return_value=(False, "HTTP 401 Unauthorized: User not found", 0.12),
+    ):
+        results = {r["provider"]: r for r in run_test_all(["openrouter", "gemini"])}
+
+    assert results["gemini"]["status"] == "invalid_key_format"
+    assert "Google AI Studio" in results["gemini"]["message"]
+    assert results["openrouter"]["status"] == "auth_rejected"
+    assert "401/403" in results["openrouter"]["message"]

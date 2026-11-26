@@ -1387,7 +1387,7 @@ def get_llm_readiness(provider_id: Optional[str] = None) -> Dict[str, Any]:
                 "configured": False,
                 "is_invalid": True,
                 "masked_key": _mask_secret(raw_key),
-                "message": "Key Gemini tampaknya tidak valid (seharusnya dimulai dengan 'AIza'). Periksa kembali di Settings -> Pengaturan AI (LLM).",
+                "message": "Key Gemini tidak dikenali, cek kembali di Google AI Studio",
                 "configured_providers": configured_tuple,
                 "requires_api_key": True,
             }
@@ -2446,14 +2446,24 @@ def test_all_llm_providers(chain: Optional[Sequence[str]] = None, timeout: float
         prov_def = get_llm_provider(pid)
         model_name = str(readiness.get("model") or "").strip()
         if not readiness.get("configured"):
+            is_fmt_bad = bool(readiness.get("is_invalid"))
+            default_fmt_msg = (
+                "Key Gemini tidak dikenali, cek kembali di Google AI Studio"
+                if ("gemini" in pid or "google" in pid)
+                else "Format key tidak dikenali"
+            )
             results.append({
                 "provider": pid,
                 "label": readiness.get("provider_label") or pid,
                 "model": model_name,
                 "ok": False,
-                "status": "invalid_key" if readiness.get("is_invalid") else "no_key",
+                "status": "invalid_key_format" if is_fmt_bad else "no_key",
                 "latency": 0.0,
-                "message": "API key belum diatur" if not readiness.get("is_invalid") else "API key tidak valid",
+                "message": (
+                    sanitize_error(str(readiness.get("message") or default_fmt_msg))
+                    if is_fmt_bad
+                    else "API key belum diatur"
+                ),
             })
             continue
         if prov_def and prov_def.requires_model_name and not model_name:
@@ -2468,14 +2478,19 @@ def test_all_llm_providers(chain: Optional[Sequence[str]] = None, timeout: float
             })
             continue
         ok, msg, latency = test_llm_provider(pid, timeout=timeout)
+        status_out = "ok" if ok else "failed"
+        low_m = str(msg or "").lower()
+        if not ok and any(tok in low_m for tok in ("401", "403", "unauthorized", "invalid api key", "user not found", "auth")):
+            status_out = "auth_rejected"
+        clean_out = sanitize_error(msg or "") if ok else format_concise_llm_error(msg or "", pid)
         results.append({
             "provider": pid,
             "label": readiness.get("provider_label") or pid,
             "model": model_name,
             "ok": bool(ok),
-            "status": "ok" if ok else "failed",
+            "status": status_out,
             "latency": round(float(latency or 0.0), 2),
-            "message": sanitize_error(msg or ""),
+            "message": clean_out,
         })
     return results
 
