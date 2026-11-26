@@ -281,6 +281,8 @@ def cached_json_get(
     headers: Optional[Dict[str, str]] = None,
     timeout: Optional[int] = None,
     min_interval_sec: float = 0.35,
+    auth_fail_statuses: Tuple[int, ...] = (),
+    on_auth_failure: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Perform HTTP GET with User-Agent, rate-limit etiquette, 429/5xx cooldown circuit breaker, and 24h JSON cache."""
     media_cache = cache or GlobalMediaCache()
@@ -310,6 +312,8 @@ def cached_json_get(
         headers=req_headers,
         timeout=timeout,
         min_interval_sec=min_interval_sec,
+        auth_fail_statuses=auth_fail_statuses,
+        on_auth_failure=on_auth_failure,
     )
     try:
         tmp_c = cache_file.with_suffix(".tmp")

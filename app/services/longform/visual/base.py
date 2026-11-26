@@ -646,10 +646,16 @@ def sanitize_source_error(error_text: Optional[str], max_len: int = 120) -> Opti
             for tok in tokens:
                 if len(tok) >= 4:
                     out = out.replace(tok, "***")
+        from app.services.longform.config import get_smithsonian_api_key
+
+        si_tok = str(get_smithsonian_api_key() or "").strip()
+        if len(si_tok) >= 4:
+            out = out.replace(si_tok, "***")
     except Exception:
         pass
     out = re.sub(r"(?i)bearer\s+[a-z0-9_\-\.]{4,}", "Bearer ***", out)
-    out = re.sub(r"(?i)([?&](?:key|api_key|token)=)[^&\s]+", r"\1***", out)
+    out = re.sub(r"(?i)([?&](?:key|api_key|token|x-api-key)=)[^&\s]+", r"\1***", out)
+    out = re.sub(r"(?i)(x-api-key\s*[:=]\s*)[^\s,;]+", r"\1***", out)
     out = re.sub(r"(?i)\b(sk|key|cov|tgp|di|tok)-[a-z0-9_\-]{4,}", r"\1-***", out)
     out = " ".join(out.splitlines()).strip()
     return out[:max_len]

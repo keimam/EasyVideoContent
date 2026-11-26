@@ -7,6 +7,7 @@ safe, conservative in-code defaults. Does NOT modify or rely on upstream config.
 from __future__ import annotations
 
 import os
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -85,6 +86,7 @@ class LongformConfig:
     capcut_download_url: str = "https://www.capcut.com/"
     network_profile: str = "normal"
     llm_failover_chain: tuple[str, ...] = ()
+    smithsonian_api_key: str = ""
 
 
 _CONFIG_CACHE: LongformConfig | None = None
@@ -120,6 +122,7 @@ def load_longform_config(reload: bool = False) -> LongformConfig:
         "capcut_download_url": "https://www.capcut.com/",
         "network_profile": "normal",
         "llm_failover_chain": (),
+        "smithsonian_api_key": "",
     }
 
     if config_path.is_file() and toml is not None:
@@ -137,12 +140,15 @@ def load_longform_config(reload: bool = False) -> LongformConfig:
                     "atomic_retry_delay_seconds",
                     "network_profile",
                     "llm_failover_chain",
+                    "smithsonian_api_key",
                 ):
                     if key in section:
                         if key == "network_profile":
                             defaults[key] = normalize_network_profile(section[key])
                         elif key == "llm_failover_chain":
                             defaults[key] = normalize_llm_failover_chain(section[key])
+                        elif key == "smithsonian_api_key":
+                            defaults[key] = str(section[key] or "").strip()
                         else:
                             defaults[key] = section[key]
                 cc_section = data.get("capcut")
@@ -166,6 +172,59 @@ def get_llm_failover_chain(*, reload: bool = False) -> list[str]:
     """Return configured backup LLM provider IDs in priority order (default `[]`) (G1)."""
     cfg = load_longform_config(reload=reload)
     return list(normalize_llm_failover_chain(getattr(cfg, "llm_failover_chain", ())))
+
+
+def get_smithsonian_api_key(*, reload: bool = False) -> str:
+    """Return configured optional BYOK Smithsonian / api.data.gov API key."""
+    cfg = load_longform_config(reload=reload)
+    return str(getattr(cfg, "smithsonian_api_key", "") or "").strip()
+
+
+def save_smithsonian_api_key(
+    api_key: Any,
+    *,
+    config_path: Path | None = None,
+) -> str:
+    """Persist optional BYOK `smithsonian_api_key` to user longform.toml atomically (D2.2)."""
+    from app.services.longform import app_paths
+
+    clean = str(api_key or "").strip()
+    target_path = config_path or (app_paths.get_data_dir(create=True) / "config" / "longform.toml")
+    target_path = Path(target_path)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+
+    base_path = app_paths.get_install_root() / "config" / "longform.toml"
+    data: dict[str, Any] = {}
+    if toml is not None:
+        for src in (target_path, base_path):
+            if src.is_file():
+                try:
+                    with open(src, "r", encoding="utf-8") as fp:
+                        loaded = toml.load(fp)
+                        if isinstance(loaded, dict):
+                            data = loaded
+                            break
+                except Exception as exc:
+                    logger.warning(f"Could not parse {src}: {exc}")
+        lf_sec = data.get("longform")
+        if not isinstance(lf_sec, dict):
+            lf_sec = {}
+            data["longform"] = lf_sec
+        lf_sec["smithsonian_api_key"] = clean
+        serialized = toml.dumps(data)
+    else:
+        serialized = f'[longform]\nsmithsonian_api_key = "{clean}"\n'
+
+    tmp_path = target_path.parent / f".{target_path.name}.tmp.{uuid.uuid4().hex}"
+    try:
+        tmp_path.write_text(serialized, encoding="utf-8")
+        os.replace(tmp_path, target_path)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+
+    load_longform_config(reload=True)
+    return clean
 
 
 def save_llm_failover_chain(

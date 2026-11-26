@@ -27,10 +27,12 @@ from loguru import logger
 from app.services.longform.visual.base import (
     VisualAsset,
     VisualCandidate,
+    VisualConfigurationError,
     VisualError,
     compute_file_content_hash,
     is_commercial_license_allowed,
     record_download_io,
+    record_provider_status_event,
     sanitize_source_error,
 )
 from app.services.longform.visual.cache import GlobalMediaCache
@@ -41,6 +43,7 @@ from app.services.longform.visual.free_providers import (
     _extract_tags_from_texts,
     _respect_rate_limit,
     cached_json_get,
+    resilient_http_json_get,
 )
 
 # ---------------------------------------------------------------------------
@@ -784,3 +787,426 @@ class InternetArchiveVisualProvider(_FreeApiProviderBase):
             return asset
 
         return super().fetch_asset(candidate, dest_path)
+
+
+# ---------------------------------------------------------------------------
+# Smithsonian Open Access API provider (BYOK api.data.gov, Images only)
+# ---------------------------------------------------------------------------
+
+import threading as _threading
+
+_SMITHSONIAN_AUTH_LOCK = _threading.Lock()
+_SMITHSONIAN_AUTH_STATE: Dict[str, Any] = {
+    "blocked": False,
+    "key_hash": "",
+    "status_code": None,
+    "error": None,
+    "has_succeeded": False,
+}
+
+_SMITHSONIAN_RIGHTS_REJECT_RE = re.compile(
+    r"(?:\blimited\s+use\b|\bpermission\s+required\b|\ball\s+rights\s+reserved\b|\bin\s+copyright\b|©)",
+    re.IGNORECASE,
+)
+
+
+class SmithsonianAuthBlockedError(VisualError):
+    """Raised when Smithsonian / api.data.gov rejects requests with HTTP 401/403 until key changes."""
+
+    def __init__(self, message: str, *, status_code: Optional[int] = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+def _si_key_hash(api_key: str) -> str:
+    return hashlib.sha256(str(api_key or "").strip().encode("utf-8")).hexdigest()[:16]
+
+
+def _sync_smithsonian_key_hash_locked(key_hash: str) -> bool:
+    prev_hash = str(_SMITHSONIAN_AUTH_STATE.get("key_hash") or "")
+    if prev_hash != key_hash:
+        changed = bool(prev_hash)
+        _SMITHSONIAN_AUTH_STATE["blocked"] = False
+        _SMITHSONIAN_AUTH_STATE["key_hash"] = key_hash
+        _SMITHSONIAN_AUTH_STATE["status_code"] = None
+        _SMITHSONIAN_AUTH_STATE["error"] = None
+        _SMITHSONIAN_AUTH_STATE["has_succeeded"] = False
+        return changed
+    return False
+
+
+def reset_smithsonian_auth_block() -> None:
+    """Clear process-level Smithsonian auth_blocked state (for tests or key updates)."""
+    with _SMITHSONIAN_AUTH_LOCK:
+        _SMITHSONIAN_AUTH_STATE["blocked"] = False
+        _SMITHSONIAN_AUTH_STATE["key_hash"] = ""
+        _SMITHSONIAN_AUTH_STATE["status_code"] = None
+        _SMITHSONIAN_AUTH_STATE["error"] = None
+        _SMITHSONIAN_AUTH_STATE["has_succeeded"] = False
+
+
+def get_smithsonian_auth_status(api_key: Optional[str] = None) -> Dict[str, Any]:
+    """Return non-blocking status dict (`configured`, `auth_blocked`, `status_code`, `error`)."""
+    resolved = str(api_key if api_key is not None else _resolve_smithsonian_key()).strip()
+    configured = bool(resolved)
+    kh = _si_key_hash(resolved) if configured else ""
+    with _SMITHSONIAN_AUTH_LOCK:
+        if configured:
+            _sync_smithsonian_key_hash_locked(kh)
+            blocked = bool(_SMITHSONIAN_AUTH_STATE.get("blocked") and _SMITHSONIAN_AUTH_STATE.get("key_hash") == kh)
+        else:
+            blocked = False
+        return {
+            "configured": configured,
+            "auth_blocked": blocked,
+            "status_code": _SMITHSONIAN_AUTH_STATE.get("status_code") if blocked else None,
+            "error": _SMITHSONIAN_AUTH_STATE.get("error") if blocked else None,
+            "has_succeeded": bool(_SMITHSONIAN_AUTH_STATE.get("has_succeeded")) if configured else False,
+        }
+
+
+def _resolve_smithsonian_key() -> str:
+    """Read BYOK Smithsonian key from longform config (requires user-supplied key)."""
+    try:
+        from app.services.longform.config import get_smithsonian_api_key
+
+        return str(get_smithsonian_api_key() or "").strip()
+    except Exception:
+        return ""
+
+
+def _smithsonian_rights_restricted(content: Dict[str, Any]) -> Optional[str]:
+    """Reject rows carrying Limited Use, permission required, or copyright claims."""
+    indexed = content.get("indexedStructured") or {}
+    online_rights = _normalize_list_field(indexed.get("online_media_rights"))
+    for r in online_rights:
+        low = r.lower()
+        if "cc0" in low:
+            continue
+        if _SMITHSONIAN_RIGHTS_REJECT_RE.search(r) or low not in ("", "public domain", "no known copyright restrictions"):
+            return f"online_media_rights restricted: {r[:60]}"
+
+    freetext = content.get("freetext") or {}
+    obj_rights = freetext.get("objectRights") or []
+    for entry in obj_rights if isinstance(obj_rights, list) else [obj_rights]:
+        val = str(entry.get("content") if isinstance(entry, dict) else entry or "").strip()
+        if not val:
+            continue
+        if _SMITHSONIAN_RIGHTS_REJECT_RE.search(val) or (
+            _COPYRIGHT_WORD_RE.search(val) and not _NEGATED_COPYRIGHT_RE.search(val)
+        ):
+            return f"objectRights restricted: {val[:60]}"
+    return None
+
+
+def _pick_smithsonian_jpeg(media_item: Dict[str, Any]) -> Optional[Tuple[str, int, int, str]]:
+    """Select 'High-resolution JPEG' resource (>=1280px when reported) avoiding giant TIFFs."""
+    resources = media_item.get("resources") if isinstance(media_item.get("resources"), list) else []
+    jpegs: List[Tuple[Tuple[int, int], str, int, int, str]] = []
+    for res in resources:
+        if not isinstance(res, dict):
+            continue
+        label = str(res.get("label") or "").strip()
+        low_label = label.lower()
+        r_url = str(res.get("url") or "").strip()
+        if not r_url:
+            continue
+        if "tiff" in low_label or r_url.lower().endswith((".tif", ".tiff")):
+            continue
+        if "jpeg" not in low_label and "jpg" not in low_label and not r_url.lower().endswith((".jpg", ".jpeg")):
+            continue
+        try:
+            w = int(float(res.get("width") or media_item.get("width") or 0))
+            h = int(float(res.get("height") or media_item.get("height") or 0))
+        except (TypeError, ValueError):
+            w, h = 0, 0
+        if w and w < 1280:
+            continue
+        prio = 0 if "high-resolution jpeg" in low_label else 1
+        jpegs.append(((prio, -w), r_url, w or 1600, h or 1066, label or "JPEG"))
+
+    if jpegs:
+        jpegs.sort(key=lambda it: it[0])
+        _, r_url, w, h, label = jpegs[0]
+        return r_url, w, h, label
+
+    fallback_url = str(media_item.get("content") or "").strip()
+    if fallback_url:
+        try:
+            w = int(float(media_item.get("width") or 0))
+            h = int(float(media_item.get("height") or 0))
+        except (TypeError, ValueError):
+            w, h = 0, 0
+        if not w or w >= 1280:
+            return fallback_url, (w or 1600), (h or 1066), "deliveryService"
+    return None
+
+
+def validate_smithsonian_row(row: Dict[str, Any]) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
+    """Validate one Smithsonian search row strictly for CC0 image rights & >=1280px JPEG."""
+    row_id = str(row.get("id") or "").strip()
+    content = row.get("content") or {}
+    dnr = content.get("descriptiveNonRepeating") or {}
+    rights_err = _smithsonian_rights_restricted(content)
+    if rights_err:
+        return False, f"{row_id}: {rights_err}", None
+
+    online_media = (dnr.get("online_media") or {}).get("media") or []
+    if not isinstance(online_media, list) or not online_media:
+        return False, f"{row_id}: missing online_media.media", None
+
+    chosen_media: Optional[Dict[str, Any]] = None
+    chosen_asset: Optional[Tuple[str, int, int, str]] = None
+    for m in online_media:
+        if not isinstance(m, dict):
+            continue
+        m_type = str(m.get("type") or "").strip().lower()
+        if m_type not in ("images", "image"):
+            continue
+        usage_access = str(((m.get("usage") or {}).get("access")) or "").strip().upper()
+        if usage_access != "CC0":
+            continue
+        picked = _pick_smithsonian_jpeg(m)
+        if picked is not None:
+            chosen_media = m
+            chosen_asset = picked
+            break
+
+    if chosen_media is None or chosen_asset is None:
+        return False, f"{row_id}: no CC0 Images media with >=1280px JPEG", None
+
+    img_url, w, h, res_label = chosen_asset
+    title_raw = row.get("title") or (dnr.get("title") or {}).get("content") or row_id
+    title = str(title_raw or row_id).strip()
+    data_source = str(dnr.get("data_source") or "Smithsonian Institution").strip()
+    unit_code = str(dnr.get("unitCode") or "").strip()
+    record_link = str(dnr.get("record_link") or dnr.get("guid") or "").strip()
+    thumb = str(chosen_media.get("thumbnail") or chosen_media.get("content") or img_url).strip()
+
+    indexed = content.get("indexedStructured") or {}
+    topics = _normalize_list_field(indexed.get("topic")) + _normalize_list_field(indexed.get("object_type"))
+    freetext_notes = []
+    for nt in (content.get("freetext") or {}).get("notes") or []:
+        if isinstance(nt, dict) and nt.get("content"):
+            freetext_notes.append(str(nt.get("content")))
+    tags = _extract_tags_from_texts(title, data_source, " ".join(topics), " ".join(freetext_notes[:3]))
+
+    return True, "ok", {
+        "candidate_id": f"si_{row_id}",
+        "source_type": "stock_image",
+        "url": img_url,
+        "width": w,
+        "height": h,
+        "author": data_source,
+        "author_url": record_link or "https://www.si.edu/openaccess",
+        "source_url": record_link or f"https://www.si.edu/object/{urllib.parse.quote(row_id, safe='')}",
+        "license": "CC0 1.0",
+        "title": title,
+        "thumbnail_url": thumb,
+        "tags": tags,
+        "rendition_name": res_label,
+        "source_info": {
+            "record_id": row_id,
+            "data_source": data_source,
+            "unit_code": unit_code,
+            "record_link": record_link,
+            "license_url": "https://creativecommons.org/publicdomain/zero/1.0/",
+            "usage_access": "CC0",
+        },
+    }
+
+
+def test_smithsonian_api_key(api_key: str, *, timeout: int = 12) -> Tuple[bool, str]:
+    """Perform a single lightweight probe request to verify a user's Smithsonian api.data.gov key."""
+    clean_key = str(api_key or "").strip()
+    if not clean_key:
+        return False, "Missing Smithsonian / api.data.gov key"
+
+    kh = _si_key_hash(clean_key)
+    with _SMITHSONIAN_AUTH_LOCK:
+        _sync_smithsonian_key_hash_locked(kh)
+
+    def _on_auth_fail(status_code: int, snippet: str) -> str:
+        safe = sanitize_source_error(snippet, max_len=140) or f"HTTP {status_code}"
+        with _SMITHSONIAN_AUTH_LOCK:
+            _SMITHSONIAN_AUTH_STATE["blocked"] = True
+            _SMITHSONIAN_AUTH_STATE["key_hash"] = kh
+            _SMITHSONIAN_AUTH_STATE["status_code"] = int(status_code)
+            _SMITHSONIAN_AUTH_STATE["error"] = safe
+        record_provider_status_event("smithsonian", "auth_blocked", error=safe, max_len=140)
+        return "auth_blocked"
+
+    try:
+        resilient_http_json_get(
+            "smithsonian",
+            SmithsonianVisualProvider.SEARCH_URL,
+            params={"q": "landscape AND online_media_type:Images", "rows": 1},
+            headers={"User-Agent": EASYFACELESS_USER_AGENT, "Accept": "application/json", "X-Api-Key": clean_key},
+            timeout=timeout,
+            min_interval_sec=0.35,
+            auth_fail_statuses=(401, 403),
+            on_auth_failure=_on_auth_fail,
+        )
+        with _SMITHSONIAN_AUTH_LOCK:
+            _SMITHSONIAN_AUTH_STATE["blocked"] = False
+            _SMITHSONIAN_AUTH_STATE["key_hash"] = kh
+            _SMITHSONIAN_AUTH_STATE["has_succeeded"] = True
+            _SMITHSONIAN_AUTH_STATE["status_code"] = None
+            _SMITHSONIAN_AUTH_STATE["error"] = None
+        return True, "OK"
+    except Exception as exc:
+        safe_msg = sanitize_source_error(str(exc).replace(clean_key, "***"), max_len=160) or "Request failed"
+        return False, safe_msg
+
+
+class SmithsonianVisualProvider(_FreeApiProviderBase):
+    """BYOK Smithsonian Open Access API provider (CC0 Images only, >=1280px JPEG)."""
+
+    SEARCH_URL = "https://api.si.edu/openaccess/api/v1.0/search"
+
+    def __init__(
+        self,
+        cache: Optional[GlobalMediaCache] = None,
+        credits_manager: Optional[CreditsManager] = None,
+        *,
+        api_key: Optional[str] = None,
+    ) -> None:
+        super().__init__(cache=cache, credits_manager=credits_manager)
+        self._explicit_api_key = str(api_key).strip() if api_key is not None else None
+
+    @property
+    def name(self) -> str:
+        return "smithsonian"
+
+    def _get_api_key(self) -> str:
+        if self._explicit_api_key is not None:
+            return self._explicit_api_key
+        return _resolve_smithsonian_key()
+
+    def validate_credentials(self) -> None:
+        key = self._get_api_key()
+        if not key:
+            raise VisualConfigurationError(
+                "Smithsonian Open Access API key is not configured (optional BYOK api.data.gov key)."
+            )
+        st = get_smithsonian_auth_status(key)
+        if st.get("auth_blocked"):
+            raise SmithsonianAuthBlockedError(
+                st.get("error") or "Smithsonian API key blocked (HTTP 401/403).",
+                status_code=st.get("status_code"),
+            )
+
+    def search_with_diagnostics(
+        self,
+        query: str,
+        target_duration: float,
+        limit: int = 3,
+        excluded_ids: Optional[Set[str]] = None,
+        required_subject_terms: Optional[List[str]] = None,
+        blocked_terms: Optional[List[str]] = None,
+        visual_keywords: Optional[List[str]] = None,
+        negative_terms: Optional[List[str]] = None,
+        anchor_terms: Optional[List[str]] = None,
+        avoid_terms: Optional[List[str]] = None,
+        min_relevance_score: Optional[float] = None,
+        **kwargs: Any,
+    ) -> Tuple[List[VisualCandidate], int, List[str]]:
+        key = self._get_api_key()
+        if not key:
+            return [], 0, ["smithsonian inactive: missing api.data.gov key"]
+
+        kh = _si_key_hash(key)
+        with _SMITHSONIAN_AUTH_LOCK:
+            _sync_smithsonian_key_hash_locked(kh)
+            if _SMITHSONIAN_AUTH_STATE.get("blocked") and _SMITHSONIAN_AUTH_STATE.get("key_hash") == kh:
+                raise SmithsonianAuthBlockedError(
+                    _SMITHSONIAN_AUTH_STATE.get("error") or "Smithsonian auth_blocked until API key changes.",
+                    status_code=_SMITHSONIAN_AUTH_STATE.get("status_code"),
+                )
+
+        if not str(query or "").strip():
+            return [], 0, []
+
+        clean_q = re.sub(r'["()]+', " ", str(query)).strip()
+        params = {
+            "q": f"({clean_q}) AND online_media_type:Images",
+            "rows": 20,
+        }
+
+        def _on_auth_fail(status_code: int, snippet: str) -> str:
+            safe = sanitize_source_error(snippet.replace(key, "***"), max_len=200) or f"HTTP {status_code}"
+            with _SMITHSONIAN_AUTH_LOCK:
+                _SMITHSONIAN_AUTH_STATE["blocked"] = True
+                _SMITHSONIAN_AUTH_STATE["key_hash"] = kh
+                _SMITHSONIAN_AUTH_STATE["status_code"] = int(status_code)
+                _SMITHSONIAN_AUTH_STATE["error"] = safe
+            record_provider_status_event("smithsonian", "auth_blocked", error=safe, max_len=200)
+            logger.warning(f"Smithsonian auth_blocked after HTTP {status_code} ({safe})")
+            return "auth_blocked"
+
+        try:
+            payload = cached_json_get(
+                self.name,
+                self.SEARCH_URL,
+                params=params,
+                cache=self.cache,
+                headers={"X-Api-Key": key},
+                min_interval_sec=0.35,
+                auth_fail_statuses=(401, 403),
+                on_auth_failure=_on_auth_fail,
+            )
+        except Exception as exc:
+            with _SMITHSONIAN_AUTH_LOCK:
+                is_blocked = bool(_SMITHSONIAN_AUTH_STATE.get("blocked") and _SMITHSONIAN_AUTH_STATE.get("key_hash") == kh)
+                code = _SMITHSONIAN_AUTH_STATE.get("status_code")
+            safe_exc = sanitize_source_error(str(exc).replace(key, "***"), max_len=200) or "Smithsonian error"
+            if is_blocked:
+                raise SmithsonianAuthBlockedError(safe_exc, status_code=code) from exc
+            raise VisualError(safe_exc) from exc
+
+        with _SMITHSONIAN_AUTH_LOCK:
+            _sync_smithsonian_key_hash_locked(kh)
+            _SMITHSONIAN_AUTH_STATE["has_succeeded"] = True
+            _SMITHSONIAN_AUTH_STATE["status_code"] = None
+            _SMITHSONIAN_AUTH_STATE["error"] = None
+
+        rows = ((payload.get("response") or {}).get("rows")) or []
+        raw_items: List[Dict[str, Any]] = []
+        rejected_early: List[str] = []
+        for row in rows[:20]:
+            if not isinstance(row, dict):
+                continue
+            ok, reason, item = validate_smithsonian_row(row)
+            if not ok or item is None:
+                rejected_early.append(reason)
+                continue
+            item["duration_seconds"] = float(target_duration or 5.0)
+            raw_items.append(item)
+
+        accepted, _, rej_score = self._score_and_filter_items(
+            raw_items,
+            query=query,
+            limit=limit,
+            excluded_ids=excluded_ids,
+            required_subject_terms=required_subject_terms,
+            blocked_terms=blocked_terms,
+            visual_keywords=visual_keywords,
+            negative_terms=negative_terms,
+            anchor_terms=anchor_terms,
+            avoid_terms=avoid_terms,
+            min_relevance_score=min_relevance_score,
+            narration_text=kwargs.get("narration_text"),
+            strict_ai_relevance=bool(kwargs.get("strict_ai_relevance", False)),
+            recommended_visual_sources=kwargs.get("recommended_visual_sources"),
+        )
+        return accepted, len(rows), (rejected_early + rej_score)
+
+    def search_candidates(
+        self,
+        query: str,
+        target_duration: float,
+        limit: int = 3,
+        **kwargs: Any,
+    ) -> List[VisualCandidate]:
+        cands, _, _ = self.search_with_diagnostics(query, target_duration, limit=limit, **kwargs)
+        return cands
