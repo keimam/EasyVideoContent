@@ -2756,9 +2756,12 @@ class VisualService:
         self._last_pipeline_metrics = pipeline_metrics
 
         try:
+            from app.services.longform.visual.image_presets import redact_api_secrets
+
             metrics_file = self.project_dir / "visual_metrics.json"
             metrics_tmp = metrics_file.with_suffix(".json.tmp")
-            metrics_tmp.write_text(json.dumps(pipeline_metrics, ensure_ascii=False, indent=2), encoding="utf-8")
+            clean_json = redact_api_secrets(json.dumps(pipeline_metrics, ensure_ascii=False, indent=2))
+            metrics_tmp.write_text(clean_json, encoding="utf-8")
             os.replace(metrics_tmp, metrics_file)
         except Exception as m_exc:
             logger.debug(f"Could not save visual_metrics.json: {m_exc}")

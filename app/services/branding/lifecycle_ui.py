@@ -273,6 +273,110 @@ def render_settings_studio_controls(*, key_prefix: str = "settings") -> None:
     except Exception as exc:
         logger.debug(f"Network profile setting control warning: {exc}")
 
+    try:
+        from app.config import config as app_config
+        from app.models.llm_provider import DEFAULT_LLM_PROVIDER_ID, get_llm_provider
+        from app.services.longform.config import (
+            DEFAULT_FAILOVER_CANDIDATES,
+            get_llm_failover_chain,
+            save_llm_failover_chain,
+        )
+        from app.services.longform.llm_adapter import (
+            get_provider_chain_status,
+            sanitize_error,
+            test_all_llm_providers,
+        )
+
+        with st.container(border=True):
+            st.markdown(f"**🔄 {t('settings_failover_heading')}**")
+            st.caption(t("settings_failover_help"))
+
+            active_primary = str(app_config.app.get("llm_provider") or DEFAULT_LLM_PROVIDER_ID).lower().strip()
+            candidate_pool: list[str] = []
+            for cid in (*DEFAULT_FAILOVER_CANDIDATES, "openai", "moonshot", "zhipu", "deepseek", "groq", "gemini", "openrouter"):
+                if cid and cid != active_primary and cid not in candidate_pool:
+                    candidate_pool.append(cid)
+
+            saved_chain = [c for c in get_llm_failover_chain() if c != active_primary]
+            for extra_c in saved_chain:
+                if extra_c not in candidate_pool:
+                    candidate_pool.append(extra_c)
+
+            def _fmt_prov(pid: str) -> str:
+                pdef = get_llm_provider(pid)
+                return pdef.display_name if pdef else pid
+
+            ms_key = f"{key_prefix}_llm_failover_multiselect"
+            if ms_key not in st.session_state or not isinstance(st.session_state.get(ms_key), list):
+                st.session_state[ms_key] = list(saved_chain)
+
+            def _on_failover_change() -> None:
+                chosen = list(st.session_state.get(ms_key) or [])
+                save_llm_failover_chain(chosen)
+
+            st.multiselect(
+                t("settings_failover_order_label"),
+                options=candidate_pool,
+                format_func=_fmt_prov,
+                key=ms_key,
+                on_change=_on_failover_change,
+            )
+
+            statuses = get_provider_chain_status()
+            if statuses:
+                st.caption(t("settings_failover_status_title"))
+                for idx_s, st_item in enumerate(statuses):
+                    pid_s = st_item["provider"]
+                    lbl_s = str(st_item.get("label") or pid_s)
+                    mdl_s = str(st_item.get("model") or "")
+                    code_s = str(st_item.get("status") or "no_key")
+                    if code_s == "ready":
+                        icon = "✅"
+                        detail = f"{t('settings_failover_ready')} · `{mdl_s}`" if mdl_s else t("settings_failover_ready")
+                    elif code_s in ("paused_quota", "paused_auth", "paused"):
+                        icon = "⏸"
+                        detail = t("settings_failover_paused", until=st_item.get("pause_label") or "-")
+                    elif code_s == "needs_model":
+                        icon = "⚠️"
+                        detail = t("settings_failover_needs_model")
+                    elif code_s == "invalid_key":
+                        icon = "⚠️"
+                        detail = t("settings_failover_invalid_key")
+                    else:
+                        icon = "⚠️"
+                        detail = t("settings_failover_no_key")
+                    role_tag = f" {t('settings_failover_primary_badge')}" if idx_s == 0 else ""
+                    prefix_s = "📌" if idx_s == 0 else f"{idx_s}."
+                    st.markdown(f"{prefix_s} {icon} **{lbl_s}**{role_tag} — {detail}")
+
+            test_res_key = f"{key_prefix}_failover_test_results"
+            if st.button(t("settings_failover_test_all_btn"), key=f"{key_prefix}_btn_test_all_llm"):
+                with st.spinner(t("settings_failover_test_spinner")):
+                    st.session_state[test_res_key] = test_all_llm_providers()
+
+            for tr in st.session_state.get(test_res_key) or []:
+                if not isinstance(tr, dict):
+                    continue
+                if tr.get("ok"):
+                    st.success(
+                        t(
+                            "settings_failover_test_ok",
+                            label=tr.get("label") or tr.get("provider"),
+                            model=tr.get("model") or "-",
+                            latency=tr.get("latency", 0.0),
+                        )
+                    )
+                else:
+                    st.warning(
+                        t(
+                            "settings_failover_test_fail",
+                            label=tr.get("label") or tr.get("provider"),
+                            msg=sanitize_error(str(tr.get("message") or ""))[:140],
+                        )
+                    )
+    except Exception as exc:
+        logger.debug(f"Failover settings control warning: {exc}")
+
     render_update_check_controls(key_prefix=key_prefix, include_wizard_rerun=True)
 
 

@@ -2742,14 +2742,31 @@ def _render_external_image_bridge_section(
                             idx_b = max(1, int(info.get("batch_index") or 1))
                             frac = min(1.0, max(0.0, (idx_b - (1 if info.get("stage") == "starting" else 0)) / total_b))
                             pbar.progress(frac)
-                            msg = t(
-                                "ext_batch_progress_label",
-                                idx=idx_b,
-                                total=total_b,
-                                start=info.get("shot_start", 1),
-                                end=info.get("shot_end", 1),
-                                eta=info.get("eta_seconds", 0),
-                            )
+                            raw_p = str(info.get("provider_used") or "").strip()
+                            if raw_p and raw_p not in ("cache", "fallback"):
+                                p_tag = (
+                                    t("ext_batch_provider_backup_tag", label=raw_p)
+                                    if info.get("failover_used")
+                                    else raw_p
+                                )
+                                msg = t(
+                                    "ext_batch_progress_label_provider",
+                                    idx=idx_b,
+                                    total=total_b,
+                                    start=info.get("shot_start", 1),
+                                    end=info.get("shot_end", 1),
+                                    provider=p_tag,
+                                    eta=info.get("eta_seconds", 0),
+                                )
+                            else:
+                                msg = t(
+                                    "ext_batch_progress_label",
+                                    idx=idx_b,
+                                    total=total_b,
+                                    start=info.get("shot_start", 1),
+                                    end=info.get("shot_end", 1),
+                                    eta=info.get("eta_seconds", 0),
+                                )
                             ptext.caption(msg)
                             st_box.update(label=msg)
 
@@ -2769,9 +2786,13 @@ def _render_external_image_bridge_section(
                         if int(res_exp.get("fallback_shots", 0) or 0) > 0 and bool(req_opts.get("use_ai", False)):
                             r_code = str(res_exp.get("failure_reason") or "error")
                             r_lbl = t(f"ext_reason_{r_code}") if r_code in ("quota", "timeout", "invalid_json", "no_llm_key") else t("ext_reason_error")
+                            warn_txt = t("ext_scene_ai_fallback_warn", count=int(res_exp["fallback_shots"]), reason=r_lbl)
+                            tried_list = [str(p) for p in (res_exp.get("providers_tried") or []) if p]
+                            if tried_list:
+                                warn_txt = f"{warn_txt} {t('ext_scene_ai_tried_providers_note', providers=', '.join(tried_list))}"
                             st.session_state[notice_key] = {
                                 "level": "warning",
-                                "text": t("ext_scene_ai_fallback_warn", count=int(res_exp["fallback_shots"]), reason=r_lbl),
+                                "text": warn_txt,
                             }
                         else:
                             st.session_state[notice_key] = {
@@ -3048,8 +3069,13 @@ def _render_external_image_bridge_section(
                     key=f"ms_ext_sids_{project_id}",
                 )
 
+            from app.services.longform.llm_adapter import has_any_ready_llm_provider
+
             llm_readiness = get_llm_readiness()
-            llm_ready = bool(llm_readiness.get("configured")) and not bool(llm_readiness.get("is_invalid"))
+            llm_ready = (
+                (bool(llm_readiness.get("configured")) and not bool(llm_readiness.get("is_invalid")))
+                or has_any_ready_llm_provider()
+            )
             use_ai_scene = st.checkbox(
                 t("ext_export_use_ai"),
                 value=llm_ready,
@@ -3076,7 +3102,11 @@ def _render_external_image_bridge_section(
                 if fb_cnt > 0 and (bool(cached_exp.get("_used_ai_toggle")) or int(cached_exp.get("batches_failed", 0) or 0) > 0 or cached_exp.get("failure_reason")):
                     reason_code = str(cached_exp.get("failure_reason") or "error")
                     reason_lbl = t(f"ext_reason_{reason_code}") if reason_code in ("quota", "timeout", "invalid_json", "no_llm_key") else t("ext_reason_error")
-                    st.warning(t("ext_scene_ai_fallback_warn", count=fb_cnt, reason=reason_lbl))
+                    warn_banner = t("ext_scene_ai_fallback_warn", count=fb_cnt, reason=reason_lbl)
+                    tried_list = [str(p) for p in (cached_exp.get("providers_tried") or []) if p]
+                    if tried_list:
+                        warn_banner = f"{warn_banner} {t('ext_scene_ai_tried_providers_note', providers=', '.join(tried_list))}"
+                    st.warning(warn_banner)
                     if st.button(
                         t("btn_ext_resume_ai"),
                         key=f"btn_ext_resume_ai_{project_id}",
@@ -3091,7 +3121,26 @@ def _render_external_image_bridge_section(
                         st.session_state[busy_key] = "resume_ai"
                         st.rerun()
                 elif cached_exp.get("ai_used"):
-                    st.caption(t("ext_scene_ai_status_ok", batches_ok=int(cached_exp.get("batches_ok", 0) or 0)))
+                    bp_tags: List[str] = []
+                    for bp in cached_exp.get("batch_providers") or []:
+                        if not isinstance(bp, dict):
+                            continue
+                        pn = str(bp.get("provider") or "").strip()
+                        if not pn or pn in ("cache", "fallback"):
+                            continue
+                        tag = t("ext_batch_provider_backup_tag", label=pn) if bp.get("failover") else pn
+                        if tag not in bp_tags:
+                            bp_tags.append(tag)
+                    if bp_tags:
+                        st.caption(
+                            t(
+                                "ext_scene_ai_status_providers",
+                                batches_ok=int(cached_exp.get("batches_ok", 0) or 0),
+                                providers=", ".join(bp_tags),
+                            )
+                        )
+                    else:
+                        st.caption(t("ext_scene_ai_status_ok", batches_ok=int(cached_exp.get("batches_ok", 0) or 0)))
 
                 st.success(t("ext_export_ready", count=cached_exp["count"]))
                 if cached_exp.get("warning_count", 0) > 0:

@@ -21,6 +21,7 @@ from app.services.longform.visual.base import (
 )
 from app.services.longform.visual.builder import ShotClipBuilder
 from app.services.longform.visual.credits import CreditsManager
+from app.services.longform.visual.image_presets import redact_api_secrets
 from app.services.longform.visual.scene_continuity import (
     _match_characters_by_aliases,
     assign_scenes_and_prompts_for_shots,
@@ -762,7 +763,9 @@ def export_external_image_prompts(
         "fallback_shots": int(scene_res.get("fallback_shots", 0) or 0),
         "failed_shot_ids": list(scene_res.get("failed_shot_ids") or []),
         "failure_reason": scene_res.get("failure_reason"),
-        "failure_detail": str(scene_res.get("failure_detail") or ""),
+        "failure_detail": redact_api_secrets(str(scene_res.get("failure_detail") or "")),
+        "batch_providers": list(scene_res.get("batch_providers") or []),
+        "providers_tried": list(scene_res.get("providers_tried") or []),
     }
 
 
