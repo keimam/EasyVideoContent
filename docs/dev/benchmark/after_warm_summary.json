@@ -1,0 +1,161 @@
+{
+  "phases": [
+    {
+      "phase": "1. Naskah (Script)",
+      "duration_s": 0.05,
+      "peak_ram_mb": 98.3,
+      "avg_cpu_pct": 31.2,
+      "note": "Impor naskah tolok ukur (1096 kata, 6 bab)"
+    },
+    {
+      "phase": "2. Suara (Voice)",
+      "duration_s": 10.8,
+      "peak_ram_mb": 115.2,
+      "avg_cpu_pct": 13.6,
+      "note": "Edge TTS (450.5 dtk audio)"
+    },
+    {
+      "phase": "3. Visual (Fetch + Build)",
+      "duration_s": 553.9,
+      "peak_ram_mb": 1582.5,
+      "avg_cpu_pct": 45.4,
+      "note": "77/77 klip shot siap"
+    },
+    {
+      "phase": "4. Render Final",
+      "duration_s": 145.0,
+      "peak_ram_mb": 802.8,
+      "avg_cpu_pct": 79.7,
+      "note": "1080p MP4 (6 bab)"
+    },
+    {
+      "phase": "5. Ekspor CapCut",
+      "duration_s": 3.08,
+      "peak_ram_mb": 151.6,
+      "avg_cpu_pct": 21.3,
+      "note": "Draft 77 klip"
+    }
+  ],
+  "total_duration_s": 712.8,
+  "max_peak_ram_mb": 1582.5,
+  "visual_metrics": {
+    "project_id": "bench_panama_10m_warm",
+    "total_seconds": 550.859,
+    "allocate_seconds": 0.047,
+    "fetch_seconds": 311.5,
+    "anchor_seconds": 1.703,
+    "anchor_llm_calls": 0,
+    "ai_keywords_seconds": 0.125,
+    "ai_keywords_llm_calls": 8,
+    "ai_keywords_retries": 0,
+    "ai_keywords_cached": 0,
+    "translate_seconds": 0.0,
+    "search_wall_seconds": 288.093,
+    "search_per_source": {
+      "coverr": {
+        "tier_attempts": 186,
+        "http_requests": 52,
+        "cache_hits": 0,
+        "elapsed_seconds": 30.719
+      },
+      "nasa": {
+        "tier_attempts": 331,
+        "http_requests": 0,
+        "cache_hits": 331,
+        "elapsed_seconds": 9.482
+      },
+      "nasa_asset": {
+        "tier_attempts": 0,
+        "http_requests": 0,
+        "cache_hits": 79,
+        "elapsed_seconds": 0.0
+      },
+      "openverse": {
+        "tier_attempts": 262,
+        "http_requests": 92,
+        "cache_hits": 170,
+        "elapsed_seconds": 116.813
+      },
+      "pixabay": {
+        "tier_attempts": 393,
+        "http_requests": 398,
+        "cache_hits": 0,
+        "elapsed_seconds": 249.825
+      },
+      "wikimedia": {
+        "tier_attempts": 321,
+        "http_requests": 0,
+        "cache_hits": 321,
+        "elapsed_seconds": 15.184
+      }
+    },
+    "source_status": {
+      "coverr": {
+        "ok": false,
+        "cooldown": 2,
+        "auth_blocked": false,
+        "rate_limited": true,
+        "timeout": 0,
+        "last_error": "HTTP 403: {\"message\":\"Exceeded query limit\"}"
+      },
+      "nasa": {
+        "ok": true,
+        "cooldown": 0,
+        "auth_blocked": false,
+        "rate_limited": false,
+        "timeout": 0,
+        "last_error": null
+      },
+      "nasa_asset": {
+        "ok": true,
+        "cooldown": 0,
+        "auth_blocked": false,
+        "rate_limited": false,
+        "timeout": 0,
+        "last_error": null
+      },
+      "openverse": {
+        "ok": true,
+        "cooldown": 0,
+        "auth_blocked": false,
+        "rate_limited": false,
+        "timeout": 0,
+        "last_error": null
+      },
+      "pixabay": {
+        "ok": true,
+        "cooldown": 0,
+        "auth_blocked": false,
+        "rate_limited": false,
+        "timeout": 0,
+        "last_error": null
+      },
+      "wikimedia": {
+        "ok": true,
+        "cooldown": 0,
+        "auth_blocked": false,
+        "rate_limited": false,
+        "timeout": 0,
+        "last_error": null
+      }
+    },
+    "thumbnail_seconds": 0.0,
+    "asset_download_seconds": 21.516,
+    "download_cache_hits": 76,
+    "download_misses": 1,
+    "ai_relevance_seconds": 0.0,
+    "build_seconds": 239.047,
+    "ffmpeg_build_seconds": 398.18,
+    "built_count": 77,
+    "skipped_count": 0,
+    "manifest_save_seconds": 11.729,
+    "manifest_save_count": 155,
+    "source_distribution": {
+      "pixabay": 36,
+      "wikimedia": 18,
+      "nasa": 17,
+      "openverse": 6
+    },
+    "total_shots": 77
+  }
+}
