@@ -3883,6 +3883,8 @@ def render_visual_step_flow(
         from app.services.branding.lifecycle_ui import render_smithsonian_key_controls
 
         render_smithsonian_key_controls(key_prefix=f"sumber_footage_{project_id}")
+        if _cb_ia or _cb_si:
+            st.warning(t("prov_archive_risk_warning"))
 
         # V0: Explicit opt-in random fallback for Local files
         cur_fill_random = bool(getattr(manifest, "fill_local_random", False))

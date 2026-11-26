@@ -36,7 +36,7 @@ Click any shot card to open the Detail panel and use its 4 tabs:
 ## 4. Footage Sources, Tiered Search & Attribution (`credits.md`)
 
 By default, the studio searches each shot in escalating tiers (**Primary/AI Queries → Broader Visual Noun/Concept Queries → Next Source**) using this priority order:
-**Pixabay → Coverr → Wikimedia Commons → NASA Library → Openverse (photos)**.
+**Pixabay → Coverr → Wikimedia Commons → NASA Library → Openverse (photos) → Internet Archive (Prelinger/Museum)** *(+ **Smithsonian Open Access** when optional key is configured)*.
 
 | Source | API Key | Media & Strengths | License & Attribution Rules |
 |---|---|---|---|
@@ -46,6 +46,10 @@ By default, the studio searches each shot in escalating tiers (**Primary/AI Quer
 | **Wikimedia Commons** | **Free (no key)** | Documentary & historical photos + videos (`WebM/OGV` auto-converted to H.264 MP4) | Strict commercial filter: Public Domain, `CC0`, `CC BY`, `CC BY-SA` only (`NC`/`ND` rejected). `CC BY`/`BY-SA` requires attribution |
 | **NASA Image & Video Library** | **Free (no key)** | Authentic space, science, Earth, and aviation footage | NASA Media (Public Domain / U.S. Gov). Credit NASA without implying endorsement |
 | **Openverse** | **Free (no key)** | Curated open-licensed photography animated with smooth Ken Burns motion | Commercial filter (`CC0`, `PDM`, `CC BY`, `CC BY-SA` only; `NC`/`ND` rejected). `CC BY`/`BY-SA` requires attribution |
+| **Internet Archive (Prelinger / Museum)** | **Free (no key)** | Historical `Prelinger` archival films (trimmed via HTTP Range without downloading multi-GB files) & `Cleveland Museum of Art` CC0 images | Curated collections only + strict PD / `CC0` / `CC BY` / `CC BY-SA` checks (`Fair Use`/`NC`/`ND` rejected). `CC BY`/`BY-SA` requires attribution |
+| **Smithsonian Open Access** | **Optional BYOK** (free `api.data.gov` key) | High-resolution museum JPEG photography (*inactive until you add your own key*) | Strictly `CC0` media items only (`Limited Use`/copyright items rejected). Museum contributor recorded in `credits.md` |
+
+> **Archival Footage Notice:** Archival footage: licenses reflect uploader metadata. Always check credits (`export/credits.md`) before publishing. Public domain and Creative Commons archival footage can still trigger third-party Content ID claims.
 
 - **Missing Visual Diagnostics:** When no source returns an acceptable match, the shot is marked `"No visual yet"` with a concise summary and expandable search attempt log in the Detail panel.
 - **Automatic `credits.md`:** Always written to `export/credits.md` and copied into final MP4 outputs and CapCut draft folders with creator, title, license, and source links. Shots using `CC BY` / `CC BY-SA` display an **Attribution required** notice in the Detail panel.

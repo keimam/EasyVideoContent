@@ -36,7 +36,7 @@ Pilih salah satu kartu shot untuk membuka panel Detail di sebelah kanan, lalu pi
 ## 4. Sumber Footage, Pencarian Bertingkat & Atribusi (`credits.md`)
 
 Secara default, studio mencari footage secara bertingkat per shot (**Query Utama/AI → Kata Kunci Lebih Umum → Sumber Berikutnya**) dengan urutan prioritas:
-**Pixabay → Coverr → Wikimedia Commons → NASA Library → Openverse (foto)**.
+**Pixabay → Coverr → Wikimedia Commons → NASA Library → Openverse (foto) → Internet Archive (Prelinger/Museum)** *(+ **Smithsonian Open Access** bila key opsional diisi)*.
 
 | Sumber | Kunci API | Media & Karakteristik | Aturan Lisensi & Atribusi |
 |---|---|---|---|
@@ -46,6 +46,10 @@ Secara default, studio mencari footage secara bertingkat per shot (**Query Utama
 | **Wikimedia Commons** | **Gratis (tanpa key)** | Video (`WebM/OGV` dikonversi otomatis ke MP4) & foto dokumenter/sejarah | Hanya Domain Publik, `CC0`, `CC BY`, `CC BY-SA` (`NC`/`ND` ditolak otomatis). Item `CC BY`/`BY-SA` wajib mencantumkan kredit |
 | **NASA Image & Video Library** | **Gratis (tanpa key)** | Klip & foto resmi misi antariksa, sains, observasi Bumi | NASA Media (Public Domain / U.S. Gov). Cantumkan kredit `NASA` tanpa menyiratkan endorsement |
 | **Openverse** | **Gratis (tanpa key)** | Foto resolusi tinggi dari berbagai koleksi terbuka; dijadikan klip *Ken Burns* | Hanya lisensi komersial (`CC0`, `PDM`, `CC BY`, `CC BY-SA`; `NC`/`ND` ditolak). Item `CC BY`/`BY-SA` wajib atribusi |
+| **Internet Archive (Prelinger / Museum)** | **Gratis (tanpa key)** | Video arsip sejarah `Prelinger` (dipotong segmen langsung tanpa unduh file utuh) & lukisan/arteak CC0 `Cleveland Museum of Art` | Koleksi terkurasi + filter ketat PD / `CC0` / `CC BY` / `CC BY-SA` (`Fair Use`/`NC`/`ND` ditolak). Item `CC BY`/`BY-SA` wajib atribusi di `credits.md` |
+| **Smithsonian Open Access** | **Opsional BYOK** (`api.data.gov` gratis) | Foto JPEG resolusi tinggi koleksi museum Smithsonian (*hanya aktif bila key Anda diisi*) | Hanya media dengan status resmi `CC0` (`Limited Use`/hak cipta ditolak). Cantumkan museum kontributor di `credits.md` |
+
+> **Peringatan Footage Arsip:** Footage arsip: lisensi dari metadata pengunggah. Selalu cek kredit (`export/credits.md`) sebelum memublikasikan video. Footage domain publik maupun CC tetap bisa terkena klaim Content ID otomatis pihak lain.
 
 - **Alasan "Belum ada visual":** Bila seluruh query dan sumber gagal, shot ditandai `"Belum ada visual"` beserta ringkasan alasannya di panel Detail (mis. jumlah kandidat & alasan penolakan relevansi/lisensi).
 - **Berkas `credits.md`:** Otomatis dibuat di `export/credits.md` dan ikut disalin ke folder hasil render MP4 & draft CapCut berisi judul, pembuat, lisensi, dan tautan sumber. Shot yang memakai `CC BY` / `CC BY-SA` menampilkan tanda **Perlu atribusi** di panel Detail.
