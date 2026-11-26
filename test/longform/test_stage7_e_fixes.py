@@ -124,17 +124,19 @@ def test_e5_api_key_masking_and_gemini_validation(monkeypatch):
     assert mask_api_key("short") == "****"
 
     from app.config import config
-    # Test invalid Gemini key (does not start with AIza)
+    # Test unusual Gemini key prefix (does not start with AIza): soft warning only, still configured (GA2.1)
     monkeypatch.setitem(config.app, "llm_provider", "gemini")
     monkeypatch.setitem(config.app, "gemini_api_key", "invalid_random_key_1234")
 
     status = check_llm_status()
-    assert status["configured"] is False
-    assert status.get("is_invalid") is True
-    assert "Key Gemini tampaknya tidak valid" in status["message"]
+    assert status["configured"] is True
+    assert status.get("is_invalid") is False
+    assert status.get("format_warning") is True
+    assert "AIza" in (status.get("warning_message") or "")
 
-    # Test valid Gemini key
+    # Test standard AIza Gemini key: configured without format warning
     monkeypatch.setitem(config.app, "gemini_api_key", "AIzaSyValidStudioKey999")
     status_valid = check_llm_status()
     assert status_valid["configured"] is True
+    assert status_valid.get("format_warning") is False
     assert status_valid["masked_key"] == "****y999"

@@ -49,6 +49,8 @@ def check_llm_status() -> Dict[str, Any]:
         "masked_key": readiness.get("masked_key") or ("(tidak memerlukan API key)" if not requires_key else None),
         "api_key_url": prov_def.api_key_url if prov_def else None,
         "is_invalid": bool(readiness.get("is_invalid", False)),
+        "format_warning": bool(readiness.get("format_warning", False)),
+        "warning_message": readiness.get("warning_message", ""),
         "message": readiness.get("message", ""),
         "configured_providers": readiness.get("configured_providers", ()),
         "billing_tier": readiness.get("billing_tier", "unknown"),

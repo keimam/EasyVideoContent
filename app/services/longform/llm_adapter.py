@@ -1343,6 +1343,8 @@ def get_llm_readiness(provider_id: Optional[str] = None) -> Dict[str, Any]:
             "adapter": "openai",
             "configured": is_ready,
             "is_invalid": False,
+            "format_warning": False,
+            "warning_message": "",
             "masked_key": _mask_secret(raw_key) if raw_key else "",
             "message": "" if is_ready else f"Kredensial penyedia '{active_id}' belum diatur.",
             "configured_providers": configured_tuple,
@@ -1369,28 +1371,22 @@ def get_llm_readiness(provider_id: Optional[str] = None) -> Dict[str, Any]:
                 "adapter": adapter,
                 "configured": False,
                 "is_invalid": False,
+                "format_warning": False,
+                "warning_message": "",
                 "masked_key": "",
                 "message": f"Key '{key_name}' belum diisi di Pengaturan AI MPT.",
                 "configured_providers": configured_tuple,
                 "requires_api_key": True,
             }
 
-        # Gemini API key format check ONLY when Gemini is the active provider
-        if ("gemini" in active_id or "google" in active_id) and not raw_key.startswith("AIza"):
-            return {
-                "provider": active_id,
-                "provider_label": provider_label,
-                "model": resolved_model,
-                "used_safe_default": used_safe_default,
-                "billing_tier": billing_tier,
-                "adapter": adapter,
-                "configured": False,
-                "is_invalid": True,
-                "masked_key": _mask_secret(raw_key),
-                "message": "Key Gemini tampaknya tidak valid (seharusnya dimulai dengan 'AIza'). Periksa kembali di Settings -> Pengaturan AI (LLM).",
-                "configured_providers": configured_tuple,
-                "requires_api_key": True,
-            }
+        # Soft format warning only for unusual Gemini key prefixes; server decides validity (GA2.1)
+        format_warning = ("gemini" in active_id or "google" in active_id) and not raw_key.startswith("AIza")
+        warning_message = (
+            "Key Gemini tidak berawalan 'AIza' (peringatan format saja; key tetap dicoba ke server). "
+            "Periksa di Google AI Studio bila gagal."
+            if format_warning
+            else ""
+        )
 
         extra_missing = [
             f.config_suffix
@@ -1407,6 +1403,8 @@ def get_llm_readiness(provider_id: Optional[str] = None) -> Dict[str, Any]:
                 "adapter": adapter,
                 "configured": False,
                 "is_invalid": False,
+                "format_warning": format_warning,
+                "warning_message": warning_message,
                 "masked_key": _mask_secret(raw_key),
                 "message": f"Konfigurasi tambahan belum lengkap ({', '.join(extra_missing)}).",
                 "configured_providers": configured_tuple,
@@ -1422,8 +1420,10 @@ def get_llm_readiness(provider_id: Optional[str] = None) -> Dict[str, Any]:
             "adapter": adapter,
             "configured": True,
             "is_invalid": False,
+            "format_warning": format_warning,
+            "warning_message": warning_message,
             "masked_key": _mask_secret(raw_key),
-            "message": "Siap",
+            "message": "Siap (peringatan format key)" if format_warning else "Siap",
             "configured_providers": configured_tuple,
             "requires_api_key": True,
         }
@@ -1440,6 +1440,8 @@ def get_llm_readiness(provider_id: Optional[str] = None) -> Dict[str, Any]:
             "adapter": adapter,
             "configured": connected,
             "is_invalid": False,
+            "format_warning": False,
+            "warning_message": "",
             "masked_key": "OAuth" if connected else "",
             "message": "Terhubung (OAuth)" if connected else f"Akun OAuth {provider_label} belum login.",
             "configured_providers": configured_tuple,
@@ -1459,6 +1461,8 @@ def get_llm_readiness(provider_id: Optional[str] = None) -> Dict[str, Any]:
             "adapter": adapter,
             "configured": found,
             "is_invalid": False,
+            "format_warning": False,
+            "warning_message": "",
             "masked_key": "CLI" if found else "",
             "message": f"CLI {default_bin} siap" if found else f"CLI '{cli_cfg}' tidak ditemukan di PATH.",
             "configured_providers": configured_tuple,
@@ -1477,6 +1481,8 @@ def get_llm_readiness(provider_id: Optional[str] = None) -> Dict[str, Any]:
         "adapter": adapter,
         "configured": has_local or (active_id in configured_tuple),
         "is_invalid": False,
+        "format_warning": False,
+        "warning_message": "",
         "masked_key": "Local",
         "message": "Siap (Lokal)" if (has_local or active_id in configured_tuple) else f"Model '{active_id}' belum diatur.",
         "configured_providers": configured_tuple,
@@ -1527,6 +1533,9 @@ def test_llm_connection() -> Tuple[bool, str, float]:
             float(time.perf_counter() - t0),
         )
     except Exception as exc:
+        _, pause_reason, norm_exc = _classify_failover_exception(exc)
+        if pause_reason == "auth_rejected":
+            mark_provider_paused(active_id, reason="auth_rejected", error_detail=str(norm_exc))
         return False, sanitize_error(str(exc)), float(time.perf_counter() - t0)
 
 
@@ -2047,6 +2056,8 @@ def get_provider_chain_status(
                 "model": model,
                 "status": status,
                 "ready": False,
+                "format_warning": bool(readiness.get("format_warning", False)),
+                "warning_message": sanitize_error(str(readiness.get("warning_message") or "")),
                 "paused_until": None,
                 "pause_label": "",
                 "message": msg_out,
@@ -2061,6 +2072,8 @@ def get_provider_chain_status(
                 "model": "",
                 "status": "needs_model",
                 "ready": False,
+                "format_warning": bool(readiness.get("format_warning", False)),
+                "warning_message": sanitize_error(str(readiness.get("warning_message") or "")),
                 "paused_until": None,
                 "pause_label": "",
                 "message": "Perlu model",
@@ -2083,6 +2096,8 @@ def get_provider_chain_status(
                 "model": model,
                 "status": status_code,
                 "ready": False,
+                "format_warning": bool(readiness.get("format_warning", False)),
+                "warning_message": sanitize_error(str(readiness.get("warning_message") or "")),
                 "paused_until": until_ts,
                 "pause_label": pause_label,
                 "message": sanitize_error(str(pause.get("error") or pause_label)),
@@ -2095,9 +2110,11 @@ def get_provider_chain_status(
             "model": model,
             "status": "ready",
             "ready": True,
+            "format_warning": bool(readiness.get("format_warning", False)),
+            "warning_message": sanitize_error(str(readiness.get("warning_message") or "")),
             "paused_until": None,
             "pause_label": "",
-            "message": "Siap",
+            "message": sanitize_error(str(readiness.get("message") or "Siap")),
         })
     return results
 
@@ -2434,6 +2451,9 @@ def test_llm_provider(provider_id: str, timeout: float = 15.0) -> Tuple[bool, st
         clear_provider_pause(pid)
         return True, sanitize_error((resp.content or "").strip()), float(time.perf_counter() - t0)
     except Exception as exc:
+        _, pause_reason, norm_exc = _classify_failover_exception(exc)
+        if pause_reason == "auth_rejected":
+            mark_provider_paused(active_id, reason="auth_rejected", error_detail=str(norm_exc))
         return False, sanitize_error(str(exc)), float(time.perf_counter() - t0)
 
 
@@ -2449,24 +2469,16 @@ def test_all_llm_providers(chain: Optional[Sequence[str]] = None, timeout: float
         prov_def = get_llm_provider(pid)
         model_name = str(readiness.get("model") or "").strip()
         if not readiness.get("configured"):
-            is_fmt_bad = bool(readiness.get("is_invalid"))
-            default_fmt_msg = (
-                "Key Gemini tidak dikenali, cek kembali di Google AI Studio"
-                if ("gemini" in pid or "google" in pid)
-                else "Format key tidak dikenali"
-            )
             results.append({
                 "provider": pid,
                 "label": readiness.get("provider_label") or pid,
                 "model": model_name,
                 "ok": False,
-                "status": "invalid_key_format" if is_fmt_bad else "no_key",
+                "status": "no_key",
+                "format_warning": bool(readiness.get("format_warning", False)),
+                "warning_message": sanitize_error(str(readiness.get("warning_message") or "")),
                 "latency": 0.0,
-                "message": (
-                    default_fmt_msg
-                    if is_fmt_bad
-                    else "API key belum diatur"
-                ),
+                "message": sanitize_error(str(readiness.get("message") or "API key belum diatur")),
             })
             continue
         if prov_def and prov_def.requires_model_name and not model_name:
@@ -2476,6 +2488,8 @@ def test_all_llm_providers(chain: Optional[Sequence[str]] = None, timeout: float
                 "model": "",
                 "ok": False,
                 "status": "needs_model",
+                "format_warning": bool(readiness.get("format_warning", False)),
+                "warning_message": sanitize_error(str(readiness.get("warning_message") or "")),
                 "latency": 0.0,
                 "message": "Perlu model",
             })
@@ -2483,8 +2497,11 @@ def test_all_llm_providers(chain: Optional[Sequence[str]] = None, timeout: float
         ok, msg, latency = test_llm_provider(pid, timeout=timeout)
         status_out = "ok" if ok else "failed"
         low_m = str(msg or "").lower()
-        if not ok and any(tok in low_m for tok in ("401", "403", "unauthorized", "invalid api key", "user not found", "auth")):
+        if ok:
+            clear_provider_pause(pid)
+        elif any(tok in low_m for tok in ("401", "403", "unauthorized", "invalid api key", "incorrect api key", "user not found", "authentication failed")):
             status_out = "auth_rejected"
+            mark_provider_paused(pid, reason="auth_rejected", error_detail=str(msg or ""))
         clean_out = sanitize_error(msg or "") if ok else format_concise_llm_error(msg or "", pid)
         results.append({
             "provider": pid,
@@ -2492,6 +2509,8 @@ def test_all_llm_providers(chain: Optional[Sequence[str]] = None, timeout: float
             "model": model_name,
             "ok": bool(ok),
             "status": status_out,
+            "format_warning": bool(readiness.get("format_warning", False)),
+            "warning_message": sanitize_error(str(readiness.get("warning_message") or "")),
             "latency": round(float(latency or 0.0), 2),
             "message": clean_out,
         })

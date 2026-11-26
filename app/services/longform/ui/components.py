@@ -1955,6 +1955,8 @@ def render_script_step_flow(
                     st.warning(t("openrouter_reasoning_model_warning", model=active_model))
             if llm_ok:
                 st.caption(t("ai_provider_ready_badge", masked=llm_status.get("masked_key") or "OK"))
+                if llm_status.get("format_warning") and llm_status.get("warning_message"):
+                    st.caption(f"ℹ️ {llm_status['warning_message']}")
             elif llm_status.get("is_invalid"):
                 st.warning(f"{llm_status['message']}")
             elif not use_fake:

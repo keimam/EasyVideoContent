@@ -80,18 +80,20 @@ def test_p1_llm_readiness_openrouter_openai_gemini_and_ollama(monkeypatch):
     assert r_oa["is_invalid"] is False
     assert check_has_llm_key() is True
 
-    # Gemini still validates AIza format ONLY when Gemini is active
+    # Gemini treats unusual prefix as soft format_warning only; server decides validity (GA2.1)
     monkeypatch.setitem(config.app, "llm_provider", "gemini")
     monkeypatch.setitem(config.app, "gemini_api_key", "bad_gemini_key_1234")
     r_gem_bad = get_llm_readiness()
-    assert r_gem_bad["configured"] is False
-    assert r_gem_bad["is_invalid"] is True
-    assert check_has_llm_key() is False
+    assert r_gem_bad["configured"] is True
+    assert r_gem_bad["is_invalid"] is False
+    assert r_gem_bad["format_warning"] is True
+    assert check_has_llm_key() is True
 
     monkeypatch.setitem(config.app, "gemini_api_key", "AIzaSyValidKeyForTest1234")
     r_gem_ok = get_llm_readiness()
     assert r_gem_ok["configured"] is True
     assert r_gem_ok["is_invalid"] is False
+    assert r_gem_ok["format_warning"] is False
     assert check_has_llm_key() is True
 
     # Ollama (keyless local provider)

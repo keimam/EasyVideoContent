@@ -334,9 +334,13 @@ def render_settings_studio_controls(*, key_prefix: str = "settings") -> None:
                     if code_s == "ready":
                         icon = "✅"
                         detail = f"{t('settings_failover_ready')} · `{mdl_s}`" if mdl_s else t("settings_failover_ready")
+                        if st_item.get("format_warning"):
+                            detail = f"{detail} ({t('settings_failover_format_warn_badge')})"
                     elif code_s in ("paused_quota", "paused_auth", "paused"):
                         icon = "⏸"
                         detail = t("settings_failover_paused", until=st_item.get("pause_label") or "-")
+                        if code_s == "paused_auth" and st_item.get("message"):
+                            detail = f"{detail} · {st_item.get('message')}"
                     elif code_s == "needs_model":
                         icon = "⚠️"
                         detail = t("settings_failover_needs_model")
