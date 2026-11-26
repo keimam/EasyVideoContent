@@ -63,6 +63,18 @@ from PIL import Image, ImageDraw
 
 MAX_PARALLEL_SOURCES = 4
 MAX_PARALLEL_DOWNLOADS = 3
+# C4: Parallel clip builds capped at 3; scales as cpu_count // 4 (e.g. 8 threads -> 2 concurrent FFmpeg workers)
+MAX_PARALLEL_BUILDS = max(1, min(3, (os.cpu_count() or 1) // 4))
+
+
+def compute_ffmpeg_threads_per_build(
+    parallel_builds: int,
+    cpu_count: Optional[int] = None,
+) -> int:
+    """Divide available logical CPU threads across concurrent FFmpeg clip builders (C4)."""
+    cpus = max(1, int(cpu_count if cpu_count is not None else (os.cpu_count() or 1)))
+    workers = max(1, int(parallel_builds))
+    return max(1, cpus // workers)
 
 
 def _get_clip_frame_count(clip_path: Path) -> Optional[int]:
@@ -2013,18 +2025,18 @@ class VisualService:
         _pct_start: float = 0.0,
         _pct_end: float = 99.0,
     ) -> Tuple[ProjectManifest, Dict[str, Any]]:
-        """Build rendered video clips for all shots in manifest (4.3, V1, D8).
+        """Build rendered video clips for all shots in manifest (4.3, V1, D8, C4).
 
-        V1 fix: shot hash now includes requested_provider + actual_provider so that
-        switching providers correctly invalidates the rendered clip.
-        D8: shots without a fetched asset are skipped cleanly instead of failing the
-        entire batch, unless use_neutral_fallback=True (user confirmed continue in
-        Render / CapCut), which builds a clean subtle dark-gradient backdrop clip.
+        C4: Runs FFmpeg clip builds in parallel up to ``MAX_PARALLEL_BUILDS`` (cpu_count // 4,
+        clamped to [1, 3]) while dividing ``-threads`` per FFmpeg process so aggregate CPU
+        threads do not exceed logical cores. Manifest saves and progress updates occur strictly
+        on the main thread (single writer), and one failing clip is isolated as skipped.
         """
         fps = getattr(getattr(manifest, "encoder_settings", None), "fps", 25) or 25
-        builder = ShotClipBuilder(fps=fps)
         built_count = 0
         skipped_count = 0
+        failed_count = 0
+        failed_shot_ids: List[str] = []
         missing_asset_count = 0
         neutral_built_count = 0
         total_time = 0.0
@@ -2082,6 +2094,7 @@ class VisualService:
             )
 
         stop_requested = False
+        pending_builds: List[Dict[str, Any]] = []
         for ch in manifest.chapters:
             if is_stop_requested(self.project_dir):
                 logger.info(f"Stop requested for project '{manifest.project_id}'. Exiting visual matching gracefully.")
@@ -2112,67 +2125,123 @@ class VisualService:
                     skipped_count += 1
                     continue
 
-                if needs_neutral:
-                    logger.info(f"Building neutral backdrop clip for {shot.shot_id} ({shot.target_frames} frames)...")
-                    _, elapsed = builder.build_neutral_backdrop_clip(
-                        output_path=clip_path,
-                        target_frames=shot.target_frames,
-                    )
-                    built_count += 1
-                    neutral_built_count += 1
-                    total_time += elapsed
-                    shot.asset_path = None
-                    shot.asset_content_hash = "neutral_backdrop_v1"
-                    shot.actual_source = "neutral_backdrop"
-                    shot.is_fake = False
-                    shot.fallback_reason = "neutral_backdrop_confirmed"
-                else:
-                    logger.info(f"Building shot clip {shot.shot_id} ({shot.target_frames} frames, {shot.motion.value})...")
-                    _, elapsed = builder.build_shot_clip(
-                        asset_path=asset_file,
-                        output_path=clip_path,
-                        motion=shot.motion,
-                        target_frames=shot.target_frames,
-                    )
-                    built_count += 1
-                    total_time += elapsed
+                pending_builds.append({
+                    "shot": shot,
+                    "asset_file": asset_file,
+                    "needs_neutral": needs_neutral,
+                    "clip_rel": clip_rel,
+                    "clip_path": clip_path,
+                })
 
-                    # S2: In case source trimming modified asset_file, update asset content hash & shot hash
-                    updated_content_hash = compute_file_content_hash(asset_file)
-                    shot.asset_content_hash = updated_content_hash
+        eff_workers = max(1, min(int(MAX_PARALLEL_BUILDS), max(1, len(pending_builds))))
+        per_worker_threads = compute_ffmpeg_threads_per_build(eff_workers)
+        builder = ShotClipBuilder(fps=fps, ffmpeg_threads=per_worker_threads)
 
-                shot.shot_hash = compute_shot_hash(
-                    shot_id=shot.shot_id,
-                    duration_seconds=shot.duration_seconds,
-                    target_frames=shot.target_frames,
-                    motion=shot.motion.value,
-                    asset_content_hash=shot.asset_content_hash,
-                    fps=fps,
-                    requested_provider=shot.requested_source or "",
-                    actual_provider=shot.actual_source or "",
+        def _build_worker(task: Dict[str, Any]) -> Dict[str, Any]:
+            if is_stop_requested(self.project_dir):
+                return {"task": task, "stopped": True}
+            sh_obj: Shot = task["shot"]
+            clip_p: Path = task["clip_path"]
+            if task["needs_neutral"]:
+                logger.info(f"Building neutral backdrop clip for {sh_obj.shot_id} ({sh_obj.target_frames} frames)...")
+                _, elapsed_s = builder.build_neutral_backdrop_clip(
+                    output_path=clip_p,
+                    target_frames=sh_obj.target_frames,
                 )
-                shot.rendered_clip = clip_rel
-                shot.status = ItemStatus.completed
-                invalidate_shot_thumbnail_cache(self.project_dir, shot.shot_id)
-                self._save_manifest_timed(manifest)
+                return {
+                    "task": task,
+                    "elapsed": float(elapsed_s),
+                    "updated_hash": "neutral_backdrop_v1",
+                    "stopped": False,
+                }
+            a_file: Path = task["asset_file"]
+            logger.info(f"Building shot clip {sh_obj.shot_id} ({sh_obj.target_frames} frames, {sh_obj.motion.value})...")
+            _, elapsed_s = builder.build_shot_clip(
+                asset_path=a_file,
+                output_path=clip_p,
+                motion=sh_obj.motion,
+                target_frames=sh_obj.target_frames,
+            )
+            upd_hash = compute_file_content_hash(a_file)
+            return {
+                "task": task,
+                "elapsed": float(elapsed_s),
+                "updated_hash": upd_hash,
+                "stopped": False,
+            }
 
-                if target_build_total > 0:
-                    pct = _pct_start + ((built_count / target_build_total) * (_pct_end - _pct_start))
-                    update_job_phase(
-                        self.project_dir,
-                        phase=f"Menyusun klip ({built_count}/{target_build_total} shot)…",
-                        phase_key="prog_visual_build",
-                        phase_args={"done": built_count, "total": target_build_total},
-                        percentage=pct,
-                        current_unit=built_count,
-                        total_units=target_build_total,
-                        skipped_units=skipped_build_init,
-                        unit_label="shot",
-                        is_indeterminate=False,
-                        partial=True,
-                    )
+        if pending_builds and not stop_requested and not is_stop_requested(self.project_dir):
+            done_builds = 0
+            with ThreadPoolExecutor(max_workers=eff_workers) as build_pool:
+                fut_map = {build_pool.submit(_build_worker, t): t for t in pending_builds}
+                for fut in as_completed(fut_map):
+                    task = fut_map[fut]
+                    try:
+                        res = fut.result()
+                    except Exception as exc:
+                        res = {"task": task, "error": exc, "stopped": False}
 
-            # Update chapter duration & frames
+                    if res.get("stopped"):
+                        stop_requested = True
+                        continue
+
+                    shot = task["shot"]
+                    if res.get("error") is not None:
+                        err = res["error"]
+                        logger.warning(f"Shot clip build failed for {shot.shot_id} (skipped): {err}")
+                        failed_count += 1
+                        skipped_count += 1
+                        failed_shot_ids.append(shot.shot_id)
+                        shot.rendered_clip = None
+                        shot.shot_hash = None
+                        shot.status = ItemStatus.failed
+                        invalidate_shot_thumbnail_cache(self.project_dir, shot.shot_id)
+                    else:
+                        if task["needs_neutral"]:
+                            neutral_built_count += 1
+                            shot.asset_path = None
+                            shot.asset_content_hash = "neutral_backdrop_v1"
+                            shot.actual_source = "neutral_backdrop"
+                            shot.is_fake = False
+                            shot.fallback_reason = "neutral_backdrop_confirmed"
+                        else:
+                            shot.asset_content_hash = res["updated_hash"]
+                        built_count += 1
+                        total_time += float(res.get("elapsed") or 0.0)
+                        shot.shot_hash = compute_shot_hash(
+                            shot_id=shot.shot_id,
+                            duration_seconds=shot.duration_seconds,
+                            target_frames=shot.target_frames,
+                            motion=shot.motion.value,
+                            asset_content_hash=shot.asset_content_hash,
+                            fps=fps,
+                            requested_provider=shot.requested_source or "",
+                            actual_provider=shot.actual_source or "",
+                        )
+                        shot.rendered_clip = task["clip_rel"]
+                        shot.status = ItemStatus.completed
+                        invalidate_shot_thumbnail_cache(self.project_dir, shot.shot_id)
+
+                    self._save_manifest_timed(manifest)
+                    done_builds += 1
+                    if target_build_total > 0:
+                        pct = _pct_start + ((done_builds / target_build_total) * (_pct_end - _pct_start))
+                        update_job_phase(
+                            self.project_dir,
+                            phase=f"Menyusun klip ({done_builds}/{target_build_total} shot)…",
+                            phase_key="prog_visual_build",
+                            phase_args={"done": done_builds, "total": target_build_total},
+                            percentage=pct,
+                            current_unit=done_builds,
+                            total_units=target_build_total,
+                            skipped_units=skipped_build_init + failed_count,
+                            unit_label="shot",
+                            is_indeterminate=False,
+                            partial=True,
+                        )
+
+        # Update chapter duration & frames on main thread
+        for ch in manifest.chapters:
             ch.visual_duration_seconds = round(sum(s.duration_seconds for s in ch.shots), 3)
             ch.visual_frames = sum(s.target_frames for s in ch.shots)
 
@@ -2180,10 +2249,14 @@ class VisualService:
         stats = {
             "built_count": built_count,
             "skipped_count": skipped_count,
+            "failed_count": failed_count,
+            "failed_shot_ids": failed_shot_ids,
             "missing_asset_count": missing_asset_count,
             "neutral_built_count": neutral_built_count,
             "total_build_seconds": round(total_time, 2),
             "average_seconds_per_clip": round(avg_speed, 2),
+            "max_parallel_builds": eff_workers,
+            "ffmpeg_threads_per_build": per_worker_threads,
         }
         return manifest, stats
 

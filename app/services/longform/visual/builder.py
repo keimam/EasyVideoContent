@@ -204,10 +204,17 @@ class ShotClipBuilder:
         fps: int = 25,
         width: int = 1920,
         height: int = 1080,
+        ffmpeg_threads: Optional[int] = None,
     ) -> None:
         self.fps = fps
         self.width = width
         self.height = height
+        self.ffmpeg_threads: Optional[int] = (
+            max(1, int(ffmpeg_threads)) if ffmpeg_threads is not None else None
+        )
+
+    def _ffmpeg_thread_args(self) -> list[str]:
+        return ["-threads", str(self.ffmpeg_threads)] if self.ffmpeg_threads else []
 
     def _get_motion_filter(self, motion: MotionType, target_frames: int) -> str:
         """Construct jitter-free zoompan filter expression for static images."""
@@ -285,6 +292,7 @@ class ShotClipBuilder:
             "-keyint_min", str(self.fps),
             "-sc_threshold", "0",
             "-an",
+            *self._ffmpeg_thread_args(),
             str(tmp_out),
         ]
 
@@ -352,6 +360,7 @@ class ShotClipBuilder:
             "-keyint_min", str(self.fps),
             "-sc_threshold", "0",
             "-an",
+            *self._ffmpeg_thread_args(),
             str(tmp_out),
         ]
 
@@ -435,6 +444,7 @@ class ShotClipBuilder:
             "-keyint_min", str(self.fps),
             "-sc_threshold", "0",
             "-an",
+            *self._ffmpeg_thread_args(),
             str(tmp_out),
         ]
 

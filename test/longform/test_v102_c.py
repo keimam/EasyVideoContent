@@ -209,3 +209,116 @@ def test_c3_download_circuit_breaker_and_cache_atomic_copy(tmp_path: Path, monke
             assert "circuit breaker" in (sh.no_visual_reason_summary or "").lower()
     finally:
         free_providers.reset_provider_circuit_breakers()
+
+
+def test_c4_parallel_build_matches_sequential_manifest_and_shares_cpu_threads(tmp_path: Path, monkeypatch):
+    """Gate (b) + C4: Parallel build_all produces identical manifest to sequential (mode fake, EFS_DEV=1) and caps -threads."""
+    from app.services.longform.visual import service as vis_svc_mod
+
+    monkeypatch.setenv("EFS_DEV", "1")
+    monkeypatch.setattr(os, "cpu_count", lambda: 8)
+    expected_formula = max(1, min(3, 8 // 4))
+    assert expected_formula == 2
+    assert vis_svc_mod.compute_ffmpeg_threads_per_build(expected_formula, cpu_count=8) == 4
+    assert expected_formula * 4 <= 8
+
+    # Seed identical fake projects: one built sequentially (workers=1), one in parallel (workers=2)
+    orig_build_clip = vis_svc_mod.ShotClipBuilder.build_shot_clip
+
+    def _build_project(sub: str, workers: int) -> tuple[dict, dict, list[int], int]:
+        p_dir, manifest = _seed_visual_project(tmp_path / sub, f"c4_{sub}", n_shots=4)
+        svc = VisualService(p_dir)
+        out_m = svc.fetch_all(
+            manifest=manifest,
+            provider_name="fake",
+            allow_fallback=True,
+            translate_keywords=False,
+        )
+        thread_args_seen: list[int] = []
+        save_tids: set[int] = set()
+        main_tid = threading.get_ident()
+
+        def _spy_build_clip(self_b, asset_path, output_path, motion, target_frames):
+            if self_b.ffmpeg_threads is not None:
+                thread_args_seen.append(int(self_b.ffmpeg_threads))
+            return orig_build_clip(self_b, asset_path, output_path, motion, target_frames)
+
+        orig_save = svc._save_manifest_timed
+
+        def _spy_save(m):
+            save_tids.add(threading.get_ident())
+            return orig_save(m)
+
+        monkeypatch.setattr(vis_svc_mod.ShotClipBuilder, "build_shot_clip", _spy_build_clip)
+        monkeypatch.setattr(svc, "_save_manifest_timed", _spy_save)
+        monkeypatch.setattr(vis_svc_mod, "MAX_PARALLEL_BUILDS", workers)
+
+        built_m, stats = svc.build_all(out_m)
+        assert save_tids == {main_tid}
+        summary = {
+            "built_count": stats["built_count"],
+            "skipped_count": stats["skipped_count"],
+            "shots": [
+                {
+                    "shot_id": s.shot_id,
+                    "actual_source": s.actual_source,
+                    "source_candidate_id": s.source_candidate_id,
+                    "asset_content_hash": s.asset_content_hash,
+                    "rendered_clip": s.rendered_clip,
+                    "shot_hash": s.shot_hash,
+                    "status": s.status.value,
+                }
+                for s in built_m.chapters[0].shots
+            ],
+            "ch_frames": built_m.chapters[0].visual_frames,
+            "ch_dur": built_m.chapters[0].visual_duration_seconds,
+        }
+        return summary, stats, thread_args_seen, len(summary["shots"])
+
+    seq_sum, seq_stats, seq_threads, _ = _build_project("seq", 1)
+    par_sum, par_stats, par_threads, _ = _build_project("par", 2)
+
+    assert seq_sum["built_count"] == 4
+    assert par_sum["built_count"] == 4
+    assert seq_sum == par_sum
+    assert seq_threads == [8, 8, 8, 8]
+    assert par_threads == [4, 4, 4, 4]
+    assert par_stats["ffmpeg_threads_per_build"] == 4
+
+
+def test_c4_single_failed_clip_does_not_abort_others_and_is_recorded_skipped(tmp_path: Path, monkeypatch):
+    """Gate (c): If one clip build fails in build_all, sibling clips complete and failed clip is recorded as skipped."""
+    from app.services.longform.visual import service as vis_svc_mod
+
+    monkeypatch.setenv("EFS_DEV", "1")
+    p_dir, manifest = _seed_visual_project(tmp_path / "fail_iso", "c4_fail_iso", n_shots=3)
+    svc = VisualService(p_dir)
+    out_m = svc.fetch_all(
+        manifest=manifest,
+        provider_name="fake",
+        allow_fallback=True,
+        translate_keywords=False,
+    )
+
+    orig_build_clip = vis_svc_mod.ShotClipBuilder.build_shot_clip
+
+    def _failing_shot2(self_b, asset_path, output_path, motion, target_frames):
+        if "ch01_shot002" in str(output_path):
+            raise RuntimeError("Simulated corrupt media stream on shot 2")
+        return orig_build_clip(self_b, asset_path, output_path, motion, target_frames)
+
+    monkeypatch.setattr(vis_svc_mod.ShotClipBuilder, "build_shot_clip", _failing_shot2)
+    monkeypatch.setattr(vis_svc_mod, "MAX_PARALLEL_BUILDS", 2)
+
+    final_m, stats = svc.build_all(out_m)
+    assert stats["built_count"] == 2
+    assert stats["failed_count"] == 1
+    assert stats["skipped_count"] == 1
+    assert stats["failed_shot_ids"] == ["ch01_shot002"]
+
+    by_id = {s.shot_id: s for s in final_m.chapters[0].shots}
+    assert by_id["ch01_shot001"].status == ItemStatus.completed
+    assert by_id["ch01_shot003"].status == ItemStatus.completed
+    assert by_id["ch01_shot002"].status == ItemStatus.failed
+    assert by_id["ch01_shot002"].rendered_clip is None
+
