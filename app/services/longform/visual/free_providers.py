@@ -272,6 +272,19 @@ def resilient_http_json_get(
     raise VisualError(f"{provider_key} API request failed: {last_err}")
 
 
+_SEARCH_CACHE_GUARD = threading.Lock()
+_SEARCH_CACHE_LOCKS: Dict[str, threading.Lock] = {}
+
+
+def _get_search_cache_lock(cache_key: str) -> threading.Lock:
+    with _SEARCH_CACHE_GUARD:
+        lk = _SEARCH_CACHE_LOCKS.get(cache_key)
+        if lk is None:
+            lk = threading.Lock()
+            _SEARCH_CACHE_LOCKS[cache_key] = lk
+        return lk
+
+
 def cached_json_get(
     provider_key: str,
     url: str,
@@ -290,38 +303,39 @@ def cached_json_get(
     key_raw = json.dumps({"p": provider_key, "u": url, "q": params or {}}, sort_keys=True)
     cache_file = cache_dir / f"{provider_key}_{hashlib.sha256(key_raw.encode('utf-8')).hexdigest()[:24]}.json"
 
-    if cache_file.is_file():
+    with _get_search_cache_lock(str(cache_file)):
+        if cache_file.is_file():
+            try:
+                age = time.time() - cache_file.stat().st_mtime
+                if age <= _SEARCH_CACHE_TTL_SECONDS:
+                    data = json.loads(cache_file.read_text(encoding="utf-8"))
+                    if isinstance(data, dict):
+                        record_search_io(provider_key, cache_hit=True)
+                        return data
+            except Exception:
+                pass
+
+        req_headers = {"User-Agent": EASYFACELESS_USER_AGENT, "Accept": "application/json"}
+        if headers:
+            req_headers.update(headers)
+
+        payload = resilient_http_json_get(
+            provider_key,
+            url,
+            params=params,
+            headers=req_headers,
+            timeout=timeout,
+            min_interval_sec=min_interval_sec,
+            auth_fail_statuses=auth_fail_statuses,
+            on_auth_failure=on_auth_failure,
+        )
         try:
-            age = time.time() - cache_file.stat().st_mtime
-            if age <= _SEARCH_CACHE_TTL_SECONDS:
-                data = json.loads(cache_file.read_text(encoding="utf-8"))
-                if isinstance(data, dict):
-                    record_search_io(provider_key, cache_hit=True)
-                    return data
+            tmp_c = cache_file.with_suffix(".tmp")
+            tmp_c.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp_c, cache_file)
         except Exception:
             pass
-
-    req_headers = {"User-Agent": EASYFACELESS_USER_AGENT, "Accept": "application/json"}
-    if headers:
-        req_headers.update(headers)
-
-    payload = resilient_http_json_get(
-        provider_key,
-        url,
-        params=params,
-        headers=req_headers,
-        timeout=timeout,
-        min_interval_sec=min_interval_sec,
-        auth_fail_statuses=auth_fail_statuses,
-        on_auth_failure=on_auth_failure,
-    )
-    try:
-        tmp_c = cache_file.with_suffix(".tmp")
-        tmp_c.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-        os.replace(tmp_c, cache_file)
-    except Exception:
-        pass
-    return payload
+        return payload
 
 
 def convert_video_to_h264_mp4(src_path: Path, dest_mp4: Path) -> Path:

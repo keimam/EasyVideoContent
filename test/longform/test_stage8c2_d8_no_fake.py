@@ -301,6 +301,7 @@ def test_d8_no_source_warning_and_block_in_visual_and_auto(tmp_path, monkeypatch
     at.session_state[f"cb_prov_wikimedia_{pid}"] = False
     at.session_state[f"cb_prov_nasa_{pid}"] = False
     at.session_state[f"cb_prov_openverse_{pid}"] = False
+    at.session_state[f"cb_prov_internet_archive_{pid}"] = False
     at.session_state[f"cb_prov_local_{pid}"] = False
     at.run()
     assert not at.exception
