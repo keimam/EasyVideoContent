@@ -2496,8 +2496,13 @@ def _download_image_thumbnail(image_url: str, dest_jpg: Path) -> bool:
 
 
 def get_candidate_thumbnail_path(project_dir: Path, candidate: Dict[str, Any]) -> Optional[Path]:
-    """Get or extract 320px cached thumbnail for an alternative visual candidate (X2, A1.2)."""
-    cand_id = candidate.get("candidate_id") or str(abs(hash(candidate.get("url", ""))))
+    """Get or extract 320px cached thumbnail for an alternative visual candidate (X2, A1.2, C5)."""
+    import hashlib
+
+    cand_id = candidate.get("candidate_id")
+    if not cand_id:
+        url_key = str(candidate.get("url") or candidate.get("thumbnail_url") or "")
+        cand_id = f"url_{hashlib.sha256(url_key.encode('utf-8')).hexdigest()[:16]}"
     safe_cid = re.sub(r"[^A-Za-z0-9._-]+", "_", str(cand_id))
     cand_t_dir = project_dir / "assets" / "visual" / "thumbnails" / "candidates"
     cand_t_file = cand_t_dir / f"{safe_cid}.jpg"

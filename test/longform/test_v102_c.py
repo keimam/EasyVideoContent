@@ -322,3 +322,79 @@ def test_c4_single_failed_clip_does_not_abort_others_and_is_recorded_skipped(tmp
     assert by_id["ch01_shot002"].status == ItemStatus.failed
     assert by_id["ch01_shot002"].rendered_clip is None
 
+
+def test_c5_no_double_transcode_thumbnail_cache_hit_and_hash_skip(tmp_path: Path, monkeypatch):
+    """C5: Eliminate libx264 double transcode on trim failure, reuse cached thumbnails, and skip unchanged shot_hash builds."""
+    import subprocess
+    from app.services.longform.ui.components import get_candidate_thumbnail_path, get_shot_thumbnail_path
+    from app.services.longform.visual import builder as builder_mod
+    from app.services.longform.visual import service as vis_svc_mod
+
+    # 1. trim_source_video_asset must NOT invoke a secondary libx264 re-encode when stream copy fails
+    vid = tmp_path / "weird_source.mp4"
+    vid.write_bytes(b"FAKEVIDEO" * 500)
+    with monkeypatch.context() as mp:
+        mp.setattr(builder_mod, "_get_video_duration", lambda _p: 15.0)
+        sub_cmds: list[list[str]] = []
+
+        def _fake_fail_copy(cmd, **_kw):
+            sub_cmds.append(list(cmd))
+            return type("Res", (), {"returncode": 1, "stderr": "copy failed", "stdout": ""})()
+
+        mp.setattr(subprocess, "run", _fake_fail_copy)
+        trimmed = builder_mod.trim_source_video_asset(vid, needed_duration_seconds=4.0)
+        assert trimmed is False
+        assert len(sub_cmds) == 1
+        assert "libx264" not in sub_cmds[0]
+
+    # 2. Candidate thumbnail path without candidate_id is deterministic and hits cache without refetching
+    cand = {"url": "https://example.test/media/panama_lock.jpg", "source_type": "stock_image"}
+    dl_calls = {"n": 0}
+
+    def _fake_dl_thumb(url: str, dest: Path) -> bool:
+        dl_calls["n"] += 1
+        dest.write_bytes(b"\xff\xd8\xff\xe0" + b"0" * 64)
+        return True
+
+    monkeypatch.setattr("app.services.longform.ui.components._download_image_thumbnail", _fake_dl_thumb)
+    p1 = get_candidate_thumbnail_path(tmp_path, cand)
+    p2 = get_candidate_thumbnail_path(tmp_path, cand)
+    assert p1 is not None and p1 == p2
+    assert "url_" in p1.name
+    assert dl_calls["n"] == 1
+
+    # 3. Shot build skipped (0 build_shot_clip calls) when shot_hash is unchanged, and shot thumbnail hits cache
+    monkeypatch.setenv("EFS_DEV", "1")
+    p_dir, manifest = _seed_visual_project(tmp_path / "skip_proj", "c5_skip", n_shots=2)
+    svc = VisualService(p_dir)
+    m_fetched = svc.fetch_all(manifest=manifest, provider_name="fake", allow_fallback=True, translate_keywords=False)
+    m_built1, st1 = svc.build_all(m_fetched)
+    assert st1["built_count"] == 2
+    assert st1["skipped_count"] == 0
+
+    sh0 = m_built1.chapters[0].shots[0]
+    t1 = get_shot_thumbnail_path(p_dir, sh0)
+    assert t1 is not None and t1.is_file()
+
+    # Second build_all with unchanged hashes must build 0 clips and skip 2 cleanly without deleting cached thumbnails
+    build_calls = {"n": 0}
+    orig_build_clip = vis_svc_mod.ShotClipBuilder.build_shot_clip
+
+    def _spy_build_clip(self_b, *args, **kwargs):
+        build_calls["n"] += 1
+        return orig_build_clip(self_b, *args, **kwargs)
+
+    monkeypatch.setattr(vis_svc_mod.ShotClipBuilder, "build_shot_clip", _spy_build_clip)
+    _m_built2, st2 = svc.build_all(m_built1)
+    assert build_calls["n"] == 0
+    assert st2["built_count"] == 0
+    assert st2["skipped_count"] == 2
+    assert t1.is_file()
+
+    # Second thumbnail call hits cache without running ffmpeg again
+    with monkeypatch.context() as mp2:
+        mp2.setattr(subprocess, "run", lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("ffmpeg should not run on cached thumbnail")))
+        t2 = get_shot_thumbnail_path(p_dir, sh0)
+        assert t2 == t1
+
+

@@ -175,21 +175,10 @@ def trim_source_video_asset(
     ]
     res = subprocess.run(cmd, capture_output=True, text=True)
     if res.returncode != 0 or not tmp_trim.is_file() or tmp_trim.stat().st_size == 0:
-        # Fallback to fast re-encode
-        cmd2 = [
-            "ffmpeg", "-y",
-            "-ss", "0",
-            "-i", str(p),
-            "-t", str(needed_duration_seconds),
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
-            "-c:a", "copy",
-            str(tmp_trim),
-        ]
-        res2 = subprocess.run(cmd2, capture_output=True, text=True)
-        if res2.returncode != 0 or not tmp_trim.is_file() or tmp_trim.stat().st_size == 0:
-            if tmp_trim.exists():
-                tmp_trim.unlink(missing_ok=True)
-            return False
+        # C5: Do not run a secondary libx264 re-encode here (avoids double transcode before build_video_clip)
+        if tmp_trim.exists():
+            tmp_trim.unlink(missing_ok=True)
+        return False
 
     os.replace(tmp_trim, p)
     logger.debug(f"Trimmed source asset {p.name} from {raw_dur:.1f}s to {needed_duration_seconds:.1f}s")
