@@ -262,7 +262,7 @@ _DIGITAL_OFFICE_TRAP_TAGS = {
     "notebook",
 }
 
-_TITLE_BASED_PROVIDERS = {"wikimedia", "openverse", "nasa"}
+_TITLE_BASED_PROVIDERS = {"wikimedia", "openverse", "nasa", "internet_archive", "smithsonian"}
 
 _GENERIC_ROLE_OR_SCENE_WORDS = {
     "apprentice",

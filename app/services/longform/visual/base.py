@@ -167,14 +167,19 @@ def canonical_candidate_dedup_key(cand: Any) -> str:
         prov = str(cand.get("provider") or "").strip().lower()
         url_val = cand.get("url")
         src_url = cand.get("source_url")
+        s_info = cand.get("source_info") or {}
     else:
         cid = str(getattr(cand, "candidate_id", "") or "").strip()
         prov = str(getattr(cand, "provider", "") or "").strip().lower()
         url_val = getattr(cand, "url", None)
         src_url = getattr(cand, "source_url", None)
+        s_info = getattr(cand, "source_info", None) or {}
 
     media_tok = _extract_canonical_media_token(url_val, src_url)
     if media_tok:
+        if prov == "internet_archive" and isinstance(s_info, dict) and s_info.get("segment_offset") is not None:
+            seg_off = float(s_info.get("segment_offset") or 0.0)
+            return f"{media_tok}#seg={seg_off:.2f}"
         return media_tok
     if cid.startswith("wikimedia_"):
         return f"wikimedia_page:{cid[len('wikimedia_'):]}"
@@ -371,8 +376,8 @@ def is_dev_or_test_mode() -> bool:
     return False
 
 
-KEYLESS_FREE_VISUAL_SOURCES = ("wikimedia", "nasa", "openverse")
-DEFAULT_VISUAL_SOURCE_ORDER = ("pixabay", "coverr", "wikimedia", "nasa", "openverse")
+KEYLESS_FREE_VISUAL_SOURCES = ("wikimedia", "nasa", "openverse", "internet_archive")
+DEFAULT_VISUAL_SOURCE_ORDER = ("pixabay", "coverr", "wikimedia", "nasa", "openverse", "internet_archive", "smithsonian")
 
 
 def is_commercial_license_allowed(license_name: Optional[str]) -> tuple[bool, str]:
@@ -466,12 +471,22 @@ def has_real_visual_source(
             return any(bool(str(x or "").strip()) for x in val)
         return bool(str(val or "").strip())
 
+    def _has_smithsonian_key() -> bool:
+        try:
+            from app.services.longform.config import get_smithsonian_api_key
+
+            return bool(get_smithsonian_api_key())
+        except Exception:
+            return False
+
     # Determine enabled providers
     if enabled_sources is not None:
         norm = {str(s).strip().lower() for s in enabled_sources if str(s or "").strip()}
         if not norm:
             return False
         if any(s in KEYLESS_FREE_VISUAL_SOURCES for s in norm):
+            return True
+        if "smithsonian" in norm and _has_smithsonian_key():
             return True
         if "pixabay" in norm and _has_val("pixabay_api_keys"):
             return True
@@ -491,7 +506,7 @@ def has_real_visual_source(
         return True
     if has_local_files:
         return True
-    if _has_val("pixabay_api_keys") or _has_val("pexels_api_keys") or _has_val("coverr_api_keys"):
+    if _has_val("pixabay_api_keys") or _has_val("pexels_api_keys") or _has_val("coverr_api_keys") or _has_smithsonian_key():
         return True
     if _has_val("openai_image_api_key") or bool((app_map or {}).get("codex_image_enabled", False)):
         return True

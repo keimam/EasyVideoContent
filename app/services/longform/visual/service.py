@@ -236,6 +236,14 @@ class VisualService:
                 return NasaVisualProvider(cache=self.cache, credits_manager=self.credits_manager)
             else:
                 return OpenverseVisualProvider(cache=self.cache, credits_manager=self.credits_manager)
+        elif p_name == "internet_archive":
+            from app.services.longform.visual.archive_providers import InternetArchiveVisualProvider
+
+            return InternetArchiveVisualProvider(cache=self.cache, credits_manager=self.credits_manager)
+        elif p_name == "smithsonian":
+            from app.services.longform.visual.archive_providers import SmithsonianVisualProvider
+
+            return SmithsonianVisualProvider(cache=self.cache, credits_manager=self.credits_manager)
         elif p_name in ("ai_image", "openai", "ai", "openai_image", "codex_image"):
             # V5: lazy import of AIImageProvider (pulls in material.py openai/codex path)
             from app.services.longform.visual.ai_image import AIImageProvider  # noqa: F811
@@ -332,6 +340,13 @@ class VisualService:
                 return _has_key("pexels_api_keys")
             if low == "coverr":
                 return _has_key("coverr_api_keys")
+            if low == "smithsonian":
+                try:
+                    from app.services.longform.config import get_smithsonian_api_key
+
+                    return bool(get_smithsonian_api_key())
+                except Exception:
+                    return False
             if low == "local":
                 from app.services.longform.visual.local import ALL_SUPPORTED_EXTS
                 lib_dir = self.project_dir / "assets" / "visual" / "library"
@@ -355,11 +370,12 @@ class VisualService:
         if provider_name and provider_name.lower().strip() not in ("auto",):
             return [provider_name.lower().strip()]
 
-        # Respect per-project source order if configured, otherwise default D9.2 order
+        # Respect per-project source order if configured, otherwise default D9.2 + D2 order
         custom_order = [str(p or "").lower().strip() for p in (getattr(manifest, "visual_source_order", []) or []) if str(p or "").strip()]
-        candidates_order: List[str] = custom_order or ["local", "pixabay", "coverr", "pexels", "wikimedia", "nasa", "openverse"]
+        default_order = ["local", "pixabay", "coverr", "pexels", "wikimedia", "nasa", "openverse", "internet_archive", "smithsonian"]
+        candidates_order: List[str] = custom_order or list(default_order)
         # Append any known default source not yet present in custom_order
-        for d_src in ["local", "pixabay", "coverr", "pexels", "wikimedia", "nasa", "openverse"]:
+        for d_src in default_order:
             if d_src not in candidates_order:
                 candidates_order.append(d_src)
         usable_default = [p for p in candidates_order if _is_provider_usable(p)]
@@ -510,6 +526,8 @@ class VisualService:
             "wikimedia",
             "nasa",
             "openverse",
+            "internet_archive",
+            "smithsonian",
         )
         has_anchor_check = bool((anchor_terms or avoid_terms) and is_stock_asset)
         if required_subject_terms or blocked_terms or negative_terms or has_anchor_check:
@@ -737,8 +755,10 @@ class VisualService:
     def _provider_query_tiers(
         prov_name: str,
         dedup_tiers: List[Tuple[str, Optional[str]]],
+        *,
+        anchor_terms: Optional[List[str]] = None,
     ) -> List[Tuple[str, Optional[str]]]:
-        """Slice query ladder cleanly per provider capabilities (D9.7, V1)."""
+        """Slice query ladder cleanly per provider capabilities (D9.7, V1, D2.3)."""
         if prov_name in ("pixabay", "pexels", "coverr", "stock"):
             return list(dedup_tiers[:6])
         seen_q_only: set[str] = set()
@@ -748,7 +768,18 @@ class VisualService:
             if ql not in seen_q_only:
                 seen_q_only.add(ql)
                 prov_tiers.append((q_t, None))
-        return prov_tiers[:3] if prov_name == "openverse" else prov_tiers[:4]
+        base_limit = 3 if prov_name in ("openverse", "internet_archive", "smithsonian") else 4
+        out_tiers = prov_tiers[:base_limit]
+        if prov_name in ("internet_archive", "smithsonian") and dedup_tiers:
+            from app.services.longform.visual.archive_providers import build_archive_short_queries
+
+            seed_q = str(dedup_tiers[0][0] or "").strip()
+            for sq in build_archive_short_queries(seed_q, anchor_terms=anchor_terms, max_variants=2):
+                sql = sq.lower()
+                if sql not in seen_q_only:
+                    seen_q_only.add(sql)
+                    out_tiers.append((sq, "archive_short"))
+        return out_tiers
 
     def _search_single_provider_tiers(
         self,
@@ -784,12 +815,23 @@ class VisualService:
         for q_text, q_cat in prov_tiers:
             if is_stop_requested(self.project_dir):
                 break
+            if q_cat == "archive_short" and best_candidates:
+                break
             if prov_name == "coverr":
                 try:
                     from app.services.longform.visual.coverr_client import get_coverr_auth_status
 
                     c_auth = get_coverr_auth_status()
                     if c_auth.get("auth_blocked") or c_auth.get("run_paused"):
+                        break
+                except Exception:
+                    pass
+            elif prov_name == "smithsonian":
+                try:
+                    from app.services.longform.visual.archive_providers import get_smithsonian_auth_status
+
+                    s_auth = get_smithsonian_auth_status()
+                    if (not s_auth.get("configured")) or s_auth.get("auth_blocked"):
                         break
                 except Exception:
                     pass
@@ -1105,7 +1147,7 @@ class VisualService:
                 fallback_reason = f"Provider '{prov_name}' error ({exc}); fell back to fake provider"
                 active_provider = FakeVisualProvider(mode=prov_name)
 
-            resolved_provs.append((prov_name, active_provider, self._provider_query_tiers(prov_name, dedup_tiers)))
+            resolved_provs.append((prov_name, active_provider, self._provider_query_tiers(prov_name, dedup_tiers, anchor_terms=proj_anchors)))
 
         if eff_mode == "priority":
             for prov_name, active_provider, prov_tiers in resolved_provs:
@@ -1918,7 +1960,16 @@ class VisualService:
                             return f"rate_limited ({c_auth.get('error') or 'HTTP 403'})"
                     except Exception:
                         pass
-                if p_nm in ("wikimedia", "nasa", "openverse"):
+                if p_nm == "smithsonian":
+                    try:
+                        from app.services.longform.visual.archive_providers import get_smithsonian_auth_status
+
+                        s_auth = get_smithsonian_auth_status()
+                        if s_auth.get("auth_blocked"):
+                            return f"auth_blocked ({s_auth.get('error') or 'HTTP 403'})"
+                    except Exception:
+                        pass
+                if p_nm in ("wikimedia", "nasa", "openverse", "internet_archive", "smithsonian"):
                     try:
                         from app.services.longform.visual.free_providers import check_provider_cooldown
 
@@ -2150,6 +2201,17 @@ class VisualService:
                         rate_lim = True
                         if not last_err:
                             last_err = sanitize_source_error(c_auth.get("error") or "HTTP 403", max_len=200)
+                except Exception:
+                    pass
+            elif pk == "smithsonian":
+                try:
+                    from app.services.longform.visual.archive_providers import get_smithsonian_auth_status
+
+                    s_auth = get_smithsonian_auth_status()
+                    if s_auth.get("auth_blocked"):
+                        auth_blk = True
+                        if not last_err:
+                            last_err = sanitize_source_error(s_auth.get("error") or "HTTP 403", max_len=200)
                 except Exception:
                     pass
             if last_err and not auth_blk and not rate_lim and to_cnt == 0 and cd_cnt == 0:
