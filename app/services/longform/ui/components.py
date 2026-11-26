@@ -340,6 +340,8 @@ def get_project_summaries() -> List[Dict[str, Any]]:
         if p.is_dir() and (p / "manifest.json").is_file():
             try:
                 st_info = compute_project_step_status(p)
+                st_info["folder_name"] = p.name
+                st_info["project_dir"] = str(p)
                 st_info["mtime"] = (p / "manifest.json").stat().st_mtime
                 projects.append(st_info)
             except Exception as exc:
@@ -1226,6 +1228,19 @@ def render_home_page():
 
     # 3. Project Filter Chips and Grid (Mockup 1)
     projects = get_project_summaries()
+    dup_by_id: Dict[str, List[str]] = {}
+    for p in projects:
+        pid = str(p.get("project_id") or "")
+        fname = str(p.get("folder_name") or pid)
+        dup_by_id.setdefault(pid, []).append(fname)
+    dup_entries = [
+        f"{pid}: {', '.join(sorted(fnames))}"
+        for pid, fnames in dup_by_id.items()
+        if len(fnames) > 1
+    ]
+    if dup_entries:
+        st.warning(t("home_duplicate_project_ids_warn", details="; ".join(dup_entries)))
+
     failed_loads = get_failed_project_loads()
     if failed_loads:
         with st.container(border=True):
@@ -1301,9 +1316,10 @@ def render_home_page():
         "CapCut": t("step_capcut"),
     }
     for idx, p in enumerate(filtered_projects):
+        folder_key = str(p.get("folder_name") or p["project_id"])
         with cols[idx % 3]:
             with st.container(border=True):
-                p_dir = get_project_dir(p["project_id"])
+                p_dir = Path(p["project_dir"]) if p.get("project_dir") else get_project_dir(folder_key)
                 thumb_p = get_project_thumbnail_path(p_dir)
                 dur_minutes = p.get("duration_minutes", 12)
                 dur_str = f"≈ {dur_minutes} {t('unit_minutes')}"
@@ -1348,19 +1364,19 @@ def render_home_page():
                 with col_card_open:
                     st.button(
                         t("btn_open_project"),
-                        key=f"btn_open_{p['project_id']}",
+                        key=f"btn_open_{folder_key}",
                         use_container_width=True,
                         on_click=open_project_state,
-                        args=(p["project_id"],),
+                        args=(folder_key,),
                     )
                 with col_card_more:
                     with st.popover("⋯", help=t("popover_more_help"), use_container_width=True):
                         if st.button(
                             t("btn_delete_project"),
-                            key=f"btn_del_card_{p['project_id']}",
+                            key=f"btn_del_card_{folder_key}",
                             use_container_width=True,
                         ):
-                            st.session_state["confirm_delete_project_id"] = p["project_id"]
+                            st.session_state["confirm_delete_project_id"] = folder_key
                             st.rerun()
 
                 if comp_steps == 5:
@@ -1368,7 +1384,7 @@ def render_home_page():
                     with col_co1:
                         if st.button(
                             t("btn_open_output_folder"),
-                            key=f"btn_card_output_{p['project_id']}",
+                            key=f"btn_card_output_{folder_key}",
                             use_container_width=True,
                         ):
                             out_target = (p_dir / "export") if (p_dir / "export").is_dir() else p_dir
@@ -1376,11 +1392,11 @@ def render_home_page():
                     with col_co2:
                         if st.button(
                             t("btn_open_credits_md"),
-                            key=f"btn_card_credits_{p['project_id']}",
+                            key=f"btn_card_credits_{folder_key}",
                             use_container_width=True,
                         ):
                             from app.services.branding.lifecycle_ui import show_credits_dialog
-                            show_credits_dialog(p_dir, p["project_id"])
+                            show_credits_dialog(p_dir, folder_key)
 
     _render_delete_project_dialog(on_deleted_redirect_home=False)
 

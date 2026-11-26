@@ -918,6 +918,7 @@ ID_TRANSLATIONS: Dict[str, str] = {
     "btn_copy_error_details": "Salin detail",
     "copied_error_details_toast": "Detail error siap disalin dari kotak di bawah.",
     "home_corrupt_projects_warn": "⚠️ {count} proyek tidak bisa dibuka (data rusak/versi lama):",
+    "home_duplicate_project_ids_warn": "⚠️ ID proyek ganda terdeteksi: {details}. Gunakan folder terpisah atau ubah `project_id` agar tidak tertukar.",
     "btn_inspect_broken_project": "Lihat detail: {id}",
     # --- Stage 8C.3 (E1: First-Run Wizard, E2: Update Checker, E3: CapCut Version, E5: Output/Credits) ---
     "wizard_title": "Wizard Pengaturan Pertama Kali",
@@ -2138,6 +2139,7 @@ EN_TRANSLATIONS: Dict[str, str] = {
     "btn_copy_error_details": "Copy details",
     "copied_error_details_toast": "Error details are ready to copy from the box below.",
     "home_corrupt_projects_warn": "⚠️ {count} project(s) could not be opened (corrupted/legacy data):",
+    "home_duplicate_project_ids_warn": "⚠️ Duplicate project IDs detected: {details}. Use separate project_id values to avoid confusion.",
     "btn_inspect_broken_project": "View details: {id}",
     # --- Stage 8C.3 (E1: First-Run Wizard, E2: Update Checker, E3: CapCut Version, E5: Output/Credits) ---
     "wizard_title": "First-Run Setup Wizard",
