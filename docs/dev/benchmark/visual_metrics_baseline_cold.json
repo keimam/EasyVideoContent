@@ -1,0 +1,120 @@
+{
+  "project_id": "bench_panama_10m",
+  "total_seconds": 1183.891,
+  "allocate_seconds": 0.016,
+  "fetch_seconds": 871.359,
+  "anchor_seconds": 1.375,
+  "anchor_llm_calls": 0,
+  "ai_keywords_seconds": 0.173,
+  "ai_keywords_llm_calls": 8,
+  "ai_keywords_retries": 0,
+  "ai_keywords_cached": 0,
+  "translate_seconds": 0.0,
+  "search_wall_seconds": 604.497,
+  "search_per_source": {
+    "coverr": {
+      "tier_attempts": 140,
+      "http_requests": 53,
+      "cache_hits": 0,
+      "elapsed_seconds": 45.938
+    },
+    "nasa": {
+      "tier_attempts": 339,
+      "http_requests": 249,
+      "cache_hits": 90,
+      "elapsed_seconds": 221.223
+    },
+    "nasa_asset": {
+      "tier_attempts": 0,
+      "http_requests": 70,
+      "cache_hits": 9,
+      "elapsed_seconds": 0.0
+    },
+    "openverse": {
+      "tier_attempts": 194,
+      "http_requests": 60,
+      "cache_hits": 26,
+      "elapsed_seconds": 188.67
+    },
+    "pixabay": {
+      "tier_attempts": 395,
+      "http_requests": 400,
+      "cache_hits": 0,
+      "elapsed_seconds": 274.512
+    },
+    "wikimedia": {
+      "tier_attempts": 329,
+      "http_requests": 248,
+      "cache_hits": 81,
+      "elapsed_seconds": 476.976
+    }
+  },
+  "source_status": {
+    "coverr": {
+      "ok": false,
+      "cooldown": 3,
+      "auth_blocked": false,
+      "rate_limited": true,
+      "timeout": 0,
+      "last_error": "HTTP 403: {\"message\":\"Exceeded query limit\"}"
+    },
+    "nasa": {
+      "ok": true,
+      "cooldown": 0,
+      "auth_blocked": false,
+      "rate_limited": false,
+      "timeout": 0,
+      "last_error": null
+    },
+    "nasa_asset": {
+      "ok": true,
+      "cooldown": 0,
+      "auth_blocked": false,
+      "rate_limited": false,
+      "timeout": 0,
+      "last_error": null
+    },
+    "openverse": {
+      "ok": false,
+      "cooldown": 5,
+      "auth_blocked": false,
+      "rate_limited": false,
+      "timeout": 8,
+      "last_error": "Timeout (HTTPSConnectionPool(host='api.openverse.org', port=443): Read timed out. (read timeout=6))"
+    },
+    "pixabay": {
+      "ok": true,
+      "cooldown": 0,
+      "auth_blocked": false,
+      "rate_limited": false,
+      "timeout": 0,
+      "last_error": null
+    },
+    "wikimedia": {
+      "ok": false,
+      "cooldown": 0,
+      "auth_blocked": false,
+      "rate_limited": false,
+      "timeout": 4,
+      "last_error": "Timeout (HTTPSConnectionPool(host='commons.wikimedia.org', port=443): Read timed out. (read timeout=6))"
+    }
+  },
+  "thumbnail_seconds": 0.0,
+  "asset_download_seconds": 260.422,
+  "download_cache_hits": 0,
+  "download_misses": 77,
+  "ai_relevance_seconds": 0.0,
+  "build_seconds": 312.453,
+  "ffmpeg_build_seconds": 234.73,
+  "built_count": 77,
+  "skipped_count": 0,
+  "manifest_save_seconds": 6.449,
+  "manifest_save_count": 155,
+  "source_distribution": {
+    "pixabay": 37,
+    "wikimedia": 18,
+    "nasa": 18,
+    "openverse": 4
+  },
+  "total_shots": 77
+}

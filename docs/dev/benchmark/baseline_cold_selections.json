@@ -1,0 +1,387 @@
+[
+  {
+    "shot_id": "ch01_shot001",
+    "actual_source": "pixabay",
+    "source_candidate_id": "pixabay_103709"
+  },
+  {
+    "shot_id": "ch01_shot002",
+    "actual_source": "pixabay",
+    "source_candidate_id": "pixabay_132563"
+  },
+  {
+    "shot_id": "ch01_shot003",
+    "actual_source": "wikimedia",
+    "source_candidate_id": "wikimedia_68161541"
+  },
+  {
+    "shot_id": "ch01_shot004",
+    "actual_source": "pixabay",
+    "source_candidate_id": "pixabay_104537"
+  },
+  {
+    "shot_id": "ch01_shot005",
+    "actual_source": "pixabay",
+    "source_candidate_id": "pixabay_26731"
+  },
+  {
+    "shot_id": "ch01_shot006",
+    "actual_source": "pixabay",
+    "source_candidate_id": "pixabay_380180"
+  },
+  {
+    "shot_id": "ch01_shot007",
+    "actual_source": "pixabay",
+    "source_candidate_id": "pixabay_33654"
+  },
+  {
+    "shot_id": "ch01_shot008",
+    "actual_source": "wikimedia",
+    "source_candidate_id": "wikimedia_143753513"
+  },
+  {
+    "shot_id": "ch01_shot009",
+    "actual_source": "pixabay",
+    "source_candidate_id": "pixabay_103581"
+  },
+  {
+    "shot_id": "ch01_shot010",
+    "actual_source": "pixabay",
+    "source_candidate_id": "pixabay_109651"
+  },
+  {
+    "shot_id": "ch01_shot011",
+    "actual_source": "pixabay",
+    "source_candidate_id": "pixabay_372286"
+  },
+  {
+    "shot_id": "ch01_shot012",
+    "actual_source": "wikimedia",
+    "source_candidate_id": "wikimedia_183413667"
+  },
+  {
+    "shot_id": "ch01_shot013",
+    "actual_source": "pixabay",
+    "source_candidate_id": "pixabay_33751"
+  },
+  {
+    "shot_id": "ch01_shot014",
+    "actual_source": "wikimedia",
+    "source_candidate_id": "wikimedia_133021111"
+  },
+  {
+    "shot_id": "ch01_shot015",
+    "actual_source": "pixabay",
+    "source_candidate_id": "pixabay_150863"
+  },
+  {
+    "shot_id": "ch01_shot016",
+    "actual_source": "pixabay",
+    "source_candidate_id": "pixabay_112471"
+  },
+  {
+    "shot_id": "ch01_shot017",
+    "actual_source": "pixabay",
+    "source_candidate_id": "pixabay_251487"
+  },
+  {
+    "shot_id": "ch02_shot001",
+    "actual_source": "nasa",
+    "source_candidate_id": "nasa_PIA20911"
+  },
+  {
+    "shot_id": "ch02_shot002",
+    "actual_source": "wikimedia",
+    "source_candidate_id": "wikimedia_68191868"
+  },
+  {
+    "shot_id": "ch02_shot003",
+    "actual_source": "pixabay",
+    "source_candidate_id": "pixabay_66101"
+  },
+  {
+    "shot_id": "ch02_shot004",
+    "actual_source": "wikimedia",
+    "source_candidate_id": "wikimedia_72083793"
+  },
+  {
+    "shot_id": "ch02_shot005",
+    "actual_source": "pixabay",
+    "source_candidate_id": "pixabay_126208"
+  },
+  {
+    "shot_id": "ch02_shot006",
+    "actual_source": "pixabay",
+    "source_candidate_id": "pixabay_276047"
+  },
+  {
+    "shot_id": "ch02_shot007",
+    "actual_source": "pixabay",
+    "source_candidate_id": "pixabay_34388"
+  },
+  {
+    "shot_id": "ch02_shot008",
+    "actual_source": "wikimedia",
+    "source_candidate_id": "wikimedia_55362674"
+  },
+  {
+    "shot_id": "ch02_shot009",
+    "actual_source": "pixabay",
+    "source_candidate_id": "pixabay_103582"
+  },
+  {
+    "shot_id": "ch02_shot010",
+    "actual_source": "pixabay",
+    "source_candidate_id": "pixabay_31943"
+  },
+  {
+    "shot_id": "ch02_shot011",
+    "actual_source": "pixabay",
+    "source_candidate_id": "pixabay_67764"
+  },
+  {
+    "shot_id": "ch02_shot012",
+    "actual_source": "pixabay",
+    "source_candidate_id": "pixabay_49640"
+  },
+  {
+    "shot_id": "ch02_shot013",
+    "actual_source": "pixabay",
+    "source_candidate_id": "pixabay_151685"
+  },
+  {
+    "shot_id": "ch02_shot014",
+    "actual_source": "wikimedia",
+    "source_candidate_id": "wikimedia_119870141"
+  },
+  {
+    "shot_id": "ch02_shot015",
+    "actual_source": "pixabay",
+    "source_candidate_id": "pixabay_269089"
+  },
+  {
+    "shot_id": "ch03_shot001",
+    "actual_source": "nasa",
+    "source_candidate_id": "nasa_GSFC_20171208_Archive_e001162"
+  },
+  {
+    "shot_id": "ch03_shot002",
+    "actual_source": "nasa",
+    "source_candidate_id": "nasa_0102619"
+  },
+  {
+    "shot_id": "ch03_shot003",
+    "actual_source": "nasa",
+    "source_candidate_id": "nasa_How Are We Made of Star Stuff Horizontal"
+  },
+  {
+    "shot_id": "ch03_shot004",
+    "actual_source": "pixabay",
+    "source_candidate_id": "pixabay_251486"
+  },
+  {
+    "shot_id": "ch03_shot005",
+    "actual_source": "pixabay",
+    "source_candidate_id": "pixabay_269090"
+  },
+  {
+    "shot_id": "ch03_shot006",
+    "actual_source": "nasa",
+    "source_candidate_id": "nasa_JPL-20241108-NISARf-0001-NISAR Critical Infrastructure"
+  },
+  {
+    "shot_id": "ch03_shot007",
+    "actual_source": "pixabay",
+    "source_candidate_id": "pixabay_269093"
+  },
+  {
+    "shot_id": "ch03_shot008",
+    "actual_source": "wikimedia",
+    "source_candidate_id": "wikimedia_191977807"
+  },
+  {
+    "shot_id": "ch03_shot009",
+    "actual_source": "nasa",
+    "source_candidate_id": "nasa_AFRC2020-0012-21"
+  },
+  {
+    "shot_id": "ch03_shot010",
+    "actual_source": "wikimedia",
+    "source_candidate_id": "wikimedia_202757056"
+  },
+  {
+    "shot_id": "ch03_shot011",
+    "actual_source": "nasa",
+    "source_candidate_id": "nasa_GSFC_20220805_PACE_064859"
+  },
+  {
+    "shot_id": "ch03_shot012",
+    "actual_source": "openverse",
+    "source_candidate_id": "openverse_bfc95ed9-6cd0-4b89-b231-87393237cdbd"
+  },
+  {
+    "shot_id": "ch03_shot013",
+    "actual_source": "wikimedia",
+    "source_candidate_id": "wikimedia_110716451"
+  },
+  {
+    "shot_id": "ch03_shot014",
+    "actual_source": "pixabay",
+    "source_candidate_id": "pixabay_33849"
+  },
+  {
+    "shot_id": "ch03_shot015",
+    "actual_source": "nasa",
+    "source_candidate_id": "nasa_20250714_B3_EC_Inspired Enterprise_Glen Swanson-Ann de Forest-Barbara Brennan"
+  },
+  {
+    "shot_id": "ch03_shot016",
+    "actual_source": "pixabay",
+    "source_candidate_id": "pixabay_269094"
+  },
+  {
+    "shot_id": "ch04_shot001",
+    "actual_source": "wikimedia",
+    "source_candidate_id": "wikimedia_13188964"
+  },
+  {
+    "shot_id": "ch04_shot002",
+    "actual_source": "pixabay",
+    "source_candidate_id": "pixabay_269096"
+  },
+  {
+    "shot_id": "ch04_shot003",
+    "actual_source": "wikimedia",
+    "source_candidate_id": "wikimedia_104646135"
+  },
+  {
+    "shot_id": "ch04_shot004",
+    "actual_source": "pixabay",
+    "source_candidate_id": "pixabay_269097"
+  },
+  {
+    "shot_id": "ch04_shot005",
+    "actual_source": "nasa",
+    "source_candidate_id": "nasa_How Big is Space"
+  },
+  {
+    "shot_id": "ch04_shot006",
+    "actual_source": "pixabay",
+    "source_candidate_id": "pixabay_269092"
+  },
+  {
+    "shot_id": "ch04_shot007",
+    "actual_source": "pixabay",
+    "source_candidate_id": "pixabay_269098"
+  },
+  {
+    "shot_id": "ch04_shot008",
+    "actual_source": "openverse",
+    "source_candidate_id": "openverse_504565dc-6db4-4409-99b6-0adb49ab9c39"
+  },
+  {
+    "shot_id": "ch04_shot009",
+    "actual_source": "pixabay",
+    "source_candidate_id": "pixabay_29485"
+  },
+  {
+    "shot_id": "ch04_shot010",
+    "actual_source": "wikimedia",
+    "source_candidate_id": "wikimedia_135434890"
+  },
+  {
+    "shot_id": "ch04_shot011",
+    "actual_source": "nasa",
+    "source_candidate_id": "nasa_NHQ201708050008"
+  },
+  {
+    "shot_id": "ch05_shot001",
+    "actual_source": "nasa",
+    "source_candidate_id": "nasa_How Long Does it Take to Get to the Moon, Mars, Jupiter"
+  },
+  {
+    "shot_id": "ch05_shot002",
+    "actual_source": "openverse",
+    "source_candidate_id": "openverse_fa53927d-db63-49fa-80ac-28dc7225f2e9"
+  },
+  {
+    "shot_id": "ch05_shot003",
+    "actual_source": "pixabay",
+    "source_candidate_id": "pixabay_269099"
+  },
+  {
+    "shot_id": "ch05_shot004",
+    "actual_source": "openverse",
+    "source_candidate_id": "openverse_06b4194c-93d7-445c-903f-18fa3ba4ab88"
+  },
+  {
+    "shot_id": "ch05_shot005",
+    "actual_source": "nasa",
+    "source_candidate_id": "nasa_PIA22352"
+  },
+  {
+    "shot_id": "ch05_shot006",
+    "actual_source": "nasa",
+    "source_candidate_id": "nasa_ksc_102506_stereo_lsp"
+  },
+  {
+    "shot_id": "ch05_shot007",
+    "actual_source": "pixabay",
+    "source_candidate_id": "pixabay_71264"
+  },
+  {
+    "shot_id": "ch05_shot008",
+    "actual_source": "wikimedia",
+    "source_candidate_id": "wikimedia_190794127"
+  },
+  {
+    "shot_id": "ch05_shot009",
+    "actual_source": "nasa",
+    "source_candidate_id": "nasa_GRC-1973-C-00857"
+  },
+  {
+    "shot_id": "ch05_shot010",
+    "actual_source": "nasa",
+    "source_candidate_id": "nasa_jsc2025m000002_How_Do_Astronauts_Exercise_in_Space_250106-MP4"
+  },
+  {
+    "shot_id": "ch05_shot011",
+    "actual_source": "pixabay",
+    "source_candidate_id": "pixabay_71267"
+  },
+  {
+    "shot_id": "ch06_shot001",
+    "actual_source": "wikimedia",
+    "source_candidate_id": "wikimedia_12985659"
+  },
+  {
+    "shot_id": "ch06_shot002",
+    "actual_source": "wikimedia",
+    "source_candidate_id": "wikimedia_201545693"
+  },
+  {
+    "shot_id": "ch06_shot003",
+    "actual_source": "nasa",
+    "source_candidate_id": "nasa_PIA01797"
+  },
+  {
+    "shot_id": "ch06_shot004",
+    "actual_source": "nasa",
+    "source_candidate_id": "nasa_sts049-s-001"
+  },
+  {
+    "shot_id": "ch06_shot005",
+    "actual_source": "wikimedia",
+    "source_candidate_id": "wikimedia_12981742"
+  },
+  {
+    "shot_id": "ch06_shot006",
+    "actual_source": "pixabay",
+    "source_candidate_id": "pixabay_189681"
+  },
+  {
+    "shot_id": "ch06_shot007",
+    "actual_source": "nasa",
+    "source_candidate_id": "nasa_GRC-1958-C-47803"
+  }
+]
