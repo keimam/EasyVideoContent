@@ -28,6 +28,14 @@ import streamlit as st
 from loguru import logger
 
 from app.services.longform.hashing import compute_audio_group_hash
+from app.services.longform.llm_adapter import (
+    LLMAdapterError,
+    LLMAuthError,
+    LLMCreditError,
+    LLMDailyQuotaError,
+    LLMModelNotFoundError,
+    format_concise_llm_error,
+)
 from app.services.longform.presets import (
     create_custom_niche_hierarchy,
     delete_custom_preset,
@@ -4160,15 +4168,15 @@ def render_visual_step_flow(
                             "text": msg_kw_ok,
                         }
                     st.rerun()
-                except (LLMCreditError, LLMModelNotFoundError) as exc:
+                except (LLMCreditError, LLMDailyQuotaError, LLMAuthError, LLMModelNotFoundError, LLMAdapterError) as exc:
                     _render_llm_friendly_error_box(
                         project_id,
-                        str(exc),
+                        format_concise_llm_error(exc),
                         active_model=str(llm_kw_status.get("model") or ""),
                         key_suffix="aikw",
                     )
                 except Exception as exc:
-                    _render_friendly_error(t("err_ai_kw_friendly"), exc)
+                    st.warning(format_concise_llm_error(exc))
 
     # --- V2: Interactive 2-Column Side-by-Side Gallery & Detail Layout (Mockup 2 V3) ---
     if total_shots > 0:

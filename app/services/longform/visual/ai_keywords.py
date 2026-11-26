@@ -389,10 +389,10 @@ def ensure_project_visual_anchors(
             "source": "ai",
             "cached": False,
         }
-    except (LLMCreditError, LLMModelNotFoundError):
-        raise
     except Exception as exc:
-        logger.warning(f"F12 anchor generation fallback: {exc}")
+        from app.services.longform.llm_adapter import format_concise_llm_error
+
+        logger.warning(f"F12 anchor generation fallback: {format_concise_llm_error(exc)}")
         manifest.visual_anchor_terms = h_anchors
         manifest.visual_avoid_terms = h_avoids
         manifest.visual_summary = h_summary
@@ -1084,23 +1084,32 @@ def generate_chapter_visual_keywords_ai(
                         shot.search_query_en = ext_q
                     updated += 1
             _save_ai_kw_cache(cache, cache_dir)
-        except LLMAuthError as exc:
-            for shot, *_ in chunk:
-                shot.search_query_reason = "ai_auth_error"
-            raise exc
-        except (LLMCreditError, LLMDailyQuotaError) as exc:
-            for shot, *_ in chunk:
-                shot.search_query_reason = "ai_quota_exceeded"
-            raise exc
-        except LLMModelNotFoundError as exc:
-            for shot, *_ in chunk:
-                shot.search_query_reason = "ai_model_unavailable"
-            raise exc
-        except Exception as exc:
+        except (LLMAuthError, LLMCreditError, LLMDailyQuotaError, LLMModelNotFoundError, Exception) as exc:
+            from app.services.longform.llm_adapter import format_concise_llm_error
+
             llm_calls += 1
             fallback_used = True
-            short_err = str(exc).strip().splitlines()[0][:120]
-            warning = f"AI gagal ({type(exc).__name__}): {short_err}"
+            low_exc = str(exc).lower()
+            if isinstance(exc, LLMAuthError) or "paused_auth" in low_exc:
+                q_reason = "ai_auth_error"
+            elif (
+                isinstance(exc, (LLMCreditError, LLMDailyQuotaError))
+                or "free-models-per-day" in low_exc
+                or "quota" in low_exc
+                or "kuota harian" in low_exc
+                or "pause s/d" in low_exc
+            ):
+                q_reason = "ai_quota_exceeded"
+            elif isinstance(exc, LLMModelNotFoundError):
+                q_reason = "ai_model_unavailable"
+            else:
+                q_reason = f"ai_failed:{type(exc).__name__}"
+
+            concise = format_concise_llm_error(exc)
+            tried_s = getattr(exc, "attempts_summary", "") or ""
+            warning = f"{concise}" + (f" ({tried_s})" if tried_s and tried_s not in concise else "")
+            if q_reason.startswith("ai_failed:"):
+                q_reason = f"{q_reason}: {concise[:80]}"
             logger.warning(warning)
             for shot, src_text, _c_key, _p_i, _p_t, focus_clause in chunk:
                 ext_q = extract_short_search_query(
@@ -1111,7 +1120,7 @@ def generate_chapter_visual_keywords_ai(
                 )
                 shot.search_query = shot.search_query or ext_q
                 shot.search_query_source = "extraction"
-                shot.search_query_reason = f"ai_failed:{type(exc).__name__}: {short_err}"
+                shot.search_query_reason = q_reason
                 if norm_lang == "en" and not shot.search_query_en:
                     shot.search_query_en = ext_q
                 updated += 1

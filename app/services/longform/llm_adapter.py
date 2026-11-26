@@ -47,9 +47,68 @@ _RAW_TOKEN_RE = re.compile(
 
 
 def sanitize_error(msg: str) -> str:
-    """Mask potential API keys or secrets in error messages."""
+    """Mask potential API keys, secrets, user IDs, or embedded raw credentials in error messages."""
     masked = _SENSITIVE_KEY_RE.sub(r"\1***REDACTED***", str(msg))
-    return _RAW_TOKEN_RE.sub("***REDACTED***", masked)
+    masked = _RAW_TOKEN_RE.sub("***REDACTED***", masked)
+    masked = re.sub(
+        r"""(['"]?user[_-]?id['"]?\s*[:=]\s*)(['"]?)[^'",}\s]+\2""",
+        r"\1\2***REDACTED***\2",
+        masked,
+        flags=re.IGNORECASE,
+    )
+    return masked
+
+
+def _short_tz_label(dt_local: datetime) -> str:
+    raw_tz = str(dt_local.tzname() or "").strip()
+    low = raw_tz.lower()
+    if "se asia" in low or raw_tz in ("WIB", "ICT", "+07"):
+        return "WIB"
+    if "central indonesia" in low or raw_tz == "WITA":
+        return "WITA"
+    if "eastern indonesia" in low or raw_tz == "WIT":
+        return "WIT"
+    return raw_tz or "Lokal"
+
+
+def format_concise_llm_error(exc_or_msg: Any, provider_id: str = "") -> str:
+    """Summarize raw LLM provider errors (especially OpenRouter 429 JSON with user_id/URLs) into concise user-safe text (GA1.2)."""
+    raw = sanitize_error(str(exc_or_msg or ""))
+    pid = (provider_id or "").strip().lower()
+    prov_def = get_llm_provider(pid) if pid else None
+    label = (prov_def.default_label if prov_def else None) or (pid.capitalize() if pid else "AI")
+    low = raw.lower()
+    if not pid and ("openrouter" in low or "free-models-per-day" in low):
+        label = "OpenRouter"
+
+    if (
+        isinstance(exc_or_msg, LLMDailyQuotaError)
+        or (isinstance(exc_or_msg, LLMRateLimitError) and getattr(exc_or_msg, "is_daily", False))
+        or "free-models-per-day" in low
+        or "requests per day" in low
+        or "daily quota" in low
+    ):
+        try:
+            dt_local = datetime.fromtimestamp(_next_utc_midnight_ts(), tz=timezone.utc).astimezone()
+            reset_str = f"{dt_local.strftime('%H:%M')} {_short_tz_label(dt_local)}"
+        except Exception:
+            reset_str = "00:00 UTC"
+        return f"{label}: kuota harian habis (reset {reset_str})"
+
+    if isinstance(exc_or_msg, LLMCreditError) or "402" in low or "insufficient credit" in low:
+        return f"{label}: saldo/kredit habis (402)"
+    if isinstance(exc_or_msg, LLMAuthError) or "401" in low or "403" in low or "unauthorized" in low or "invalid api key" in low:
+        return f"{label}: API key ditolak server (401/403)"
+    if isinstance(exc_or_msg, LLMModelNotFoundError) or "404" in low or "no endpoints found" in low:
+        return f"{label}: model tidak ditemukan (404)"
+
+    # Strip long URLs & raw dict error wrappers for cleaner logs/warnings
+    cleaned = re.sub(r"https?://\S+", "", raw)
+    cleaned = re.sub(r"\{\s*['\"]error['\"][\s\S]*$", "", cleaned).strip()
+    if not cleaned:
+        cleaned = raw.splitlines()[0]
+    cleaned = " ".join(cleaned.split())
+    return cleaned[:160]
 
 
 def resolve_effective_model(provider_id: str, configured_model: Optional[str]) -> Tuple[str, bool]:
@@ -1867,7 +1926,7 @@ def _format_pause_until_label(paused_until_ts: Optional[float]) -> str:
         return "Sementara dijeda"
     try:
         dt_local = datetime.fromtimestamp(float(paused_until_ts), tz=timezone.utc).astimezone()
-        tz_abbr = dt_local.tzname() or "Lokal"
+        tz_abbr = _short_tz_label(dt_local)
         return f"Pause s/d {dt_local.strftime('%H:%M')} {tz_abbr}".strip()
     except Exception:
         return "Sementara dijeda"
@@ -1899,7 +1958,7 @@ def mark_provider_paused(
         "paused_until": float(paused_until_ts),
         "key_fp": _provider_key_fingerprint(pid),
         "model": eff_model,
-        "error": sanitize_error(str(error_detail or ""))[:180],
+        "error": format_concise_llm_error(str(error_detail or ""), pid)[:180],
         "recorded_at": now,
     }
     with _PAUSE_LOCK:
@@ -2293,9 +2352,8 @@ def call_llm_with_failover(
             last_terminal_exc = norm_exc
             if pause_reason:
                 mark_provider_paused(pid, reason=pause_reason, error_detail=str(norm_exc))
-            logger.warning(
-                f"LLM provider '{pid}' failed ({err_tag}): {sanitize_error(str(norm_exc))[:160]}"
-            )
+            concise_err = format_concise_llm_error(norm_exc, pid)
+            logger.warning(f"LLM provider '{pid}' failed ({err_tag}): {concise_err}")
 
     summary = _format_failover_attempts_summary(chain, provider_errors, succeeded_provider=None)
     if last_terminal_exc is not None:
@@ -2306,7 +2364,8 @@ def call_llm_with_failover(
         except Exception:
             pass
         if len(chain) > 1 and summary:
-            msg = sanitize_error(f"{last_terminal_exc} | Provider dicoba: {summary}")
+            concise_last = format_concise_llm_error(last_terminal_exc, providers_tried[-1] if providers_tried else "")
+            msg = sanitize_error(f"{concise_last} | Provider dicoba: {summary}")
             new_exc = type(last_terminal_exc)(msg) if type(last_terminal_exc) is not LLMRateLimitError else LLMRateLimitError(
                 msg,
                 is_daily=getattr(last_terminal_exc, "is_daily", False),
@@ -2320,7 +2379,22 @@ def call_llm_with_failover(
             except Exception:
                 pass
             raise new_exc from last_terminal_exc
-        raise last_terminal_exc
+        if isinstance(last_terminal_exc, (LLMDailyQuotaError, LLMCreditError, LLMAuthError, LLMModelNotFoundError, LLMRateLimitError)):
+            raise last_terminal_exc
+        raise LLMAdapterError(format_concise_llm_error(last_terminal_exc)) from last_terminal_exc
+
+    paused_quota_pid = next(
+        (pid for pid in chain if statuses.get(pid, {}).get("status") == "paused_quota"),
+        None,
+    )
+    if paused_quota_pid:
+        concise_q = format_concise_llm_error("free-models-per-day", paused_quota_pid)
+        full_q = f"{concise_q} | Provider dicoba: {summary}" if (len(chain) > 1 and summary) else concise_q
+        err_q = LLMDailyQuotaError(sanitize_error(full_q))
+        setattr(err_q, "providers_tried", list(providers_tried))
+        setattr(err_q, "provider_errors", dict(provider_errors))
+        setattr(err_q, "attempts_summary", summary)
+        raise err_q
 
     err = LLMAdapterError(sanitize_error(f"Semua penyedia AI dilewati/dijeda: {summary or 'tidak ada key siap'}"))
     setattr(err, "providers_tried", list(providers_tried))

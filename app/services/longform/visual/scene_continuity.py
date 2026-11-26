@@ -899,7 +899,9 @@ def assign_scenes_and_prompts_for_shots(
                 else:
                     err_obj = last_exc or ValueError("Empty scene batch JSON from LLM")
                     reason = _classify_batch_failure(err_obj)
-                    safe_detail = redact_api_secrets(str(err_obj)).replace("\n", " ").strip()[:160]
+                    from app.services.longform.llm_adapter import format_concise_llm_error
+
+                    safe_detail = redact_api_secrets(format_concise_llm_error(err_obj)).replace("\n", " ").strip()[:160]
                     if raise_on_error:
                         raise ExternalPromptGenerationError(
                             reason,
