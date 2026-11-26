@@ -300,10 +300,15 @@ def _derive_flashback_description(base_desc: str, age: Optional[int]) -> str:
         count=1,
         flags=re.IGNORECASE,
     )
-    out = re.sub(r"\b(?:late|early|mid)?[\s\-]*(?:\d{2}s|\d{2}[\-\s]+years?[\-\s]+old)\b", f"age {age}" if age else "childhood", out, flags=re.IGNORECASE)
+    out = re.sub(
+        r",?\s*\b(?:late|early|mid)?[\s\-]*(?:\d{2}s|\d{2}[\-\s]+years?[\-\s]+old|teens?|twenties|thirties|forties|fifties)\b",
+        "",
+        out,
+        flags=re.IGNORECASE,
+    )
     if str(age or "") not in out and age_phrase not in out.lower():
         out = f"{age_phrase}, {out}"
-    return re.sub(r"\s{2,}", " ", out).strip(" ,")
+    return re.sub(r"\s{2,}", " ", re.sub(r",\s*,+", ", ", out)).strip(" ,")
 
 
 def ensure_flashback_character_variants(
