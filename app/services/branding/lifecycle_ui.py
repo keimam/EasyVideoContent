@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import streamlit as st
+from loguru import logger
 
 from app.services.branding.constants import (
     APP_VERSION,
@@ -304,7 +305,7 @@ def render_settings_studio_controls(*, key_prefix: str = "settings") -> None:
 
             def _fmt_prov(pid: str) -> str:
                 pdef = get_llm_provider(pid)
-                return pdef.display_name if pdef else pid
+                return pdef.default_label if pdef else pid
 
             ms_key = f"{key_prefix}_llm_failover_multiselect"
             if ms_key not in st.session_state or not isinstance(st.session_state.get(ms_key), list):

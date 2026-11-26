@@ -20,7 +20,7 @@ from app.services.longform.llm_adapter import (
     build_provider_failover_chain,
     get_llm_readiness,
     get_provider_chain_status,
-    has_any_ready_llm_provider,
+    is_primary_or_failover_ready,
 )
 from app.services.longform.schema import (
     Chapter,
@@ -564,8 +564,7 @@ def assign_scenes_and_prompts_for_shots(
     readiness = get_llm_readiness()
     llm_ready = allow_llm and (
         (llm_adapter is not None)
-        or (bool(readiness.get("configured")) and not bool(readiness.get("is_invalid")))
-        or has_any_ready_llm_provider()
+        or is_primary_or_failover_ready(readiness, get_llm_readiness)
     )
 
     if not llm_ready:

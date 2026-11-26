@@ -1068,12 +1068,11 @@ def ensure_project_visual_bible(
         except Exception:
             pass
 
-    from app.services.longform.llm_adapter import has_any_ready_llm_provider
+    from app.services.longform.llm_adapter import is_primary_or_failover_ready
 
     readiness = get_llm_readiness()
-    llm_ready = (llm_adapter is not None) or (
-        (bool(readiness.get("configured")) and not bool(readiness.get("is_invalid")))
-        or has_any_ready_llm_provider()
+    llm_ready = (llm_adapter is not None) or is_primary_or_failover_ready(
+        readiness, get_llm_readiness
     )
 
     if not allow_llm or not llm_ready:

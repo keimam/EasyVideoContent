@@ -3069,13 +3069,10 @@ def _render_external_image_bridge_section(
                     key=f"ms_ext_sids_{project_id}",
                 )
 
-            from app.services.longform.llm_adapter import has_any_ready_llm_provider
+            from app.services.longform.llm_adapter import is_primary_or_failover_ready
 
             llm_readiness = get_llm_readiness()
-            llm_ready = (
-                (bool(llm_readiness.get("configured")) and not bool(llm_readiness.get("is_invalid")))
-                or has_any_ready_llm_provider()
-            )
+            llm_ready = is_primary_or_failover_ready(llm_readiness, get_llm_readiness)
             use_ai_scene = st.checkbox(
                 t("ext_export_use_ai"),
                 value=llm_ready,

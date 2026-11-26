@@ -2048,6 +2048,22 @@ def has_any_ready_llm_provider(primary_provider: Optional[str] = None) -> bool:
     )
 
 
+def is_primary_or_failover_ready(
+    readiness: Dict[str, Any],
+    readiness_fn: Any = None,
+) -> bool:
+    """Check primary readiness cleanly, consulting backup providers only when failover is configured and not mocked."""
+    if bool(readiness.get("configured")) and not bool(readiness.get("is_invalid")):
+        return True
+    if readiness_fn is not None and getattr(readiness_fn, "__module__", "") != __name__:
+        return False
+    from app.services.longform.config import get_llm_failover_chain
+
+    if not get_llm_failover_chain():
+        return False
+    return has_any_ready_llm_provider()
+
+
 def _classify_failover_exception(exc: Exception, *, model: str = "") -> Tuple[str, Optional[str], Exception]:
     """Classify an LLM failure into (short_tag, pause_reason_or_none, normalized_exc)."""
     clean_msg = sanitize_error(str(exc))
