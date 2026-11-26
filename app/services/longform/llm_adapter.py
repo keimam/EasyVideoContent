@@ -2040,6 +2040,14 @@ def get_provider_chain_status(
     return results
 
 
+def has_any_ready_llm_provider(primary_provider: Optional[str] = None) -> bool:
+    """Return True if at least one provider in the configured primary+failover chain is ready."""
+    return any(
+        bool(item.get("ready"))
+        for item in get_provider_chain_status(primary_provider=primary_provider)
+    )
+
+
 def _classify_failover_exception(exc: Exception, *, model: str = "") -> Tuple[str, Optional[str], Exception]:
     """Classify an LLM failure into (short_tag, pause_reason_or_none, normalized_exc)."""
     clean_msg = sanitize_error(str(exc))
@@ -2222,8 +2230,16 @@ def call_llm_with_failover(
         providers_tried.append(pid)
         model_id = str(st.get("model") or "")
         try:
-            resp = _invoke_once(pid, model_id, prompt, minimize_reasoning, max_tokens)
-            if not _validate_json_response(resp):
+            try:
+                resp = _invoke_once(pid, model_id, prompt, minimize_reasoning, max_tokens)
+                needs_json_retry = not _validate_json_response(resp)
+            except LLMEmptyResponseError:
+                if not (expect_json or json_validator is not None):
+                    raise
+                needs_json_retry = True
+                resp = None  # type: ignore[assignment]
+
+            if needs_json_retry:
                 # G3: Retry ONCE on the SAME provider with minimal reasoning + strict JSON reminder
                 json_retry_prompt = (
                     f"{prompt.rstrip()}\n\n"
@@ -2231,7 +2247,7 @@ def call_llm_with_failover(
                 )
                 retry_tokens = max(int(max_tokens or 1024), 1024)
                 logger.info(
-                    f"LLM provider '{pid}' returned non-JSON/empty JSON payload; retrying once with minimize_reasoning=True"
+                    f"LLM provider '{pid}' returned empty/non-JSON payload; retrying once with minimize_reasoning=True"
                 )
                 resp = _invoke_once(pid, model_id, json_retry_prompt, True, retry_tokens)
                 if not _validate_json_response(resp):

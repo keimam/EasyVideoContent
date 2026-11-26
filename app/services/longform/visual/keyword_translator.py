@@ -129,6 +129,7 @@ def _invoke_translation_llm(
     expect_json: bool = False,
     json_validator: Optional[Callable[[str], Any]] = None,
     primary_provider: Optional[str] = None,
+    failover_chain: Optional[Sequence[str]] = None,
 ) -> Tuple[str, str, str]:
     """Call active LLM (with configured failover chain & minimal-reasoning JSON retry) with bounded max_tokens."""
     from app.services.longform.llm_adapter import call_llm_with_failover
@@ -136,6 +137,7 @@ def _invoke_translation_llm(
     resp = call_llm_with_failover(
         prompt=prompt,
         primary_provider=primary_provider,
+        failover_chain=failover_chain,
         llm_adapter=llm_adapter,
         force_refresh=True,
         max_tokens=max_tokens,
@@ -152,6 +154,30 @@ def _invoke_translation_llm(
         "attempts_summary": str(getattr(resp, "attempts_summary", "") or ""),
     }
     return resp.content, resp.provider, resp.model
+
+
+def call_translation_llm_json(
+    invoke_fn: Callable[..., Tuple[str, str, str]],
+    prompt: str,
+    *,
+    llm_adapter: Optional[LLMAdapter] = None,
+    max_tokens: int = 400,
+    json_validator: Optional[Callable[[str], Any]] = None,
+    primary_provider: Optional[str] = None,
+    failover_chain: Optional[Sequence[str]] = None,
+) -> Tuple[str, str, str]:
+    """Call `_invoke_translation_llm` with JSON retry/failover kwargs when unpatched, preserving 3-arg mock compatibility."""
+    if invoke_fn is _invoke_translation_llm:
+        return invoke_fn(
+            prompt,
+            llm_adapter=llm_adapter,
+            max_tokens=max_tokens,
+            expect_json=True,
+            json_validator=json_validator,
+            primary_provider=primary_provider,
+            failover_chain=failover_chain,
+        )
+    return invoke_fn(prompt, llm_adapter=llm_adapter, max_tokens=max_tokens)
 
 
 def translate_chapter_queries_to_english(
@@ -212,8 +238,12 @@ def translate_chapter_queries_to_english(
 
     batch_max_tokens = min(1600, max(320, 45 * len(pending_uncached) + 200))
     try:
-        content, used_prov, used_model = _invoke_translation_llm(
-            prompt, llm_adapter=llm_adapter, max_tokens=batch_max_tokens
+        content, used_prov, used_model = call_translation_llm_json(
+            _invoke_translation_llm,
+            prompt,
+            llm_adapter=llm_adapter,
+            max_tokens=batch_max_tokens,
+            json_validator=lambda txt: bool(_extract_json_dict(txt)),
         )
         mapping = _extract_json_dict(content)
         translated_count = 0
@@ -276,8 +306,12 @@ def translate_single_query_to_english(
         preset_snapshot=preset_snapshot,
     )
     try:
-        content, used_prov, used_model = _invoke_translation_llm(
-            prompt, llm_adapter=llm_adapter, max_tokens=320
+        content, used_prov, used_model = call_translation_llm_json(
+            _invoke_translation_llm,
+            prompt,
+            llm_adapter=llm_adapter,
+            max_tokens=320,
+            json_validator=lambda txt: bool(_extract_json_dict(txt)),
         )
         mapping = _extract_json_dict(content)
         en_clean = _sanitize_english_query(mapping.get("q1", ""))

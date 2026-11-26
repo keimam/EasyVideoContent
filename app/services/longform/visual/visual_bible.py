@@ -25,7 +25,11 @@ from app.services.longform.schema import (
     VisualBibleLocation,
 )
 from app.services.longform.visual.cache import get_global_cache_dir
-from app.services.longform.visual.keyword_translator import _invoke_translation_llm
+from app.services.longform.visual.keyword_translator import (
+    _invoke_translation_llm,
+    call_translation_llm_json,
+    get_last_translation_llm_meta,
+)
 
 STYLE_MODE_OPTIONS = ("realistic", "illustration", "painting", "custom")
 STYLE_MODE_BASE_TEXTS: Dict[str, str] = {
@@ -810,9 +814,12 @@ def ensure_project_visual_bible(
         except Exception:
             pass
 
+    from app.services.longform.llm_adapter import has_any_ready_llm_provider
+
     readiness = get_llm_readiness()
     llm_ready = (llm_adapter is not None) or (
-        bool(readiness.get("configured")) and not bool(readiness.get("is_invalid"))
+        (bool(readiness.get("configured")) and not bool(readiness.get("is_invalid")))
+        or has_any_ready_llm_provider()
     )
 
     if not allow_llm or not llm_ready:
@@ -825,43 +832,47 @@ def ensure_project_visual_bible(
 
     prompt = _build_visual_bible_llm_prompt(manifest, script_text, style_mode=eff_mode)
     last_err: Optional[Exception] = None
-    for attempt in range(2):
-        try:
-            raw_content, prov, model_name = _invoke_translation_llm(
-                prompt,
-                llm_adapter=llm_adapter,
-                max_tokens=1500,
-            )
-            parsed = _extract_json_object(raw_content)
-            if not parsed or (not parsed.get("world") and not parsed.get("style")):
-                raise ValueError("LLM VisualBible JSON missing required world/style fields")
-            vb = _coerce_visual_bible(
-                parsed,
-                fallback=fallback_bible,
-                source="ai",
-                style_mode=eff_mode,
-                project_id=manifest.project_id,
-            )
-            manifest.visual_bible = vb
-            cache[c_key] = {
-                "bible": vb.model_dump(mode="json"),
-                "source": "ai",
-                "provider": prov,
-                "model": model_name,
-            }
-            _save_cache(cache_path, cache)
-            return {
-                "visual_bible": vb,
-                "source": "ai",
-                "cached": False,
-                "provider": prov,
-                "model": model_name,
-            }
-        except (LLMCreditError, LLMDailyQuotaError, LLMModelNotFoundError):
-            raise
-        except Exception as exc:
-            last_err = exc
-            logger.warning(f"VisualBible LLM attempt {attempt + 1} failed: {exc}")
+    try:
+        raw_content, prov, model_name = call_translation_llm_json(
+            _invoke_translation_llm,
+            prompt,
+            llm_adapter=llm_adapter,
+            max_tokens=1500,
+            json_validator=lambda txt: bool(_extract_json_object(txt).get("world") or _extract_json_object(txt).get("style")),
+        )
+        call_meta = get_last_translation_llm_meta()
+        parsed = _extract_json_object(raw_content)
+        if not parsed or (not parsed.get("world") and not parsed.get("style")):
+            raise ValueError("LLM VisualBible JSON missing required world/style fields")
+        vb = _coerce_visual_bible(
+            parsed,
+            fallback=fallback_bible,
+            source="ai",
+            style_mode=eff_mode,
+            project_id=manifest.project_id,
+        )
+        manifest.visual_bible = vb
+        cache[c_key] = {
+            "bible": vb.model_dump(mode="json"),
+            "source": "ai",
+            "provider": prov,
+            "model": model_name,
+        }
+        _save_cache(cache_path, cache)
+        return {
+            "visual_bible": vb,
+            "source": "ai",
+            "cached": False,
+            "provider": prov,
+            "model": model_name,
+            "failover_used": bool(call_meta.get("failover_used", False)),
+            "providers_tried": list(call_meta.get("providers_tried") or ([prov] if prov else [])),
+        }
+    except (LLMCreditError, LLMDailyQuotaError, LLMModelNotFoundError):
+        raise
+    except Exception as exc:
+        last_err = exc
+        logger.warning(f"VisualBible LLM failed: {exc}")
 
     if raise_on_error and last_err is not None:
         raise last_err

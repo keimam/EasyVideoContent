@@ -35,6 +35,7 @@ from app.services.longform.visual.cache import get_global_cache_dir
 from app.services.longform.visual.keyword_translator import (
     _invoke_translation_llm,
     _sanitize_english_query,
+    call_translation_llm_json,
     translate_single_query_to_english,
 )
 from app.services.longform.visual.query_extractor import extract_short_search_query
@@ -327,9 +328,12 @@ def ensure_project_visual_anchors(
             "cached": True,
         }
 
+    from app.services.longform.llm_adapter import has_any_ready_llm_provider
+
     readiness = get_llm_readiness()
     llm_ready = (llm_adapter is not None) or (
-        bool(readiness.get("configured")) and not bool(readiness.get("is_invalid"))
+        (bool(readiness.get("configured")) and not bool(readiness.get("is_invalid")))
+        or has_any_ready_llm_provider()
     )
 
     h_anchors, h_avoids, h_summary = _heuristic_anchors_for_project(manifest)
@@ -348,8 +352,12 @@ def ensure_project_visual_anchors(
 
     try:
         prompt = _build_project_anchors_prompt(manifest)
-        content, used_prov, used_model = _invoke_translation_llm(
-            prompt, llm_adapter=llm_adapter, max_tokens=360
+        content, used_prov, used_model = call_translation_llm_json(
+            _invoke_translation_llm,
+            prompt,
+            llm_adapter=llm_adapter,
+            max_tokens=360,
+            json_validator=lambda txt: bool(_extract_json_any_dict(txt)),
         )
         data = _extract_json_any_dict(content)
         anchors = _clean_term_list(data.get("anchor_terms"))
@@ -780,9 +788,12 @@ def generate_chapter_visual_keywords_ai(
     warning: Optional[str] = None
     examples: List[Dict[str, str]] = []
 
+    from app.services.longform.llm_adapter import has_any_ready_llm_provider
+
     readiness = get_llm_readiness()
     llm_ready = (llm_adapter is not None) or (
-        bool(readiness.get("configured")) and not bool(readiness.get("is_invalid"))
+        (bool(readiness.get("configured")) and not bool(readiness.get("is_invalid")))
+        or has_any_ready_llm_provider()
     )
 
     pending: List[Tuple[Shot, str, str, int, int, str]] = []
@@ -963,8 +974,12 @@ def generate_chapter_visual_keywords_ai(
         batch_max_tokens = min(3072, max(600, 120 * len(chunk) + 300))
 
         try:
-            content, used_prov, used_model = _invoke_translation_llm(
-                prompt, llm_adapter=llm_adapter, max_tokens=batch_max_tokens
+            content, used_prov, used_model = call_translation_llm_json(
+                _invoke_translation_llm,
+                prompt,
+                llm_adapter=llm_adapter,
+                max_tokens=batch_max_tokens,
+                json_validator=lambda txt: bool(_extract_json_any_dict(txt)),
             )
             llm_calls += 1
             mapping = _extract_json_any_dict(content)
@@ -1001,8 +1016,12 @@ def generate_chapter_visual_keywords_ai(
                 )
                 retry_tokens = min(2000, max(520, 120 * len(retry_payload) + 260))
                 try:
-                    retry_txt, r_prov, r_model = _invoke_translation_llm(
-                        retry_prompt, llm_adapter=llm_adapter, max_tokens=retry_tokens
+                    retry_txt, r_prov, r_model = call_translation_llm_json(
+                        _invoke_translation_llm,
+                        retry_prompt,
+                        llm_adapter=llm_adapter,
+                        max_tokens=retry_tokens,
+                        json_validator=lambda txt: bool(_extract_json_any_dict(txt)),
                     )
                     llm_calls += 1
                     llm_retries += 1

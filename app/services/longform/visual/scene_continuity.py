@@ -13,10 +13,14 @@ from loguru import logger
 from app.services.longform.hashing import hash_string, normalize_text
 from app.services.longform.llm_adapter import (
     LLMAdapter,
+    LLMAuthError,
     LLMCreditError,
     LLMDailyQuotaError,
     LLMModelNotFoundError,
+    build_provider_failover_chain,
     get_llm_readiness,
+    get_provider_chain_status,
+    has_any_ready_llm_provider,
 )
 from app.services.longform.schema import (
     Chapter,
@@ -28,9 +32,14 @@ from app.services.longform.schema import (
 from app.services.longform.visual.ai_keywords import get_shot_narration_slice
 from app.services.longform.visual.cache import get_global_cache_dir
 from app.services.longform.visual.image_presets import redact_api_secrets
-from app.services.longform.visual.keyword_translator import _invoke_translation_llm
+from app.services.longform.visual.keyword_translator import (
+    _invoke_translation_llm,
+    call_translation_llm_json,
+    get_last_translation_llm_meta,
+)
 
 SCENE_BATCH_SIZE = 15
+SCENE_RETRY_SUB_BATCH_SIZE = 5
 _SEARCH_TAG_RE = re.compile(r"\[search\s*:[^\]]*\]", re.IGNORECASE)
 _VALID_TIMES = {"dawn", "day", "dusk", "night"}
 
@@ -549,6 +558,7 @@ def assign_scenes_and_prompts_for_shots(
     llm_ready = allow_llm and (
         (llm_adapter is not None)
         or (bool(readiness.get("configured")) and not bool(readiness.get("is_invalid")))
+        or has_any_ready_llm_provider()
     )
 
     if not llm_ready:
@@ -622,6 +632,142 @@ def assign_scenes_and_prompts_for_shots(
     completed_batches = 0
     live_durations: List[float] = []
     global_shot_offset = 0
+    batch_providers: List[Dict[str, Any]] = []
+    providers_tried_all: List[str] = []
+
+    def _is_split_eligible(exc: Optional[Exception]) -> bool:
+        if exc is None:
+            return True
+        if isinstance(exc, (LLMAuthError, LLMCreditError, LLMDailyQuotaError, LLMModelNotFoundError)):
+            return False
+        reason = _classify_batch_failure(exc)
+        if reason == "quota":
+            return False
+        low = str(exc or "").lower()
+        return (
+            reason in ("invalid_json", "timeout", "error")
+            or "empty" in low
+            or "json" in low
+            or "truncated" in low
+        )
+
+    def _extract_sub_prev_state(
+        sub_indexed: Sequence[Tuple[int, Shot, str]],
+        items: Sequence[Dict[str, Any]],
+        cur_prev: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        if not sub_indexed:
+            return cur_prev
+        by_id = {str(it.get("shot_id") or "").strip(): it for it in items if isinstance(it, dict)}
+        last_sh = sub_indexed[-1][1]
+        matched = by_id.get(last_sh.shot_id)
+        if not matched and len(items) == len(sub_indexed) and isinstance(items[-1], dict):
+            matched = items[-1]
+        if not matched:
+            return cur_prev
+        return {
+            "scene_id": str(matched.get("scene_id") or cur_prev.get("scene_id") or ""),
+            "location_id": matched.get("location_id") or cur_prev.get("location_id"),
+            "time_of_day": str(matched.get("time_of_day") or cur_prev.get("time_of_day") or ""),
+            "weather": str(matched.get("weather") or cur_prev.get("weather") or ""),
+            "lighting": str(matched.get("lighting") or cur_prev.get("lighting") or ""),
+            "props": list(matched.get("props") or cur_prev.get("props") or []),
+            "character_state": str(matched.get("character_state") or cur_prev.get("character_state") or ""),
+        }
+
+    def _run_batch_across_chain(
+        ch_obj: Chapter,
+        b_indexed: List[Tuple[int, Shot, str]],
+        c_narrs: List[Tuple[Shot, str]],
+        p_state: Dict[str, Any],
+    ) -> Tuple[List[Dict[str, Any]], str, int, Optional[Exception], List[str]]:
+        inferred_primary = getattr(llm_adapter, "provider", None) if llm_adapter is not None else None
+        chain = build_provider_failover_chain(primary_provider=inferred_primary)
+        statuses = {s["provider"]: s for s in get_provider_chain_status(chain)}
+        is_mocked_invoke = (
+            getattr(_invoke_translation_llm, "__module__", "").split(".")[-1] != "keyword_translator"
+            or getattr(_invoke_translation_llm, "__name__", "") != "_invoke_translation_llm"
+        )
+        custom_adapter = llm_adapter is not None and type(llm_adapter).generate is not LLMAdapter.generate
+
+        candidates = [
+            pid for idx, pid in enumerate(chain)
+            if statuses.get(pid, {}).get("ready") or (idx == 0 and (custom_adapter or is_mocked_invoke))
+        ]
+        if not candidates:
+            candidates = list(chain)
+
+        calls_here = 0
+        tried_here: List[str] = []
+        last_err: Optional[Exception] = None
+        full_prompt = _build_scene_batch_prompt(manifest, ch_obj, b_indexed, c_narrs, p_state)
+
+        for idx, pid in enumerate(candidates):
+            tried_here.append(pid)
+            eff_adapter = llm_adapter if (idx == 0 and llm_adapter is not None) else None
+            try:
+                calls_here += 1
+                raw_txt, used_prov, _mdl = call_translation_llm_json(
+                    _invoke_translation_llm,
+                    full_prompt,
+                    llm_adapter=eff_adapter,
+                    max_tokens=2048,
+                    json_validator=lambda txt: bool(_extract_batch_shots_json(txt)),
+                    primary_provider=pid,
+                    failover_chain=[],
+                )
+                items = _extract_batch_shots_json(raw_txt)
+                if items:
+                    return items, (used_prov or pid), calls_here, None, tried_here
+                last_err = ValueError("Empty scene batch JSON from LLM")
+            except Exception as exc:
+                last_err = exc
+                safe_err = redact_api_secrets(str(exc))[:140]
+                logger.warning(f"Scene batch ch{ch_obj.chapter_index} on '{pid}' failed: {safe_err}")
+
+            # G3 step 2: On same provider, split >5 shot batch into 5-shot sub-batches before moving to backup
+            if len(b_indexed) > SCENE_RETRY_SUB_BATCH_SIZE and _is_split_eligible(last_err):
+                logger.info(
+                    f"Splitting scene batch ch{ch_obj.chapter_index} ({len(b_indexed)} shots -> sub-batches of {SCENE_RETRY_SUB_BATCH_SIZE}) on '{pid}'"
+                )
+                sub_items_all: List[Dict[str, Any]] = []
+                sub_prev = dict(p_state)
+                sub_ok = True
+                sub_provider_used = pid
+                for s_off in range(0, len(b_indexed), SCENE_RETRY_SUB_BATCH_SIZE):
+                    sub_slice = b_indexed[s_off:s_off + SCENE_RETRY_SUB_BATCH_SIZE]
+                    sub_prompt = _build_scene_batch_prompt(manifest, ch_obj, sub_slice, c_narrs, sub_prev)
+                    try:
+                        calls_here += 1
+                        s_raw, s_prov, _s_mdl = call_translation_llm_json(
+                            _invoke_translation_llm,
+                            sub_prompt,
+                            llm_adapter=eff_adapter,
+                            max_tokens=1400,
+                            json_validator=lambda txt: bool(_extract_batch_shots_json(txt)),
+                            primary_provider=pid,
+                            failover_chain=[],
+                        )
+                        s_items = _extract_batch_shots_json(s_raw)
+                        if not s_items:
+                            last_err = ValueError("Empty scene sub-batch JSON from LLM")
+                            sub_ok = False
+                            break
+                        sub_items_all.extend(s_items)
+                        sub_prev = _extract_sub_prev_state(sub_slice, s_items, sub_prev)
+                        sub_provider_used = s_prov or sub_provider_used
+                    except Exception as sub_exc:
+                        last_err = sub_exc
+                        logger.warning(
+                            f"Scene 5-shot sub-batch ch{ch_obj.chapter_index} on '{pid}' failed: "
+                            + redact_api_secrets(str(sub_exc))[:140]
+                        )
+                        sub_ok = False
+                        break
+                if sub_ok and sub_items_all:
+                    return sub_items_all, sub_provider_used, calls_here, None, tried_here
+
+        return [], (candidates[-1] if candidates else ""), calls_here, last_err, tried_here
 
     for ch, ch_narrs, ch_batches in planned_chapters:
         prev_state: Dict[str, Any] = {}
@@ -652,6 +798,8 @@ def assign_scenes_and_prompts_for_shots(
                 })
 
             llm_items: Optional[List[Dict[str, Any]]] = None
+            batch_provider_used = ""
+            batch_failover = False
             all_ai_ready_in_batch = all(
                 getattr(sh, "scene_source", None) == "ai"
                 and bool(sh.scene_id)
@@ -661,12 +809,14 @@ def assign_scenes_and_prompts_for_shots(
 
             if not force and isinstance(cache.get(batch_key), dict) and isinstance(cache[batch_key].get("items"), list):
                 llm_items = cache[batch_key]["items"]
+                batch_provider_used = str(cache[batch_key].get("provider") or "cache")
                 cache_hits += 1
                 batches_ok += 1
                 logger.info(f"scene batch {batch_num}/{total_batches} shots {shot_start}–{shot_end}: cache hit")
             elif retry_failed_only and not force and all_ai_ready_in_batch:
                 cache_hits += 1
                 batches_ok += 1
+                batch_provider_used = "cache"
                 logger.info(f"scene batch {batch_num}/{total_batches} shots {shot_start}–{shot_end}: cache hit")
                 last_sh = batch_indexed[-1][1]
                 last_cont = getattr(last_sh, "continuity", None)
@@ -680,6 +830,7 @@ def assign_scenes_and_prompts_for_shots(
                     "character_state": str(last_cont.character_state if last_cont else ""),
                 }
                 completed_batches += 1
+                batch_providers.append({"batch": batch_num, "provider": batch_provider_used, "failover": False})
                 if callable(progress_callback):
                     progress_callback({
                         "batch_index": completed_batches,
@@ -689,6 +840,8 @@ def assign_scenes_and_prompts_for_shots(
                         "total_shots": len(target_set),
                         "eta_seconds": 0,
                         "stage": "done",
+                        "provider_used": batch_provider_used,
+                        "failover_used": False,
                     })
                 continue
             elif quota_tripped_reason is not None and not raise_on_error:
@@ -701,6 +854,7 @@ def assign_scenes_and_prompts_for_shots(
                 _apply_fallback_chapter_continuity(ch, {sh.shot_id for _gi, sh, _narr in batch_indexed}, bible)
                 prev_state = {}
                 completed_batches += 1
+                batch_providers.append({"batch": batch_num, "provider": "fallback", "failover": False})
                 if callable(progress_callback):
                     progress_callback({
                         "batch_index": completed_batches,
@@ -710,51 +864,32 @@ def assign_scenes_and_prompts_for_shots(
                         "total_shots": len(target_set),
                         "eta_seconds": 0,
                         "stage": "done",
+                        "provider_used": "fallback",
+                        "failover_used": False,
                     })
                 continue
             else:
-                prompt = _build_scene_batch_prompt(manifest, ch, batch_indexed, ch_narrs, prev_state)
-                parsed_items: List[Dict[str, Any]] = []
-                last_exc: Optional[Exception] = None
                 t_b0 = time.monotonic()
-                for attempt in range(2):
-                    try:
-                        llm_calls += 1
-                        raw_txt, _prov, _mdl = _invoke_translation_llm(
-                            prompt,
-                            llm_adapter=llm_adapter,
-                            max_tokens=2048,
-                        )
-                        parsed_items = _extract_batch_shots_json(raw_txt)
-                        if parsed_items:
-                            break
-                        last_exc = ValueError("Empty scene batch JSON from LLM")
-                    except (LLMCreditError, LLMDailyQuotaError, LLMModelNotFoundError) as exc:
-                        last_exc = exc
-                        if raise_on_error:
-                            reason = _classify_batch_failure(exc)
-                            raise ExternalPromptGenerationError(
-                                reason,
-                                str(exc),
-                                completed_batches=batches_ok,
-                                total_batches=total_batches,
-                            ) from exc
-                        break
-                    except Exception as exc:
-                        last_exc = exc
-                        safe_err = redact_api_secrets(str(exc))[:140]
-                        logger.warning(f"Scene batch ch{ch.chapter_index} attempt {attempt + 1} failed: {safe_err}")
-                        if _classify_batch_failure(exc) == "quota":
-                            break
+                parsed_items, used_prov, calls_made, last_exc, tried_here = _run_batch_across_chain(
+                    ch, batch_indexed, ch_narrs, prev_state
+                )
+                llm_calls += calls_made
+                for tp in tried_here:
+                    if tp and tp not in providers_tried_all:
+                        providers_tried_all.append(tp)
 
                 if parsed_items:
                     live_durations.append(max(1.0, time.monotonic() - t_b0))
                     llm_items = parsed_items
-                    # Persist batch immediately so mid-run failures preserve completed batches in cache (FA1.1)
-                    cache[batch_key] = {"items": parsed_items}
+                    batch_provider_used = str(used_prov or "")
+                    batch_failover = len(tried_here) > 1
+                    cache[batch_key] = {"items": parsed_items, "provider": batch_provider_used}
                     _save_scene_cache(cache_path, cache)
                     batches_ok += 1
-                    logger.info(f"scene batch {batch_num}/{total_batches} shots {shot_start}–{shot_end}: ok")
+                    logger.info(
+                        f"scene batch {batch_num}/{total_batches} shots {shot_start}–{shot_end}: ok via {batch_provider_used}"
+                        + (" (cadangan)" if batch_failover else "")
+                    )
                 else:
                     err_obj = last_exc or ValueError("Empty scene batch JSON from LLM")
                     reason = _classify_batch_failure(err_obj)
@@ -765,7 +900,7 @@ def assign_scenes_and_prompts_for_shots(
                             safe_detail or reason,
                             completed_batches=batches_ok,
                             total_batches=total_batches,
-                        )
+                        ) from (err_obj if isinstance(err_obj, Exception) else None)
                     used_source = "fallback"
                     batches_failed += 1
                     failure_reasons.append(reason)
@@ -779,6 +914,7 @@ def assign_scenes_and_prompts_for_shots(
                     _apply_fallback_chapter_continuity(ch, {sh.shot_id for _gi, sh, _narr in batch_indexed}, bible)
                     prev_state = {}
                     completed_batches += 1
+                    batch_providers.append({"batch": batch_num, "provider": "fallback", "failover": len(tried_here) > 1})
                     if callable(progress_callback):
                         avg_sec = (sum(live_durations) / len(live_durations)) if live_durations else 10.0
                         rem_batches = max(0, total_batches - completed_batches)
@@ -790,11 +926,14 @@ def assign_scenes_and_prompts_for_shots(
                             "total_shots": len(target_set),
                             "eta_seconds": int(round(avg_sec * rem_batches)),
                             "stage": "done",
+                            "provider_used": "fallback",
+                            "failover_used": len(tried_here) > 1,
                         })
                     continue
 
             prev_state = _apply_batch_continuity(batch_tuples, llm_items, bible, prev_state, bible_sig=bible_sig)
             completed_batches += 1
+            batch_providers.append({"batch": batch_num, "provider": batch_provider_used, "failover": batch_failover})
 
             if callable(progress_callback):
                 avg_sec = (sum(live_durations) / len(live_durations)) if live_durations else 10.0
@@ -807,6 +946,8 @@ def assign_scenes_and_prompts_for_shots(
                     "total_shots": len(target_set),
                     "eta_seconds": int(round(avg_sec * rem_batches)),
                     "stage": "done",
+                    "provider_used": batch_provider_used,
+                    "failover_used": batch_failover,
                 })
 
         global_shot_offset += len(ch_narrs)
@@ -834,4 +975,6 @@ def assign_scenes_and_prompts_for_shots(
         "failed_shot_ids": failed_shot_ids,
         "failure_reason": failure_reasons[0] if failure_reasons else None,
         "failure_detail": first_failure_detail,
+        "batch_providers": batch_providers,
+        "providers_tried": providers_tried_all,
     }
