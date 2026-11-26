@@ -63,8 +63,22 @@ from PIL import Image, ImageDraw
 
 MAX_PARALLEL_SOURCES = 4
 MAX_PARALLEL_DOWNLOADS = 3
+MAX_SEARCH_PREFETCH_SHOTS = 3
 # C4: Parallel clip builds capped at 3; scales as cpu_count // 4 (e.g. 8 threads -> 2 concurrent FFmpeg workers)
 MAX_PARALLEL_BUILDS = max(1, min(3, (os.cpu_count() or 1) // 4))
+
+
+def get_effective_search_prefetch_shots(profile: Optional[str] = None) -> int:
+    """Return shot search prefetch window: 1 under 'lambat' network profile, else MAX_SEARCH_PREFETCH_SHOTS (CA1.1)."""
+    try:
+        from app.services.longform.config import get_network_profile_settings
+
+        prof = get_network_profile_settings(profile=profile)
+        if str(prof.get("profile") or "").lower().strip() == "lambat":
+            return 1
+    except Exception:
+        pass
+    return max(1, int(MAX_SEARCH_PREFETCH_SHOTS))
 
 
 def compute_ffmpeg_threads_per_build(
@@ -125,6 +139,7 @@ class VisualService:
         self._active_search_seconds: Optional[Dict[str, float]] = None
         self._active_manifest_save_seconds: float = 0.0
         self._active_manifest_save_count: int = 0
+        self._origin_queries_by_shot: Dict[str, Dict[Tuple[str, str], str]] = {}
 
     def _save_manifest_timed(self, manifest: ProjectManifest) -> None:
         t0 = time.monotonic()
@@ -713,6 +728,7 @@ class VisualService:
         stop_on_first_hit: bool = False,
         existing_ids: Optional[Set[str]] = None,
         recommended_visual_sources: Optional[Dict[str, Any]] = None,
+        search_semaphore: Optional[threading.BoundedSemaphore] = None,
     ) -> Tuple[List[VisualCandidate], Dict[Tuple[str, str], str], List[Dict[str, Any]]]:
         """Run sequential query tiers against one provider (used by both Priority and Mix Best)."""
         best_candidates: List[VisualCandidate] = []
@@ -725,30 +741,67 @@ class VisualService:
         for q_text, q_cat in prov_tiers:
             if is_stop_requested(self.project_dir):
                 break
+            if prov_name == "coverr":
+                try:
+                    from app.services.longform.visual.coverr_client import get_coverr_auth_status
+
+                    c_auth = get_coverr_auth_status()
+                    if c_auth.get("auth_blocked") or c_auth.get("run_paused"):
+                        break
+                except Exception:
+                    pass
+            try:
+                from app.services.longform.visual.free_providers import check_provider_cooldown
+
+                if check_provider_cooldown(prov_name) > 0.0:
+                    break
+            except Exception:
+                pass
             raw_cnt = 0
             rej_reasons: List[str] = []
             err_txt: Optional[str] = None
             tier_cands: List[VisualCandidate] = []
             try:
                 _t_call0 = time.monotonic()
-                tier_cands, raw_cnt, rej_reasons = self._call_provider_search(
-                    active_provider,
-                    query=q_text,
-                    target_duration=shot.duration_seconds,
-                    limit=limit,
-                    excluded_ids=excluded_ids,
-                    req_terms=req_terms,
-                    block_terms=block_terms,
-                    neg_terms=neg_terms,
-                    anchor_terms=proj_anchors,
-                    avoid_terms=proj_avoids,
-                    min_rel_score=min_rel_score,
-                    visual_kws=visual_kws,
-                    category=q_cat,
-                    narration_text=narration_txt,
-                    strict_ai_relevance=strict_ai_relevance,
-                    recommended_visual_sources=recommended_visual_sources,
-                )
+                if search_semaphore is not None:
+                    with search_semaphore:
+                        tier_cands, raw_cnt, rej_reasons = self._call_provider_search(
+                            active_provider,
+                            query=q_text,
+                            target_duration=shot.duration_seconds,
+                            limit=limit,
+                            excluded_ids=excluded_ids,
+                            req_terms=req_terms,
+                            block_terms=block_terms,
+                            neg_terms=neg_terms,
+                            anchor_terms=proj_anchors,
+                            avoid_terms=proj_avoids,
+                            min_rel_score=min_rel_score,
+                            visual_kws=visual_kws,
+                            category=q_cat,
+                            narration_text=narration_txt,
+                            strict_ai_relevance=strict_ai_relevance,
+                            recommended_visual_sources=recommended_visual_sources,
+                        )
+                else:
+                    tier_cands, raw_cnt, rej_reasons = self._call_provider_search(
+                        active_provider,
+                        query=q_text,
+                        target_duration=shot.duration_seconds,
+                        limit=limit,
+                        excluded_ids=excluded_ids,
+                        req_terms=req_terms,
+                        block_terms=block_terms,
+                        neg_terms=neg_terms,
+                        anchor_terms=proj_anchors,
+                        avoid_terms=proj_avoids,
+                        min_rel_score=min_rel_score,
+                        visual_kws=visual_kws,
+                        category=q_cat,
+                        narration_text=narration_txt,
+                        strict_ai_relevance=strict_ai_relevance,
+                        recommended_visual_sources=recommended_visual_sources,
+                    )
             except Exception as search_exc:
                 err_cap = 200 if prov_name == "coverr" else 120
                 err_txt = str(search_exc)[:err_cap]
@@ -884,6 +937,7 @@ class VisualService:
         strict_ai_relevance: bool = False,
         initial_fallback_reason: Optional[str] = None,
         search_mode: Optional[str] = None,
+        search_semaphore: Optional[threading.BoundedSemaphore] = None,
     ) -> Tuple[List[VisualCandidate], Optional[BaseVisualProvider], str, List[Dict[str, Any]], Optional[str]]:
         """Shared candidate search used identically by fetch_all, Otomatis, Search again, and candidate grid (D9.7, V1)."""
         preset_snap = manifest.preset_snapshot or {}
@@ -956,6 +1010,23 @@ class VisualService:
                     })
                     continue
             try:
+                from app.services.longform.visual.free_providers import check_provider_cooldown
+
+                rem_cd = check_provider_cooldown(prov_name)
+                if rem_cd > 0.0:
+                    attempts_log.append({
+                        "provider": prov_name,
+                        "query": raw_query,
+                        "raw_count": 0,
+                        "accepted_count": 0,
+                        "rejected_reasons": [],
+                        "error": f"cooldown ({rem_cd:.1f}s remaining)",
+                        "skipped": True,
+                    })
+                    continue
+            except Exception:
+                pass
+            try:
                 active_provider = self.get_provider(prov_name, manifest)
                 if prov_name in ("fake", "local"):
                     active_provider.validate_credentials()
@@ -1014,6 +1085,7 @@ class VisualService:
                     narration_txt=narration_txt,
                     strict_ai_relevance=strict_ai_relevance,
                     recommended_visual_sources=rec_sources,
+                    search_semaphore=search_semaphore,
                 )
                 attempts_log.extend(p_attempts)
                 origin_map.update(p_origin)
@@ -1060,6 +1132,7 @@ class VisualService:
                             strict_ai_relevance=strict_ai_relevance,
                             existing_ids=seen_per_prov_ids.get(p_name),
                             recommended_visual_sources=rec_sources,
+                            search_semaphore=search_semaphore,
                         ): p_name
                         for p_name, p_obj, p_tiers in phase_slices
                     }
@@ -1153,6 +1226,7 @@ class VisualService:
                     strict_ai_relevance=strict_ai_relevance,
                     stop_on_first_hit=True,
                     recommended_visual_sources=rec_sources,
+                    search_semaphore=search_semaphore,
                 )
                 attempts_log.extend(rel_att)
                 origin_map.update(rel_origin)
@@ -1170,6 +1244,8 @@ class VisualService:
 
         candidates = deduplicate_candidates(candidates)
         self._last_shot_origin_queries = origin_map
+        with self._telemetry_lock:
+            self._origin_queries_by_shot[shot.shot_id] = dict(origin_map)
         return candidates, chosen_provider, chosen_query, attempts_log, fallback_reason
 
     def fetch_all(
@@ -1397,6 +1473,9 @@ class VisualService:
         pending_downloads: List[Dict[str, Any]] = []
         pct_span = _pct_end - _pct_start
         pct_mid = _pct_start + (pct_span * 0.5)
+        eff_prefetch = get_effective_search_prefetch_shots()
+        search_sem = threading.BoundedSemaphore(max(1, int(MAX_PARALLEL_SOURCES) * eff_prefetch))
+        searched_shot_ids: Set[str] = set()
 
         def _mark_no_visual(sh_obj: Shot, att_log: List[Dict[str, Any]], summary_override: Optional[str] = None) -> None:
             reason_sum = summary_override or self._summarize_search_failures(att_log)
@@ -1505,16 +1584,13 @@ class VisualService:
                     if tr_res.get("warning"):
                         translation_warnings.append(str(tr_res["warning"]))
 
+            chapter_targets: List[Shot] = []
             for shot in ch.shots:
-                if is_stop_requested(self.project_dir):
-                    logger.info(f"Stop requested for project '{manifest.project_id}'. Exiting visual matching gracefully.")
-                    stop_requested = True
-                    break
-                # Skip locked shots
                 if shot.locked:
                     logger.info(f"Skipping locked shot: {shot.shot_id}")
                     continue
-
+                if shot.shot_id in searched_shot_ids:
+                    continue
                 # V1, S4, S5, T3, F12: Check if asset is valid for requested provider AND meets strict subject/anchor filter
                 if self._is_shot_asset_valid_for_provider(
                     shot,
@@ -1529,46 +1605,68 @@ class VisualService:
                 ):
                     logger.debug(f"Shot {shot.shot_id} asset valid for provider '{effective_provider_name}', skipping fetch")
                     continue
+                chapter_targets.append(shot)
 
-                # Determine candidate provider list for this shot (waterfall in D9.2 vs single provider)
-                shot_providers = list(waterfall_providers) if use_waterfall else [effective_provider_name]
-                if not shot_providers and allow_fake_fallback:
-                    shot_providers = ["fake"]
-
+            def _prepare_shot_for_search(sh_obj: Shot) -> Tuple[List[str], str]:
+                searched_shot_ids.add(sh_obj.shot_id)
+                sh_provs = list(waterfall_providers) if use_waterfall else [effective_provider_name]
+                if not sh_provs and allow_fake_fallback:
+                    sh_provs = ["fake"]
                 # F13: Clear stale candidate list/tags on unlocked shots being re-fetched
-                shot.candidates = []
-                shot.tags = []
-                shot.search_attempts = []
-                shot.no_visual_reason_summary = None
-
-                raw_query = (
-                    getattr(shot, "search_query_en", None)
-                    or shot.search_query
-                    or shot.visual_prompt
+                sh_obj.candidates = []
+                sh_obj.tags = []
+                sh_obj.search_attempts = []
+                sh_obj.no_visual_reason_summary = None
+                raw_q = (
+                    getattr(sh_obj, "search_query_en", None)
+                    or sh_obj.search_query
+                    or sh_obj.visual_prompt
                     or "cinematic scene"
                 )
-                _t_sw0 = time.monotonic()
-                candidates, chosen_provider, chosen_query, attempts_log, fallback_reason = self._search_shot_across_providers(
-                    shot,
+                return sh_provs, raw_q
+
+            def _search_shot_worker(
+                sh_obj: Shot,
+                sh_provs: List[str],
+                excl_snapshot: Set[str],
+            ) -> Tuple[List[VisualCandidate], Optional[BaseVisualProvider], str, List[Dict[str, Any]], Optional[str]]:
+                return self._search_shot_across_providers(
+                    sh_obj,
                     manifest,
-                    providers_order=shot_providers,
+                    providers_order=sh_provs,
                     explicit_prompt=None,
                     limit=5,
-                    excluded_ids=used_candidate_ids,
+                    excluded_ids=excl_snapshot,
                     allow_waterfall=use_waterfall,
                     allow_fake_fallback=allow_fake_fallback,
                     strict_ai_relevance=bool(check_ai_relevance),
                     initial_fallback_reason=global_fallback_reason,
                     search_mode=eff_search_mode if use_waterfall else "priority",
+                    search_semaphore=search_sem,
                 )
-                search_wall_seconds += time.monotonic() - _t_sw0
+
+            def _apply_shot_search_result(
+                shot: Shot,
+                shot_providers: List[str],
+                raw_query: str,
+                search_res: Tuple[List[VisualCandidate], Optional[BaseVisualProvider], str, List[Dict[str, Any]], Optional[str]],
+            ) -> None:
+                nonlocal searched_count, done_fetch_count
+                candidates, chosen_provider, chosen_query, attempts_log, fallback_reason = search_res
                 for att in attempts_log:
                     p_k = str(att.get("provider") or "unknown").lower().strip()
-                    requests_by_provider[p_k] = requests_by_provider.get(p_k, 0) + 1
+                    if not att.get("skipped"):
+                        requests_by_provider[p_k] = requests_by_provider.get(p_k, 0) + 1
                     att_err = sanitize_source_error(att.get("error"))
                     if att_err:
                         attempt_errors_by_provider[p_k] = att_err
                         attempt_err_counts_by_provider[p_k] = attempt_err_counts_by_provider.get(p_k, 0) + 1
+
+                # Reconcile any candidates claimed by earlier shots in the same prefetch window
+                if candidates:
+                    avail_cands = [c for c in candidates if c.candidate_id not in used_candidate_ids]
+                    if avail_cands:
+                        candidates = avail_cands
 
                 active_provider = chosen_provider or self.get_provider(shot_providers[0], manifest)
                 shot.search_attempts = attempts_log[-25:]
@@ -1583,6 +1681,7 @@ class VisualService:
                                 query=raw_query,
                                 target_duration=shot.duration_seconds,
                                 limit=3,
+                                excluded_ids=used_candidate_ids,
                                 required_subject_terms=req_terms,
                                 blocked_terms=block_terms,
                                 visual_keywords=visual_kws,
@@ -1593,6 +1692,8 @@ class VisualService:
                                 target_duration=shot.duration_seconds,
                                 limit=3,
                             )
+                        if candidates:
+                            candidates = [c for c in candidates if c.candidate_id not in used_candidate_ids] or candidates
 
                     if not candidates:
                         # D8 / D9.1: Mark shot cleanly as 'Belum ada visual' with structured failure reason
@@ -1614,7 +1715,7 @@ class VisualService:
                                 is_indeterminate=False,
                                 partial=True,
                             )
-                        continue
+                        return
 
                 # V1: In Mix Best mode, select winner sequentially (60% / 3-consecutive rule requires ordered state)
                 if use_waterfall and eff_search_mode == "mix_best" and candidates:
@@ -1640,7 +1741,10 @@ class VisualService:
                 if not getattr(active_provider, "is_fake", False) or str(selected_candidate.provider).lower().strip() == "fake":
                     if str(selected_candidate.provider).lower().strip() != str(active_provider.name).lower().strip():
                         active_provider = self.get_provider(selected_candidate.provider, manifest)
-                origin_map = getattr(self, "_last_shot_origin_queries", {}) or {}
+                with self._telemetry_lock:
+                    origin_map = self._origin_queries_by_shot.pop(shot.shot_id, None)
+                if origin_map is None:
+                    origin_map = getattr(self, "_last_shot_origin_queries", {}) or {}
                 chosen_query = origin_map.get((selected_candidate.provider, selected_candidate.candidate_id), chosen_query)
 
                 # Record sequential selection state BEFORE parallel downloads begin
@@ -1681,6 +1785,67 @@ class VisualService:
                         is_indeterminate=False,
                         partial=True,
                     )
+
+            if chapter_targets:
+                _t_ch_sw0 = time.monotonic()
+                is_priority_cascade = bool(
+                    use_waterfall and eff_search_mode != "mix_best" and len(waterfall_providers) > 1
+                )
+                if eff_prefetch <= 1 or len(chapter_targets) == 1 or is_priority_cascade:
+                    for shot in chapter_targets:
+                        if is_stop_requested(self.project_dir):
+                            logger.info(f"Stop requested for project '{manifest.project_id}'. Exiting visual matching gracefully.")
+                            stop_requested = True
+                            break
+                        shot_providers, raw_query = _prepare_shot_for_search(shot)
+                        res = _search_shot_worker(shot, shot_providers, set(used_candidate_ids))
+                        _apply_shot_search_result(shot, shot_providers, raw_query, res)
+                else:
+                    # CA1.1: Rolling bounded prefetch (<= MAX_SEARCH_PREFETCH_SHOTS shots ahead)
+                    # while keeping candidate selection & diversity state strictly sequential.
+                    prefetch_pool = ThreadPoolExecutor(max_workers=min(eff_prefetch, len(chapter_targets)))
+                    inflight: Dict[int, Tuple[Shot, List[str], str, Any]] = {}
+                    next_submit = 0
+                    next_proc = 0
+                    try:
+                        while next_submit < min(eff_prefetch, len(chapter_targets)):
+                            if is_stop_requested(self.project_dir):
+                                logger.info(f"Stop requested for project '{manifest.project_id}'. Exiting visual matching gracefully.")
+                                stop_requested = True
+                                break
+                            sh_obj = chapter_targets[next_submit]
+                            sh_provs, raw_q = _prepare_shot_for_search(sh_obj)
+                            fut = prefetch_pool.submit(_search_shot_worker, sh_obj, sh_provs, set(used_candidate_ids))
+                            inflight[next_submit] = (sh_obj, sh_provs, raw_q, fut)
+                            next_submit += 1
+
+                        while next_proc < len(chapter_targets) and not stop_requested:
+                            if is_stop_requested(self.project_dir):
+                                logger.info(f"Stop requested for project '{manifest.project_id}'. Exiting visual matching gracefully.")
+                                stop_requested = True
+                                break
+                            slot = inflight.pop(next_proc, None)
+                            if slot is None:
+                                break
+                            sh_obj, sh_provs, raw_q, fut = slot
+                            res = fut.result()
+                            _apply_shot_search_result(sh_obj, sh_provs, raw_q, res)
+                            next_proc += 1
+                            if (
+                                next_submit < len(chapter_targets)
+                                and not is_stop_requested(self.project_dir)
+                                and len(inflight) < eff_prefetch
+                            ):
+                                nxt_obj = chapter_targets[next_submit]
+                                nxt_provs, nxt_raw = _prepare_shot_for_search(nxt_obj)
+                                nxt_fut = prefetch_pool.submit(_search_shot_worker, nxt_obj, nxt_provs, set(used_candidate_ids))
+                                inflight[next_submit] = (nxt_obj, nxt_provs, nxt_raw, nxt_fut)
+                                next_submit += 1
+                    finally:
+                        for _rem_idx, (_s, _p, _r, rem_fut) in list(inflight.items()):
+                            rem_fut.cancel()
+                        prefetch_pool.shutdown(wait=True, cancel_futures=True)
+                search_wall_seconds += time.monotonic() - _t_ch_sw0
 
         # C3: Bounded parallel downloads of already-selected assets (manifest written strictly on main thread)
         if pending_downloads and not stop_requested and not is_stop_requested(self.project_dir):

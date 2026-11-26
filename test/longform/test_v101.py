@@ -130,7 +130,10 @@ def test_v0_local_opt_in_random_fill_and_deterministic_pass3(tmp_path: Path):
 
 
 def _make_stub_provider_cls(name: str, score_fn_or_map, query_calls: list, img_bytes_color=(60, 120, 180)):
+    import threading
     from app.services.longform.visual.base import BaseVisualProvider, VisualAsset, VisualCandidate, compute_file_content_hash
+
+    _calls_lock = threading.Lock()
 
     class _StubProv(BaseVisualProvider):
         def __init__(self, project_dir: Path):
@@ -148,10 +151,10 @@ def _make_stub_provider_cls(name: str, score_fn_or_map, query_calls: list, img_b
             return None
 
         def search_with_diagnostics(self, query: str, target_duration: float, limit: int = 3, **kwargs):
-            query_calls.append((name, query, threading_ident()))
+            with _calls_lock:
+                query_calls.append((name, query, threading_ident()))
+                call_num = sum(1 for n, _, _ in query_calls if n == name)
             idx_hint = kwargs.get("excluded_ids") or set()
-            # Map call counter or callable for deterministic per-shot score
-            call_num = sum(1 for n, _, _ in query_calls if n == name)
             if callable(score_fn_or_map):
                 sc = float(score_fn_or_map(query, call_num))
             elif isinstance(score_fn_or_map, dict):
@@ -272,9 +275,9 @@ def test_v1_mix_best_parallel_2tier_budget_tiebreak_and_provider_download(tmp_pa
     save_manifest(manifest, proj_dir)
 
     calls: list = []
-    # Wikimedia scores 0.85 on all shots; NASA scores 0.84 (diff 0.01 <= 0.02!) except shot 3 where Wikimedia wins 0.95 vs 0.65
-    wiki_cls = _make_stub_provider_cls("wikimedia", {1: 0.85, 2: 0.85, 3: 0.85, 4: 0.85, 5: 0.95, 6: 0.95, 7: 0.85, 8: 0.85}, calls)
-    nasa_cls = _make_stub_provider_cls("nasa", {1: 0.84, 2: 0.84, 3: 0.84, 4: 0.84, 5: 0.65, 6: 0.65, 7: 0.84, 8: 0.84}, calls)
+    # Wikimedia scores 0.85 on shots 1,2,4; NASA scores 0.84 (diff 0.01 <= 0.02!) except shot 3 where Wikimedia wins 0.95 vs 0.65
+    wiki_cls = _make_stub_provider_cls("wikimedia", lambda q, _n: 0.95 if "3" in q else 0.85, calls)
+    nasa_cls = _make_stub_provider_cls("nasa", lambda q, _n: 0.65 if "3" in q else 0.84, calls)
     svc = VisualService(proj_dir)
 
     def _mock_get_provider(pname: str, m: ProjectManifest):
@@ -317,6 +320,7 @@ def test_v1_diversity_cap_consecutive_and_fallback_when_no_alternative(tmp_path:
             visual_prompt=f"subject {i}",
             search_query=f"subject {i}",
             search_query_en=f"subject {i}",
+            search_queries_en=[f"subject {i}", f"scene item {i}"],
             search_query_source="ai",
         )
         for i in range(1, 6)
@@ -334,9 +338,9 @@ def test_v1_diversity_cap_consecutive_and_fallback_when_no_alternative(tmp_path:
     save_manifest(manifest, proj_dir)
 
     calls: list = []
-    # Wikimedia strong 0.95 on all 5 shots; NASA passes at 0.70 on shots 1-4 (calls 1..8), fails (0.0) on shot 5 (calls 9+)
+    # Wikimedia strong 0.95 on all 5 shots; NASA passes at 0.70 on shots 1-4, fails (0.0) on shot 5
     wiki_cls = _make_stub_provider_cls("wikimedia", 0.95, calls)
-    nasa_cls = _make_stub_provider_cls("nasa", lambda _q, n: 0.0 if n >= 9 else 0.70, calls)
+    nasa_cls = _make_stub_provider_cls("nasa", lambda q, _n: 0.0 if "5" in q else 0.70, calls)
     svc = VisualService(proj_dir)
 
     def _mock_get_provider(pname: str, m: ProjectManifest):
