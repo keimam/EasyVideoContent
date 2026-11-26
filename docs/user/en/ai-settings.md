@@ -52,3 +52,21 @@ Under **Settings → Image Generation** (*OpenAI Compatible*), built-in presets 
   - `black-forest-labs/FLUX.1-schnell` is released under the **Apache 2.0** license for personal, scientific, and commercial use ([huggingface.co/black-forest-labs/FLUX.1-schnell](https://huggingface.co/black-forest-labs/FLUX.1-schnell)).
   - `black-forest-labs/FLUX.1-dev` *(if configured manually)* uses `flux-1-dev-non-commercial-license` ([huggingface.co/black-forest-labs/FLUX.1-dev](https://huggingface.co/black-forest-labs/FLUX.1-dev)); check terms before commercial deployment.
 - **Test 1 Image Button:** Click **Test 1 image** in Image Settings or Long Video **Footage Sources** to preview a generated test image immediately or inspect categorized errors (`401/403` auth, `402`/quota, `404` model/endpoint, `400/422` parameter, or timeout/network) with API keys redacted.
+
+---
+
+## 5. Backup AI Providers (Cross-Provider Auto-Failover)
+
+To prevent script generation, chapter summaries, AI visual keywords, *Visual Context*, and scene continuity batches from stopping when your primary AI hits a daily limit or returns `401`/`402`/`404`/`429`:
+
+1. **Add keys from different providers** in **AI & API Providers** (for example **Google Gemini**, **Groq**, or **DeepSeek** alongside OpenRouter). A common recommended backup order is: **`gemini`, `groq`, `deepseek`**.
+2. **Avoid stacking multiple free OpenRouter keys:** Per [OpenRouter Limits](https://openrouter.ai/docs/api/reference/limits) *(accessed 2026-11-26)*, accounts without at least \$10 purchased lifetime credits are capped globally at `50 requests per day` and `20 requests per minute` on `:free` models (resets `00:00 UTC`), and creating multiple accounts/keys does not multiply free capacity. Configure genuinely separate providers for real backup capacity.
+3. **Manage priority & status in Settings:** Under **General Settings → Backup AI providers**, select and order your backup list (`llm_failover_chain` in `config/longform.toml`). Status badges show:
+   - **✅ Ready:** key and model are configured cleanly.
+   - **⚠️ No API key / Needs model:** skipped cleanly without failed requests.
+   - **⏸ Temporarily paused:** auto-paused until quota reset (e.g. `00:00 UTC` for OpenRouter daily cap) or until you update the API key/model.
+4. **Test all AI providers:** Click **🔍 Test all AI providers** to check the primary provider and every configured backup sequentially with all secrets redacted.
+5. **Official provider rate-limit policies *(accessed 2026-11-26)*:**
+   - **Google Gemini:** RPM, TPM, and RPD limits are enforced per Google Cloud project (not per key) and vary by model and tier ([ai.google.dev/gemini-api/docs/rate-limits](https://ai.google.dev/gemini-api/docs/rate-limits)).
+   - **Groq:** RPM, RPD (resets midnight UTC), TPM, and TPD limits apply per organization and model ([console.groq.com/docs/rate-limits](https://console.groq.com/docs/rate-limits)).
+   - **DeepSeek:** Uses dynamic concurrency rather than a fixed RPM cap, billed from prepaid credits ([api-docs.deepseek.com/quick_start/rate_limit](https://api-docs.deepseek.com/quick_start/rate_limit)).

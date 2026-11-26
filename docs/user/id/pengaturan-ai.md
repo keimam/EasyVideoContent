@@ -52,3 +52,21 @@ Di jendela **Pengaturan → Sumber Visual / Gambar** (*OpenAI Compatible*), ters
   - `black-forest-labs/FLUX.1-schnell`: berlisensi **Apache 2.0**, dapat digunakan untuk penggunaan pribadi, ilmiah, maupun komersial ([huggingface.co/black-forest-labs/FLUX.1-schnell](https://huggingface.co/black-forest-labs/FLUX.1-schnell)).
   - `black-forest-labs/FLUX.1-dev` *(jika dipakai manual)*: memakai lisensi **non-komersial** khusus ([huggingface.co/black-forest-labs/FLUX.1-dev](https://huggingface.co/black-forest-labs/FLUX.1-dev)); perhatikan ketentuannya sebelum pemakaian komersial.
 - **Tombol Uji 1 Gambar:** Gunakan **Uji 1 gambar** di Pengaturan Gambar atau panel **Sumber Footage** Video Panjang untuk melihat pratinjau gambar langsung atau kategori error yang aman (`401/403` auth, `402`/kuota, `404` model/endpoint, `400/422` parameter, atau timeout jaringan) tanpa pernah menampilkan API key.
+
+---
+
+## 5. Penyedia AI Cadangan (*Auto-Failover* Lintas Penyedia)
+
+Agar penulisan naskah, ringkasan, kata kunci visual AI, *Konteks Visual*, dan penyusunan adegan tidak terhenti saat kuota penyedia utama habis atau mengembalikan error `401`/`402`/`404`/`429`:
+
+1. **Siapkan lebih dari satu penyedia berbeda** di tab **API & Penyedia AI** (cukup isi API key di kartu **Google Gemini**, **Groq**, **DeepSeek**, atau penyedia lain). Urutan cadangan yang umum disarankan: **`gemini`, `groq`, `deepseek`**.
+2. **Jangan menumpuk beberapa API key OpenRouter gratisan:** Mengacu pada dokumentasi resmi [OpenRouter Limits](https://openrouter.ai/docs/api/reference/limits) *(diakses 2026-11-26)*, akun dengan total pembelian kredit di bawah \$10 dibatasi `50 requests per day` dan `20 requests per minute` untuk model `:free` secara global per akun (reset `00:00 UTC`), serta membuat banyak akun/key tidak menambah kapasitas gratis. Gunakan penyedia berbeda agar kuotanya benar-benar terpisah.
+3. **Atur urutan & pantau status di Pengaturan:** Di **Pengaturan Umum → Penyedia AI cadangan**, atur urutan daftar *Backup AI* (`llm_failover_chain` di `config/longform.toml`). Badge status menunjukkan:
+   - **✅ Siap:** key & model valid.
+   - **⚠️ Belum ada key / Perlu model:** penyedia dilewati tanpa memicu error jaringan.
+   - **⏸ Dijeda sementara:** penyedia otomatis dijeda hingga waktu reset (mis. `00:00 UTC` untuk limit harian OpenRouter) atau sampai API key/model diubah.
+4. **Tombol Uji semua penyedia AI:** Klik **🔍 Uji semua penyedia AI** untuk mengetes penyedia utama beserta seluruh daftar cadangan secara berurutan tanpa menampilkan API key.
+5. **Batas resmi masing-masing penyedia *(diakses 2026-11-26)*:**
+   - **Google Gemini:** Batas RPM, TPM, dan RPD berlaku per proyek Google Cloud (bukan per API key) dan berbeda per model serta tier ([ai.google.dev/gemini-api/docs/rate-limits](https://ai.google.dev/gemini-api/docs/rate-limits)).
+   - **Groq:** Batas RPM, RPD (reset tengah malam UTC), TPM, dan TPD berlaku per organisasi dan model ([console.groq.com/docs/rate-limits](https://console.groq.com/docs/rate-limits)).
+   - **DeepSeek:** Menggunakan batas berbasis konkurensi tanpa batas RPM tetap, berbayar sesuai saldo kredit ([api-docs.deepseek.com/quick_start/rate_limit](https://api-docs.deepseek.com/quick_start/rate_limit)).
