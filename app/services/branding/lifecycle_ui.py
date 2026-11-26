@@ -228,6 +228,64 @@ def show_update_release_dialog(banner: Dict[str, Any]) -> None:
     st.dialog(t("update_dialog_title", ver=remote_ver))(_render_update_release_dialog_body)(banner)
 
 
+SMITHSONIAN_SIGNUP_URL = "https://api.data.gov/signup/"
+
+
+def render_smithsonian_key_controls(*, key_prefix: str = "settings") -> None:
+    """Shared optional BYOK Smithsonian / api.data.gov key field, signup link, and 1-request test button."""
+    try:
+        from app.services.longform.config import get_smithsonian_api_key, save_smithsonian_api_key
+        from app.services.longform.visual.archive_providers import (
+            get_smithsonian_auth_status,
+            test_smithsonian_api_key,
+        )
+
+        cur_key = get_smithsonian_api_key()
+        st_info = get_smithsonian_auth_status(cur_key) if cur_key else {"configured": False, "auth_blocked": False}
+        if st_info.get("auth_blocked"):
+            badge_txt = t("prov_badge_paused")
+        elif cur_key:
+            badge_txt = t("prov_badge_ready")
+        else:
+            badge_txt = t("prov_badge_needs_key")
+
+        with st.container(border=True):
+            st.markdown(f"**🏛️ {t('smithsonian_key_heading')}** · `{badge_txt}`")
+            st.caption(t("smithsonian_key_signup", url=SMITHSONIAN_SIGNUP_URL))
+            c_in, c_save, c_test = st.columns([3, 1, 1])
+            new_si_key = c_in.text_input(
+                t("smithsonian_key_label"),
+                value=cur_key,
+                type="password",
+                key=f"{key_prefix}_smithsonian_api_key",
+                label_visibility="collapsed",
+                placeholder=t("smithsonian_key_label"),
+            )
+            if c_save.button(t("smithsonian_key_btn_save"), key=f"{key_prefix}_btn_save_si", width="stretch"):
+                saved = save_smithsonian_api_key(new_si_key)
+                if saved:
+                    st.success(t("smithsonian_key_saved"))
+                else:
+                    st.info(t("smithsonian_key_cleared"))
+                st.rerun()
+            if c_test.button(
+                t("smithsonian_key_btn_test"),
+                disabled=not str(new_si_key or cur_key).strip(),
+                key=f"{key_prefix}_btn_test_si",
+                width="stretch",
+            ):
+                probe_key = str(new_si_key or cur_key).strip()
+                ok, msg = test_smithsonian_api_key(probe_key)
+                if ok:
+                    if new_si_key and new_si_key.strip() != cur_key:
+                        save_smithsonian_api_key(new_si_key.strip())
+                    st.success(t("smithsonian_key_test_ok"))
+                else:
+                    st.error(t("smithsonian_key_test_fail", error=msg))
+    except Exception as exc:
+        logger.debug(f"Smithsonian key control warning: {exc}")
+
+
 def render_settings_studio_controls(*, key_prefix: str = "settings") -> None:
     """Render Language selector, Wizard re-run & App Update controls inside Settings General tab (E1, E2, E9, E11)."""
     ensure_ui_language_initialized()
@@ -273,6 +331,8 @@ def render_settings_studio_controls(*, key_prefix: str = "settings") -> None:
         )
     except Exception as exc:
         logger.debug(f"Network profile setting control warning: {exc}")
+
+    render_smithsonian_key_controls(key_prefix=key_prefix)
 
     try:
         from app.config import config as app_config
@@ -660,6 +720,8 @@ def render_first_run_wizard(*, key_prefix: str = "home") -> bool:
                 config.app["coverr_api_key"] = new_cov.strip()
                 config.save_config()
                 st.success(t("wizard_sources_saved"))
+
+            render_smithsonian_key_controls(key_prefix=f"wizard_{key_prefix}")
 
         # --- Step 5: CapCut ---
         elif step == 5:

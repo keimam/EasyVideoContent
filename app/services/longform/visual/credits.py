@@ -87,7 +87,22 @@ class CreditsManager:
             for sh in getattr(ch, "shots", []) or []:
                 if not (sh.rendered_clip or sh.asset_path):
                     continue
-                src = str(sh.actual_source or "").strip()
+                src_raw = str(sh.actual_source or "").strip()
+                src_low = src_raw.lower()
+                if src_low == "internet_archive":
+                    asset_s = str(getattr(sh, "asset_path", "") or "").lower()
+                    url_s = str(getattr(sh, "attribution_url", None) or "").lower()
+                    cid_s = str(getattr(sh, "source_candidate_id", None) or "").lower()
+                    if asset_s.endswith(".mp4") or "_seg" in cid_s:
+                        src = "Prelinger Archives / Internet Archive"
+                    elif "clevelandart" in url_s or "clevelandart" in cid_s:
+                        src = "Cleveland Museum of Art / Internet Archive"
+                    else:
+                        src = "Internet Archive"
+                elif src_low == "smithsonian":
+                    src = "Smithsonian Open Access"
+                else:
+                    src = src_raw
                 lic = str(getattr(sh, "attribution_license", None) or "").strip()
                 author = str(getattr(sh, "attribution_author", None) or "").strip()
                 title = str(getattr(sh, "attribution_title", None) or "").strip()

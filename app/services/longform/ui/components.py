@@ -2591,6 +2591,8 @@ _DEFAULT_VISUAL_ORDER: tuple[str, ...] = (
     "wikimedia",
     "nasa",
     "openverse",
+    "internet_archive",
+    "smithsonian",
     "ai_image",
 )
 
@@ -2602,6 +2604,8 @@ _VISUAL_SOURCE_LABELS: Dict[str, str] = {
     "wikimedia": "Wikimedia",
     "nasa": "NASA",
     "openverse": "Openverse",
+    "internet_archive": "Internet Archive",
+    "smithsonian": "Smithsonian",
     "ai_image": "AI Image",
 }
 
@@ -3562,12 +3566,22 @@ def render_visual_step_flow(
     vision_info = get_vision_readiness()
     ai_vid_providers = list_configured_ai_video_providers()
 
+    from app.services.longform.config import get_smithsonian_api_key
+    from app.services.longform.visual.archive_providers import get_smithsonian_auth_status
+
+    raw_si_key = get_smithsonian_api_key()
+    has_smithsonian = bool(raw_si_key)
+    mask_smithsonian = mask_api_key(raw_si_key) if has_smithsonian else ""
+    si_auth = get_smithsonian_auth_status(raw_si_key) if has_smithsonian else {"configured": False, "auth_blocked": False}
+
     _cb_pix = st.session_state.get(f"cb_prov_pixabay_{project_id}", has_pixabay) if has_pixabay else False
     _cb_cov = st.session_state.get(f"cb_prov_coverr_{project_id}", has_coverr) if has_coverr else False
     _cb_pxl = st.session_state.get(f"cb_prov_pexels_{project_id}", has_pexels) if has_pexels else False
     _cb_wiki = bool(st.session_state.get(f"cb_prov_wikimedia_{project_id}", True))
     _cb_nasa = bool(st.session_state.get(f"cb_prov_nasa_{project_id}", True))
     _cb_ov = bool(st.session_state.get(f"cb_prov_openverse_{project_id}", True))
+    _cb_ia = bool(st.session_state.get(f"cb_prov_internet_archive_{project_id}", True))
+    _cb_si = st.session_state.get(f"cb_prov_smithsonian_{project_id}", has_smithsonian) if has_smithsonian else False
     _cb_ai = st.session_state.get(f"cb_prov_ai_{project_id}", False) if has_ai_image else False
     _cb_loc = bool(st.session_state.get(f"cb_prov_local_{project_id}", True))
     _cb_ai_rel = bool(st.session_state.get(f"cb_ai_rel_{project_id}", False)) if vision_info.get("vision_supported") else False
@@ -3580,6 +3594,8 @@ def render_visual_step_flow(
             "wikimedia": bool(_cb_wiki),
             "nasa": bool(_cb_nasa),
             "openverse": bool(_cb_ov),
+            "internet_archive": bool(_cb_ia),
+            "smithsonian": bool(_cb_si),
             "local": bool(_cb_loc),
             "ai_image": bool(_cb_ai),
         },
@@ -3589,7 +3605,7 @@ def render_visual_step_flow(
     has_vis_source = has_real_visual_source(p_dir, enabled_sources=selected_sources)
     start_vis_blocked = (not has_vis_source) and (not is_dev_or_test_mode())
 
-    only_ai_selected = bool(_cb_ai and not (_cb_pix or _cb_cov or _cb_pxl or _cb_wiki or _cb_nasa or _cb_ov))
+    only_ai_selected = bool(_cb_ai and not (_cb_pix or _cb_cov or _cb_pxl or _cb_wiki or _cb_nasa or _cb_ov or _cb_ia or _cb_si))
     target_prov = "ai_image" if only_ai_selected else None
     providers_csv = ",".join(selected_sources) if selected_sources else ""
 
@@ -3805,7 +3821,68 @@ def render_visual_step_flow(
             disabled=False,
             key=f"cb_prov_openverse_{project_id}",
         )
+        col_f4, col_f5, col_f6 = st.columns(3)
+        col_f4.checkbox(
+            t("prov_internet_archive_free"),
+            value=True,
+            disabled=False,
+            key=f"cb_prov_internet_archive_{project_id}",
+        )
+        si_paused = bool(si_auth.get("auth_blocked"))
+        si_label = (
+            t("prov_smithsonian_paused")
+            if si_paused
+            else (t("prov_smithsonian_key", mask=mask_smithsonian) if has_smithsonian else t("prov_smithsonian_no_key"))
+        )
+        col_f5.checkbox(
+            si_label,
+            value=has_smithsonian and not si_paused,
+            disabled=(not has_smithsonian) or si_paused,
+            key=f"cb_prov_smithsonian_{project_id}",
+        )
+        # Live source status summary badges (siap / butuh key / dijeda)
+        from app.services.longform.visual.coverr_client import get_coverr_auth_status
+
+        cov_auth = get_coverr_auth_status() if has_coverr else {}
+        ready_srcs = ["Wikimedia", "NASA", "Openverse", "Internet Archive", "Local"]
+        needs_key_srcs: List[str] = []
+        paused_srcs: List[str] = []
+        if has_pixabay:
+            ready_srcs.insert(0, "Pixabay")
+        else:
+            needs_key_srcs.append("Pixabay")
+        if has_coverr:
+            if cov_auth.get("auth_blocked") or cov_auth.get("rate_limited"):
+                paused_srcs.append("Coverr")
+            else:
+                ready_srcs.insert(1, "Coverr")
+        else:
+            needs_key_srcs.append("Coverr")
+        if has_smithsonian:
+            if si_paused:
+                paused_srcs.append("Smithsonian")
+            else:
+                ready_srcs.append("Smithsonian")
+        else:
+            needs_key_srcs.append("Smithsonian")
+        if has_pexels:
+            ready_srcs.append("Pexels")
+        else:
+            needs_key_srcs.append("Pexels")
+        col_f6.caption(
+            t(
+                "prov_status_badges_caption",
+                ready=len(ready_srcs),
+                needs_key=len(needs_key_srcs),
+                paused=len(paused_srcs),
+            )
+        )
+
         st.caption(t("prov_pexels_closed_note"))
+
+        from app.services.branding.lifecycle_ui import render_smithsonian_key_controls
+
+        render_smithsonian_key_controls(key_prefix=f"sumber_footage_{project_id}")
 
         # V0: Explicit opt-in random fallback for Local files
         cur_fill_random = bool(getattr(manifest, "fill_local_random", False))
