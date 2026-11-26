@@ -74,7 +74,8 @@ def test_a2_1_pipeline_phase_telemetry_recorded_and_lazy_thumbnails(tmp_path: Pa
 
     assert metrics["thumbnail_seconds"] == 0.0
     assert metrics["built_count"] == 1
-    assert metrics["manifest_save_count"] >= 3
+    # CA1.2: batched saves flush once per phase on a 1-shot pre-allocated run (>= 2)
+    assert metrics["manifest_save_count"] >= 2
     assert "local" in metrics["search_per_source"]
     assert metrics["search_per_source"]["local"]["tier_attempts"] >= 1
 
