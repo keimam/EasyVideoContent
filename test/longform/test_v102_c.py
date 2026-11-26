@@ -19,8 +19,12 @@ from app.services.longform.visual.base import (
     compute_file_content_hash,
 )
 from app.services.longform.visual.service import (
+    MANIFEST_SAVE_BATCH_SIZE,
     MAX_PARALLEL_DOWNLOADS,
+    MAX_PARALLEL_SOURCES,
+    MAX_SEARCH_PREFETCH_SHOTS,
     VisualService,
+    get_effective_search_prefetch_shots,
 )
 
 
@@ -396,5 +400,339 @@ def test_c5_no_double_transcode_thumbnail_cache_hit_and_hash_skip(tmp_path: Path
         mp2.setattr(subprocess, "run", lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("ffmpeg should not run on cached thumbnail")))
         t2 = get_shot_thumbnail_path(p_dir, sh0)
         assert t2 == t1
+
+
+def test_ca1_prefetch_fake_selection_identical_to_sequential(tmp_path: Path, monkeypatch):
+    """CA1.4(a): Prefetch up to MAX_SEARCH_PREFETCH_SHOTS yields identical fake selection to sequential."""
+    import app.services.longform.visual.service as vis_svc_mod
+
+    monkeypatch.setenv("EFS_DEV", "1")
+    assert MAX_SEARCH_PREFETCH_SHOTS == 3
+
+    def _run_case(sub_name: str, win_size: int) -> tuple[list[tuple[str | None, str | None, str | None]], int]:
+        p_dir, manifest = _seed_visual_project(tmp_path / sub_name, f"ca1_a_{sub_name}", n_shots=8)
+        # Include duplicate queries on shots 2 & 3 to exercise sequential window dedup
+        manifest.chapters[0].shots[2].search_query_en = manifest.chapters[0].shots[1].search_query_en
+        manifest.chapters[0].shots[2].search_query = manifest.chapters[0].shots[1].search_query
+        save_manifest(manifest, p_dir)
+
+        svc = VisualService(p_dir)
+        active = {"cur": 0, "peak": 0}
+        lock = threading.Lock()
+        orig_search = svc._search_shot_across_providers
+
+        def _spy_search(*args, **kwargs):
+            with lock:
+                active["cur"] += 1
+                active["peak"] = max(active["peak"], active["cur"])
+            try:
+                time.sleep(0.02)
+                return orig_search(*args, **kwargs)
+            finally:
+                with lock:
+                    active["cur"] -= 1
+
+        with monkeypatch.context() as mp:
+            mp.setattr(vis_svc_mod, "get_effective_search_prefetch_shots", lambda profile=None: win_size)
+            mp.setattr(svc, "_search_shot_across_providers", _spy_search)
+            out_m = svc.fetch_all(manifest=manifest, provider_name="fake", allow_fallback=True, translate_keywords=False)
+
+        picked = [
+            (sh.source_candidate_id, sh.actual_source, sh.effective_query)
+            for sh in out_m.chapters[0].shots
+        ]
+        return picked, active["peak"]
+
+    seq_picked, seq_peak = _run_case("seq", 1)
+    pref_picked, pref_peak = _run_case("pref", MAX_SEARCH_PREFETCH_SHOTS)
+
+    assert seq_peak == 1
+    assert 2 <= pref_peak <= MAX_SEARCH_PREFETCH_SHOTS
+    assert pref_picked == seq_picked
+    cids = [c[0] for c in pref_picked]
+    assert all(c is not None for c in cids)
+    assert len(set(cids)) == len(cids)
+
+
+def test_ca1_prefetch_request_count_per_source_equals_sequential(tmp_path: Path, monkeypatch):
+    """CA1.4(b): Prefetch never increases HTTP/search request count per source and caps total threads <= 4*3."""
+    import app.services.longform.visual.service as vis_svc_mod
+    from app.services.longform.visual.free_providers import reset_provider_circuit_breakers
+
+    reset_provider_circuit_breakers()
+    providers = ["wikimedia", "nasa", "openverse", "pexels"]
+
+    class _CountingStub(BaseVisualProvider):
+        def __init__(self, prov_name: str, counts: dict[str, int], conc_state: dict[str, int], lock: threading.Lock):
+            self._name = prov_name
+            self._counts = counts
+            self._conc = conc_state
+            self._lock = lock
+
+        @property
+        def name(self) -> str:
+            return self._name
+
+        @property
+        def is_fake(self) -> bool:
+            return False
+
+        def validate_credentials(self) -> None:
+            return None
+
+        def search_candidates(self, query: str, target_duration: float, limit: int = 3, excluded_ids=None, **kwargs):
+            with self._lock:
+                self._counts[self._name] = self._counts.get(self._name, 0) + 1
+                self._conc["cur"] += 1
+                self._conc["peak"] = max(self._conc["peak"], self._conc["cur"])
+            try:
+                time.sleep(0.015)
+                h = abs(hash(f"{self._name}:{query}")) % 100000
+                return [
+                    VisualCandidate(
+                        candidate_id=f"{self._name}_{h}_{i}",
+                        provider=self._name,
+                        source_type="stock_image",
+                        url=f"https://example.test/{self._name}/{h}_{i}.jpg",
+                        width=1280,
+                        height=720,
+                        duration_seconds=target_duration,
+                        tags=["canal", "excavation"],
+                        relevance_score=round(0.92 - i * 0.03, 3),
+                        title=f"canal {query} {i}",
+                    )
+                    for i in range(max(3, limit))
+                ]
+            finally:
+                with self._lock:
+                    self._conc["cur"] -= 1
+
+        def fetch_asset(self, candidate: VisualCandidate, dest_path: Path) -> VisualAsset:
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            dest_path.write_bytes(b"\xff\xd8\xff\xe0CANAL")
+            return VisualAsset(
+                asset_id=candidate.candidate_id,
+                provider=self._name,
+                source_type="stock_image",
+                local_path=dest_path,
+                content_hash=compute_file_content_hash(dest_path),
+            )
+
+    def _run_counts(sub_name: str, win_size: int) -> tuple[dict[str, int], int]:
+        p_dir, manifest = _seed_visual_project(tmp_path / sub_name, f"ca1_b_{sub_name}", n_shots=7)
+        manifest.visual_search_mode = "mix_best"
+        manifest.visual_source_order = list(providers)
+        save_manifest(manifest, p_dir)
+
+        svc = VisualService(p_dir)
+        counts: dict[str, int] = {p: 0 for p in providers}
+        conc = {"cur": 0, "peak": 0}
+        lock = threading.Lock()
+        monkeypatch.setattr(svc, "get_provider", lambda pn, m=None: _CountingStub(pn, counts, conc, lock))
+        monkeypatch.setattr(svc, "resolve_provider_waterfall", lambda m, **kw: list(providers))
+        with monkeypatch.context() as mp:
+            mp.setattr(vis_svc_mod, "get_effective_search_prefetch_shots", lambda profile=None: win_size)
+            out_m = svc.fetch_all(manifest=manifest, provider_name="auto", providers_order=list(providers), translate_keywords=False)
+        assert all(sh.actual_source is not None for sh in out_m.chapters[0].shots)
+        return counts, conc["peak"]
+
+    seq_counts, seq_peak = _run_counts("seq", 1)
+    pref_counts, pref_peak = _run_counts("pref", MAX_SEARCH_PREFETCH_SHOTS)
+
+    assert seq_peak <= MAX_PARALLEL_SOURCES
+    assert pref_peak <= MAX_PARALLEL_SOURCES * MAX_SEARCH_PREFETCH_SHOTS
+    assert pref_counts == seq_counts
+    assert all(cnt > 0 for cnt in pref_counts.values())
+
+
+def test_ca1_cooled_down_source_gets_zero_prefetch_requests(tmp_path: Path, monkeypatch):
+    """CA1.4(c): Source in cooldown (before or during prefetch window) receives 0 new prefetch calls."""
+    import app.services.longform.visual.service as vis_svc_mod
+    from app.services.longform.visual.free_providers import (
+        reset_provider_circuit_breakers,
+        trip_provider_cooldown,
+    )
+
+    reset_provider_circuit_breakers()
+    trip_provider_cooldown("wikimedia", 60.0)
+    try:
+        p_dir, manifest = _seed_visual_project(tmp_path / "cd_pref", "ca1_c", n_shots=6)
+        manifest.visual_search_mode = "mix_best"
+        manifest.visual_source_order = ["wikimedia", "nasa"]
+        save_manifest(manifest, p_dir)
+
+        svc = VisualService(p_dir)
+        calls: dict[str, int] = {"wikimedia": 0, "nasa": 0}
+        lock = threading.Lock()
+
+        class _CooldownSpy(BaseVisualProvider):
+            def __init__(self, pn: str) -> None:
+                self._name = pn
+
+            @property
+            def name(self) -> str:
+                return self._name
+
+            @property
+            def is_fake(self) -> bool:
+                return False
+
+            def validate_credentials(self) -> None:
+                return None
+
+            def search_candidates(self, query: str, target_duration: float, limit: int = 3, **kwargs):
+                with lock:
+                    calls[self._name] = calls.get(self._name, 0) + 1
+                h = abs(hash(f"{self._name}:{query}")) % 100000
+                return [
+                    VisualCandidate(
+                        candidate_id=f"{self._name}_{h}_{i}",
+                        provider=self._name,
+                        source_type="stock_image",
+                        url=f"https://example.test/{self._name}/{h}_{i}.jpg",
+                        width=1280,
+                        height=720,
+                        duration_seconds=target_duration,
+                        tags=["canal"],
+                        relevance_score=0.90,
+                        title=f"canal {query}",
+                    )
+                    for i in range(max(2, limit))
+                ]
+
+            def fetch_asset(self, candidate: VisualCandidate, dest_path: Path) -> VisualAsset:
+                dest_path.parent.mkdir(parents=True, exist_ok=True)
+                dest_path.write_bytes(b"\xff\xd8\xff\xe0NASA")
+                return VisualAsset(
+                    asset_id=candidate.candidate_id,
+                    provider=self._name,
+                    source_type="stock_image",
+                    local_path=dest_path,
+                    content_hash=compute_file_content_hash(dest_path),
+                )
+
+        monkeypatch.setattr(svc, "get_provider", lambda pn, m=None: _CooldownSpy(pn))
+        with monkeypatch.context() as mp:
+            mp.setattr(vis_svc_mod, "get_effective_search_prefetch_shots", lambda profile=None: 3)
+            out_m = svc.fetch_all(manifest=manifest, provider_name="auto", providers_order=["wikimedia", "nasa"], translate_keywords=False)
+
+        assert calls["wikimedia"] == 0
+        assert calls["nasa"] > 0
+        assert all(sh.actual_source == "nasa" for sh in out_m.chapters[0].shots)
+    finally:
+        reset_provider_circuit_breakers()
+
+
+def test_ca1_network_profile_lambat_disables_prefetch_window(tmp_path: Path, monkeypatch):
+    """CA1.4(d): network_profile='lambat' clamps search prefetch window to 1 (no outer shot overlap)."""
+    import app.services.longform.config as lf_cfg
+
+    monkeypatch.setenv("EFS_DEV", "1")
+    with monkeypatch.context() as mp:
+        mp.setattr(lf_cfg, "get_network_profile_settings", lambda profile=None: {"profile": "lambat"})
+        assert get_effective_search_prefetch_shots() == 1
+    with monkeypatch.context() as mp:
+        mp.setattr(lf_cfg, "get_network_profile_settings", lambda profile=None: {"profile": "sedang"})
+        assert get_effective_search_prefetch_shots() == MAX_SEARCH_PREFETCH_SHOTS
+    with monkeypatch.context() as mp:
+        mp.setattr(lf_cfg, "get_network_profile_settings", lambda profile=None: {"profile": "cepat"})
+        assert get_effective_search_prefetch_shots() == MAX_SEARCH_PREFETCH_SHOTS
+
+    p_dir, manifest = _seed_visual_project(tmp_path / "lambat_proj", "ca1_d", n_shots=5)
+    svc = VisualService(p_dir)
+    conc = {"cur": 0, "peak": 0}
+    lock = threading.Lock()
+    orig_search = svc._search_shot_across_providers
+
+    def _spy_outer(*args, **kwargs):
+        with lock:
+            conc["cur"] += 1
+            conc["peak"] = max(conc["peak"], conc["cur"])
+        try:
+            time.sleep(0.02)
+            return orig_search(*args, **kwargs)
+        finally:
+            with lock:
+                conc["cur"] -= 1
+
+    with monkeypatch.context() as mp:
+        mp.setattr(lf_cfg, "get_network_profile_settings", lambda profile=None: {"profile": "lambat"})
+        mp.setattr(svc, "_search_shot_across_providers", _spy_outer)
+        svc.fetch_all(manifest=manifest, provider_name="fake", allow_fallback=True, translate_keywords=False)
+
+    assert conc["peak"] == 1
+
+
+def test_ca1_manifest_consistent_and_batched_on_mid_fetch_cancel(tmp_path: Path, monkeypatch):
+    """CA1.4(e): Manifest saves are batched (< N shots) yet flush all completed shots on mid-fetch stop."""
+    import app.services.longform.store as store_mod
+    import app.services.longform.visual.service as vis_svc_mod
+
+    monkeypatch.setenv("EFS_DEV", "1")
+    assert MANIFEST_SAVE_BATCH_SIZE == 5
+
+    # 1. Normal 7-shot run batches saves strictly fewer than 7 times while persisting all 7 shots
+    p_dir, manifest = _seed_visual_project(tmp_path / "batch_ok", "ca1_e_ok", n_shots=7)
+    svc = VisualService(p_dir)
+    save_calls = {"n": 0}
+    orig_save = vis_svc_mod.save_manifest
+
+    def _spy_save(m, pd):
+        save_calls["n"] += 1
+        return orig_save(m, pd)
+
+    monkeypatch.setattr(vis_svc_mod, "save_manifest", _spy_save)
+    svc.fetch_all(manifest=manifest, provider_name="fake", allow_fallback=True, translate_keywords=False)
+    assert 1 <= save_calls["n"] <= 3
+    reloaded = load_manifest(p_dir)
+    assert all(sh.asset_path for sh in reloaded.chapters[0].shots)
+
+    # 2. Mid-fetch cancel before batch_size (after shot #3) still flushes all 3 completed shots to disk
+    p_stop, m_stop = _seed_visual_project(tmp_path / "batch_stop", "ca1_e_stop", n_shots=7)
+    svc_stop = VisualService(p_stop)
+    stop_flag = {"triggered": False}
+    dl_done = {"n": 0}
+    dl_lock = threading.Lock()
+    orig_get_prov = svc_stop.get_provider
+
+    class _CancelSpyProvider(BaseVisualProvider):
+        def __init__(self, inner: BaseVisualProvider) -> None:
+            self._inner = inner
+
+        @property
+        def name(self) -> str:
+            return self._inner.name
+
+        @property
+        def is_fake(self) -> bool:
+            return self._inner.is_fake
+
+        def validate_credentials(self) -> None:
+            return self._inner.validate_credentials()
+
+        def search_candidates(self, *args, **kwargs):
+            return self._inner.search_candidates(*args, **kwargs)
+
+        def fetch_asset(self, candidate: VisualCandidate, dest_path: Path) -> VisualAsset:
+            asset = self._inner.fetch_asset(candidate, dest_path)
+            with dl_lock:
+                dl_done["n"] += 1
+                if dl_done["n"] >= 3 and not stop_flag["triggered"]:
+                    stop_flag["triggered"] = True
+                    store_mod.request_job_stop(p_stop)
+            return asset
+
+    monkeypatch.setattr(svc_stop, "get_provider", lambda pn, m=None: _CancelSpyProvider(orig_get_prov(pn, m)))
+    # Force sequential download completion visibility by capping parallel workers to 1 so stop hits cleanly at 3 < batch_size(5)
+    with monkeypatch.context() as mp:
+        mp.setattr(vis_svc_mod, "MAX_PARALLEL_DOWNLOADS", 1)
+        svc_stop.fetch_all(manifest=m_stop, provider_name="fake", allow_fallback=True, translate_keywords=False)
+
+    reloaded_stop = load_manifest(p_stop)
+    persisted_assets = [sh for sh in reloaded_stop.chapters[0].shots if sh.asset_path]
+    assert len(persisted_assets) == 3
+    for sh in persisted_assets:
+        assert (p_stop / sh.asset_path).is_file()
+
 
 
