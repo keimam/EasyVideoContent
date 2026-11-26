@@ -150,6 +150,159 @@ def sanitize_palette_lighting(raw_palette: str) -> str:
     return out
 
 
+def sanitize_visual_description_time_words(raw_desc: str) -> str:
+    """Strip time-of-day/lighting phrases (e.g. 'riding at dawn', 'at twilight') from character/location descriptions (FA2.5)."""
+    txt = str(raw_desc or "").strip()
+    if not txt:
+        return ""
+    time_alt = "|".join(sorted(PALETTE_TIME_LIGHT_WORDS, key=len, reverse=True))
+    out = re.sub(
+        rf"\b(?:at|in|during|by|under|before|after)?\s*(?:the\s+)?(?:soft|warm|cold|bright|dim|pale|harsh|golden|dramatic)?\s*(?:{time_alt})\s*(?:light|lighting|glow|rays|sky|hours?)?\b",
+        " ",
+        txt,
+        flags=re.IGNORECASE,
+    )
+    out = re.sub(rf"(?<![a-z0-9])(?:{time_alt})(?![a-z0-9])", " ", out, flags=re.IGNORECASE)
+    out = re.sub(r"\s+,", ",", out)
+    out = re.sub(r",\s*,+", ", ", out)
+    out = re.sub(r"\s{2,}", " ", out).strip(" ,;-")
+    return out
+
+
+_ERA_REGEX = re.compile(
+    r"(?:"
+    r"\b\d{1,2}(?:st|nd|rd|th)\s+century\b"
+    r"|\babad\s+(?:ke-?)?\d+"
+    r"|\b(?:1[0-9]{3}|20[0-2][0-9]|9\d{2}|8\d{2})s?\b"
+    r"|\b(?:era|period|zaman|masa|ancient|medieval|victorian|edwardian|georgian|renaissance|baroque|"
+    r"colonial|imperial|feudal|prehistoric|industrial revolution|cold war|world war|modern\s+day|"
+    r"contemporary|late\s+\d{2}th|early\s+\d{2}th|mid-?\d{4}s?|old\s+russia|tsarist|soviet)\b"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def world_mentions_era(world_text: str, *, chapter_overrides: Optional[Sequence[Any]] = None) -> bool:
+    """Return True when world (or any chapter override era) explicitly indicates a time period/era (FA2.5)."""
+    w = str(world_text or "").strip()
+    if w and _ERA_REGEX.search(w):
+        return True
+    for ov in chapter_overrides or []:
+        ov_era = str(getattr(ov, "era", "") or "").strip()
+        ov_world = str(getattr(ov, "world", "") or "").strip()
+        if (ov_era and _ERA_REGEX.search(ov_era)) or (ov_world and _ERA_REGEX.search(ov_world)):
+            return True
+    return False
+
+
+def auto_clean_visual_bible(
+    bible: VisualBible,
+    manifest: Optional[ProjectManifest] = None,
+) -> Tuple[VisualBible, List[str]]:
+    """Automatically sanitize legacy Visual Bible issues (forbidden/dup aliases, time/light words, slug, POV) without blocking save (FA2.5)."""
+    notes: List[str] = []
+    project_id = getattr(manifest, "project_id", None) if manifest is not None else None
+
+    eff_mode = normalize_style_mode(getattr(bible, "style_mode", "realistic"))
+    orig_world = str(bible.world or "").strip()
+    clean_world = clean_world_slug_prefix(orig_world, project_id=project_id)
+    if clean_world != orig_world:
+        notes.append("prefix slug pada Setting dihapus")
+
+    orig_pal = str(bible.palette_lighting or "").strip()
+    clean_pal = sanitize_palette_lighting(orig_pal) if orig_pal else orig_pal
+    if orig_pal and clean_pal != orig_pal:
+        notes.append("kata waktu/cahaya pada Palette dihapus")
+
+    orig_avoid = str(bible.avoid or "").strip()
+    clean_avoid = reconcile_avoid_with_style(orig_avoid, eff_mode)
+    if clean_avoid != orig_avoid:
+        notes.append("istilah Avoid diselaraskan dengan mode gaya")
+
+    cleaned_chars: List[VisualBibleCharacter] = []
+    used_aliases_global: set[str] = set()
+    removed_aliases_note: List[str] = []
+    cleaned_desc_count = 0
+
+    for c in bible.characters or []:
+        kept_aliases: List[str] = []
+        for raw_a in c.aliases or []:
+            tok = str(raw_a or "").strip()
+            if not tok:
+                continue
+            low = tok.lower()
+            if is_forbidden_character_alias(tok):
+                removed_aliases_note.append(f"{c.id}:{tok}")
+                continue
+            if low in used_aliases_global:
+                removed_aliases_note.append(f"{c.id}:{tok} (ganda)")
+                continue
+            used_aliases_global.add(low)
+            kept_aliases.append(tok)
+
+        orig_cd = str(c.description or "").strip()
+        clean_cd = sanitize_visual_description_time_words(orig_cd) or orig_cd
+        if clean_cd != orig_cd:
+            cleaned_desc_count += 1
+
+        cleaned_chars.append(
+            VisualBibleCharacter(
+                id=c.id,
+                name=c.name,
+                aliases=kept_aliases,
+                role=c.role,
+                variant_of=getattr(c, "variant_of", None),
+                description=clean_cd,
+            )
+        )
+
+    if removed_aliases_note:
+        notes.append(f"alias terlarang/ganda dihapus ({', '.join(removed_aliases_note[:5])})")
+
+    cleaned_locs: List[VisualBibleLocation] = []
+    for loc in bible.locations or []:
+        orig_ld = str(loc.description or "").strip()
+        clean_ld = sanitize_visual_description_time_words(orig_ld) or orig_ld
+        if clean_ld != orig_ld:
+            cleaned_desc_count += 1
+        cleaned_locs.append(
+            VisualBibleLocation(id=loc.id, name=loc.name, description=clean_ld)
+        )
+
+    if cleaned_desc_count > 0:
+        notes.append(f"kata waktu/cahaya dihapus dari {cleaned_desc_count} deskripsi tokoh/lokasi")
+
+    pov_id = str(getattr(bible, "pov_character_id", None) or "").strip() or None
+    if not pov_id and cleaned_chars and manifest is not None:
+        script_sample = collect_project_script_text(manifest, max_chars=8000)
+        if re.search(r"(?<![a-z0-9])(?:you|your|yourself)(?![a-z0-9])", script_sample, re.IGNORECASE):
+            prot = next(
+                (
+                    c for c in cleaned_chars
+                    if not getattr(c, "variant_of", None)
+                    and "protagonist" in str(c.role or "").lower()
+                ),
+                None,
+            )
+            if prot is not None:
+                pov_id = prot.id
+                notes.append(f"pov_character_id diisi otomatis ke '{pov_id}'")
+
+    cleaned_vb = VisualBible(
+        world=clean_world,
+        style_mode=eff_mode,
+        style=bible.style,
+        palette_lighting=clean_pal,
+        pov_character_id=pov_id,
+        characters=cleaned_chars,
+        locations=cleaned_locs,
+        chapter_overrides=list(bible.chapter_overrides or []),
+        avoid=clean_avoid,
+        source=bible.source,
+    )
+    return cleaned_vb, notes
+
+
 def validate_visual_bible(bible: VisualBible) -> List[str]:
     """Validate VisualBible quality rules (FA1.3): no pronoun/generic/duplicate aliases, no time words in palette, clean world."""
     errors: List[str] = []
@@ -478,7 +631,7 @@ def _coerce_visual_bible(
                     aliases=aliases,
                     role=str(item.get("role") or "").strip(),
                     variant_of=variant_of,
-                    description=desc,
+                    description=sanitize_visual_description_time_words(desc) or desc,
                 )
             )
 
@@ -506,7 +659,7 @@ def _coerce_visual_bible(
                 VisualBibleLocation(
                     id=lid,
                     name=name or lid,
-                    description=desc,
+                    description=sanitize_visual_description_time_words(desc) or desc,
                 )
             )
 

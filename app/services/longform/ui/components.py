@@ -2658,12 +2658,14 @@ def _render_external_image_bridge_section(
     from app.services.longform.visual.visual_bible import (
         STYLE_MODE_BASE_TEXTS,
         STYLE_MODE_OPTIONS,
+        auto_clean_visual_bible,
         build_template_visual_bible,
         clean_world_slug_prefix,
         ensure_project_visual_bible,
         normalize_style_mode,
         reconcile_avoid_with_style,
         validate_visual_bible,
+        world_mentions_era,
     )
 
     exp_cache_key = f"ext_export_payload_{project_id}"
@@ -2819,9 +2821,14 @@ def _render_external_image_bridge_section(
         ])
 
         # --- Tab 1: Visual Context (Konteks Visual) ---
-        cur_vb = manifest.visual_bible or build_template_visual_bible(manifest)
+        raw_cur_vb = manifest.visual_bible or build_template_visual_bible(manifest)
+        cur_vb, load_clean_notes = auto_clean_visual_bible(raw_cur_vb, manifest)
         with tab_vb:
             st.markdown(f"**{t('ext_vb_heading')}**")
+            if load_clean_notes:
+                st.warning(t("ext_vb_autoclean_warn", items="; ".join(load_clean_notes)))
+            if not world_mentions_era(cur_vb.world, chapter_overrides=cur_vb.chapter_overrides):
+                st.warning(t("ext_vb_warn_missing_era"))
             vb_col_a, vb_col_b = st.columns([2, 1])
             with vb_col_a:
                 st.caption(t("ext_vb_source_caption", source=cur_vb.source or "template"))
@@ -2970,8 +2977,8 @@ def _render_external_image_bridge_section(
                     parsed_locs.append(
                         VisualBibleLocation(id=l_id, name=l_name or l_id, description=l_desc)
                     )
-                candidate_vb = VisualBible(
-                    world=clean_world_slug_prefix(ed_world, project_id=project_id),
+                raw_candidate_vb = VisualBible(
+                    world=ed_world,
                     style_mode=ed_style_mode,
                     style=ed_style,
                     palette_lighting=ed_palette,
@@ -2979,15 +2986,27 @@ def _render_external_image_bridge_section(
                     characters=parsed_chars,
                     locations=parsed_locs,
                     chapter_overrides=list(cur_vb.chapter_overrides or []),
-                    avoid=reconcile_avoid_with_style(ed_avoid, ed_style_mode),
+                    avoid=ed_avoid,
                     source="manual",
                 )
+                candidate_vb, save_clean_notes = auto_clean_visual_bible(raw_candidate_vb, manifest)
                 vb_errs = validate_visual_bible(candidate_vb)
                 if vb_errs:
                     st.error(t("ext_vb_validation_err", errs="; ".join(vb_errs)))
                 else:
                     manifest.visual_bible = candidate_vb
                     save_manifest(manifest, p_dir)
+                    for wk in (
+                        f"ext_vb_world_{project_id}",
+                        f"ext_vb_style_mode_{project_id}",
+                        f"ext_vb_style_{project_id}",
+                        f"ext_vb_palette_{project_id}",
+                        f"ext_vb_pov_{project_id}",
+                        f"ext_vb_avoid_{project_id}",
+                        f"ext_vb_chars_{project_id}",
+                        f"ext_vb_locs_{project_id}",
+                    ):
+                        st.session_state.pop(wk, None)
                     if isinstance(st.session_state.get(exp_cache_key), dict):
                         prev_ids = st.session_state[exp_cache_key].get("shot_ids") or []
                         if prev_ids:
@@ -2998,6 +3017,10 @@ def _render_external_image_bridge_section(
                                 selected_shot_ids=prev_ids,
                                 auto_prepare_llm=False,
                             )
+                    if save_clean_notes:
+                        st.warning(t("ext_vb_autoclean_warn", items="; ".join(save_clean_notes)))
+                    if not world_mentions_era(candidate_vb.world, chapter_overrides=candidate_vb.chapter_overrides):
+                        st.warning(t("ext_vb_warn_missing_era"))
                     st.success(t("ext_vb_saved_ok"))
 
         # --- Tab 2: Export Prompts ---
