@@ -34,6 +34,7 @@ from app.services.longform.llm_adapter import (
     LLMCreditError,
     LLMDailyQuotaError,
     LLMModelNotFoundError,
+    LLMModelNotInFreeTierError,
     format_concise_llm_error,
 )
 from app.services.longform.presets import (
@@ -1713,7 +1714,11 @@ def render_project_page(project_id: str):
 
     # F12: Project Advanced Settings (Editable anchor_terms, avoid_terms & visual_summary)
     with st.expander(t("expander_project_advanced_settings"), expanded=False):
-        from app.services.longform.llm_adapter import LLMCreditError, LLMModelNotFoundError
+        from app.services.longform.llm_adapter import (
+            LLMCreditError,
+            LLMModelNotFoundError,
+            LLMModelNotInFreeTierError,
+        )
         from app.services.longform.visual.ai_keywords import (
             _clean_term_list,
             ensure_project_visual_anchors,
@@ -1785,7 +1790,7 @@ def render_project_page(project_id: str):
                     st.session_state[f"_reset_proj_anchors_{project_id}"] = True
                     st.session_state[f"proj_anchors_notice_{project_id}"] = t("project_anchors_regen_ok")
                     st.rerun()
-                except (LLMCreditError, LLMModelNotFoundError) as exc:
+                except (LLMCreditError, LLMModelNotFoundError, LLMModelNotInFreeTierError) as exc:
                     llm_adv = check_llm_status()
                     _render_llm_friendly_error_box(
                         project_id,
@@ -4088,7 +4093,11 @@ def render_visual_step_flow(
 
     # --- F8: Update Visual Keywords with AI (per chapter / all chapters) ---
     if total_shots > 0:
-        from app.services.longform.llm_adapter import LLMCreditError, LLMModelNotFoundError
+        from app.services.longform.llm_adapter import (
+            LLMCreditError,
+            LLMModelNotFoundError,
+            LLMModelNotInFreeTierError,
+        )
 
         ai_kw_notice = st.session_state.pop(f"ai_kw_last_notice_{project_id}", None)
         if isinstance(ai_kw_notice, dict) and ai_kw_notice.get("text"):
@@ -4170,7 +4179,7 @@ def render_visual_step_flow(
                             "text": msg_kw_ok,
                         }
                     st.rerun()
-                except (LLMCreditError, LLMDailyQuotaError, LLMAuthError, LLMModelNotFoundError, LLMAdapterError) as exc:
+                except (LLMCreditError, LLMDailyQuotaError, LLMAuthError, LLMModelNotFoundError, LLMModelNotInFreeTierError, LLMAdapterError) as exc:
                     _render_llm_friendly_error_box(
                         project_id,
                         format_concise_llm_error(exc),

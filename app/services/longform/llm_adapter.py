@@ -29,6 +29,7 @@ from app.config import config
 from app.models.llm_provider import DEFAULT_LLM_PROVIDER_ID, get_llm_provider
 
 OPENROUTER_SAFE_DEFAULT_MODEL = "openrouter/free"
+GEMINI_FREE_DEFAULT_MODEL = "gemini-3.5-flash-lite"
 MAX_TOKENS_TEST_CONNECTION = 256
 MAX_TOKENS_VISION_RELEVANCE = 256
 
@@ -86,8 +87,31 @@ def _short_tz_label(dt_local: datetime) -> str:
     return raw_tz or "Lokal"
 
 
+def _extract_gemini_model_from_error(raw: str) -> str:
+    m = re.search(r"\bmodel\s*:\s*([A-Za-z0-9_.\-]+)", str(raw or ""), re.IGNORECASE)
+    return m.group(1).strip() if m else ""
+
+
+def _is_limit_zero_free_tier_error(raw_lower: str) -> bool:
+    if not raw_lower or "free-models-per-day" in raw_lower:
+        return False
+    has_limit_zero = bool(re.search(r"\blimit[\"']?\s*[:=]\s*0(?:\b|[,}\s])", raw_lower))
+    if not has_limit_zero:
+        return False
+    return any(
+        tok in raw_lower
+        for tok in (
+            "resource_exhausted",
+            "quota exceeded",
+            "429",
+            "free_tier",
+            "free tier",
+        )
+    )
+
+
 def format_concise_llm_error(exc_or_msg: Any, provider_id: str = "") -> str:
-    """Summarize raw LLM provider errors (especially OpenRouter 429 JSON with user_id/URLs) into concise user-safe text (GA1.2)."""
+    """Summarize raw LLM provider errors (OpenRouter 429 JSON, Gemini limit: 0 / URLs / metrics) into concise text (GA1.2/GA2.3)."""
     raw = sanitize_error(str(exc_or_msg or ""))
     pid = (provider_id or "").strip().lower()
     prov_def = get_llm_provider(pid) if pid else None
@@ -95,6 +119,25 @@ def format_concise_llm_error(exc_or_msg: Any, provider_id: str = "") -> str:
     low = raw.lower()
     if not pid and ("openrouter" in low or "free-models-per-day" in low):
         label = "OpenRouter"
+
+    if isinstance(exc_or_msg, LLMModelNotInFreeTierError) or _is_limit_zero_free_tier_error(low):
+        mdl = (
+            getattr(exc_or_msg, "model", "") or _extract_gemini_model_from_error(raw) or "gemini-3.1-pro-preview"
+        )
+        try:
+            from app.services.longform.ui.i18n import get_ui_language
+
+            if get_ui_language() == "en":
+                return (
+                    f"Model {mdl} is not available on Gemini Free Tier. "
+                    f"Choose a Flash model (e.g. {GEMINI_FREE_DEFAULT_MODEL}) in Settings."
+                )
+        except Exception:
+            pass
+        return (
+            f"Model {mdl} tidak tersedia di tier gratis Gemini. "
+            f"Pilih model Flash (mis. {GEMINI_FREE_DEFAULT_MODEL}) di Pengaturan."
+        )
 
     if (
         isinstance(exc_or_msg, LLMDailyQuotaError)
@@ -117,8 +160,9 @@ def format_concise_llm_error(exc_or_msg: Any, provider_id: str = "") -> str:
     if isinstance(exc_or_msg, LLMModelNotFoundError) or "404" in low or "no endpoints found" in low:
         return f"{label}: model tidak ditemukan (404)"
 
-    # Strip long URLs & raw dict error wrappers for cleaner logs/warnings
+    # Strip long URLs, Gemini metric lists & raw dict error wrappers for cleaner logs/warnings
     cleaned = re.sub(r"https?://\S+", "", raw)
+    cleaned = re.sub(r"\*\s*Quota exceeded for metric:[^\n]*", "", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\{\s*['\"]error['\"][\s\S]*$", "", cleaned).strip()
     if not cleaned:
         cleaned = raw.splitlines()[0]
@@ -127,11 +171,13 @@ def format_concise_llm_error(exc_or_msg: Any, provider_id: str = "") -> str:
 
 
 def resolve_effective_model(provider_id: str, configured_model: Optional[str]) -> Tuple[str, bool]:
-    """Resolve model name for Long Video, substituting a working OpenRouter free model when empty."""
+    """Resolve model name for Long Video with free-tier safe defaults when empty (OpenRouter & Gemini Flash-Lite)."""
     pid = (provider_id or "").strip().lower()
     raw = (configured_model or "").strip()
     if pid == "openrouter" and not raw:
         return OPENROUTER_SAFE_DEFAULT_MODEL, True
+    if pid in ("gemini", "google") and not raw:
+        return GEMINI_FREE_DEFAULT_MODEL, True
     prov_def = get_llm_provider(pid)
     if prov_def:
         resolved = prov_def.resolve_model_name(raw)
@@ -149,6 +195,10 @@ def resolve_model_billing_tier(provider_id: str, model_id: Optional[str]) -> str
         return "free"
     if pid in ("openai_codex", "openai_chatgpt", "claude_code", "kimi_code"):
         return "subscription"
+    if pid in ("gemini", "google"):
+        if "flash" in mid:
+            return "free"
+        return "unknown"
     if pid == "openrouter":
         if mid in _MODEL_PRICING_CACHE:
             return _MODEL_PRICING_CACHE[mid]
@@ -259,6 +309,15 @@ class LLMModelNotFoundError(LLMAdapterError):
     def __init__(self, message: str, model: str = "") -> None:
         super().__init__(message)
         self.model = model
+
+
+class LLMModelNotInFreeTierError(LLMAdapterError):
+    """Raised when Gemini returns 429 RESOURCE_EXHAUSTED with limit: 0 (model unavailable on Free Tier)."""
+
+    def __init__(self, message: str, model: str = "", provider: str = "gemini") -> None:
+        super().__init__(message)
+        self.model = model
+        self.provider = provider
 
 
 class LLMEmptyResponseError(LLMAdapterError):
@@ -543,6 +602,10 @@ def _classify_llm_error(
         )
     ):
         return LLMCreditError(error_msg)
+
+    if _is_limit_zero_free_tier_error(lower):
+        det_model = _extract_gemini_model_from_error(error_msg) or model
+        return LLMModelNotInFreeTierError(error_msg, model=det_model)
 
     if any(
         tok in lower
@@ -962,7 +1025,7 @@ class LLMAdapter:
                 if not text_out or text_out.startswith("Error:"):
                     clean_err = sanitize_error(text_out or "Empty LLM response")
                     classified = _classify_llm_error(clean_err, model=resolved_model)
-                    if isinstance(classified, (LLMAuthError, LLMModelNotFoundError, LLMCreditError, LLMDailyQuotaError)):
+                    if isinstance(classified, (LLMAuthError, LLMModelNotFoundError, LLMModelNotInFreeTierError, LLMCreditError, LLMDailyQuotaError)):
                         raise classified
                     last_error = clean_err
                     logger.warning(
@@ -1020,7 +1083,7 @@ class LLMAdapter:
                     time.sleep(self.retry_delay * (2 ** (attempt - 1)))
                     continue
                 raise
-            except (LLMAuthError, LLMModelNotFoundError, LLMCreditError, LLMDailyQuotaError):
+            except (LLMAuthError, LLMModelNotFoundError, LLMModelNotInFreeTierError, LLMCreditError, LLMDailyQuotaError):
                 raise
             except LLMRateLimitError as rl_exc:
                 if rl_exc.is_daily:
@@ -1038,7 +1101,7 @@ class LLMAdapter:
                 last_error = sanitize_error(str(exc))
                 resp_headers = _extract_response_headers(exc)
                 classified = _classify_llm_error(last_error, model=resolved_model, headers=resp_headers)
-                if isinstance(classified, (LLMAuthError, LLMModelNotFoundError, LLMCreditError, LLMDailyQuotaError)):
+                if isinstance(classified, (LLMAuthError, LLMModelNotFoundError, LLMModelNotInFreeTierError, LLMCreditError, LLMDailyQuotaError)):
                     raise classified
                 logger.warning(
                     f"LLM call attempt {attempt}/{self.max_retries} failed ({duration:.2f}s): {last_error}"
@@ -1553,8 +1616,13 @@ def test_llm_connection() -> Tuple[bool, str, float]:
         )
     except Exception as exc:
         _, pause_reason, norm_exc = _classify_failover_exception(exc)
-        if pause_reason == "auth_rejected":
-            mark_provider_paused(active_id, reason="auth_rejected", error_detail=str(norm_exc))
+        if pause_reason in ("auth_rejected", "model_not_in_free_tier"):
+            mark_provider_paused(
+                active_id,
+                reason=pause_reason,
+                error_detail=str(norm_exc),
+                model=str(getattr(norm_exc, "model", "") or ""),
+            )
         return False, sanitize_error(str(exc)), float(time.perf_counter() - t0)
 
 
@@ -1969,8 +2037,9 @@ def mark_provider_paused(
     reason: str,
     paused_until_ts: Optional[float] = None,
     error_detail: str = "",
+    model: str = "",
 ) -> Dict[str, Any]:
-    """Record temporary pause state for a provider (daily quota -> UTC midnight, auth/credit/404 -> 1h or until config changes)."""
+    """Record temporary pause state for a provider (or provider+model combo for 404/limit:0)."""
     pid = (provider_id or "").strip().lower()
     if not pid:
         return {}
@@ -1978,19 +2047,26 @@ def mark_provider_paused(
     if paused_until_ts is None:
         if reason == "daily_quota":
             paused_until_ts = _next_utc_midnight_ts(now)
+        elif reason == "model_not_in_free_tier":
+            paused_until_ts = now + 86400.0
         else:
             paused_until_ts = now + 3600.0
     app_cfg = get_effective_app_config()
     prov_def = get_llm_provider(pid)
     raw_model = str(app_cfg.get(prov_def.config_key("model_name"), "") or "") if prov_def else ""
-    eff_model, _ = resolve_effective_model(pid, raw_model)
+    eff_model = str(model or "").strip() or resolve_effective_model(pid, raw_model)[0]
+    concise_src: Any = (
+        LLMModelNotInFreeTierError(str(error_detail or ""), model=eff_model, provider=pid)
+        if reason == "model_not_in_free_tier"
+        else str(error_detail or "")
+    )
     entry = {
         "provider": pid,
         "reason": str(reason or "paused"),
         "paused_until": float(paused_until_ts),
         "key_fp": _provider_key_fingerprint(pid),
         "model": eff_model,
-        "error": format_concise_llm_error(str(error_detail or ""), pid)[:180],
+        "error": format_concise_llm_error(concise_src, pid)[:180],
         "recorded_at": now,
     }
     with _PAUSE_LOCK:
@@ -2015,7 +2091,7 @@ def clear_provider_pause(provider_id: Optional[str] = None) -> None:
         _save_pause_map_unlocked(cur)
 
 
-def get_provider_pause_state(provider_id: str) -> Optional[Dict[str, Any]]:
+def get_provider_pause_state(provider_id: str, *, model: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Return active pause entry for provider, auto-clearing if expired or if key/model changed."""
     pid = (provider_id or "").strip().lower()
     if not pid:
@@ -2031,10 +2107,10 @@ def get_provider_pause_state(provider_id: str) -> Optional[Dict[str, Any]]:
         should_clear = until <= now
         if not should_clear and entry.get("key_fp") != _provider_key_fingerprint(pid):
             should_clear = True
-        if not should_clear and reason == "model_not_found":
+        if not should_clear and reason in ("model_not_found", "model_not_in_free_tier"):
             prov_def = get_llm_provider(pid)
             raw_model = str(get_effective_app_config().get(prov_def.config_key("model_name"), "") or "") if prov_def else ""
-            eff_model, _ = resolve_effective_model(pid, raw_model)
+            eff_model = str(model or "").strip() or resolve_effective_model(pid, raw_model)[0]
             if eff_model != str(entry.get("model") or ""):
                 should_clear = True
         if should_clear:
@@ -2103,13 +2179,21 @@ def get_provider_chain_status(
             })
             continue
 
-        pause = get_provider_pause_state(pid)
+        pause = get_provider_pause_state(pid, model=model)
         if pause is not None:
             p_reason = str(pause.get("reason") or "paused")
             status_code = (
                 "paused_quota"
                 if p_reason in ("daily_quota", "credit_exhausted")
-                else ("paused_auth" if p_reason == "auth_rejected" else "paused")
+                else (
+                    "paused_auth"
+                    if p_reason == "auth_rejected"
+                    else (
+                        "model_not_in_free_tier"
+                        if p_reason == "model_not_in_free_tier"
+                        else "paused"
+                    )
+                )
             )
             until_ts = float(pause.get("paused_until") or 0.0) or None
             pause_label = _format_pause_until_label(until_ts)
@@ -2169,6 +2253,8 @@ def is_primary_or_failover_ready(
 def _classify_failover_exception(exc: Exception, *, model: str = "") -> Tuple[str, Optional[str], Exception]:
     """Classify an LLM failure into (short_tag, pause_reason_or_none, normalized_exc)."""
     clean_msg = sanitize_error(str(exc))
+    if isinstance(exc, LLMModelNotInFreeTierError):
+        return "model_not_in_free_tier", "model_not_in_free_tier", exc
     if isinstance(exc, LLMDailyQuotaError) or (isinstance(exc, LLMRateLimitError) and exc.is_daily):
         return "quota", "daily_quota", exc
     if isinstance(exc, LLMCreditError):
@@ -2183,6 +2269,8 @@ def _classify_failover_exception(exc: Exception, *, model: str = "") -> Tuple[st
         return "empty", None, exc
 
     classified = _classify_llm_error(clean_msg, model=model)
+    if isinstance(classified, LLMModelNotInFreeTierError):
+        return "model_not_in_free_tier", "model_not_in_free_tier", classified
     if isinstance(classified, LLMDailyQuotaError):
         return "quota", "daily_quota", classified
     if isinstance(classified, LLMCreditError):
@@ -2394,7 +2482,13 @@ def call_llm_with_failover(
             provider_errors[pid] = err_tag
             last_terminal_exc = norm_exc
             if pause_reason:
-                mark_provider_paused(pid, reason=pause_reason, error_detail=str(norm_exc))
+                pause_model = str(getattr(norm_exc, "model", "") or model_id)
+                mark_provider_paused(
+                    pid,
+                    reason=pause_reason,
+                    error_detail=str(norm_exc),
+                    model=pause_model,
+                )
             concise_err = format_concise_llm_error(norm_exc, pid)
             logger.warning(f"LLM provider '{pid}' failed ({err_tag}): {concise_err}")
 
@@ -2422,7 +2516,17 @@ def call_llm_with_failover(
             except Exception:
                 pass
             raise new_exc from last_terminal_exc
-        if isinstance(last_terminal_exc, (LLMDailyQuotaError, LLMCreditError, LLMAuthError, LLMModelNotFoundError, LLMRateLimitError)):
+        if isinstance(
+            last_terminal_exc,
+            (
+                LLMDailyQuotaError,
+                LLMCreditError,
+                LLMAuthError,
+                LLMModelNotFoundError,
+                LLMModelNotInFreeTierError,
+                LLMRateLimitError,
+            ),
+        ):
             raise last_terminal_exc
         raise LLMAdapterError(format_concise_llm_error(last_terminal_exc)) from last_terminal_exc
 
@@ -2475,9 +2579,14 @@ def test_llm_provider(provider_id: str, timeout: float = 15.0) -> Tuple[bool, st
         clear_provider_pause(pid)
         return True, sanitize_error((resp.content or "").strip()), float(time.perf_counter() - t0)
     except Exception as exc:
-        _, pause_reason, norm_exc = _classify_failover_exception(exc)
-        if pause_reason == "auth_rejected":
-            mark_provider_paused(active_id, reason="auth_rejected", error_detail=str(norm_exc))
+        _, pause_reason, norm_exc = _classify_failover_exception(exc, model=model_name)
+        if pause_reason in ("auth_rejected", "model_not_in_free_tier"):
+            mark_provider_paused(
+                pid,
+                reason=pause_reason,
+                error_detail=str(norm_exc),
+                model=str(getattr(norm_exc, "model", "") or model_name),
+            )
         return False, sanitize_error(str(exc)), float(time.perf_counter() - t0)
 
 
@@ -2520,13 +2629,33 @@ def test_all_llm_providers(chain: Optional[Sequence[str]] = None, timeout: float
             continue
         ok, msg, latency = test_llm_provider(pid, timeout=timeout)
         status_out = "ok" if ok else "failed"
-        low_m = str(msg or "").lower()
+        clean_out = sanitize_error(msg or "")
         if ok:
             clear_provider_pause(pid)
-        elif any(tok in low_m for tok in ("401", "403", "unauthorized", "invalid api key", "incorrect api key", "user not found", "authentication failed")):
-            status_out = "auth_rejected"
-            mark_provider_paused(pid, reason="auth_rejected", error_detail=str(msg or ""))
-        clean_out = sanitize_error(msg or "") if ok else format_concise_llm_error(msg or "", pid)
+        else:
+            err_tag, _, norm_exc = _classify_failover_exception(
+                RuntimeError(str(msg or "")),
+                model=model_name,
+            )
+            if err_tag == "model_not_in_free_tier":
+                status_out = "model_not_in_free_tier"
+                fail_model = str(getattr(norm_exc, "model", "") or model_name)
+                mark_provider_paused(
+                    pid,
+                    reason="model_not_in_free_tier",
+                    error_detail=str(norm_exc),
+                    model=fail_model,
+                )
+                clean_out = format_concise_llm_error(norm_exc, pid)
+            else:
+                low_m = str(msg or "").lower()
+                if err_tag == "auth" or any(
+                    tok in low_m
+                    for tok in ("401", "403", "unauthorized", "invalid api key", "incorrect api key", "user not found", "authentication failed")
+                ):
+                    status_out = "auth_rejected"
+                    mark_provider_paused(pid, reason="auth_rejected", error_detail=str(msg or ""))
+                clean_out = format_concise_llm_error(msg or "", pid)
         results.append({
             "provider": pid,
             "label": readiness.get("provider_label") or pid,

@@ -37,6 +37,7 @@ from app.services.longform.llm_adapter import (
     LLMDailyQuotaError,
     LLMEmptyResponseError,
     LLMModelNotFoundError,
+    LLMModelNotInFreeTierError,
     LLMRateLimitError,
     MAX_TOKENS_VISION_RELEVANCE,
     _classify_failover_exception,
@@ -473,7 +474,7 @@ def _call_vision_with_retry_single(
             msg = _sanitize_error_message(exc)
             classified = _classify_llm_error(msg, model=model_name)
             last_err = classified or exc
-            if isinstance(classified, (LLMAuthError, LLMCreditError, LLMDailyQuotaError, LLMModelNotFoundError)):
+            if isinstance(classified, (LLMAuthError, LLMCreditError, LLMDailyQuotaError, LLMModelNotFoundError, LLMModelNotInFreeTierError)):
                 raise classified
             is_rate = isinstance(classified, LLMRateLimitError) or "429" in msg or "rate limit" in msg.lower()
             if is_rate and attempt < max_retries - 1:

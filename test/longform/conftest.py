@@ -125,12 +125,22 @@ def block_real_llm_and_network_calls(request, tmp_path: Path):
         guard_mp.setitem(app_cfg.app, "llm_provider", "openrouter")
     clear_provider_pause()
 
+    lf_cfg._CONFIG_CACHE = None
+    failover_override_active = {"saved": False}
     orig_get_failover = lf_cfg.get_llm_failover_chain
-    guard_mp.setattr(
-        lf_cfg,
-        "get_llm_failover_chain",
-        lambda *, reload=False: [] if lf_cfg._CONFIG_CACHE is None and not (tmp_path / "custom_toml").exists() else orig_get_failover(reload=reload),
-    )
+    orig_save_failover = lf_cfg.save_llm_failover_chain
+
+    def _isolated_save_failover(*args, **kwargs):
+        failover_override_active["saved"] = True
+        return orig_save_failover(*args, **kwargs)
+
+    def _isolated_get_failover(*, reload: bool = False):
+        if not failover_override_active["saved"] and not os.environ.get("EFS_DATA_DIR", "").strip():
+            return []
+        return orig_get_failover(reload=reload)
+
+    guard_mp.setattr(lf_cfg, "save_llm_failover_chain", _isolated_save_failover)
+    guard_mp.setattr(lf_cfg, "get_llm_failover_chain", _isolated_get_failover)
 
     @functools.wraps(orig_generate)
     def _blocked_upstream_generate(*args, **kwargs):
@@ -139,15 +149,16 @@ def block_real_llm_and_network_calls(request, tmp_path: Path):
             "Real upstream LLM call blocked in tests (mock app.services.llm._generate_response or use provider='fake')."
         )
 
-    def _sdk_client_is_mocked() -> bool:
-        return (
-            openai.OpenAI is not orig_openai_cls
-            or openai.AzureOpenAI is not orig_azure_cls
-            or genai.Client is not orig_genai_cls
-        )
+    def _sdk_client_is_mocked(provider_id: str = "") -> bool:
+        pid = (provider_id or "").strip().lower()
+        if pid in ("gemini", "google"):
+            return genai.Client is not orig_genai_cls
+        if pid == "azure":
+            return openai.AzureOpenAI is not orig_azure_cls
+        return openai.OpenAI is not orig_openai_cls
 
     def _guarded_bounded_sdk(self, *args, **kwargs):
-        if _sdk_client_is_mocked():
+        if _sdk_client_is_mocked(getattr(self, "provider", "")):
             return orig_bounded_sdk(self, *args, **kwargs)
         record_llm_blocked()
         raise RealLLMCallBlockedInTests(

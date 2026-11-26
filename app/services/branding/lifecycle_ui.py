@@ -349,6 +349,9 @@ def render_settings_studio_controls(*, key_prefix: str = "settings") -> None:
                         detail = t("settings_failover_paused", until=st_item.get("pause_label") or "-")
                         if code_s == "paused_auth" and st_item.get("message"):
                             detail = f"{detail} · {st_item.get('message')}"
+                    elif code_s == "model_not_in_free_tier":
+                        icon = "⚠️"
+                        detail = str(st_item.get("message") or t("err_model_not_in_free_tier", model=mdl_s or "model"))
                     elif code_s == "needs_model":
                         icon = "⚠️"
                         detail = t("settings_failover_needs_model")

@@ -26,6 +26,7 @@ from app.services.longform.llm_adapter import (
     LLMCreditError,
     LLMDailyQuotaError,
     LLMModelNotFoundError,
+    LLMModelNotInFreeTierError,
     get_llm_readiness,
 )
 
@@ -1029,7 +1030,7 @@ def generate_chapter_visual_keywords_ai(
                         content = content or retry_txt
                         used_prov = r_prov or used_prov
                         used_model = r_model or used_model
-                except (LLMAuthError, LLMCreditError, LLMDailyQuotaError, LLMModelNotFoundError):
+                except (LLMAuthError, LLMCreditError, LLMDailyQuotaError, LLMModelNotFoundError, LLMModelNotInFreeTierError):
                     raise
                 except Exception as retry_exc:
                     logger.warning(f"AI visual keyword missing-key retry failed: {retry_exc}")
@@ -1084,7 +1085,7 @@ def generate_chapter_visual_keywords_ai(
                         shot.search_query_en = ext_q
                     updated += 1
             _save_ai_kw_cache(cache, cache_dir)
-        except (LLMAuthError, LLMCreditError, LLMDailyQuotaError, LLMModelNotFoundError, Exception) as exc:
+        except (LLMAuthError, LLMCreditError, LLMDailyQuotaError, LLMModelNotFoundError, LLMModelNotInFreeTierError, Exception) as exc:
             from app.services.longform.llm_adapter import format_concise_llm_error
 
             llm_calls += 1
@@ -1092,6 +1093,8 @@ def generate_chapter_visual_keywords_ai(
             low_exc = str(exc).lower()
             if isinstance(exc, LLMAuthError) or "paused_auth" in low_exc:
                 q_reason = "ai_auth_error"
+            elif isinstance(exc, (LLMModelNotFoundError, LLMModelNotInFreeTierError)):
+                q_reason = "ai_model_unavailable"
             elif (
                 isinstance(exc, (LLMCreditError, LLMDailyQuotaError))
                 or "free-models-per-day" in low_exc
@@ -1100,8 +1103,6 @@ def generate_chapter_visual_keywords_ai(
                 or "pause s/d" in low_exc
             ):
                 q_reason = "ai_quota_exceeded"
-            elif isinstance(exc, LLMModelNotFoundError):
-                q_reason = "ai_model_unavailable"
             else:
                 q_reason = f"ai_failed:{type(exc).__name__}"
 

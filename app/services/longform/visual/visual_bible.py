@@ -15,6 +15,7 @@ from app.services.longform.llm_adapter import (
     LLMCreditError,
     LLMDailyQuotaError,
     LLMModelNotFoundError,
+    LLMModelNotInFreeTierError,
     get_llm_readiness,
 )
 from app.services.longform.schema import (
@@ -1158,7 +1159,7 @@ def ensure_project_visual_bible(
             "failover_used": bool(call_meta.get("failover_used", False)),
             "providers_tried": list(call_meta.get("providers_tried") or ([prov] if prov else [])),
         }
-    except (LLMCreditError, LLMDailyQuotaError, LLMModelNotFoundError):
+    except (LLMCreditError, LLMDailyQuotaError, LLMModelNotFoundError, LLMModelNotInFreeTierError):
         raise
     except Exception as exc:
         last_err = exc

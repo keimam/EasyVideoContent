@@ -17,6 +17,7 @@ from app.services.longform.llm_adapter import (
     LLMCreditError,
     LLMDailyQuotaError,
     LLMModelNotFoundError,
+    LLMModelNotInFreeTierError,
     build_provider_failover_chain,
     get_llm_readiness,
     get_provider_chain_status,
@@ -644,7 +645,7 @@ def assign_scenes_and_prompts_for_shots(
     def _is_split_eligible(exc: Optional[Exception]) -> bool:
         if exc is None:
             return True
-        if isinstance(exc, (LLMAuthError, LLMCreditError, LLMDailyQuotaError, LLMModelNotFoundError)):
+        if isinstance(exc, (LLMAuthError, LLMCreditError, LLMDailyQuotaError, LLMModelNotFoundError, LLMModelNotInFreeTierError)):
             return False
         reason = _classify_batch_failure(exc)
         if reason == "quota":

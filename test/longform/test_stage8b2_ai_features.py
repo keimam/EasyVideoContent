@@ -154,6 +154,7 @@ def _seed_project_with_shots(
 )
 def test_f1_vision_model_detection(monkeypatch, provider, cfg_key, model_name, expected_vision):
     monkeypatch.setattr("app.config.config.app", dict(config.app))
+    monkeypatch.setattr("app.services.longform.config.get_llm_failover_chain", lambda **_kw: [])
     monkeypatch.setitem(config.app, "llm_provider", provider)
     monkeypatch.setitem(config.app, f"{provider}_api_key", "AIzaDummyKeyForTestCheck_123456" if provider == "gemini" else "sk-test-key-1234567890")
     monkeypatch.setitem(config.app, cfg_key, model_name)
@@ -166,6 +167,7 @@ def test_f1_vision_model_detection(monkeypatch, provider, cfg_key, model_name, e
 
 def test_f1_cache_per_asset_hash_429_retry_and_needs_review_preserves_asset(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("app.config.config.app", dict(config.app))
+    monkeypatch.setattr("app.services.longform.config.get_llm_failover_chain", lambda **_kw: [])
     monkeypatch.setitem(config.app, "llm_provider", "openai")
     monkeypatch.setitem(config.app, "openai_api_key", "sk-test-openai-vision-key")
     monkeypatch.setitem(config.app, "openai_model_name", "gpt-4o-mini")
@@ -399,6 +401,7 @@ def test_f2_ui_shows_original_and_english_keywords_and_prefills_search_again(tmp
 
 def test_f3_provider_priority_duration_rounding_and_cost_table(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("app.config.config.app", dict(config.app))
+    monkeypatch.setattr("app.services.longform.config.get_llm_failover_chain", lambda **_kw: [])
     monkeypatch.setitem(config.app, "ofox_api_key", "ofox-test-key")
     monkeypatch.setitem(config.app, "wavespeed_api_keys", ["ws-test-key"])
 
@@ -618,6 +621,7 @@ def test_f5_max_tokens_per_call_type_never_unbounded(tmp_path: Path, monkeypatch
     from app.services.longform.visual import ai_relevance, keyword_translator
 
     monkeypatch.setattr("app.config.config.app", dict(config.app))
+    monkeypatch.setattr("app.services.longform.config.get_llm_failover_chain", lambda **_kw: [])
     monkeypatch.setitem(config.app, "llm_provider", "openrouter")
     monkeypatch.setitem(config.app, "openrouter_api_key", "sk-or-test-key")
     monkeypatch.setitem(config.app, "openrouter_model_name", "openrouter/free")
@@ -786,6 +790,7 @@ def test_f5_402_credit_error_zero_retries_and_friendly_ui(tmp_path: Path, monkey
     from app.services.longform.visual import ai_relevance, keyword_translator
 
     monkeypatch.setattr("app.config.config.app", dict(config.app))
+    monkeypatch.setattr("app.services.longform.config.get_llm_failover_chain", lambda **_kw: [])
     monkeypatch.setattr("app.services.longform.store.get_projects_root", lambda: tmp_path)
     monkeypatch.setattr("app.services.longform.ui.components.get_projects_root", lambda: tmp_path)
     monkeypatch.setitem(config.app, "llm_provider", "openrouter")
@@ -878,6 +883,7 @@ def test_f5_empty_openrouter_model_uses_openrouter_free_and_404_unavailable_for_
     )
 
     monkeypatch.setattr("app.config.config.app", dict(config.app))
+    monkeypatch.setattr("app.services.longform.config.get_llm_failover_chain", lambda **_kw: [])
     monkeypatch.setattr("app.services.longform.store.get_projects_root", lambda: tmp_path)
     monkeypatch.setattr("app.services.longform.ui.components.get_projects_root", lambda: tmp_path)
     monkeypatch.setitem(config.app, "llm_provider", "openrouter")
@@ -1000,6 +1006,7 @@ def test_f6_connection_test_retries_length_reasoning_with_larger_max_tokens(monk
     from app.services.longform.llm_adapter import MAX_TOKENS_TEST_CONNECTION, test_llm_connection
 
     monkeypatch.setattr("app.config.config.app", dict(config.app))
+    monkeypatch.setattr("app.services.longform.config.get_llm_failover_chain", lambda **_kw: [])
     monkeypatch.setitem(config.app, "llm_provider", "openrouter")
     monkeypatch.setitem(config.app, "openrouter_api_key", "sk-or-test-key")
     monkeypatch.setitem(config.app, "openrouter_model_name", "openrouter/free")
@@ -1045,6 +1052,7 @@ def test_f6_permanent_empty_http_ok_shows_connected_empty_warning_not_failed(
     from app.services.longform.llm_adapter import test_llm_connection
 
     monkeypatch.setattr("app.config.config.app", dict(config.app))
+    monkeypatch.setattr("app.services.longform.config.get_llm_failover_chain", lambda **_kw: [])
     monkeypatch.setattr("app.services.longform.store.get_projects_root", lambda: tmp_path)
     monkeypatch.setattr("app.services.longform.ui.components.get_projects_root", lambda: tmp_path)
     monkeypatch.setitem(config.app, "llm_provider", "openrouter")
@@ -1103,6 +1111,7 @@ def test_f6_ai_relevance_and_keyword_translator_escalate_on_length_reasoning(tmp
     from app.services.longform.visual import ai_relevance, keyword_translator
 
     monkeypatch.setattr("app.config.config.app", dict(config.app))
+    monkeypatch.setattr("app.services.longform.config.get_llm_failover_chain", lambda **_kw: [])
     monkeypatch.setitem(config.app, "llm_provider", "openrouter")
     monkeypatch.setitem(config.app, "openrouter_api_key", "sk-or-test-key")
     monkeypatch.setitem(config.app, "openrouter_model_name", "google/gemini-2.5-flash")
@@ -1291,6 +1300,7 @@ def test_f8_ai_keywords_different_for_same_sentence_preserves_tag_and_locked(tmp
     from app.services.longform.visual.ai_keywords import generate_chapter_visual_keywords_ai
 
     monkeypatch.setattr("app.config.config.app", dict(config.app))
+    monkeypatch.setattr("app.services.longform.config.get_llm_failover_chain", lambda **_kw: [])
     monkeypatch.setitem(config.app, "llm_provider", "openrouter")
     monkeypatch.setitem(config.app, "openrouter_api_key", "sk-or-test-key")
     monkeypatch.setitem(config.app, "openrouter_model_name", "openrouter/free")
@@ -1457,6 +1467,7 @@ def test_f8_ui_shows_en_keyword_source_origin_and_update_button(tmp_path: Path, 
 
 def test_f9_ai_video_provider_dropdown_and_unsupported_list(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("app.config.config.app", dict(config.app))
+    monkeypatch.setattr("app.services.longform.config.get_llm_failover_chain", lambda **_kw: [])
     monkeypatch.setattr("app.services.longform.store.get_projects_root", lambda: tmp_path)
     monkeypatch.setattr("app.services.longform.ui.components.get_projects_root", lambda: tmp_path)
     monkeypatch.setitem(config.ui, "language", "id")

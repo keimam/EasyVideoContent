@@ -1083,6 +1083,7 @@ ID_TRANSLATIONS: Dict[str, str] = {
     "settings_failover_test_spinner": "Menguji penyedia AI utama & cadangan...",
     "settings_failover_test_ok": "✅ {label} ({model}): OK ({latency} dtk)",
     "settings_failover_test_fail": "⚠️ {label}: {msg}",
+    "err_model_not_in_free_tier": "Model {model} tidak tersedia di tier gratis Gemini. Pilih model Flash (mis. gemini-3.5-flash-lite) di Pengaturan.",
     # --- V101 V0/V1: Search Mode, Reorderable Priority, Diversity & Distribution ---
     "visual_search_mode_label": "Mode pencarian sumber footage (khusus proyek ini)",
     "visual_search_mode_mix_best": "Campur terbaik (skor relevansi tertinggi lintas sumber)",
@@ -2330,6 +2331,7 @@ EN_TRANSLATIONS: Dict[str, str] = {
     "settings_failover_test_spinner": "Testing primary & backup AI providers...",
     "settings_failover_test_ok": "✅ {label} ({model}): OK ({latency}s)",
     "settings_failover_test_fail": "⚠️ {label}: {msg}",
+    "err_model_not_in_free_tier": "Model {model} is not available on Gemini Free Tier. Choose a Flash model (e.g. gemini-3.5-flash-lite) in Settings.",
     # --- V101 V0/V1: Search Mode, Reorderable Priority, Diversity & Distribution ---
     "visual_search_mode_label": "Footage search mode (this project)",
     "visual_search_mode_mix_best": "Mix best (highest relevance score across active sources)",
