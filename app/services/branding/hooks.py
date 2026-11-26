@@ -13,6 +13,11 @@ from app.services.branding.constants import APP_NAME, FAVICON_PATH, MIT_THANKS, 
 
 def init_main_page(styles_css_path: Path) -> None:
     """Configure Streamlit page meta, inject branding CSS, and render sidebar on Short Video main page."""
+    try:
+        from app.services.longform.logging_guard import dedupe_terminal_stream_handlers
+        dedupe_terminal_stream_handlers()
+    except Exception:
+        pass
     if st.session_state.get("_efs_settings_library_only", False):
         return
 

@@ -2632,6 +2632,7 @@ def _render_external_image_bridge_section(
     from app.services.longform.visual.external_bridge import (
         apply_bulk_external_import,
         compose_shot_external_prompt,
+        detect_missing_browser_base_file,
         export_external_image_prompts,
         get_bulk_import_count_mismatch,
         plan_bulk_external_import,
@@ -2652,6 +2653,8 @@ def _render_external_image_bridge_section(
     exp_cache_key = f"ext_export_payload_{project_id}"
     busy_key = f"ext_busy_action_{project_id}"
     req_key = f"ext_prepare_req_{project_id}"
+    apply_req_key = f"ext_apply_req_{project_id}"
+    folder_state_key = f"ext_folder_plan_{project_id}"
     notice_key = f"ext_notice_{project_id}"
     busy_action = st.session_state.get(busy_key)
     eff_disabled = bool(is_job_running or busy_action)
@@ -2662,9 +2665,24 @@ def _render_external_image_bridge_section(
 
     with st.expander(t("expander_external_bridge"), expanded=False):
         status_slot = st.empty()
-        if busy_action in ("ai_bible", "prepare", "resume_ai"):
+        if busy_action in ("ai_bible", "prepare", "resume_ai", "apply_ext"):
             try:
-                if busy_action == "ai_bible":
+                if busy_action == "apply_ext":
+                    to_apply = st.session_state.get(apply_req_key) or []
+                    with status_slot.status(t("spinner_applying_external"), expanded=True):
+                        app_res = apply_bulk_external_import(p_dir, manifest, to_apply, rebuild=True)
+                    if app_res["applied_shots"]:
+                        st.session_state.pop(folder_state_key, None)
+                        st.session_state[notice_key] = {
+                            "level": "success",
+                            "text": t("ext_import_applied_ok", count=len(app_res["applied_shots"])),
+                        }
+                    elif app_res.get("errors"):
+                        st.session_state[notice_key] = {
+                            "level": "error",
+                            "text": "; ".join(app_res["errors"][:3]),
+                        }
+                elif busy_action == "ai_bible":
                     with status_slot.status(t("ext_status_running_ai_bible"), expanded=True):
                         sel_mode = normalize_style_mode(st.session_state.get(f"ext_vb_style_mode_{project_id}", "realistic"))
                         vb_res = ensure_project_visual_bible(
@@ -2765,6 +2783,7 @@ def _render_external_image_bridge_section(
             finally:
                 st.session_state.pop(busy_key, None)
                 st.session_state.pop(req_key, None)
+                st.session_state.pop(apply_req_key, None)
             st.rerun()
 
         last_notice = st.session_state.pop(notice_key, None)
@@ -3281,6 +3300,10 @@ def _render_external_image_bridge_section(
             if plan_rows:
                 st.markdown(f"**{t('ext_import_preview_heading')}**")
 
+                missing_base = detect_missing_browser_base_file(plan_rows, manifest)
+                if missing_base:
+                    st.warning(t("ext_import_missing_base_warn", base=missing_base))
+
                 mismatch = get_bulk_import_count_mismatch(manifest, plan_rows)
                 if mismatch is not None:
                     st.warning(
@@ -3358,13 +3381,9 @@ def _render_external_image_bridge_section(
                     if not to_apply:
                         st.warning(t("ext_import_nothing_selected"))
                     else:
-                        with st.spinner(t("spinner_applying_external")):
-                            app_res = apply_bulk_external_import(p_dir, manifest, to_apply, rebuild=True)
-                        if app_res["applied_shots"]:
-                            st.session_state.pop(folder_state_key, None)
-                            st.success(t("ext_import_applied_ok", count=len(app_res["applied_shots"])))
-                            time.sleep(0.4)
-                            st.rerun()
+                        st.session_state[apply_req_key] = to_apply
+                        st.session_state[busy_key] = "apply_ext"
+                        st.rerun()
 
 
 def render_visual_step_flow(

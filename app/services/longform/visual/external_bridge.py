@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from loguru import logger
 
+from app.services.longform.logging_guard import dedupe_terminal_stream_handlers
 from app.services.longform.schema import Chapter, ItemStatus, ProjectManifest, SceneContinuity, Shot, VisualBible
 from app.services.longform.shot import compute_shot_hash
 from app.services.longform.store import save_manifest
@@ -92,6 +93,57 @@ def _detect_browser_duplicate_positions(
     for idx, _b, dup_num in candidates:
         pos_map[idx] = 1 if dup_num is None else (dup_num + 1)
     return pos_map
+
+
+def detect_missing_browser_base_file(
+    items: Sequence[Any],
+    manifest: Optional[ProjectManifest] = None,
+) -> Optional[str]:
+    """Return missing unnumbered base filename stem when browser `(n)` duplicates exist without `name.ext` (FA2.3)."""
+    all_shots = _iter_project_shots(manifest) if manifest is not None else []
+    shot_lookup = {s.shot_id.lower(): s.shot_id for s in all_shots}
+
+    numbered_bases: set[str] = set()
+    unnumbered_bases: set[str] = set()
+    base_display: Dict[str, str] = {}
+
+    for item in items:
+        if isinstance(item, dict):
+            if not item.get("supported", True):
+                continue
+            raw_name = str(item.get("filename") or "")
+        elif isinstance(item, (tuple, list)):
+            raw_name = str(item[0] or "")
+        else:
+            raw_name = str(item or "")
+
+        clean_name = Path(raw_name).name
+        if not clean_name:
+            continue
+        ext = Path(clean_name).suffix.lower()
+        if ext and ext not in EXTERNAL_IMPORT_EXTENSIONS:
+            continue
+        stem = Path(clean_name).stem.strip()
+        if not stem:
+            continue
+        exact_hits = _SHOT_ID_EXACT_RE.findall(stem)
+        if exact_hits and any(tok.lower() in shot_lookup for tok in exact_hits):
+            continue
+
+        m_dup = _BROWSER_DUP_RE.match(stem)
+        if m_dup:
+            base_raw = m_dup.group(1).strip()
+            base_low = base_raw.lower()
+            if base_low:
+                numbered_bases.add(base_low)
+                base_display.setdefault(base_low, base_raw)
+        else:
+            unnumbered_bases.add(stem.lower())
+
+    missing = sorted(numbered_bases - unnumbered_bases)
+    if missing:
+        return base_display.get(missing[0], missing[0])
+    return None
 
 
 def _extract_visual_style(manifest: ProjectManifest) -> str:
@@ -893,7 +945,8 @@ def apply_bulk_external_import(
     *,
     rebuild: bool = True,
 ) -> Dict[str, Any]:
-    """Copy confirmed external assets into project folder, render clips, lock shots, update credits & manifest (V3)."""
+    """Copy confirmed external assets into project folder, render clips, lock shots, update credits & manifest (V3, FA2.3)."""
+    dedupe_terminal_stream_handlers()
     p_dir = Path(project_dir).resolve()
     fps = getattr(getattr(manifest, "encoder_settings", None), "fps", 25) or 25
     builder = ShotClipBuilder(fps=fps)

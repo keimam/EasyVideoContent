@@ -13,6 +13,8 @@ from typing import Any
 
 from loguru import logger
 
+from app.services.longform.logging_guard import dedupe_terminal_stream_handlers
+
 try:
     import toml
 except ImportError:
@@ -63,6 +65,7 @@ def get_config_file_path() -> Path:
 def load_longform_config(reload: bool = False) -> LongformConfig:
     """Load longform configuration from file or fallback to code defaults."""
     global _CONFIG_CACHE
+    dedupe_terminal_stream_handlers()
     if _CONFIG_CACHE is not None and not reload:
         return _CONFIG_CACHE
 
