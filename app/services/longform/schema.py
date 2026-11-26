@@ -229,6 +229,8 @@ class Shot(BaseModel):
     requires_attribution: bool = False
     scene_id: Optional[str] = None
     scene_en: Optional[str] = None
+    scene_source: Optional[str] = None  # "ai" | "fallback" | "manual"
+    scene_bible_hash: Optional[str] = None
     characters_in_shot: List[str] = Field(default_factory=list)
     location_id: Optional[str] = None
     continuity: Optional[SceneContinuity] = None

@@ -2905,6 +2905,27 @@ def _render_external_image_bridge_section(
 
             cached_exp = st.session_state.get(exp_cache_key)
             if isinstance(cached_exp, dict) and cached_exp.get("count", 0) > 0:
+                fb_cnt = int(cached_exp.get("fallback_shots", 0) or 0)
+                if fb_cnt > 0 and (bool(cached_exp.get("_used_ai_toggle")) or int(cached_exp.get("batches_failed", 0) or 0) > 0 or cached_exp.get("failure_reason")):
+                    reason_code = str(cached_exp.get("failure_reason") or "error")
+                    reason_lbl = t(f"ext_reason_{reason_code}") if reason_code in ("quota", "timeout", "invalid_json", "no_llm_key") else t("ext_reason_error")
+                    st.warning(t("ext_scene_ai_fallback_warn", count=fb_cnt, reason=reason_lbl))
+                    if st.button(
+                        t("btn_ext_resume_ai"),
+                        key=f"btn_ext_resume_ai_{project_id}",
+                        disabled=eff_disabled,
+                    ):
+                        st.session_state[req_key] = {
+                            "scope": exp_scope,
+                            "selected_shot_ids": list(chosen_sids),
+                            "use_ai": True,
+                            "retry_failed_only": True,
+                        }
+                        st.session_state[busy_key] = "resume_ai"
+                        st.rerun()
+                elif cached_exp.get("ai_used"):
+                    st.caption(t("ext_scene_ai_status_ok", batches_ok=int(cached_exp.get("batches_ok", 0) or 0)))
+
                 st.success(t("ext_export_ready", count=cached_exp["count"]))
                 if cached_exp.get("warning_count", 0) > 0:
                     st.warning(
@@ -3053,6 +3074,7 @@ def _render_external_image_bridge_section(
                         if sh_obj is not None:
                             sh_obj.characters_in_shot = list(new_chars)
                             sh_obj.scene_en = new_scene_en
+                            sh_obj.scene_source = "manual"
                     save_manifest(manifest, p_dir)
                     st.session_state[exp_cache_key] = export_external_image_prompts(
                         manifest,
@@ -3197,7 +3219,7 @@ def _render_external_image_bridge_section(
                             time.sleep(0.4)
                             st.rerun()
 
-        if busy_action in ("ai_bible", "prepare"):
+        if busy_action in ("ai_bible", "prepare", "resume_ai"):
             try:
                 if busy_action == "ai_bible":
                     with status_slot.status(t("ext_status_running_ai_bible"), expanded=True):
@@ -3259,14 +3281,24 @@ def _render_external_image_bridge_section(
                             selected_shot_ids=req_opts.get("selected_shot_ids", []),
                             auto_prepare_llm=bool(req_opts.get("use_ai", False)),
                             progress_callback=_on_prog,
-                            raise_on_llm_error=True,
+                            raise_on_llm_error=False,
+                            retry_failed_only=bool(req_opts.get("retry_failed_only", False) or busy_action == "resume_ai"),
                         )
+                        res_exp["_used_ai_toggle"] = bool(req_opts.get("use_ai", False))
                         pbar.progress(1.0)
                         st.session_state[exp_cache_key] = res_exp
-                        st.session_state[notice_key] = {
-                            "level": "success",
-                            "text": t("ext_export_ready", count=res_exp.get("count", 0)),
-                        }
+                        if int(res_exp.get("fallback_shots", 0) or 0) > 0 and bool(req_opts.get("use_ai", False)):
+                            r_code = str(res_exp.get("failure_reason") or "error")
+                            r_lbl = t(f"ext_reason_{r_code}") if r_code in ("quota", "timeout", "invalid_json", "no_llm_key") else t("ext_reason_error")
+                            st.session_state[notice_key] = {
+                                "level": "warning",
+                                "text": t("ext_scene_ai_fallback_warn", count=int(res_exp["fallback_shots"]), reason=r_lbl),
+                            }
+                        else:
+                            st.session_state[notice_key] = {
+                                "level": "success",
+                                "text": t("ext_export_ready", count=res_exp.get("count", 0)),
+                            }
             except ExternalPromptGenerationError as exc:
                 msg_key = {
                     "quota": "ext_batch_fail_quota",

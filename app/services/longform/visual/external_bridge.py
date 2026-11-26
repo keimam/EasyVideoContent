@@ -124,16 +124,168 @@ def format_continuity_clause(continuity: Optional[SceneContinuity]) -> str:
     return "; ".join(parts)
 
 
-def _replace_untethered_second_person(scene_en: str, locked_chars: List[Any]) -> str:
-    """Replace bare POV 'you'/'your' in fallback scene text when a locked character is present."""
-    if not scene_en or len(locked_chars) != 1:
+_INFLECT_NOT_PRECEDED_RE = re.compile(
+    r"(?:to|with|for|from|of|by|at|on|in|into|upon|about|against|near|toward|towards|behind|beside|"
+    r"between|around|did|do|does|can|could|will|would|shall|should|may|might|must|"
+    r"let|lets|make|makes|made|see|sees|saw|watch|watches|watched|hear|hears|heard|"
+    r"feel|feels|felt|help|helps|helped|tell|tells|told|ask|asks|asked|give|gives|gave|send|sends|sent)$",
+    re.IGNORECASE,
+)
+
+_COMMON_SECOND_PERSON_VERBS = {
+    "are": "is",
+    "were": "was",
+    "have": "has",
+    "do": "does",
+    "aren't": "isn't",
+    "weren't": "wasn't",
+    "haven't": "hasn't",
+    "don't": "doesn't",
+    "go": "goes",
+    "do": "does",
+    "live": "lives",
+    "spin": "spins",
+    "carry": "carries",
+    "try": "tries",
+    "cry": "cries",
+    "fly": "flies",
+    "hurry": "hurries",
+    "leave": "leaves",
+    "walk": "walks",
+    "sit": "sits",
+    "stand": "stands",
+    "hold": "holds",
+    "keep": "keeps",
+    "look": "looks",
+    "see": "sees",
+    "hear": "hears",
+    "take": "takes",
+    "find": "finds",
+    "feel": "feels",
+    "tell": "tells",
+    "ask": "asks",
+    "need": "needs",
+    "want": "wants",
+    "return": "returns",
+    "run": "runs",
+    "step": "steps",
+    "wake": "wakes",
+    "watch": "watches",
+    "reach": "reaches",
+    "open": "opens",
+    "close": "closes",
+    "wash": "washes",
+    "cross": "crosses",
+    "pass": "passes",
+    "push": "pushes",
+    "pull": "pulls",
+    "follow": "follows",
+    "wait": "waits",
+    "whisper": "whispers",
+    "enter": "enters",
+    "climb": "climbs",
+    "kneel": "kneels",
+    "sleep": "sleeps",
+    "eat": "eats",
+    "drink": "drinks",
+    "wear": "wears",
+    "turn": "turns",
+    "fall": "falls",
+    "make": "makes",
+    "know": "knows",
+    "think": "thinks",
+    "seem": "seems",
+    "stay": "stays",
+    "move": "moves",
+    "play": "plays",
+    "work": "works",
+    "write": "writes",
+    "read": "reads",
+    "give": "gives",
+    "pick": "picks",
+    "set": "sets",
+    "put": "puts",
+    "bring": "brings",
+    "begin": "begins",
+    "come": "comes",
+    "sweep": "sweeps",
+    "hide": "hides",
+    "feed": "feeds",
+    "say": "says",
+    "hear": "hears",
+    "serve": "serves",
+    "clean": "cleans",
+    "cook": "cooks",
+    "sort": "sorts",
+    "light": "lights",
+    "knock": "knocks",
+    "rush": "rushes",
+    "catch": "catches",
+    "mix": "mixes",
+    "bless": "blesses",
+    "promise": "promises",
+    "obey": "obeys",
+    "gather": "gathers",
+    "travel": "travels",
+    "trek": "treks",
+    "peer": "peers",
+    "gaze": "gazes",
+    "pause": "pauses",
+    "check": "checks",
+}
+
+
+def _replace_untethered_second_person(
+    scene_en: str,
+    locked_chars: List[Any],
+    *,
+    pov_char: Optional[Any] = None,
+) -> str:
+    """Replace POV 'you'/'your' in scene text with grammatical 3rd-person singular agreement (FA2.1)."""
+    if not scene_en:
         return scene_en
-    c = locked_chars[0]
-    name = str(getattr(c, "name", "") or "").strip()
+    target_char = None
+    if pov_char is not None and locked_chars:
+        pov_id = str(getattr(pov_char, "id", "") or "").strip()
+        target_char = next(
+            (c for c in locked_chars if c.id == pov_id or getattr(c, "variant_of", None) == pov_id),
+            None,
+        )
+    if target_char is None:
+        if len(locked_chars) == 1:
+            target_char = locked_chars[0]
+        elif pov_char is not None:
+            target_char = pov_char
+    if target_char is None:
+        return scene_en
+
+    name = str(getattr(target_char, "name", "") or "").strip()
     if not name:
         return scene_en
-    out = re.sub(r"\byour\b", f"{name}'s", scene_en, flags=re.IGNORECASE)
+
+    out = scene_en
+    out = re.sub(r"\byou're\b", f"{name} is", out, flags=re.IGNORECASE)
+    out = re.sub(r"\byou've\b", f"{name} has", out, flags=re.IGNORECASE)
+    out = re.sub(r"\byou'll\b", f"{name} will", out, flags=re.IGNORECASE)
+    out = re.sub(r"\byou'd\b", f"{name} would", out, flags=re.IGNORECASE)
+    out = re.sub(r"\byour\b", f"{name}'s", out, flags=re.IGNORECASE)
+    out = re.sub(r"\byours\b", f"{name}'s", out, flags=re.IGNORECASE)
     out = re.sub(r"\byourself\b", name, out, flags=re.IGNORECASE)
+
+    def _repl_you_verb(match: re.Match[str]) -> str:
+        verb_raw = match.group(1)
+        verb_low = verb_raw.lower()
+        prefix_slice = out[:match.start()].rstrip()
+        if prefix_slice:
+            prev_word = prefix_slice.split()[-1].strip(",.;:!?\"'()[]")
+            if _INFLECT_NOT_PRECEDED_RE.match(prev_word):
+                return f"{name} {verb_raw}"
+        inflected = _COMMON_SECOND_PERSON_VERBS.get(verb_low)
+        if inflected:
+            return f"{name} {inflected}"
+        return f"{name} {verb_raw}"
+
+    out = re.sub(r"\byou\s+([a-z']+)(?![a-z'])", _repl_you_verb, out, flags=re.IGNORECASE)
     out = re.sub(r"\byou\b", name, out, flags=re.IGNORECASE)
     return out
 
@@ -271,7 +423,9 @@ def compose_shot_external_prompt(
             or shot.visual_prompt
             or "Visual scene matching narration"
         ).strip()
-    scene_en = _replace_untethered_second_person(scene_en, resolved_chars)
+    pov_id = str(getattr(bible, "pov_character_id", None) or "").strip()
+    pov_char_obj = char_map.get(pov_id) if pov_id else None
+    scene_en = _replace_untethered_second_person(scene_en, resolved_chars, pov_char=pov_char_obj)
     scene_clean = scene_en.rstrip(" .")
 
     eff_loc_id = getattr(shot, "location_id", None) or (
@@ -417,6 +571,7 @@ def export_external_image_prompts(
     force_prepare: bool = False,
     progress_callback: Optional[Any] = None,
     raise_on_llm_error: bool = False,
+    retry_failed_only: bool = False,
 ) -> Dict[str, Any]:
     """Build .txt and UTF-8 .csv prompt exports with visual_bible, scenes, continuity & lock validation (V3, F1-F5)."""
     p_dir = Path(project_dir).resolve()
@@ -442,7 +597,7 @@ def export_external_image_prompts(
             raise_on_error=bool(use_llm and raise_on_llm_error),
         )
 
-    assign_scenes_and_prompts_for_shots(
+    scene_res = assign_scenes_and_prompts_for_shots(
         manifest,
         target_shot_ids=[s.shot_id for s in target_shots],
         llm_adapter=llm_adapter,
@@ -451,6 +606,7 @@ def export_external_image_prompts(
         allow_llm=use_llm,
         progress_callback=progress_callback,
         raise_on_error=bool(use_llm and raise_on_llm_error),
+        retry_failed_only=retry_failed_only,
     )
 
     eff_bible = manifest.visual_bible or build_template_visual_bible(manifest)
@@ -548,6 +704,13 @@ def export_external_image_prompts(
         "bulk_txt": bulk_txt,
         "bulk_line_count": len(bulk_lines),
         "csv": csv_buf.getvalue(),
+        "ai_used": bool(scene_res.get("ai_used", False)),
+        "batches_ok": int(scene_res.get("batches_ok", 0) or 0),
+        "batches_failed": int(scene_res.get("batches_failed", 0) or 0),
+        "fallback_shots": int(scene_res.get("fallback_shots", 0) or 0),
+        "failed_shot_ids": list(scene_res.get("failed_shot_ids") or []),
+        "failure_reason": scene_res.get("failure_reason"),
+        "failure_detail": str(scene_res.get("failure_detail") or ""),
     }
 
 
