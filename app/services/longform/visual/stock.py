@@ -1484,7 +1484,10 @@ class StockVisualProvider(BaseVisualProvider):
         dest = Path(dest_path).resolve()
         dest.parent.mkdir(parents=True, exist_ok=True)
 
-        # Download via global cache
+        # Download via global cache (respect per-provider rate limit on uncached HTTP fetches)
+        if not self.cache.is_cached(candidate.url):
+            dl_prov = str(candidate.provider or self.name or "stock").lower().strip()
+            respect_provider_rate_limit(f"dl:{dl_prov}", 0.25)
         self.cache.download_or_get(candidate.url, dest)
 
         # Compute content hash

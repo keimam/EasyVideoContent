@@ -390,7 +390,15 @@ class LocalVisualProvider(BaseVisualProvider):
             raise VisualError(f"Local library asset not found: {src_path}")
 
         if src_path != dest:
-            shutil.copyfile(src_path, dest)
+            import uuid as _uuid
+
+            tmp_dest = dest.parent / f"{dest.name}.tmp.{_uuid.uuid4().hex}"
+            try:
+                shutil.copyfile(src_path, tmp_dest)
+                os.replace(tmp_dest, dest)
+            finally:
+                if tmp_dest.exists():
+                    tmp_dest.unlink(missing_ok=True)
 
         c_hash = compute_file_content_hash(dest)
 

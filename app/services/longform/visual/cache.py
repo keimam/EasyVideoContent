@@ -18,6 +18,7 @@ import json
 import os
 import shutil
 import sys
+import threading
 import time
 import urllib.parse
 import uuid
@@ -36,6 +37,21 @@ else:
     import tomli as tomllib  # type: ignore
 
 from app.services.longform.visual.base import compute_file_content_hash, record_download_io
+
+
+_CACHE_URL_GUARD = threading.Lock()
+_CACHE_URL_LOCKS: Dict[str, threading.Lock] = {}
+_CACHE_EVICT_LOCK = threading.Lock()
+
+
+def _get_cache_url_lock(url_hash_prefix: str) -> threading.Lock:
+    """Return a stable per-URL-hash lock so parallel downloads of distinct URLs proceed concurrently."""
+    with _CACHE_URL_GUARD:
+        lk = _CACHE_URL_LOCKS.get(url_hash_prefix)
+        if lk is None:
+            lk = threading.Lock()
+            _CACHE_URL_LOCKS[url_hash_prefix] = lk
+        return lk
 
 
 def get_repo_root() -> Path:
@@ -326,87 +342,99 @@ class GlobalMediaCache:
     ) -> Path:
         """Fetch media file using global cache, downloading with exponential backoff on cache miss.
 
+        Thread-safe per URL hash with atomic `.tmp -> os.replace` writes for both global cache and project destination.
         Touches file access time on hit (LRU maintenance) and triggers auto-eviction if cache exceeds limit.
         """
         dest = Path(dest_path).resolve()
         dest.parent.mkdir(parents=True, exist_ok=True)
         cached = self.get_cache_path_for_url(url)
+        url_hash = hashlib.sha256(url.strip().encode("utf-8")).hexdigest()[:24]
 
-        # Cache Hit
-        if cached.is_file() and cached.stat().st_size > 0:
-            record_download_io(cache_hit=True)
-            logger.debug(f"Global cache hit for URL: {url[:60]}... -> {cached.name}")
-            # Update access time for LRU tracking
+        def _atomic_copy_to_dest(src_file: Path) -> Path:
+            tmp_dest = dest.parent / f"{dest.name}.tmp.{uuid.uuid4().hex}"
             try:
-                os.utime(cached, None)
-            except Exception:
-                pass
-            shutil.copyfile(cached, dest)
-            return dest
+                shutil.copyfile(src_file, tmp_dest)
+                os.replace(tmp_dest, dest)
+                return dest
+            finally:
+                if tmp_dest.exists():
+                    tmp_dest.unlink(missing_ok=True)
 
-        # Cache Miss: Download with retries
-        record_download_io(cache_hit=False)
-        logger.info(f"Downloading media to global cache: {url[:80]}...")
-        tmp_cached = self.cache_dir / f"{cached.name}.tmp.{uuid.uuid4().hex}"
-        last_error = ""
+        with _get_cache_url_lock(url_hash):
+            # Cache Hit
+            if cached.is_file() and cached.stat().st_size > 0:
+                record_download_io(cache_hit=True)
+                logger.debug(f"Global cache hit for URL: {url[:60]}... -> {cached.name}")
+                # Update access time for LRU tracking
+                try:
+                    os.utime(cached, None)
+                except Exception:
+                    pass
+                return _atomic_copy_to_dest(cached)
 
-        req_headers = {
-            "User-Agent": f"EasyFacelessStudio/{APP_VERSION} (Open-Source Longform Video Studio)"
-        }
-        if headers:
-            req_headers.update(headers)
+            # Cache Miss: Download with retries
+            record_download_io(cache_hit=False)
+            logger.info(f"Downloading media to global cache: {url[:80]}...")
+            tmp_cached = self.cache_dir / f"{cached.name}.tmp.{uuid.uuid4().hex}"
+            last_error = ""
 
-        for attempt in range(1, max_retries + 1):
-            try:
-                with requests.get(url, headers=req_headers, stream=True, timeout=timeout) as resp:
-                    if resp.status_code == 429:
-                        retry_after = float(resp.headers.get("Retry-After") or (backoff_seconds * (2 ** attempt)))
-                        time.sleep(min(retry_after, 15.0))
+            req_headers = {
+                "User-Agent": f"EasyFacelessStudio/{APP_VERSION} (Open-Source Longform Video Studio)"
+            }
+            if headers:
+                req_headers.update(headers)
+
+            for attempt in range(1, max_retries + 1):
+                try:
+                    with requests.get(url, headers=req_headers, stream=True, timeout=timeout) as resp:
+                        if resp.status_code == 429:
+                            retry_after = float(resp.headers.get("Retry-After") or (backoff_seconds * (2 ** attempt)))
+                            time.sleep(min(retry_after, 15.0))
+                            resp.raise_for_status()
                         resp.raise_for_status()
-                    resp.raise_for_status()
-                    with open(tmp_cached, "wb") as f:
-                        for chunk in resp.iter_content(chunk_size=65536):
-                            if chunk:
-                                f.write(chunk)
+                        with open(tmp_cached, "wb") as f:
+                            for chunk in resp.iter_content(chunk_size=65536):
+                                if chunk:
+                                    f.write(chunk)
 
-                if tmp_cached.is_file() and tmp_cached.stat().st_size > 0:
-                    os.replace(tmp_cached, cached)
-                    try:
-                        os.utime(cached, None)
-                    except Exception:
-                        pass
+                    if tmp_cached.is_file() and tmp_cached.stat().st_size > 0:
+                        os.replace(tmp_cached, cached)
+                        try:
+                            os.utime(cached, None)
+                        except Exception:
+                            pass
 
-                    # Automatic LRU eviction check after adding new file (S2)
-                    self._check_and_auto_evict()
+                        # Automatic LRU eviction check after adding new file (S2)
+                        self._check_and_auto_evict()
 
-                    shutil.copyfile(cached, dest)
-                    return dest
-                else:
-                    raise IOError("Downloaded file is empty (0 bytes)")
+                        return _atomic_copy_to_dest(cached)
+                    else:
+                        raise IOError("Downloaded file is empty (0 bytes)")
 
-            except Exception as exc:
-                if tmp_cached.exists():
-                    tmp_cached.unlink(missing_ok=True)
-                last_error = str(exc)
-                logger.warning(f"Download attempt {attempt}/{max_retries} failed for {url[:60]}: {last_error}")
-                if attempt < max_retries:
-                    time.sleep(backoff_seconds * (2 ** (attempt - 1)))
+                except Exception as exc:
+                    if tmp_cached.exists():
+                        tmp_cached.unlink(missing_ok=True)
+                    last_error = str(exc)
+                    logger.warning(f"Download attempt {attempt}/{max_retries} failed for {url[:60]}: {last_error}")
+                    if attempt < max_retries:
+                        time.sleep(backoff_seconds * (2 ** (attempt - 1)))
 
         raise RuntimeError(f"Failed to download media after {max_retries} attempts: {last_error}")
 
     def _check_and_auto_evict(self) -> None:
         """Check if global cache exceeds configured max_size_bytes and evict oldest non-locked items."""
         try:
-            status = get_cache_status(self.cache_dir)
-            if status["total_bytes"] > self.config.max_size_bytes:
-                logger.info(
-                    f"Global cache size ({status['total_mb']} MB) exceeds limit ({self.config.max_size_gb} GB). "
-                    "Running automatic LRU eviction..."
-                )
-                res = prune_cache(
-                    max_size_bytes=self.config.max_size_bytes,
-                    cache_dir=self.cache_dir,
-                )
-                logger.info(f"Auto-evicted {res['files_removed']} files, freed {res['mb_freed']} MB.")
+            with _CACHE_EVICT_LOCK:
+                status = get_cache_status(self.cache_dir)
+                if status["total_bytes"] > self.config.max_size_bytes:
+                    logger.info(
+                        f"Global cache size ({status['total_mb']} MB) exceeds limit ({self.config.max_size_gb} GB). "
+                        "Running automatic LRU eviction..."
+                    )
+                    res = prune_cache(
+                        max_size_bytes=self.config.max_size_bytes,
+                        cache_dir=self.cache_dir,
+                    )
+                    logger.info(f"Auto-evicted {res['files_removed']} files, freed {res['mb_freed']} MB.")
         except Exception as exc:
             logger.warning(f"Cache auto-eviction failed: {exc}")

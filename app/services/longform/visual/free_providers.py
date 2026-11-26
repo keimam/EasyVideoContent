@@ -477,6 +477,8 @@ class _FreeApiProviderBase(BaseVisualProvider):
         dest = Path(dest_path).resolve()
         dest.parent.mkdir(parents=True, exist_ok=True)
         parsed_ext = os.path.splitext(urllib.parse.urlparse(candidate.url).path)[1].lower()
+        if not self.cache.is_cached(candidate.url):
+            _respect_rate_limit(f"dl:{self.name}", 0.25)
 
         if candidate.source_type == "stock_video" and parsed_ext in (".webm", ".ogv", ".ogg"):
             raw_dl = dest.with_suffix(parsed_ext)

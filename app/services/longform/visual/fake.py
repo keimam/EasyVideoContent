@@ -219,6 +219,7 @@ class FakeVisualProvider(BaseVisualProvider):
             self.create_synthetic_image(tmp_jpg, prompt=query, shot_id=candidate.candidate_id)
 
             dur = max(float(candidate.duration_seconds) + 3.0, 10.0)
+            tmp_vid = dest.parent / f"{dest.name}.tmp.{uuid.uuid4().hex}.mp4"
             cmd = [
                 "ffmpeg", "-y",
                 "-framerate", "25",
@@ -228,14 +229,25 @@ class FakeVisualProvider(BaseVisualProvider):
                 "-c:v", "libx264",
                 "-pix_fmt", "yuv420p",
                 "-r", "25",
-                str(dest),
+                str(tmp_vid),
             ]
-            res = subprocess.run(cmd, capture_output=True, text=True)
-            tmp_jpg.unlink(missing_ok=True)
-            if res.returncode != 0 or not dest.is_file():
-                raise RuntimeError(f"Failed to generate synthetic fake video: {res.stderr[-300:]}")
+            try:
+                res = subprocess.run(cmd, capture_output=True, text=True)
+                tmp_jpg.unlink(missing_ok=True)
+                if res.returncode != 0 or not tmp_vid.is_file():
+                    raise RuntimeError(f"Failed to generate synthetic fake video: {res.stderr[-300:]}")
+                os.replace(tmp_vid, dest)
+            finally:
+                if tmp_vid.exists():
+                    tmp_vid.unlink(missing_ok=True)
         else:
-            self.create_synthetic_image(dest, prompt=query, shot_id=candidate.candidate_id)
+            tmp_img = dest.parent / f"{dest.name}.tmp.{uuid.uuid4().hex}.jpg"
+            try:
+                self.create_synthetic_image(tmp_img, prompt=query, shot_id=candidate.candidate_id)
+                os.replace(tmp_img, dest)
+            finally:
+                if tmp_img.exists():
+                    tmp_img.unlink(missing_ok=True)
 
         c_hash = compute_file_content_hash(dest)
         return VisualAsset(
