@@ -88,27 +88,33 @@ def block_real_llm_and_network_calls(request, tmp_path: Path):
     orig_urllib_open = urllib.request.OpenerDirector.open
     orig_socket_connect = socket.socket.connect
 
-    # Optional test mode for Condition (2): blank/dummy all keys via isolated temp copy without touching host config.toml
+    # Optional test mode for Condition (2): blank/dummy ONLY LLM keys via isolated temp copy outside tmp_path
     import os
+    import tempfile
     test_cfg_mode = os.environ.get("EFS_TEST_CONFIG_MODE", "").strip().lower()
+    _STOCK_KEY_FIELDS = {"pixabay_api_keys", "pexels_api_keys", "coverr_api_keys", "unsplash_api_keys"}
     if test_cfg_mode in ("fake_keys", "empty_keys"):
-        temp_cfg_path = tmp_path / "isolated_config.toml"
+        from app.models.llm_provider import LLM_PROVIDER_REGISTRY
+        llm_key_fields = {p.config_key("api_key") for p in LLM_PROVIDER_REGISTRY}
+        with tempfile.TemporaryDirectory() as isolated_dir:
+            temp_cfg_path = Path(isolated_dir) / "isolated_config.toml"
+            if test_cfg_mode == "fake_keys":
+                temp_cfg_path.write_text(
+                    '[app]\nllm_provider = "openrouter"\nopenrouter_api_key = "sk-or-v1-dummyisolatedkey0000"\n'
+                    'gemini_api_key = "AIzaSyDummyIsolatedKey0000000000000"\ngrok_api_key = ""\ndeepseek_api_key = ""\n',
+                    encoding="utf-8",
+                )
+            else:
+                temp_cfg_path.write_text('[app]\nllm_provider = "openrouter"\nopenrouter_api_key = ""\n', encoding="utf-8")
+
+        for k in list(app_cfg.app.keys()):
+            if k in _STOCK_KEY_FIELDS:
+                continue
+            if k in llm_key_fields or (k.endswith("_api_key") and "image" not in k and "tts" not in k and "speech" not in k):
+                guard_mp.setitem(app_cfg.app, k, "")
         if test_cfg_mode == "fake_keys":
-            temp_cfg_path.write_text(
-                '[app]\nllm_provider = "openrouter"\nopenrouter_api_key = "sk-or-v1-dummyisolatedkey0000"\n'
-                'gemini_api_key = "AIzaSyDummyIsolatedKey0000000000000"\ngrok_api_key = ""\ndeepseek_api_key = ""\n',
-                encoding="utf-8",
-            )
-            for k in list(app_cfg.app.keys()):
-                if k.endswith("_api_key") or k.endswith("_api_keys"):
-                    guard_mp.setitem(app_cfg.app, k, [] if k.endswith("_api_keys") else "")
             guard_mp.setitem(app_cfg.app, "openrouter_api_key", "sk-or-v1-dummyisolatedkey0000")
             guard_mp.setitem(app_cfg.app, "gemini_api_key", "AIzaSyDummyIsolatedKey0000000000000")
-        else:
-            temp_cfg_path.write_text('[app]\nllm_provider = "openrouter"\nopenrouter_api_key = ""\n', encoding="utf-8")
-            for k in list(app_cfg.app.keys()):
-                if k.endswith("_api_key") or k.endswith("_api_keys"):
-                    guard_mp.setitem(app_cfg.app, k, [] if k.endswith("_api_keys") else "")
 
     # Force safe defaults: EFS_DEV=1, fake LLM provider, empty failover chain, isolated pause state
     guard_mp.setenv("EFS_DEV", "1")
