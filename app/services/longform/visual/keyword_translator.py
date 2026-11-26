@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from loguru import logger
 
@@ -19,6 +20,14 @@ from app.services.longform.hashing import hash_string, normalize_text
 from app.services.longform.language_guard import normalize_language_code
 from app.services.longform.llm_adapter import LLMAdapter, get_llm_readiness
 from app.services.longform.visual.cache import get_global_cache_dir
+
+_LAST_LLM_CALL_META = threading.local()
+
+
+def get_last_translation_llm_meta() -> Dict[str, Any]:
+    """Return metadata (failover_used, providers_tried, provider_errors, attempts_summary) from latest _invoke_translation_llm call on this thread."""
+    meta = getattr(_LAST_LLM_CALL_META, "data", None)
+    return dict(meta) if isinstance(meta, dict) else {}
 
 
 def is_non_english_language(lang_code: Optional[str]) -> bool:
@@ -116,130 +125,33 @@ def _invoke_translation_llm(
     prompt: str,
     llm_adapter: Optional[LLMAdapter] = None,
     max_tokens: int = 400,
+    *,
+    expect_json: bool = False,
+    json_validator: Optional[Callable[[str], Any]] = None,
+    primary_provider: Optional[str] = None,
 ) -> Tuple[str, str, str]:
-    """Call active LLM cleanly with bounded batch max_tokens (prevents 402 credit over-reservation)."""
-    if llm_adapter is not None:
-        try:
-            resp = llm_adapter.generate(prompt=prompt, max_tokens=max_tokens)
-        except TypeError:
-            resp = llm_adapter.generate(prompt=prompt)
-        return resp.content, resp.provider, resp.model
+    """Call active LLM (with configured failover chain & minimal-reasoning JSON retry) with bounded max_tokens."""
+    from app.services.longform.llm_adapter import call_llm_with_failover
 
-    import time
-    from app.config import config
-    from app.models.llm_provider import DEFAULT_LLM_PROVIDER_ID, get_llm_provider
-    from app.services.llm import (
-        _normalize_text_response,
-        _resolve_provider_field_value,
-        _sanitize_error_message,
-        _sdk_transport_options,
+    resp = call_llm_with_failover(
+        prompt=prompt,
+        primary_provider=primary_provider,
+        llm_adapter=llm_adapter,
+        force_refresh=True,
+        max_tokens=max_tokens,
+        minimize_reasoning=True,
+        expect_json=expect_json,
+        json_validator=json_validator,
     )
-    from app.services.longform.llm_adapter import (
-        LLMCreditError,
-        LLMEmptyResponseError,
-        LLMModelNotFoundError,
-        LLMRateLimitError,
-        _classify_llm_error,
-        extract_sdk_completion_or_raise,
-        invoke_openai_chat_completion,
-        resolve_effective_model,
-    )
-    from app.utils.request_logging import trace_sdk_call
-
-    pid = str(config.app.get("llm_provider", DEFAULT_LLM_PROVIDER_ID) or DEFAULT_LLM_PROVIDER_ID).lower()
-    prov_def = get_llm_provider(pid)
-    adapter = prov_def.adapter if prov_def else "openai_compatible"
-    raw_model = str(config.app.get(prov_def.config_key("model_name"), "") or "") if prov_def else ""
-    model_name, _ = resolve_effective_model(pid, raw_model)
-
-    if adapter in ("claude_code", "openai_codex", "openai_chatgpt", "kimi_code", "litellm", "qwen"):
-        resp = LLMAdapter().generate(prompt=prompt, max_tokens=max_tokens, minimize_reasoning=True)
-        return resp.content, resp.provider, resp.model
-
-    api_key = str(config.app.get(prov_def.config_key("api_key"), "") or "") if prov_def else ""
-    base_url = prov_def.resolve_base_url(str(config.app.get(prov_def.config_key("base_url"), "") or "")) if prov_def else ""
-    if pid == "ollama":
-        api_key = "ollama"
-        base_url = base_url or config.get_default_ollama_base_url()
-
-    cur_max_tokens = int(max_tokens)
-    escalated_once = False
-    for attempt in range(3):
-        try:
-            if adapter == "gemini":
-                from google import genai
-                from google.genai import types
-
-                http_options = types.HttpOptions(base_url=base_url) if base_url else None
-                cfg = types.GenerateContentConfig(temperature=0.2, max_output_tokens=cur_max_tokens)
-                with genai.Client(api_key=api_key, http_options=http_options) as client:
-                    r = trace_sdk_call(
-                        pid, base_url, client.models.generate_content, model=model_name, contents=prompt, config=cfg
-                    )
-                return _normalize_text_response(getattr(r, "text", ""), pid), pid, model_name
-
-            from openai import AzureOpenAI, OpenAI
-
-            if adapter == "azure":
-                api_ver = str(config.app.get(prov_def.config_key("api_version"), "2024-02-15-preview") or "2024-02-15-preview")
-                client = AzureOpenAI(
-                    api_key=api_key, api_version=api_ver, azure_endpoint=base_url, **_sdk_transport_options(35.0, 0)
-                )
-            elif adapter == "cloudflare_ai_gateway":
-                extra = {
-                    f.config_suffix: _resolve_provider_field_value(
-                        config.app.get(prov_def.config_key(f.config_suffix)), f.default_value
-                    )
-                    for f in prov_def.extra_fields
-                }
-                client = OpenAI(
-                    api_key=api_key,
-                    base_url=f"https://api.cloudflare.com/client/v4/accounts/{extra['account_id']}/ai/v1",
-                    default_headers={"cf-aig-gateway-id": extra["gateway_id"]},
-                    **_sdk_transport_options(35.0, 0),
-                )
-            else:
-                client = OpenAI(api_key=api_key, base_url=base_url, **_sdk_transport_options(35.0, 0))
-
-            try:
-                r = invoke_openai_chat_completion(
-                    client.chat.completions.create,
-                    pid,
-                    base_url=base_url,
-                    minimize_reasoning=True,
-                    model=model_name,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.2,
-                    max_tokens=cur_max_tokens,
-                )
-                txt = extract_sdk_completion_or_raise(r, pid, max_tokens_used=cur_max_tokens)
-                return txt, pid, model_name
-            finally:
-                close = getattr(client, "close", None)
-                if callable(close):
-                    try:
-                        close()
-                    except Exception:
-                        pass
-        except LLMEmptyResponseError as exc:
-            if (exc.finish_reason == "length" or exc.has_reasoning) and not escalated_once:
-                escalated_once = True
-                cur_max_tokens = min(3072, max(512, cur_max_tokens * 2))
-                logger.info(
-                    f"Keyword translation empty ({exc.finish_reason}); retrying once with max_tokens={cur_max_tokens}"
-                )
-                continue
-            raise
-        except Exception as exc:
-            msg = _sanitize_error_message(exc)
-            classified = _classify_llm_error(msg, model=model_name)
-            if isinstance(classified, (LLMCreditError, LLMModelNotFoundError)):
-                raise classified
-            is_rate = isinstance(classified, LLMRateLimitError) or "429" in msg or "rate limit" in msg.lower()
-            if is_rate and attempt < 2:
-                time.sleep(min(1.5 * (2 ** attempt), 6.0))
-                continue
-            raise
+    _LAST_LLM_CALL_META.data = {
+        "provider": resp.provider,
+        "model": resp.model,
+        "failover_used": bool(getattr(resp, "failover_used", False)),
+        "providers_tried": list(getattr(resp, "providers_tried", None) or [resp.provider]),
+        "provider_errors": dict(getattr(resp, "provider_errors", None) or {}),
+        "attempts_summary": str(getattr(resp, "attempts_summary", "") or ""),
+    }
+    return resp.content, resp.provider, resp.model
 
 
 def translate_chapter_queries_to_english(

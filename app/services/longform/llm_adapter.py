@@ -15,11 +15,13 @@ import json
 import os
 import re
 import shutil
+import threading
 import time
 import uuid
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from loguru import logger
 
@@ -113,6 +115,10 @@ class LLMResponse:
     tokens: Optional[Dict[str, int]] = None
     cache_hit: bool = False
     max_tokens_requested: Optional[int] = None
+    failover_used: bool = False
+    providers_tried: Optional[List[str]] = None
+    provider_errors: Optional[Dict[str, str]] = None
+    attempts_summary: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -937,7 +943,18 @@ class LLMAdapter:
                     time.sleep(self.retry_delay * (2 ** (attempt - 1)))
                     continue
                 raise
-            except (LLMAuthError, LLMModelNotFoundError, LLMCreditError, LLMRateLimitError):
+            except (LLMAuthError, LLMModelNotFoundError, LLMCreditError, LLMDailyQuotaError):
+                raise
+            except LLMRateLimitError as rl_exc:
+                if rl_exc.is_daily:
+                    raise
+                last_error = sanitize_error(str(rl_exc))
+                if attempt < self.max_retries:
+                    wait_s = self.retry_delay * (2 ** (attempt - 1))
+                    if rl_exc.retry_after_seconds is not None:
+                        wait_s = min(max(float(rl_exc.retry_after_seconds), wait_s), 65.0)
+                    time.sleep(wait_s)
+                    continue
                 raise
             except Exception as exc:
                 duration = time.perf_counter() - start_time
@@ -1442,6 +1459,7 @@ def test_llm_connection() -> Tuple[bool, str, float]:
             max_tokens=MAX_TOKENS_TEST_CONNECTION,
             minimize_reasoning=True,
         )
+        clear_provider_pause(active_id)
         return True, sanitize_error((resp.content or "").strip()), float(time.perf_counter() - t0)
     except LLMEmptyResponseError as exc:
         return (
@@ -1798,12 +1816,151 @@ def _provider_key_fingerprint(provider_id: str) -> str:
     return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()[:16]
 
 
+_PAUSE_LOCK = threading.Lock()
+_MEMORY_PROVIDER_PAUSES: Dict[str, Dict[str, Any]] = {}
+_PAUSE_STATE_FILE = Path("storage") / "longform_cache" / "llm_provider_pauses.json"
+
+
+def _pause_file_path() -> Path:
+    env_override = os.environ.get("EFS_LLM_PAUSE_STATE_PATH", "").strip()
+    if env_override:
+        return Path(env_override)
+    return _PAUSE_STATE_FILE
+
+
+def _load_pause_map_unlocked() -> Dict[str, Dict[str, Any]]:
+    merged: Dict[str, Dict[str, Any]] = dict(_MEMORY_PROVIDER_PAUSES)
+    p = _pause_file_path()
+    try:
+        if p.is_file():
+            raw = json.loads(p.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                for k, v in raw.items():
+                    if isinstance(k, str) and isinstance(v, dict):
+                        merged.setdefault(k, v)
+    except Exception:
+        pass
+    return merged
+
+
+def _save_pause_map_unlocked(data: Dict[str, Dict[str, Any]]) -> None:
+    p = _pause_file_path()
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_name(f"{p.name}.tmp.{uuid.uuid4().hex}")
+        with open(tmp, "w", encoding="utf-8") as fp:
+            fp.write(json.dumps(data, ensure_ascii=False, indent=2))
+            fp.flush()
+            os.fsync(fp.fileno())
+        os.replace(tmp, p)
+    except Exception as exc:
+        logger.debug(f"Could not persist provider pause state: {exc}")
+
+
+def _next_utc_midnight_ts(now_ts: Optional[float] = None) -> float:
+    now = float(time.time() if now_ts is None else now_ts)
+    return float(((int(now // 86400) + 1) * 86400))
+
+
+def _format_pause_until_label(paused_until_ts: Optional[float]) -> str:
+    if not paused_until_ts:
+        return "Sementara dijeda"
+    try:
+        dt_local = datetime.fromtimestamp(float(paused_until_ts), tz=timezone.utc).astimezone()
+        tz_abbr = dt_local.tzname() or "Lokal"
+        return f"Pause s/d {dt_local.strftime('%H:%M')} {tz_abbr}".strip()
+    except Exception:
+        return "Sementara dijeda"
+
+
+def mark_provider_paused(
+    provider_id: str,
+    *,
+    reason: str,
+    paused_until_ts: Optional[float] = None,
+    error_detail: str = "",
+) -> Dict[str, Any]:
+    """Record temporary pause state for a provider (daily quota -> UTC midnight, auth/credit/404 -> 1h or until config changes)."""
+    pid = (provider_id or "").strip().lower()
+    if not pid:
+        return {}
+    now = time.time()
+    if paused_until_ts is None:
+        if reason == "daily_quota":
+            paused_until_ts = _next_utc_midnight_ts(now)
+        else:
+            paused_until_ts = now + 3600.0
+    prov_def = get_llm_provider(pid)
+    raw_model = str(config.app.get(prov_def.config_key("model_name"), "") or "") if prov_def else ""
+    eff_model, _ = resolve_effective_model(pid, raw_model)
+    entry = {
+        "provider": pid,
+        "reason": str(reason or "paused"),
+        "paused_until": float(paused_until_ts),
+        "key_fp": _provider_key_fingerprint(pid),
+        "model": eff_model,
+        "error": sanitize_error(str(error_detail or ""))[:180],
+        "recorded_at": now,
+    }
+    with _PAUSE_LOCK:
+        cur = _load_pause_map_unlocked()
+        cur[pid] = entry
+        _MEMORY_PROVIDER_PAUSES[pid] = entry
+        _save_pause_map_unlocked(cur)
+    return entry
+
+
+def clear_provider_pause(provider_id: Optional[str] = None) -> None:
+    """Clear pause state for one provider or all providers."""
+    with _PAUSE_LOCK:
+        cur = _load_pause_map_unlocked()
+        if provider_id is None:
+            _MEMORY_PROVIDER_PAUSES.clear()
+            cur.clear()
+        else:
+            pid = (provider_id or "").strip().lower()
+            _MEMORY_PROVIDER_PAUSES.pop(pid, None)
+            cur.pop(pid, None)
+        _save_pause_map_unlocked(cur)
+
+
+def get_provider_pause_state(provider_id: str) -> Optional[Dict[str, Any]]:
+    """Return active pause entry for provider, auto-clearing if expired or if key/model changed."""
+    pid = (provider_id or "").strip().lower()
+    if not pid:
+        return None
+    with _PAUSE_LOCK:
+        cur = _load_pause_map_unlocked()
+        entry = cur.get(pid)
+        if not entry:
+            return None
+        now = time.time()
+        until = float(entry.get("paused_until") or 0.0)
+        reason = str(entry.get("reason") or "")
+        should_clear = until <= now
+        if not should_clear and entry.get("key_fp") != _provider_key_fingerprint(pid):
+            should_clear = True
+        if not should_clear and reason == "model_not_found":
+            prov_def = get_llm_provider(pid)
+            raw_model = str(config.app.get(prov_def.config_key("model_name"), "") or "") if prov_def else ""
+            eff_model, _ = resolve_effective_model(pid, raw_model)
+            if eff_model != str(entry.get("model") or ""):
+                should_clear = True
+        if should_clear:
+            _MEMORY_PROVIDER_PAUSES.pop(pid, None)
+            cur.pop(pid, None)
+            _save_pause_map_unlocked(cur)
+            return None
+        _MEMORY_PROVIDER_PAUSES[pid] = entry
+        return dict(entry)
+
+
 def get_provider_chain_status(
     chain: Optional[Sequence[str]] = None,
     *,
     primary_provider: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """Inspect configured credentials, resolved default/custom model, and pause status for each provider (G1)."""
+    """Inspect configured credentials, resolved default/custom model, and pause status for each provider (G1/G2)."""
     targets = (
         list(chain)
         if chain is not None
@@ -1820,10 +1977,7 @@ def get_provider_chain_status(
         requires_model = bool(getattr(prov_def, "requires_model_name", True)) if prov_def else True
 
         if not bool(readiness.get("configured")):
-            if bool(readiness.get("is_invalid")):
-                status = "invalid_key"
-            else:
-                status = "no_key"
+            status = "invalid_key" if bool(readiness.get("is_invalid")) else "no_key"
             logger.debug(f"Failover provider '{pid}' skipped ({status}); no secret logged")
             results.append({
                 "provider": pid,
@@ -1851,6 +2005,28 @@ def get_provider_chain_status(
             })
             continue
 
+        pause = get_provider_pause_state(pid)
+        if pause is not None:
+            p_reason = str(pause.get("reason") or "paused")
+            status_code = (
+                "paused_quota"
+                if p_reason in ("daily_quota", "credit_exhausted")
+                else ("paused_auth" if p_reason == "auth_rejected" else "paused")
+            )
+            until_ts = float(pause.get("paused_until") or 0.0) or None
+            pause_label = _format_pause_until_label(until_ts)
+            results.append({
+                "provider": pid,
+                "label": readiness.get("provider_label") or pid,
+                "model": model,
+                "status": status_code,
+                "ready": False,
+                "paused_until": until_ts,
+                "pause_label": pause_label,
+                "message": sanitize_error(str(pause.get("error") or pause_label)),
+            })
+            continue
+
         results.append({
             "provider": pid,
             "label": readiness.get("provider_label") or pid,
@@ -1862,4 +2038,339 @@ def get_provider_chain_status(
             "message": "Siap",
         })
     return results
+
+
+def _classify_failover_exception(exc: Exception, *, model: str = "") -> Tuple[str, Optional[str], Exception]:
+    """Classify an LLM failure into (short_tag, pause_reason_or_none, normalized_exc)."""
+    clean_msg = sanitize_error(str(exc))
+    if isinstance(exc, LLMDailyQuotaError) or (isinstance(exc, LLMRateLimitError) and exc.is_daily):
+        return "quota", "daily_quota", exc
+    if isinstance(exc, LLMCreditError):
+        return "credit", "credit_exhausted", exc
+    if isinstance(exc, LLMAuthError):
+        return "auth", "auth_rejected", exc
+    if isinstance(exc, LLMModelNotFoundError):
+        return "model_not_found", "model_not_found", exc
+    if isinstance(exc, LLMRateLimitError):
+        return "rate_limit", None, exc
+    if isinstance(exc, LLMEmptyResponseError):
+        return "empty", None, exc
+
+    classified = _classify_llm_error(clean_msg, model=model)
+    if isinstance(classified, LLMDailyQuotaError):
+        return "quota", "daily_quota", classified
+    if isinstance(classified, LLMCreditError):
+        return "credit", "credit_exhausted", classified
+    if isinstance(classified, LLMAuthError):
+        return "auth", "auth_rejected", classified
+    if isinstance(classified, LLMModelNotFoundError):
+        return "model_not_found", "model_not_found", classified
+    if isinstance(classified, LLMRateLimitError):
+        return "rate_limit", None, classified
+    if "empty" in clean_msg.lower() or "json" in clean_msg.lower():
+        return "invalid_json" if "json" in clean_msg.lower() else "empty", None, exc
+    return "error", None, exc
+
+
+def _format_failover_attempts_summary(
+    chain: Sequence[str],
+    provider_errors: Dict[str, str],
+    succeeded_provider: Optional[str] = None,
+) -> str:
+    parts: List[str] = []
+    for pid in chain:
+        if pid == succeeded_provider:
+            parts.append(f"{pid}: ok")
+        elif pid in provider_errors:
+            parts.append(f"{pid}: {sanitize_error(provider_errors[pid])}")
+    return "; ".join(parts)
+
+
+def call_llm_with_failover(
+    prompt: str,
+    *,
+    primary_provider: Optional[str] = None,
+    failover_chain: Optional[Sequence[str]] = None,
+    llm_adapter: Optional[LLMAdapter] = None,
+    fake_kind: Optional[str] = None,
+    fake_kwargs: Optional[Dict[str, Any]] = None,
+    force_refresh: bool = False,
+    max_tokens: Optional[int] = None,
+    minimize_reasoning: Optional[bool] = None,
+    timeout: Optional[float] = None,
+    max_retries: Optional[int] = None,
+    expect_json: bool = False,
+    json_validator: Optional[Callable[[str], Any]] = None,
+) -> LLMResponse:
+    """Invoke configured primary LLM and seamlessly fail over across backup providers (G2/G3).
+
+    - Skips providers without credentials, without a required model, or currently paused.
+    - Immediately pauses & fails over on daily quota (429 free-models-per-day), credit exhausted (402),
+      auth rejection (401/403), or missing model (404), and fails over when per-minute 429 retries
+      or minimal-reasoning JSON retries still fail.
+    - When `expect_json=True`, retries ONCE on the same provider with minimal reasoning & JSON-only
+      instruction before moving to the next backup provider.
+    """
+    if llm_adapter is not None and getattr(llm_adapter, "provider", "") == "fake":
+        resp = llm_adapter.generate(
+            prompt=prompt,
+            fake_kind=fake_kind,
+            fake_kwargs=fake_kwargs,
+            force_refresh=force_refresh,
+            max_tokens=max_tokens,
+            minimize_reasoning=minimize_reasoning,
+        )
+        resp.providers_tried = ["fake"]
+        resp.provider_errors = {}
+        resp.attempts_summary = "fake: ok"
+        return resp
+
+    inferred_primary = primary_provider
+    if inferred_primary is None and llm_adapter is not None:
+        inferred_primary = getattr(llm_adapter, "provider", None)
+
+    chain = build_provider_failover_chain(
+        primary_provider=inferred_primary,
+        failover_chain=failover_chain,
+    )
+    statuses = {item["provider"]: item for item in get_provider_chain_status(chain)}
+    provider_errors: Dict[str, str] = {}
+    providers_tried: List[str] = []
+    last_terminal_exc: Optional[Exception] = None
+
+    eff_timeout = float(timeout) if timeout is not None else float(getattr(llm_adapter, "timeout", 90.0) or 90.0)
+    eff_retries = (
+        int(max_retries)
+        if max_retries is not None
+        else int(getattr(llm_adapter, "max_retries", 2 if len(chain) > 1 else 3) or 2)
+    )
+    eff_retry_delay = float(getattr(llm_adapter, "retry_delay", 1.5) or 1.5)
+    custom_mock_adapter = (
+        llm_adapter is not None
+        and type(llm_adapter).generate is not LLMAdapter.generate
+    )
+
+    def _invoke_once(
+        pid: str,
+        model_id: str,
+        prompt_text: str,
+        min_reason: Optional[bool],
+        toks: Optional[int],
+    ) -> LLMResponse:
+        use_injected = (
+            llm_adapter is not None
+            and len(providers_tried) == 1
+            and (custom_mock_adapter or getattr(llm_adapter, "provider", pid) == pid)
+        )
+        if use_injected:
+            try:
+                return llm_adapter.generate(
+                    prompt=prompt_text,
+                    fake_kind=fake_kind,
+                    fake_kwargs=fake_kwargs,
+                    force_refresh=force_refresh,
+                    max_tokens=toks,
+                    minimize_reasoning=min_reason,
+                )
+            except TypeError:
+                try:
+                    return llm_adapter.generate(prompt=prompt_text, max_tokens=toks)
+                except TypeError:
+                    return llm_adapter.generate(prompt=prompt_text)
+
+        adapter = LLMAdapter(
+            provider=pid,
+            model=model_id,
+            timeout=eff_timeout,
+            max_retries=eff_retries,
+            retry_delay=eff_retry_delay,
+            cache_dir=getattr(llm_adapter, "cache_dir", None) if llm_adapter is not None else None,
+        )
+        return adapter.generate(
+            prompt=prompt_text,
+            fake_kind=fake_kind,
+            fake_kwargs=fake_kwargs,
+            force_refresh=force_refresh,
+            max_tokens=toks,
+            minimize_reasoning=min_reason,
+        )
+
+    def _validate_json_response(resp: LLMResponse) -> bool:
+        if not expect_json and json_validator is None:
+            return True
+        if json_validator is not None:
+            return bool(json_validator(resp.content))
+        from app.services.longform.script_generator import extract_json_payload
+        payload = extract_json_payload(resp.content or "")
+        if not payload:
+            return False
+        try:
+            parsed = json.loads(payload)
+            return isinstance(parsed, (dict, list)) and bool(parsed)
+        except Exception:
+            return False
+
+    for pid in chain:
+        st = statuses.get(pid, {})
+        st_code = str(st.get("status") or "no_key")
+        allow_mocked_bypass = custom_mock_adapter and pid == chain[0]
+        if not st.get("ready") and not allow_mocked_bypass:
+            provider_errors[pid] = str(st.get("pause_label") or st_code)
+            logger.debug(f"LLM failover skip provider '{pid}': {provider_errors[pid]}")
+            continue
+
+        providers_tried.append(pid)
+        model_id = str(st.get("model") or "")
+        try:
+            resp = _invoke_once(pid, model_id, prompt, minimize_reasoning, max_tokens)
+            if not _validate_json_response(resp):
+                # G3: Retry ONCE on the SAME provider with minimal reasoning + strict JSON reminder
+                json_retry_prompt = (
+                    f"{prompt.rstrip()}\n\n"
+                    "Return JSON only matching the requested schema. No prose, no markdown explanation, no reasoning text."
+                )
+                retry_tokens = max(int(max_tokens or 1024), 1024)
+                logger.info(
+                    f"LLM provider '{pid}' returned non-JSON/empty JSON payload; retrying once with minimize_reasoning=True"
+                )
+                resp = _invoke_once(pid, model_id, json_retry_prompt, True, retry_tokens)
+                if not _validate_json_response(resp):
+                    raise LLMEmptyResponseError(
+                        f"Provider '{pid}' returned invalid/empty JSON after minimal-reasoning retry",
+                        finish_reason="invalid_json",
+                        has_reasoning=False,
+                        http_ok=True,
+                        max_tokens_used=retry_tokens,
+                    )
+
+            resp.failover_used = len(providers_tried) > 1 or bool(provider_errors)
+            resp.providers_tried = list(providers_tried)
+            resp.provider_errors = dict(provider_errors)
+            resp.attempts_summary = _format_failover_attempts_summary(
+                chain, provider_errors, succeeded_provider=pid
+            )
+            if resp.failover_used:
+                logger.info(
+                    f"LLM failover succeeded using '{pid}' ({resp.model}); prior outcomes: "
+                    + sanitize_error(json.dumps(provider_errors, ensure_ascii=False))
+                )
+            return resp
+        except Exception as exc:
+            err_tag, pause_reason, norm_exc = _classify_failover_exception(exc, model=model_id)
+            provider_errors[pid] = err_tag
+            last_terminal_exc = norm_exc
+            if pause_reason:
+                mark_provider_paused(pid, reason=pause_reason, error_detail=str(norm_exc))
+            logger.warning(
+                f"LLM provider '{pid}' failed ({err_tag}): {sanitize_error(str(norm_exc))[:160]}"
+            )
+
+    summary = _format_failover_attempts_summary(chain, provider_errors, succeeded_provider=None)
+    if last_terminal_exc is not None:
+        try:
+            setattr(last_terminal_exc, "providers_tried", list(providers_tried))
+            setattr(last_terminal_exc, "provider_errors", dict(provider_errors))
+            setattr(last_terminal_exc, "attempts_summary", summary)
+        except Exception:
+            pass
+        if len(chain) > 1 and summary:
+            msg = sanitize_error(f"{last_terminal_exc} | Provider dicoba: {summary}")
+            new_exc = type(last_terminal_exc)(msg) if type(last_terminal_exc) is not LLMRateLimitError else LLMRateLimitError(
+                msg,
+                is_daily=getattr(last_terminal_exc, "is_daily", False),
+                retry_after_seconds=getattr(last_terminal_exc, "retry_after_seconds", None),
+                reset_hint=getattr(last_terminal_exc, "reset_hint", ""),
+            )
+            try:
+                setattr(new_exc, "providers_tried", list(providers_tried))
+                setattr(new_exc, "provider_errors", dict(provider_errors))
+                setattr(new_exc, "attempts_summary", summary)
+            except Exception:
+                pass
+            raise new_exc from last_terminal_exc
+        raise last_terminal_exc
+
+    err = LLMAdapterError(sanitize_error(f"Semua penyedia AI dilewati/dijeda: {summary or 'tidak ada key siap'}"))
+    setattr(err, "providers_tried", list(providers_tried))
+    setattr(err, "provider_errors", dict(provider_errors))
+    setattr(err, "attempts_summary", summary)
+    raise err
+
+
+def test_llm_provider(provider_id: str, timeout: float = 15.0) -> Tuple[bool, str, float]:
+    """Run lightweight connection ping against a specific provider ID (clears pause on success)."""
+    pid = (provider_id or config.app.get("llm_provider") or DEFAULT_LLM_PROVIDER_ID).lower().strip()
+    active = str(config.app.get("llm_provider") or DEFAULT_LLM_PROVIDER_ID).lower().strip()
+    if pid == active:
+        return test_llm_connection()
+
+    prov_def = get_llm_provider(pid)
+    readiness = get_llm_readiness(pid)
+    if not readiness.get("configured"):
+        return False, sanitize_error(str(readiness.get("message") or "API key belum diatur")), 0.0
+    model_name = str(readiness.get("model") or "").strip()
+    if prov_def and prov_def.requires_model_name and not model_name:
+        return False, "Model belum diisi", 0.0
+
+    t0 = time.perf_counter()
+    try:
+        adapter = LLMAdapter(provider=pid, model=model_name, max_retries=1, timeout=float(timeout))
+        resp = adapter.generate(
+            prompt="Reply with exactly: OK",
+            fake_kind="test_connection",
+            force_refresh=True,
+            max_tokens=MAX_TOKENS_TEST_CONNECTION,
+            minimize_reasoning=True,
+        )
+        clear_provider_pause(pid)
+        return True, sanitize_error((resp.content or "").strip()), float(time.perf_counter() - t0)
+    except Exception as exc:
+        return False, sanitize_error(str(exc)), float(time.perf_counter() - t0)
+
+
+def test_all_llm_providers(chain: Optional[Sequence[str]] = None, timeout: float = 12.0) -> List[Dict[str, Any]]:
+    """Sequentially verify primary + configured failover providers with safe status messages (G4)."""
+    targets = list(chain) if chain is not None else build_provider_failover_chain()
+    results: List[Dict[str, Any]] = []
+    for raw_pid in targets:
+        pid = str(raw_pid or "").strip().lower()
+        if not pid:
+            continue
+        readiness = get_llm_readiness(pid)
+        prov_def = get_llm_provider(pid)
+        model_name = str(readiness.get("model") or "").strip()
+        if not readiness.get("configured"):
+            results.append({
+                "provider": pid,
+                "label": readiness.get("provider_label") or pid,
+                "model": model_name,
+                "ok": False,
+                "status": "invalid_key" if readiness.get("is_invalid") else "no_key",
+                "latency": 0.0,
+                "message": "API key belum diatur" if not readiness.get("is_invalid") else "API key tidak valid",
+            })
+            continue
+        if prov_def and prov_def.requires_model_name and not model_name:
+            results.append({
+                "provider": pid,
+                "label": readiness.get("provider_label") or pid,
+                "model": "",
+                "ok": False,
+                "status": "needs_model",
+                "latency": 0.0,
+                "message": "Perlu model",
+            })
+            continue
+        ok, msg, latency = test_llm_provider(pid, timeout=timeout)
+        results.append({
+            "provider": pid,
+            "label": readiness.get("provider_label") or pid,
+            "model": model_name,
+            "ok": bool(ok),
+            "status": "ok" if ok else "failed",
+            "latency": round(float(latency or 0.0), 2),
+            "message": sanitize_error(msg or ""),
+        })
+    return results
+
 

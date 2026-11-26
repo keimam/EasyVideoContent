@@ -32,16 +32,23 @@ from app.services.llm import (
 from app.services.longform.hashing import hash_string, normalize_text
 from app.services.longform.llm_adapter import (
     LLMAdapterError,
+    LLMAuthError,
     LLMCreditError,
+    LLMDailyQuotaError,
     LLMEmptyResponseError,
     LLMModelNotFoundError,
     LLMRateLimitError,
     MAX_TOKENS_VISION_RELEVANCE,
+    _classify_failover_exception,
     _classify_llm_error,
+    build_provider_failover_chain,
     extract_sdk_completion_or_raise,
     get_llm_readiness,
+    get_provider_chain_status,
     invoke_openai_chat_completion,
+    mark_provider_paused,
     resolve_effective_model,
+    sanitize_error,
 )
 from app.services.longform.schema import Chapter, ItemStatus, ProjectManifest, Shot
 from app.services.longform.store import is_stop_requested
@@ -307,11 +314,12 @@ def _call_vision_provider_once(
     prompt_text: str,
     timeout: float = 45.0,
     max_tokens: int = MAX_TOKENS_VISION_RELEVANCE,
+    provider_id: Optional[str] = None,
 ) -> str:
-    """Invoke active MPT vision LLM with bounded max_tokens and reasoning minimization (F5/F6)."""
+    """Invoke specified (or active) MPT vision LLM with bounded max_tokens and reasoning minimization (F5/F6/G2)."""
     from openai import AzureOpenAI, OpenAI
 
-    llm_provider = str(config.app.get("llm_provider", DEFAULT_LLM_PROVIDER_ID)).lower()
+    llm_provider = str(provider_id or config.app.get("llm_provider", DEFAULT_LLM_PROVIDER_ID)).lower()
     prov_def = get_llm_provider(llm_provider)
     if prov_def is None:
         raise LLMAdapterError(f"Unsupported LLM provider: {llm_provider}")
@@ -427,11 +435,12 @@ def _call_vision_provider_once(
                 pass
 
 
-def _call_vision_with_retry(
+def _call_vision_with_retry_single(
     image_bytes: bytes,
     prompt_text: str,
     model_name: str,
     *,
+    provider_id: Optional[str] = None,
     max_retries: int = 3,
     transport_fn: Optional[Callable[[bytes, str], str]] = None,
 ) -> str:
@@ -443,7 +452,10 @@ def _call_vision_with_retry(
             if transport_fn is not None:
                 return transport_fn(image_bytes, prompt_text)
             return _call_vision_provider_once(
-                image_bytes, prompt_text, max_tokens=cur_max_tokens
+                image_bytes,
+                prompt_text,
+                max_tokens=cur_max_tokens,
+                provider_id=provider_id,
             )
         except LLMEmptyResponseError as exc:
             last_err = exc
@@ -459,7 +471,7 @@ def _call_vision_with_retry(
             msg = _sanitize_error_message(exc)
             classified = _classify_llm_error(msg, model=model_name)
             last_err = classified or exc
-            if isinstance(classified, (LLMCreditError, LLMModelNotFoundError)):
+            if isinstance(classified, (LLMAuthError, LLMCreditError, LLMDailyQuotaError, LLMModelNotFoundError)):
                 raise classified
             is_rate = isinstance(classified, LLMRateLimitError) or "429" in msg or "rate limit" in msg.lower()
             if is_rate and attempt < max_retries - 1:
@@ -468,6 +480,56 @@ def _call_vision_with_retry(
                 time.sleep(delay)
                 continue
             raise last_err
+    raise last_err or LLMAdapterError("Vision evaluation failed")
+
+
+def _call_vision_with_retry(
+    image_bytes: bytes,
+    prompt_text: str,
+    model_name: str,
+    *,
+    max_retries: int = 3,
+    transport_fn: Optional[Callable[[bytes, str], str]] = None,
+) -> str:
+    if transport_fn is not None:
+        return _call_vision_with_retry_single(
+            image_bytes,
+            prompt_text,
+            model_name,
+            max_retries=max_retries,
+            transport_fn=transport_fn,
+        )
+
+    chain = build_provider_failover_chain()
+    statuses = get_provider_chain_status(chain)
+    ready_items = [s for s in statuses if s.get("ready")]
+    if not ready_items:
+        # Preserve single-provider fallback if tests mock SDK directly without keys
+        ready_items = [s for s in statuses[:1] if s.get("status") not in ("paused_quota", "paused_auth", "paused")]
+        if not ready_items:
+            ready_items = statuses[:1]
+
+    last_err: Optional[Exception] = None
+    eff_retries = min(max_retries, 2) if len(ready_items) > 1 else max_retries
+    for item in ready_items:
+        pid = str(item.get("provider") or "")
+        mdl = str(item.get("model") or model_name or "")
+        try:
+            return _call_vision_with_retry_single(
+                image_bytes,
+                prompt_text,
+                mdl,
+                provider_id=pid,
+                max_retries=eff_retries,
+            )
+        except Exception as exc:
+            tag, pause_reason, norm_exc = _classify_failover_exception(exc, model=mdl)
+            last_err = norm_exc
+            if pause_reason:
+                mark_provider_paused(pid, reason=pause_reason, error_detail=str(norm_exc))
+            logger.warning(
+                f"Vision provider '{pid}' failed ({tag}): {sanitize_error(str(norm_exc))[:140]}"
+            )
     raise last_err or LLMAdapterError("Vision evaluation failed")
 
 

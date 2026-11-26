@@ -837,9 +837,8 @@ def suggest_niche_keywords(
 
     # Try LLM proposal if configured
     try:
-        from app.services.longform.llm_adapter import LLMAdapter
+        from app.services.longform.llm_adapter import LLMAdapter, call_llm_with_failover
         adapter = LLMAdapter()
-        adapter.validate_configuration()
         prompt = (
             f"You are a documentary video producer. Propose search keywords and filters for a video project.\n"
             f"Niche: {niche_name}\n"
@@ -851,7 +850,12 @@ def suggest_niche_keywords(
             f"- negative_terms: list of 2-4 visual aspects to avoid\n"
             f"- blocked_terms: list of 2-4 blocked content terms\n"
         )
-        resp = adapter.generate(prompt=prompt, fake_kind="outline")
+        resp = call_llm_with_failover(
+            prompt=prompt,
+            llm_adapter=adapter,
+            fake_kind="outline",
+            expect_json=True,
+        )
         from app.services.longform.script_generator import extract_json_payload
         data = json.loads(extract_json_payload(resp.content))
         if isinstance(data, dict) and "visual_keywords" in data:

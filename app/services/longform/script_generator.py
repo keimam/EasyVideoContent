@@ -29,6 +29,8 @@ from app.services.longform.language_guard import (
 from app.services.longform.llm_adapter import (
     LLMAdapter,
     LLMAdapterError,
+    LLMResponse,
+    call_llm_with_failover,
     compute_script_max_tokens,
 )
 from app.services.longform.presets import get_preset
@@ -181,7 +183,7 @@ class ScriptGenerator:
             "chapter_text": chapter_text,
         }
         prompt = render_prompt("summary", context)
-        resp = self.adapter.generate(
+        resp = self._generate_with_failover(
             prompt=prompt,
             fake_kind="summary",
             fake_kwargs={
@@ -191,6 +193,7 @@ class ScriptGenerator:
             },
             force_refresh=force_refresh,
             max_tokens=compute_script_max_tokens("summary"),
+            expect_json=True,
         )
         json_str = extract_json_payload(resp.content)
         try:
@@ -203,6 +206,27 @@ class ScriptGenerator:
         except Exception as exc:
             logger.warning(f"Failed to parse chapter summary JSON: {exc}. Falling back to default.")
             return f"Chapter {chapter_index} ({chapter_title}) established core story points.", []
+
+    def _generate_with_failover(
+        self,
+        *,
+        prompt: str,
+        fake_kind: Optional[str] = None,
+        fake_kwargs: Optional[Dict[str, Any]] = None,
+        force_refresh: bool = False,
+        max_tokens: Optional[int] = None,
+        expect_json: bool = False,
+    ) -> LLMResponse:
+        return call_llm_with_failover(
+            prompt=prompt,
+            primary_provider=getattr(self.adapter, "provider", None),
+            llm_adapter=self.adapter,
+            fake_kind=fake_kind,
+            fake_kwargs=fake_kwargs,
+            force_refresh=force_refresh,
+            max_tokens=max_tokens,
+            expect_json=expect_json,
+        )
 
     @staticmethod
     def _outline_combined_text(outline: ScriptOutline) -> str:
@@ -312,7 +336,7 @@ class ScriptGenerator:
                     + base_prompt
                 )
 
-            resp = self.adapter.generate(
+            resp = self._generate_with_failover(
                 prompt=prompt,
                 fake_kind="outline",
                 fake_kwargs={
@@ -323,6 +347,7 @@ class ScriptGenerator:
                 },
                 force_refresh=eff_refresh,
                 max_tokens=compute_script_max_tokens("outline", total_target_words),
+                expect_json=True,
             )
 
             json_str = extract_json_payload(resp.content)
@@ -588,7 +613,7 @@ class ScriptGenerator:
                     + base_prompt
                 )
 
-            resp = self.adapter.generate(
+            resp = self._generate_with_failover(
                 prompt=prompt,
                 fake_kind="chapter",
                 fake_kwargs={
@@ -626,7 +651,7 @@ class ScriptGenerator:
                     "chapter_text": chapter_content,
                 }
                 rev_prompt = render_prompt("revise_length", rev_context)
-                rev_resp = self.adapter.generate(
+                rev_resp = self._generate_with_failover(
                     prompt=rev_prompt,
                     fake_kind="revise_length",
                     fake_kwargs={
