@@ -99,8 +99,11 @@ def _shot_narration_text(ch: Chapter, sh: Shot) -> str:
 
 
 _FLASHBACK_CUE_RE = re.compile(
-    r"\b(?:when\s+(?:you|she|he|they)\s+were\s+(?:young|little|small|a\s+(?:child|boy|girl)|[a-z]+|\d+)"
-    r"|at\s+age\s+\d+|years?\s+old|year[\-\s]old|as\s+a\s+(?:child|boy|girl)"
+    r"\b(?:when\s+(?:you|she|he|they|[a-z]+)\s+(?:were|was)\s+(?:young|little|small|a\s+(?:child|boy|girl)|[a-z]+|\d+)"
+    r"|at\s+(?:the\s+)?age\s+(?:of\s+)?(?:\d+|four|five|six|seven|eight|nine|ten|eleven|twelve)|years?\s+old|year[\-\s]old"
+    r"|as\s+a\s+(?:young\s+)?(?:child|boy|girl)"
+    r"|saat\s+(?:masih\s+)?(?:kecil|anak-anak|berusia\s+(?:\d+|delapan|[a-z]+))"
+    r"|ketika\s+(?:kamu|ia|dia)?\s*(?:masih\s+)?kecil|berusia\s+\d+"
     r"|childhood|flashback|younger\s+self|years?\s+(?:earlier|ago)|in\s+(?:her|his|your)\s+youth)\b",
     re.IGNORECASE,
 )
@@ -118,7 +121,11 @@ def _resolve_flashback_variant_for_text(
     if not variants:
         return char_id
     low = str(narr_text or "").lower()
-    word_digits = {"five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9", "ten": "10", "eleven": "11", "twelve": "12"}
+    word_digits = {
+        "four": "4", "five": "5", "six": "6", "seven": "7", "eight": "8",
+        "nine": "9", "ten": "10", "eleven": "11", "twelve": "12",
+        "empat": "4", "lima": "5", "enam": "6", "tujuh": "7", "delapan": "8", "sembilan": "9", "sepuluh": "10",
+    }
     age_tokens: set[str] = set(re.findall(r"\b\d{1,2}\b", low))
     for w, d in word_digits.items():
         if re.search(rf"\b{w}\b", low):

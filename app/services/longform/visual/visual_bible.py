@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from loguru import logger
 
@@ -173,6 +173,237 @@ def sanitize_visual_description_time_words(raw_desc: str) -> str:
     return out
 
 
+_CARRIED_PROP_NOUNS = (
+    r"(?:skull\s+lantern|glowing\s+lantern|oil\s+lamp|brass\s+lamp|lantern|"
+    r"wooden\s+doll|porcelain\s+doll|rag\s+doll|doll|"
+    r"iron\s+key|rusty\s+key|golden\s+key|key|"
+    r"wicker\s+basket|heavy\s+basket|basket|"
+    r"candle|taper|torch|dagger|knife|sword|satchel|pouch|scroll|letter|map|goblet|chalice|bucket|pail)"
+)
+_LOCATION_HELD_PROP_RE = re.compile(
+    rf",?\s*\b(?:while\s+)?(?:holds?|holding|carries|carrying|clutching|clutches|grasping|with)\s+"
+    rf"(?:a|an|the|her|his|their)?\s*(?:[a-z]+\s+){{0,2}}{_CARRIED_PROP_NOUNS}\b[^,.;]*",
+    re.IGNORECASE,
+)
+_LOCATION_LOOSE_PROP_RE = re.compile(
+    rf",?\s*\b(?:a|an|the|small|tiny|glowing|carved|wooden|iron|old|brass)?\s*{_CARRIED_PROP_NOUNS}\s+"
+    rf"(?:lies|lying|resting|rests|placed|sitting|sits|left|dropped|hanging|hangs|gleaming)\s+"
+    rf"(?:on|upon|by|near|beside|inside|at)\s+[^,.;]*",
+    re.IGNORECASE,
+)
+_LOCATION_SIMPLE_PROP_PHRASE_RE = re.compile(
+    rf",?\s*(?:with\s+)?(?:a|an|the)?\s*(?:small\s+|glowing\s+|carved\s+)?(?:skull\s+lantern|wooden\s+doll|iron\s+key)\b[^,.;]*",
+    re.IGNORECASE,
+)
+
+
+def strip_carried_objects_from_location_desc(raw_desc: str) -> str:
+    """Remove transient handheld/carried props from static location descriptions so shot continuity owns props (G5)."""
+    txt = str(raw_desc or "").strip()
+    if not txt:
+        return ""
+    out = _LOCATION_HELD_PROP_RE.sub("", txt)
+    out = _LOCATION_LOOSE_PROP_RE.sub("", out)
+    out = _LOCATION_SIMPLE_PROP_PHRASE_RE.sub("", out)
+    out = re.sub(r"\s+,", ",", out)
+    out = re.sub(r",\s*,+", ", ", out)
+    out = re.sub(r"\s{2,}", " ", out).strip(" ,;-.")
+    if len(out) < 6 or not re.search(r"[a-z]{3,}", out, re.I):
+        return txt
+    return out
+
+
+_AGE_WORDS_MAP: Dict[str, int] = {
+    "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9,
+    "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
+    "empat": 4, "lima": 5, "enam": 6, "tujuh": 7, "delapan": 8, "sembilan": 9, "sepuluh": 10,
+}
+_AGE_TOKEN_PATTERN = "|".join(sorted(_AGE_WORDS_MAP.keys(), key=len, reverse=True) + [r"\d{1,2}"])
+_FLASHBACK_CUE_PATTERNS = (
+    re.compile(
+        rf"\bwhen\s+(?P<subj>you|she|he|they|[A-Z][a-z]+)\s+(?:was|were)\s+(?P<age>{_AGE_TOKEN_PATTERN})\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"\bat\s+(?:the\s+)?age\s+(?:of\s+)?(?P<age>{_AGE_TOKEN_PATTERN})\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"\b(?P<age>{_AGE_TOKEN_PATTERN})[\-\s]+years?[\-\s]+old\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"\b(?:saat|ketika)\s+(?:(?P<subj>kamu|ia|dia|[A-Z][a-z]+)\s+)?(?:masih\s+)?(?:kecil|anak-anak|berusia\s+(?P<age>{_AGE_TOKEN_PATTERN}))\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"\bberusia\s+(?P<age>{_AGE_TOKEN_PATTERN})\s+tahun\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:as\s+a\s+(?:young\s+)?(?:child|little\s+girl|little\s+boy)|in\s+(?:her|his|your)\s+(?:childhood|youth)|years?\s+earlier)\b",
+        re.IGNORECASE,
+    ),
+)
+
+
+def _parse_age_token(raw_tok: Optional[str]) -> Optional[int]:
+    if not raw_tok:
+        return None
+    low = str(raw_tok).strip().lower()
+    if low.isdigit():
+        val = int(low)
+        return val if 2 <= val <= 16 else None
+    return _AGE_WORDS_MAP.get(low)
+
+
+def detect_script_flashback_cues(script_text: str) -> List[Dict[str, Any]]:
+    """Detect childhood/younger-age flashback cues across the narration script (G5)."""
+    text = str(script_text or "").strip()
+    if not text:
+        return []
+    clauses = [c.strip() for c in re.split(r"(?<=[.!?\n])\s+", text) if c.strip()]
+    cues: List[Dict[str, Any]] = []
+    for clause in clauses:
+        for pat in _FLASHBACK_CUE_PATTERNS:
+            m = pat.search(clause)
+            if not m:
+                continue
+            gd = m.groupdict()
+            age_num = _parse_age_token(gd.get("age"))
+            # Ignore adult ages >= 17 even if matched by "X years old"
+            if gd.get("age") is not None and age_num is None:
+                continue
+            cues.append({
+                "age": age_num,
+                "subject": str(gd.get("subj") or "").strip(),
+                "snippet": clause[:220],
+            })
+            break
+    return cues
+
+
+def _derive_flashback_description(base_desc: str, age: Optional[int]) -> str:
+    clean = sanitize_visual_description_time_words(base_desc) or str(base_desc or "").strip()
+    low = clean.lower()
+    is_male = bool(re.search(r"\b(?:man|boy|male|gentleman|husband|father|brother)\b", low)) and not bool(
+        re.search(r"\b(?:woman|girl|female|daughter|sister|mother)\b", low)
+    )
+    noun = "boy" if is_male else "girl"
+    age_phrase = f"{age}-year-old {noun}" if age else f"young {noun}"
+    if not clean:
+        return f"{age_phrase} in simple traditional clothing"
+    out = re.sub(
+        r"\b(?:young\s+)?(?:woman|man|adult|maiden|youth|girl|boy)\b",
+        age_phrase,
+        clean,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+    out = re.sub(r"\b(?:late|early|mid)?[\s\-]*(?:\d{2}s|\d{2}[\-\s]+years?[\-\s]+old)\b", f"age {age}" if age else "childhood", out, flags=re.IGNORECASE)
+    if str(age or "") not in out and age_phrase not in out.lower():
+        out = f"{age_phrase}, {out}"
+    return re.sub(r"\s{2,}", " ", out).strip(" ,")
+
+
+def ensure_flashback_character_variants(
+    bible: VisualBible,
+    script_text: str,
+) -> Tuple[VisualBible, bool]:
+    """Ensure every younger-age flashback cue in `script_text` has a matching `variant_of` entry (G5)."""
+    cues = detect_script_flashback_cues(script_text)
+    if not cues or not (bible.characters or []):
+        return bible, False
+
+    base_chars = [c for c in bible.characters if not getattr(c, "variant_of", None)]
+    if not base_chars:
+        return bible, False
+
+    existing_ids = {c.id for c in bible.characters}
+    added_variants: Dict[str, List[VisualBibleCharacter]] = {}
+    changed = False
+
+    for cue in cues:
+        age = cue.get("age")
+        subj = str(cue.get("subject") or "").strip().lower()
+        snip_low = str(cue.get("snippet") or "").lower()
+
+        target_base: Optional[VisualBibleCharacter] = None
+        # 1. Explicit proper name match in snippet/subject
+        for bc in base_chars:
+            names = [bc.name] + list(bc.aliases or [])
+            if any(re.search(rf"(?<![a-z0-9]){re.escape(nm.lower())}(?![a-z0-9])", snip_low) for nm in names if nm):
+                target_base = bc
+                break
+        # 2. Second-person POV fallback
+        if target_base is None and (subj in ("you", "kamu") or re.search(r"\b(?:you|your|kamu)\b", snip_low)):
+            pov_id = str(getattr(bible, "pov_character_id", None) or "").strip()
+            if pov_id:
+                target_base = next((bc for bc in base_chars if bc.id == pov_id), None)
+        # 3. Protagonist fallback
+        if target_base is None:
+            target_base = next(
+                (bc for bc in base_chars if "protagonist" in str(bc.role or "").lower()),
+                base_chars[0],
+            )
+
+        existing_variants = [
+            c for c in list(bible.characters) + added_variants.get(target_base.id, [])
+            if getattr(c, "variant_of", None) == target_base.id
+        ]
+        if age is not None:
+            already = any(
+                re.search(rf"(?<![a-z0-9])(?:{age}|child{age})(?![a-z0-9])", f"{v.id} {v.name} {v.description}".lower())
+                for v in existing_variants
+            )
+        else:
+            already = bool(existing_variants)
+        if already:
+            continue
+
+        suffix = f"_child{age}" if age is not None else "_child"
+        vid = f"{target_base.id}{suffix}"
+        n = 2
+        while vid in existing_ids:
+            vid = f"{target_base.id}{suffix}_{n}"
+            n += 1
+        existing_ids.add(vid)
+
+        variant = VisualBibleCharacter(
+            id=vid,
+            name=f"Young {target_base.name}",
+            aliases=[],
+            role="flashback_younger_self",
+            variant_of=target_base.id,
+            description=_derive_flashback_description(target_base.description, age),
+        )
+        added_variants.setdefault(target_base.id, []).append(variant)
+        changed = True
+
+    if not changed:
+        return bible, False
+
+    new_chars: List[VisualBibleCharacter] = []
+    for ch in bible.characters:
+        new_chars.append(ch)
+        for v in added_variants.get(ch.id, []):
+            new_chars.append(v)
+
+    updated = VisualBible(
+        world=bible.world,
+        style_mode=bible.style_mode,
+        style=bible.style,
+        palette_lighting=bible.palette_lighting,
+        pov_character_id=bible.pov_character_id,
+        characters=new_chars,
+        locations=list(bible.locations or []),
+        chapter_overrides=list(bible.chapter_overrides or []),
+        avoid=bible.avoid,
+        source=bible.source,
+    )
+    return updated, True
+
+
 _ERA_REGEX = re.compile(
     r"(?:"
     r"\b\d{1,2}(?:st|nd|rd|th)\s+century\b"
@@ -264,9 +495,14 @@ def auto_clean_visual_bible(
         notes.append(f"alias terlarang/ganda dihapus ({', '.join(removed_aliases_note[:5])})")
 
     cleaned_locs: List[VisualBibleLocation] = []
+    stripped_prop_count = 0
     for loc in bible.locations or []:
         orig_ld = str(loc.description or "").strip()
         clean_ld = sanitize_visual_description_time_words(orig_ld) or orig_ld
+        no_prop_ld = strip_carried_objects_from_location_desc(clean_ld)
+        if no_prop_ld != clean_ld:
+            stripped_prop_count += 1
+            clean_ld = no_prop_ld
         if clean_ld != orig_ld:
             cleaned_desc_count += 1
         cleaned_locs.append(
@@ -275,6 +511,8 @@ def auto_clean_visual_bible(
 
     if cleaned_desc_count > 0:
         notes.append(f"kata waktu/cahaya dihapus dari {cleaned_desc_count} deskripsi tokoh/lokasi")
+    if stripped_prop_count > 0:
+        notes.append(f"benda bawaan dihapus dari {stripped_prop_count} deskripsi lokasi")
 
     pov_id = str(getattr(bible, "pov_character_id", None) or "").strip() or None
     if not pov_id and cleaned_chars and manifest is not None:
@@ -304,6 +542,11 @@ def auto_clean_visual_bible(
         avoid=clean_avoid,
         source=bible.source,
     )
+    if manifest is not None and cleaned_vb.characters:
+        fb_script = collect_project_script_text(manifest, max_chars=24000)
+        cleaned_vb, added_fb = ensure_flashback_character_variants(cleaned_vb, fb_script)
+        if added_fb:
+            notes.append("varian tokoh kilas balik (variant_of) dilengkapi otomatis")
     return cleaned_vb, notes
 
 
@@ -594,6 +837,7 @@ def _coerce_visual_bible(
     source: str = "ai",
     style_mode: Optional[str] = None,
     project_id: Optional[str] = None,
+    script_text: str = "",
 ) -> VisualBible:
     eff_mode = normalize_style_mode(style_mode or fallback.style_mode)
     world = clean_world_slug_prefix(str(raw.get("world") or ""), project_id=project_id) or fallback.world
@@ -659,11 +903,13 @@ def _coerce_visual_bible(
             while lid in seen_lids:
                 lid = f"{lid}_{idx}"
             seen_lids.add(lid)
+            clean_ld = sanitize_visual_description_time_words(desc) or desc
+            clean_ld = strip_carried_objects_from_location_desc(clean_ld) or clean_ld
             locs.append(
                 VisualBibleLocation(
                     id=lid,
                     name=name or lid,
-                    description=sanitize_visual_description_time_words(desc) or desc,
+                    description=clean_ld,
                 )
             )
 
@@ -682,7 +928,7 @@ def _coerce_visual_bible(
             if w or e:
                 overrides.append(VisualBibleChapterOverride(chapter_index=c_idx, world=w, era=e))
 
-    return VisualBible(
+    vb = VisualBible(
         world=world,
         style_mode=eff_mode,
         style=style,
@@ -694,6 +940,9 @@ def _coerce_visual_bible(
         avoid=avoid,
         source=source,
     )
+    if script_text:
+        vb, _ = ensure_flashback_character_variants(vb, script_text)
+    return vb
 
 
 def _build_visual_bible_llm_prompt(
@@ -770,9 +1019,14 @@ def ensure_project_visual_bible(
 ) -> Dict[str, Any]:
     """Load, generate (with active LLM + JSON recovery), or template-build `manifest.visual_bible` (F1, FA1.2)."""
     if not force and manifest.visual_bible is not None:
+        cur_vb = manifest.visual_bible
+        fb_txt = collect_project_script_text(manifest)
+        cur_vb, fb_changed = ensure_flashback_character_variants(cur_vb, fb_txt)
+        if fb_changed:
+            manifest.visual_bible = cur_vb
         return {
-            "visual_bible": manifest.visual_bible,
-            "source": manifest.visual_bible.source or "manifest",
+            "visual_bible": cur_vb,
+            "source": cur_vb.source or "manifest",
             "cached": False,
         }
 
@@ -850,6 +1104,7 @@ def ensure_project_visual_bible(
             source="ai",
             style_mode=eff_mode,
             project_id=manifest.project_id,
+            script_text=script_text,
         )
         manifest.visual_bible = vb
         cache[c_key] = {
