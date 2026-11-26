@@ -46,6 +46,21 @@ _RAW_TOKEN_RE = re.compile(
 )
 
 
+def get_effective_app_config(app_config: Any = None) -> Dict[str, Any]:
+    """Return live config.app merged with any deferred WebUI updates (GA2.2)."""
+    cfg_obj = app_config or config
+    section = getattr(cfg_obj, "app", cfg_obj)
+    snap_fn = getattr(cfg_obj, "snapshot_config_with_pending", None)
+    if callable(snap_fn) and isinstance(section, dict):
+        try:
+            snap = snap_fn(section)
+            if isinstance(snap, dict):
+                return snap
+        except Exception:
+            pass
+    return dict(section) if isinstance(section, dict) else {}
+
+
 def sanitize_error(msg: str) -> str:
     """Mask potential API keys, secrets, user IDs, or embedded raw credentials in error messages."""
     masked = _SENSITIVE_KEY_RE.sub(r"\1***REDACTED***", str(msg))
@@ -588,7 +603,8 @@ class LLMAdapter:
         retry_delay: float = 1.0,
         fake_delay: float = 0.0,
     ) -> None:
-        self.provider = (provider or config.app.get("llm_provider") or DEFAULT_LLM_PROVIDER_ID).lower().strip()
+        app_cfg = get_effective_app_config()
+        self.provider = (provider or app_cfg.get("llm_provider") or DEFAULT_LLM_PROVIDER_ID).lower().strip()
         self.fake_delay = float(fake_delay)
         self.cache_dir = Path(cache_dir).resolve() if cache_dir else None
         self.timeout = timeout
@@ -604,7 +620,7 @@ class LLMAdapter:
             self.model = "deterministic-fake-v1"
         else:
             prov_def = get_llm_provider(self.provider)
-            raw_model = config.app.get(prov_def.config_key("model_name"), "") if prov_def else ""
+            raw_model = app_cfg.get(prov_def.config_key("model_name"), "") if prov_def else ""
             self.model, self.used_safe_default = resolve_effective_model(self.provider, raw_model)
 
         if self.cache_dir:
@@ -624,11 +640,12 @@ class LLMAdapter:
         if readiness.get("configured"):
             return
 
+        app_cfg = get_effective_app_config()
         prov_def = get_llm_provider(self.provider)
         if prov_def:
             if prov_def.requires_api_key:
                 key_name = prov_def.config_key("api_key")
-                key_val = (config.app.get(key_name) or "").strip()
+                key_val = (app_cfg.get(key_name) or "").strip()
                 if not key_val:
                     url_hint = f" ({prov_def.api_key_url})" if prov_def.api_key_url else ""
                     raise LLMConfigurationError(
@@ -644,7 +661,7 @@ class LLMAdapter:
             )
         else:
             key_name = f"{self.provider}_api_key"
-            key_val = (config.app.get(key_name) or "").strip()
+            key_val = (app_cfg.get(key_name) or "").strip()
             if not key_val:
                 raise LLMConfigurationError(
                     f"LLM Provider '{self.provider}' is selected, but '{key_name}' is not configured or empty.\n"
@@ -860,14 +877,15 @@ class LLMAdapter:
         from app.services import llm as upstream_llm
 
         last_error = ""
+        app_cfg = get_effective_app_config()
         resolved_model = self.model
         prov_def = get_llm_provider(self.provider)
         if not resolved_model:
-            raw_model = config.app.get(prov_def.config_key("model_name"), "") if prov_def else ""
+            raw_model = app_cfg.get(prov_def.config_key("model_name"), "") if prov_def else ""
             resolved_model, _ = resolve_effective_model(self.provider, raw_model)
 
         # Build isolated config snapshot honoring explicit adapter provider/model overrides
-        runtime_cfg = dict(config.app)
+        runtime_cfg = dict(app_cfg)
         runtime_cfg["llm_provider"] = self.provider
         if resolved_model and prov_def:
             runtime_cfg[prov_def.config_key("model_name")] = resolved_model
@@ -1318,8 +1336,9 @@ def get_llm_readiness(provider_id: Optional[str] = None) -> Dict[str, Any]:
     Delegates configured provider detection to ``webui.settings_providers.configured_llm_providers``
     and respects OAuth/CLI/local (Ollama) providers with zero duplicate key storage.
     """
+    app_cfg = get_effective_app_config()
     active_id = (
-        provider_id or config.app.get("llm_provider") or DEFAULT_LLM_PROVIDER_ID
+        provider_id or app_cfg.get("llm_provider") or DEFAULT_LLM_PROVIDER_ID
     ).lower().strip()
     prov_def = get_llm_provider(active_id)
     oauth_status = _get_oauth_status_map()
@@ -1328,13 +1347,13 @@ def get_llm_readiness(provider_id: Optional[str] = None) -> Dict[str, Any]:
     try:
         from webui.settings_providers import configured_llm_providers
 
-        configured_tuple = configured_llm_providers(config.app, oauth_status)
+        configured_tuple = configured_llm_providers(app_cfg, oauth_status)
     except Exception:
         configured_tuple = ()
 
     if not prov_def:
-        raw_key = str(config.app.get(f"{active_id}_api_key") or "").strip()
-        raw_model = str(config.app.get(f"{active_id}_model_name") or "").strip()
+        raw_key = str(app_cfg.get(f"{active_id}_api_key") or "").strip()
+        raw_model = str(app_cfg.get(f"{active_id}_model_name") or "").strip()
         is_ready = bool(raw_key)
         return {
             "provider": active_id,
@@ -1351,7 +1370,7 @@ def get_llm_readiness(provider_id: Optional[str] = None) -> Dict[str, Any]:
             "requires_api_key": True,
         }
 
-    raw_model = str(config.app.get(prov_def.config_key("model_name")) or "").strip()
+    raw_model = str(app_cfg.get(prov_def.config_key("model_name")) or "").strip()
     resolved_model, used_safe_default = resolve_effective_model(active_id, raw_model)
     billing_tier = resolve_model_billing_tier(active_id, resolved_model)
     provider_label = prov_def.default_label or active_id
@@ -1360,7 +1379,7 @@ def get_llm_readiness(provider_id: Optional[str] = None) -> Dict[str, Any]:
     # Resolve readiness based on MPT provider kind
     if prov_def.requires_api_key:
         key_name = prov_def.config_key("api_key")
-        raw_key = str(config.app.get(key_name) or "").strip()
+        raw_key = str(app_cfg.get(key_name) or "").strip()
         if not raw_key:
             return {
                 "provider": active_id,
@@ -1499,7 +1518,7 @@ def test_llm_connection() -> Tuple[bool, str, float]:
         getattr(tc_fn, "__module__", "") != "app.services.llm"
         or getattr(tc_fn, "__name__", "") != "test_connection"
     )
-    active_id = (config.app.get("llm_provider") or DEFAULT_LLM_PROVIDER_ID).lower().strip()
+    active_id = (get_effective_app_config().get("llm_provider") or DEFAULT_LLM_PROVIDER_ID).lower().strip()
     prov_def = get_llm_provider(active_id)
     adapter_type = prov_def.adapter if prov_def else "openai_compatible"
     use_upstream_directly = is_mocked_tc or (
@@ -1542,7 +1561,7 @@ def test_llm_connection() -> Tuple[bool, str, float]:
 def supports_model_listing(provider_id: Optional[str] = None) -> bool:
     """Return True if the provider supports dynamic model catalog or ``/models`` listing."""
     active_id = (
-        provider_id or config.app.get("llm_provider") or DEFAULT_LLM_PROVIDER_ID
+        provider_id or get_effective_app_config().get("llm_provider") or DEFAULT_LLM_PROVIDER_ID
     ).lower().strip()
     prov_def = get_llm_provider(active_id)
     if not prov_def:
@@ -1567,8 +1586,9 @@ def list_llm_models(
     """
     import requests
 
+    app_cfg = get_effective_app_config()
     active_id = (
-        provider_id or config.app.get("llm_provider") or DEFAULT_LLM_PROVIDER_ID
+        provider_id or app_cfg.get("llm_provider") or DEFAULT_LLM_PROVIDER_ID
     ).lower().strip()
     prov_def = get_llm_provider(active_id)
     if not prov_def:
@@ -1855,8 +1875,9 @@ def build_provider_failover_chain(
     """Return ordered deduplicated `[primary, *backups]` chain without altering single-provider default (G1)."""
     from app.services.longform.config import get_llm_failover_chain, normalize_llm_failover_chain
 
+    app_cfg = get_effective_app_config()
     active_id = (
-        primary_provider or config.app.get("llm_provider") or DEFAULT_LLM_PROVIDER_ID
+        primary_provider or app_cfg.get("llm_provider") or DEFAULT_LLM_PROVIDER_ID
     ).lower().strip()
     raw_backups = (
         list(normalize_llm_failover_chain(failover_chain))
@@ -1877,8 +1898,9 @@ def build_provider_failover_chain(
 def _provider_key_fingerprint(provider_id: str) -> str:
     pid = (provider_id or "").strip().lower()
     prov_def = get_llm_provider(pid)
+    app_cfg = get_effective_app_config()
     key_name = prov_def.config_key("api_key") if prov_def else f"{pid}_api_key"
-    raw_key = str(config.app.get(key_name) or "").strip()
+    raw_key = str(app_cfg.get(key_name) or "").strip()
     if not raw_key:
         return ""
     return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()[:16]
@@ -1958,8 +1980,9 @@ def mark_provider_paused(
             paused_until_ts = _next_utc_midnight_ts(now)
         else:
             paused_until_ts = now + 3600.0
+    app_cfg = get_effective_app_config()
     prov_def = get_llm_provider(pid)
-    raw_model = str(config.app.get(prov_def.config_key("model_name"), "") or "") if prov_def else ""
+    raw_model = str(app_cfg.get(prov_def.config_key("model_name"), "") or "") if prov_def else ""
     eff_model, _ = resolve_effective_model(pid, raw_model)
     entry = {
         "provider": pid,
@@ -2010,7 +2033,7 @@ def get_provider_pause_state(provider_id: str) -> Optional[Dict[str, Any]]:
             should_clear = True
         if not should_clear and reason == "model_not_found":
             prov_def = get_llm_provider(pid)
-            raw_model = str(config.app.get(prov_def.config_key("model_name"), "") or "") if prov_def else ""
+            raw_model = str(get_effective_app_config().get(prov_def.config_key("model_name"), "") or "") if prov_def else ""
             eff_model, _ = resolve_effective_model(pid, raw_model)
             if eff_model != str(entry.get("model") or ""):
                 should_clear = True
@@ -2425,8 +2448,9 @@ def call_llm_with_failover(
 
 def test_llm_provider(provider_id: str, timeout: float = 15.0) -> Tuple[bool, str, float]:
     """Run lightweight connection ping against a specific provider ID (clears pause on success)."""
-    pid = (provider_id or config.app.get("llm_provider") or DEFAULT_LLM_PROVIDER_ID).lower().strip()
-    active = str(config.app.get("llm_provider") or DEFAULT_LLM_PROVIDER_ID).lower().strip()
+    app_cfg = get_effective_app_config()
+    pid = (provider_id or app_cfg.get("llm_provider") or DEFAULT_LLM_PROVIDER_ID).lower().strip()
+    active = str(app_cfg.get("llm_provider") or DEFAULT_LLM_PROVIDER_ID).lower().strip()
     if pid == active:
         return test_llm_connection()
 

@@ -318,16 +318,18 @@ def _call_vision_provider_once(
 ) -> str:
     """Invoke specified (or active) MPT vision LLM with bounded max_tokens and reasoning minimization (F5/F6/G2)."""
     from openai import AzureOpenAI, OpenAI
+    from app.services.longform.llm_adapter import get_effective_app_config
 
-    llm_provider = str(provider_id or config.app.get("llm_provider", DEFAULT_LLM_PROVIDER_ID)).lower()
+    app_cfg = get_effective_app_config()
+    llm_provider = str(provider_id or app_cfg.get("llm_provider", DEFAULT_LLM_PROVIDER_ID)).lower()
     prov_def = get_llm_provider(llm_provider)
     if prov_def is None:
         raise LLMAdapterError(f"Unsupported LLM provider: {llm_provider}")
 
-    api_key = str(config.app.get(prov_def.config_key("api_key"), "") or "")
-    configured_model = str(config.app.get(prov_def.config_key("model_name"), "") or "")
+    api_key = str(app_cfg.get(prov_def.config_key("api_key"), "") or "")
+    configured_model = str(app_cfg.get(prov_def.config_key("model_name"), "") or "")
     model_name, _ = resolve_effective_model(llm_provider, configured_model)
-    base_url = prov_def.resolve_base_url(str(config.app.get(prov_def.config_key("base_url"), "") or ""))
+    base_url = prov_def.resolve_base_url(str(app_cfg.get(prov_def.config_key("base_url"), "") or ""))
     adapter = prov_def.adapter
 
     if llm_provider == "ollama":

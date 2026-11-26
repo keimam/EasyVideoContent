@@ -283,6 +283,7 @@ def render_settings_studio_controls(*, key_prefix: str = "settings") -> None:
             save_llm_failover_chain,
         )
         from app.services.longform.llm_adapter import (
+            get_effective_app_config,
             get_provider_chain_status,
             sanitize_error,
             test_all_llm_providers,
@@ -292,7 +293,8 @@ def render_settings_studio_controls(*, key_prefix: str = "settings") -> None:
             st.markdown(f"**🔄 {t('settings_failover_heading')}**")
             st.caption(t("settings_failover_help"))
 
-            active_primary = str(app_config.app.get("llm_provider") or DEFAULT_LLM_PROVIDER_ID).lower().strip()
+            effective_app = get_effective_app_config(app_config)
+            active_primary = str(effective_app.get("llm_provider") or DEFAULT_LLM_PROVIDER_ID).lower().strip()
             candidate_pool: list[str] = []
             for cid in (*DEFAULT_FAILOVER_CANDIDATES, "openai", "moonshot", "zhipu", "deepseek", "groq", "gemini", "openrouter"):
                 if cid and cid != active_primary and cid not in candidate_pool:
@@ -310,9 +312,14 @@ def render_settings_studio_controls(*, key_prefix: str = "settings") -> None:
             ms_key = f"{key_prefix}_llm_failover_multiselect"
             if ms_key not in st.session_state or not isinstance(st.session_state.get(ms_key), list):
                 st.session_state[ms_key] = list(saved_chain)
+            else:
+                st.session_state[ms_key] = [
+                    c for c in st.session_state.get(ms_key, [])
+                    if c in candidate_pool and c != active_primary
+                ]
 
             def _on_failover_change() -> None:
-                chosen = list(st.session_state.get(ms_key) or [])
+                chosen = [c for c in (st.session_state.get(ms_key) or []) if c != active_primary]
                 save_llm_failover_chain(chosen)
 
             st.multiselect(
@@ -323,7 +330,8 @@ def render_settings_studio_controls(*, key_prefix: str = "settings") -> None:
                 on_change=_on_failover_change,
             )
 
-            statuses = get_provider_chain_status()
+            statuses = get_provider_chain_status(primary_provider=active_primary)
+            st.caption(t("settings_failover_primary_sync_hint"))
             if statuses:
                 st.caption(t("settings_failover_status_title"))
                 for idx_s, st_item in enumerate(statuses):
