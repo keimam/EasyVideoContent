@@ -423,9 +423,17 @@ def run_benchmark(*, use_llm: bool = True, keep_temp: bool = False) -> Path:
             },
         }
 
+        import json as _json_rep
         out_md = REPO_ROOT / "docs" / "dev" / "BENCHMARK.md"
         out_md.parent.mkdir(parents=True, exist_ok=True)
         out_md.write_text(format_benchmark_markdown(report), encoding="utf-8")
+        try:
+            (proj_dir / "benchmark_summary.json").write_text(
+                _json_rep.dumps(report, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
         print(f"\n[Benchmark] Saved report to {out_md}")
         print(f"  Total time: {total_dur_s:.1f}s | Peak RAM: {max_ram_mb:.1f} MB | Project disk: {total_proj_mb:.1f} MB | Video duration: {final_dur_s:.1f}s")
         return out_md

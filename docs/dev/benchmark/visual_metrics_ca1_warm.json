@@ -1,0 +1,120 @@
+{
+  "project_id": "bench_panama_10m_warm",
+  "total_seconds": 366.797,
+  "allocate_seconds": 0.032,
+  "fetch_seconds": 162.859,
+  "anchor_seconds": 0.937,
+  "anchor_llm_calls": 0,
+  "ai_keywords_seconds": 0.157,
+  "ai_keywords_llm_calls": 8,
+  "ai_keywords_retries": 0,
+  "ai_keywords_cached": 0,
+  "translate_seconds": 0.0,
+  "search_wall_seconds": 140.687,
+  "search_per_source": {
+    "coverr": {
+      "tier_attempts": 53,
+      "http_requests": 53,
+      "cache_hits": 0,
+      "elapsed_seconds": 39.516
+    },
+    "nasa": {
+      "tier_attempts": 343,
+      "http_requests": 2,
+      "cache_hits": 341,
+      "elapsed_seconds": 15.119
+    },
+    "nasa_asset": {
+      "tier_attempts": 0,
+      "http_requests": 2,
+      "cache_hits": 81,
+      "elapsed_seconds": 0.0
+    },
+    "openverse": {
+      "tier_attempts": 273,
+      "http_requests": 3,
+      "cache_hits": 270,
+      "elapsed_seconds": 12.445
+    },
+    "pixabay": {
+      "tier_attempts": 404,
+      "http_requests": 521,
+      "cache_hits": 0,
+      "elapsed_seconds": 339.533
+    },
+    "wikimedia": {
+      "tier_attempts": 331,
+      "http_requests": 1,
+      "cache_hits": 330,
+      "elapsed_seconds": 18.623
+    }
+  },
+  "source_status": {
+    "coverr": {
+      "ok": false,
+      "cooldown": 3,
+      "auth_blocked": false,
+      "rate_limited": true,
+      "timeout": 0,
+      "last_error": "HTTP 403: {\"message\":\"Exceeded query limit\"}"
+    },
+    "nasa": {
+      "ok": true,
+      "cooldown": 0,
+      "auth_blocked": false,
+      "rate_limited": false,
+      "timeout": 0,
+      "last_error": null
+    },
+    "nasa_asset": {
+      "ok": true,
+      "cooldown": 0,
+      "auth_blocked": false,
+      "rate_limited": false,
+      "timeout": 0,
+      "last_error": null
+    },
+    "openverse": {
+      "ok": true,
+      "cooldown": 0,
+      "auth_blocked": false,
+      "rate_limited": false,
+      "timeout": 0,
+      "last_error": null
+    },
+    "pixabay": {
+      "ok": true,
+      "cooldown": 0,
+      "auth_blocked": false,
+      "rate_limited": false,
+      "timeout": 0,
+      "last_error": null
+    },
+    "wikimedia": {
+      "ok": true,
+      "cooldown": 0,
+      "auth_blocked": false,
+      "rate_limited": false,
+      "timeout": 0,
+      "last_error": null
+    }
+  },
+  "thumbnail_seconds": 0.0,
+  "asset_download_seconds": 21.062,
+  "download_cache_hits": 71,
+  "download_misses": 6,
+  "ai_relevance_seconds": 0.0,
+  "build_seconds": 203.765,
+  "ffmpeg_build_seconds": 336.58,
+  "built_count": 77,
+  "skipped_count": 0,
+  "manifest_save_seconds": 3.328,
+  "manifest_save_count": 46,
+  "source_distribution": {
+    "pixabay": 34,
+    "wikimedia": 18,
+    "nasa": 17,
+    "openverse": 8
+  },
+  "total_shots": 77
+}

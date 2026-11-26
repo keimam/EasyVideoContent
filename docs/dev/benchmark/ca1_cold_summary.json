@@ -1,0 +1,77 @@
+{
+  "tested_at": "2026-11-26 16:56:38",
+  "app_version": "1.0.1",
+  "project_id": "bench_panama_10m",
+  "chapters": 6,
+  "shots": 77,
+  "final_duration_s": 450.5,
+  "specs": {
+    "os": "Windows 10 (AMD64)",
+    "cpu_model": "12th Gen Intel(R) Core(TM) i3-12100",
+    "physical_cores": 4,
+    "logical_cores": 8,
+    "ram_gb": 7.75,
+    "disk_free_gb": 9.03,
+    "ffmpeg_version": "ffmpeg version 2025-11-17-git-e94439e49b-full_build-www.gyan.dev Copyright (c) 2000-2025 the FFmpeg developers",
+    "python_version": "3.11.9",
+    "capcut_status": "v8.9.0 (tested)"
+  },
+  "phases": [
+    {
+      "phase": "1. Naskah (Script)",
+      "duration_s": 0.03,
+      "peak_ram_mb": 97.0,
+      "peak_python_ram_mb": 97.0,
+      "peak_ffmpeg_ram_mb": 0.0,
+      "avg_cpu_pct": 32.0,
+      "note": "Impor naskah tolok ukur (1096 kata, 4 bab)"
+    },
+    {
+      "phase": "2. Suara (Voice)",
+      "duration_s": 10.33,
+      "peak_ram_mb": 102.5,
+      "peak_python_ram_mb": 102.5,
+      "peak_ffmpeg_ram_mb": 0.0,
+      "avg_cpu_pct": 7.7,
+      "note": "Edge TTS (450.5 dtk audio)"
+    },
+    {
+      "phase": "3. Visual (Fetch + Build)",
+      "duration_s": 507.51,
+      "peak_ram_mb": 1415.2,
+      "peak_python_ram_mb": 152.8,
+      "peak_ffmpeg_ram_mb": 1281.7,
+      "avg_cpu_pct": 42.7,
+      "note": "77/77 klip shot siap"
+    },
+    {
+      "phase": "4. Render Final",
+      "duration_s": 125.63,
+      "peak_ram_mb": 813.4,
+      "peak_python_ram_mb": 156.1,
+      "peak_ffmpeg_ram_mb": 665.5,
+      "avg_cpu_pct": 74.9,
+      "note": "1080p MP4 + BGM + loudnorm (6 bab)"
+    },
+    {
+      "phase": "5. Ekspor CapCut",
+      "duration_s": 3.15,
+      "peak_ram_mb": 168.8,
+      "peak_python_ram_mb": 156.1,
+      "peak_ffmpeg_ram_mb": 19.7,
+      "avg_cpu_pct": 15.8,
+      "note": "Draft 77 klip + 138 subtitle"
+    }
+  ],
+  "totals": {
+    "total_duration_s": 646.6,
+    "max_peak_ram_mb": 1415.2
+  },
+  "disk": {
+    "assets_mb": 756.5,
+    "export_mb": 627.3,
+    "other_mb": 365.4,
+    "total_project_mb": 1749.2,
+    "cache_mb": 2281.5
+  }
+}

@@ -1,0 +1,64 @@
+{
+  "project_id": "bench_panama_10m_warm",
+  "chapters": 6,
+  "shots": 77,
+  "final_duration_s": 450.5,
+  "phases": [
+    {
+      "phase": "1. Naskah (Script)",
+      "duration_s": 0.05,
+      "peak_ram_mb": 95.7,
+      "peak_python_ram_mb": 95.7,
+      "peak_ffmpeg_ram_mb": 0.0,
+      "avg_cpu_pct": 29.2,
+      "note": "Impor naskah tolok ukur (1096 kata, 6 bab)"
+    },
+    {
+      "phase": "2. Suara (Voice)",
+      "duration_s": 11.08,
+      "peak_ram_mb": 112.9,
+      "peak_python_ram_mb": 101.1,
+      "peak_ffmpeg_ram_mb": 12.8,
+      "avg_cpu_pct": 14.4,
+      "note": "Edge TTS (450.5 dtk audio)"
+    },
+    {
+      "phase": "3. Visual (Fetch + Build)",
+      "duration_s": 369.71,
+      "peak_ram_mb": 1376.1,
+      "peak_python_ram_mb": 139.2,
+      "peak_ffmpeg_ram_mb": 1256.8,
+      "avg_cpu_pct": 51.6,
+      "note": "77/77 klip shot siap"
+    },
+    {
+      "phase": "4. Render Final",
+      "duration_s": 126.22,
+      "peak_ram_mb": 801.2,
+      "peak_python_ram_mb": 142.8,
+      "peak_ffmpeg_ram_mb": 667.2,
+      "avg_cpu_pct": 74.8,
+      "note": "1080p MP4 + BGM + loudnorm (6 bab)"
+    },
+    {
+      "phase": "5. Ekspor CapCut",
+      "duration_s": 2.8,
+      "peak_ram_mb": 155.0,
+      "peak_python_ram_mb": 142.8,
+      "peak_ffmpeg_ram_mb": 19.6,
+      "avg_cpu_pct": 17.9,
+      "note": "Draft 77 klip + 138 subtitle"
+    }
+  ],
+  "totals": {
+    "total_duration_s": 509.9,
+    "max_peak_ram_mb": 1376.1
+  },
+  "disk": {
+    "assets_mb": 768.5,
+    "export_mb": 634.5,
+    "other_mb": 368.3,
+    "total_project_mb": 1771.3,
+    "cache_mb": 2404.4
+  }
+}
