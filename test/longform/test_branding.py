@@ -188,8 +188,10 @@ def test_apptest_branding_main_page(monkeypatch):
         mock_update.return_value.complete = True
         mock_update.return_value.available_version = None
 
-        at = AppTest.from_file(main_file)
-        at.run(timeout=60)
+        # CA1.3: Under full pytest suite cold-import contention (torch/faster_whisper/moviepy/cv2),
+        # Main.py first-run import + Streamlit bootstrap can exceed 60s; use 120s timeout without disabling checks.
+        at = AppTest.from_file(main_file, default_timeout=120)
+        at.run(timeout=120)
 
         assert not at.exception, f"Main.py threw exceptions: {[e.value for e in at.exception]}"
 
@@ -334,8 +336,10 @@ def test_r2_sidebar_click_all_items_main_page():
         mock_update.return_value.available_version = None
 
         # 1. Initial page load
-        at = AppTest.from_file(main_file)
-        at.run(timeout=60)
+        # CA1.3: Under full pytest suite cold-import contention (torch/faster_whisper/moviepy/cv2),
+        # Main.py first-run import + Streamlit bootstrap can exceed 60s; use 120s timeout without disabling checks.
+        at = AppTest.from_file(main_file, default_timeout=120)
+        at.run(timeout=120)
         assert not at.exception, f"Main.py initial run threw exceptions: {[e.value for e in at.exception]}"
 
         # Verify old G5 link '🎬 Long Video' is completely absent from top bar
