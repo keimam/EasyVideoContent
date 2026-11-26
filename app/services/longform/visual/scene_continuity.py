@@ -89,6 +89,40 @@ def _shot_narration_text(ch: Chapter, sh: Shot) -> str:
     return _clean_narration_for_scene(text)
 
 
+_FLASHBACK_CUE_RE = re.compile(
+    r"\b(?:when\s+(?:you|she|he|they)\s+were\s+(?:young|little|small|a\s+(?:child|boy|girl)|[a-z]+|\d+)"
+    r"|at\s+age\s+\d+|years?\s+old|year[\-\s]old|as\s+a\s+(?:child|boy|girl)"
+    r"|childhood|flashback|younger\s+self|years?\s+(?:earlier|ago)|in\s+(?:her|his|your)\s+youth)\b",
+    re.IGNORECASE,
+)
+
+
+def _resolve_flashback_variant_for_text(
+    narr_text: str,
+    char_id: str,
+    bible: Optional[VisualBible],
+) -> str:
+    """When narration is a childhood/age flashback and a `variant_of == char_id` exists, promote that variant ID (FA2.6)."""
+    if bible is None or not bible.characters or not _FLASHBACK_CUE_RE.search(str(narr_text or "")):
+        return char_id
+    variants = [c for c in bible.characters if getattr(c, "variant_of", None) == char_id]
+    if not variants:
+        return char_id
+    low = str(narr_text or "").lower()
+    word_digits = {"five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9", "ten": "10", "eleven": "11", "twelve": "12"}
+    age_tokens: set[str] = set(re.findall(r"\b\d{1,2}\b", low))
+    for w, d in word_digits.items():
+        if re.search(rf"\b{w}\b", low):
+            age_tokens.add(d)
+            age_tokens.add(w)
+    if age_tokens:
+        for v in variants:
+            blob = f"{v.id} {v.name} {v.description} {' '.join(v.aliases or [])}".lower()
+            if any(re.search(rf"(?<![a-z0-9]){re.escape(tok)}(?![a-z0-9])", blob) for tok in age_tokens):
+                return v.id
+    return variants[0].id
+
+
 def _match_characters_by_aliases(text: str, bible: Optional[VisualBible]) -> List[str]:
     """Deterministically match bible character IDs using word boundaries (most specific aliases first)."""
     if bible is None or not bible.characters:
@@ -97,7 +131,7 @@ def _match_characters_by_aliases(text: str, bible: Optional[VisualBible]) -> Lis
     if not low_text.strip():
         return []
 
-    is_flashback_ctx = any(
+    is_flashback_ctx = bool(_FLASHBACK_CUE_RE.search(low_text)) or any(
         tok in low_text
         for tok in ("years old", "when you were", "when she was", "when he was", "childhood", "flashback", "memory", "younger")
     )
@@ -118,7 +152,7 @@ def _match_characters_by_aliases(text: str, bible: Optional[VisualBible]) -> Lis
 
     pov_id = str(getattr(bible, "pov_character_id", None) or "").strip()
     if pov_id and re.search(r"(?<![a-z0-9])(?:you|your|yourself)(?![a-z0-9])", low_text):
-        eff_pov = flashback_variants.get(pov_id, pov_id) if is_flashback_ctx else pov_id
+        eff_pov = _resolve_flashback_variant_for_text(low_text, pov_id, bible) if is_flashback_ctx else pov_id
         if any(c.id == eff_pov for c in bible.characters) and eff_pov not in matched_ids:
             matched_ids.append(eff_pov)
 
@@ -305,6 +339,8 @@ def _apply_batch_continuity(
                     cid = next((c.id for c in bible.characters if c.name.lower() == tok.lower()), "")
                 else:
                     cid = ""
+                if cid:
+                    cid = _resolve_flashback_variant_for_text(narr, cid, bible)
                 if cid and cid not in eff_chars:
                     eff_chars.append(cid)
         else:
