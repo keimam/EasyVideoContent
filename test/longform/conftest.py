@@ -2,7 +2,218 @@
 
 from __future__ import annotations
 
+import functools
+import socket
+import urllib.parse
+from pathlib import Path
+
 import pytest
+
+from test.longform.network_guard import (
+    _NET_GUARD_COUNTS,
+    RealLLMCallBlockedInTests,
+    RealNetworkCallBlockedInTests,
+    get_test_network_guard_counts,
+    record_http_blocked,
+    record_llm_blocked,
+)
+
+
+def _is_loopback_host(host: str | None) -> bool:
+    h = str(host or "").strip().lower().strip("[]")
+    return h in ("", "localhost", "127.0.0.1", "::1")
+
+
+def _url_is_loopback(url: str) -> bool:
+    try:
+        parsed = urllib.parse.urlparse(str(url or ""))
+        if parsed.scheme in ("file", "data", "blob", ""):
+            return True
+        return _is_loopback_host(parsed.hostname)
+    except Exception:
+        return False
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "allow_network: allow real outbound network connections in this test (GA1.1).",
+    )
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config):
+    total_blocked = _NET_GUARD_COUNTS["llm_blocked"] + _NET_GUARD_COUNTS["http_blocked"]
+    terminalreporter.write_line(
+        f"real LLM/HTTP calls blocked: {total_blocked}, attempted: {_NET_GUARD_COUNTS['real_attempted']}"
+    )
+
+
+@pytest.fixture(autouse=True)
+def block_real_llm_and_network_calls(request, tmp_path: Path):
+    """Block all unmocked real LLM & outbound non-loopback HTTP/socket calls across tests (GA1.1)."""
+    if "allow_network" in request.keywords:
+        yield
+        return
+
+    import httpx
+    import openai
+    import requests.adapters
+    import urllib.request
+    from google import genai
+
+    from app.config import config as app_cfg
+    from app.services import llm as upstream_llm
+    from app.services import version_checker as upstream_ver
+    from app.services.longform import config as lf_cfg
+    from app.services.longform.llm_adapter import LLMAdapter, clear_provider_pause
+
+    # Separate MonkeyPatch instance so tests calling monkeypatch.undo() cannot strip this guard
+    guard_mp = pytest.MonkeyPatch()
+
+    # Prevent Main.py background version check thread from hitting api.github.com
+    guard_mp.setattr(upstream_ver, "get_available_update", lambda *_a, **_kw: None)
+    guard_mp.setattr(
+        upstream_ver,
+        "poll_available_update",
+        lambda *_a, **_kw: upstream_ver.UpdateCheckSnapshot(complete=True),
+    )
+
+    orig_generate = upstream_llm._generate_response
+    orig_bounded_sdk = LLMAdapter._call_bounded_sdk
+    orig_openai_cls = openai.OpenAI
+    orig_azure_cls = openai.AzureOpenAI
+    orig_genai_cls = genai.Client
+    orig_http_adapter_send = requests.adapters.HTTPAdapter.send
+    orig_httpx_transport_handle = httpx.HTTPTransport.handle_request
+    orig_urllib_open = urllib.request.OpenerDirector.open
+    orig_socket_connect = socket.socket.connect
+
+    # Optional test mode for Condition (2): blank/dummy all keys via isolated temp copy without touching host config.toml
+    import os
+    test_cfg_mode = os.environ.get("EFS_TEST_CONFIG_MODE", "").strip().lower()
+    if test_cfg_mode in ("fake_keys", "empty_keys"):
+        temp_cfg_path = tmp_path / "isolated_config.toml"
+        if test_cfg_mode == "fake_keys":
+            temp_cfg_path.write_text(
+                '[app]\nllm_provider = "openrouter"\nopenrouter_api_key = "sk-or-v1-dummyisolatedkey0000"\n'
+                'gemini_api_key = "AIzaSyDummyIsolatedKey0000000000000"\ngrok_api_key = ""\ndeepseek_api_key = ""\n',
+                encoding="utf-8",
+            )
+            for k in list(app_cfg.app.keys()):
+                if k.endswith("_api_key") or k.endswith("_api_keys"):
+                    guard_mp.setitem(app_cfg.app, k, [] if k.endswith("_api_keys") else "")
+            guard_mp.setitem(app_cfg.app, "openrouter_api_key", "sk-or-v1-dummyisolatedkey0000")
+            guard_mp.setitem(app_cfg.app, "gemini_api_key", "AIzaSyDummyIsolatedKey0000000000000")
+        else:
+            temp_cfg_path.write_text('[app]\nllm_provider = "openrouter"\nopenrouter_api_key = ""\n', encoding="utf-8")
+            for k in list(app_cfg.app.keys()):
+                if k.endswith("_api_key") or k.endswith("_api_keys"):
+                    guard_mp.setitem(app_cfg.app, k, [] if k.endswith("_api_keys") else "")
+
+    # Force safe defaults: EFS_DEV=1, fake LLM provider, empty failover chain, isolated pause state
+    guard_mp.setenv("EFS_DEV", "1")
+    guard_mp.setenv("EFS_LLM_PAUSE_STATE_PATH", str(tmp_path / "test_llm_pauses.json"))
+    if request.node.name != "test_llm_adapter_default_is_not_fake":
+        guard_mp.setitem(app_cfg.app, "llm_provider", "fake")
+    elif not str(app_cfg.app.get("llm_provider") or "").strip():
+        guard_mp.setitem(app_cfg.app, "llm_provider", "openrouter")
+    clear_provider_pause()
+
+    orig_get_failover = lf_cfg.get_llm_failover_chain
+    guard_mp.setattr(
+        lf_cfg,
+        "get_llm_failover_chain",
+        lambda *, reload=False: [] if lf_cfg._CONFIG_CACHE is None and not (tmp_path / "custom_toml").exists() else orig_get_failover(reload=reload),
+    )
+
+    @functools.wraps(orig_generate)
+    def _blocked_upstream_generate(*args, **kwargs):
+        record_llm_blocked()
+        raise RealLLMCallBlockedInTests(
+            "Real upstream LLM call blocked in tests (mock app.services.llm._generate_response or use provider='fake')."
+        )
+
+    def _sdk_client_is_mocked() -> bool:
+        return (
+            openai.OpenAI is not orig_openai_cls
+            or openai.AzureOpenAI is not orig_azure_cls
+            or genai.Client is not orig_genai_cls
+        )
+
+    def _guarded_bounded_sdk(self, *args, **kwargs):
+        if _sdk_client_is_mocked():
+            return orig_bounded_sdk(self, *args, **kwargs)
+        record_llm_blocked()
+        raise RealLLMCallBlockedInTests(
+            f"Real LLM SDK call blocked for provider '{getattr(self, 'provider', '')}' in tests."
+        )
+
+    orig_openai_init = orig_openai_cls.__init__
+    orig_azure_init = orig_azure_cls.__init__
+    orig_genai_init = orig_genai_cls.__init__
+
+    def _blocked_openai_init(self, *args, **kwargs):
+        record_llm_blocked()
+        raise RealLLMCallBlockedInTests("Real openai.OpenAI client instantiation blocked in tests.")
+
+    def _blocked_azure_init(self, *args, **kwargs):
+        record_llm_blocked()
+        raise RealLLMCallBlockedInTests("Real openai.AzureOpenAI client instantiation blocked in tests.")
+
+    def _blocked_genai_init(self, *args, **kwargs):
+        record_llm_blocked()
+        raise RealLLMCallBlockedInTests("Real google.genai.Client instantiation blocked in tests.")
+
+    def _guarded_http_adapter_send(self, req, *args, **kwargs):
+        url = getattr(req, "url", "")
+        if _url_is_loopback(url):
+            return orig_http_adapter_send(self, req, *args, **kwargs)
+        record_http_blocked()
+        raise RealNetworkCallBlockedInTests(f"Real outbound HTTP call blocked in tests: {url}")
+
+    def _guarded_httpx_handle(self, req, *args, **kwargs):
+        url = str(getattr(req, "url", ""))
+        if _url_is_loopback(url):
+            return orig_httpx_transport_handle(self, req, *args, **kwargs)
+        record_http_blocked()
+        raise RealNetworkCallBlockedInTests(f"Real outbound httpx call blocked in tests: {url}")
+
+    def _guarded_urllib_open(self, fullurl, *args, **kwargs):
+        url = fullurl.full_url if hasattr(fullurl, "full_url") else str(fullurl)
+        if _url_is_loopback(url):
+            return orig_urllib_open(self, fullurl, *args, **kwargs)
+        record_http_blocked()
+        raise RealNetworkCallBlockedInTests(f"Real outbound urllib call blocked in tests: {url}")
+
+    def _guarded_socket_connect(sock_self, address, *args, **kwargs):
+        try:
+            family = getattr(sock_self, "family", socket.AF_INET)
+            if family in (socket.AF_INET, socket.AF_INET6) and isinstance(address, tuple) and address:
+                host = str(address[0] or "")
+                if not _is_loopback_host(host):
+                    record_http_blocked()
+                    raise RealNetworkCallBlockedInTests(f"Real outbound socket connection blocked in tests: {address}")
+        except RealNetworkCallBlockedInTests:
+            raise
+        except Exception:
+            pass
+        return orig_socket_connect(sock_self, address, *args, **kwargs)
+
+    guard_mp.setattr(upstream_llm, "_generate_response", _blocked_upstream_generate)
+    guard_mp.setattr(LLMAdapter, "_call_bounded_sdk", _guarded_bounded_sdk)
+    guard_mp.setattr(orig_openai_cls, "__init__", _blocked_openai_init)
+    guard_mp.setattr(orig_azure_cls, "__init__", _blocked_azure_init)
+    guard_mp.setattr(orig_genai_cls, "__init__", _blocked_genai_init)
+    guard_mp.setattr(requests.adapters.HTTPAdapter, "send", _guarded_http_adapter_send)
+    guard_mp.setattr(httpx.HTTPTransport, "handle_request", _guarded_httpx_handle)
+    guard_mp.setattr(urllib.request.OpenerDirector, "open", _guarded_urllib_open)
+    guard_mp.setattr(socket.socket, "connect", _guarded_socket_connect)
+
+    try:
+        yield
+    finally:
+        guard_mp.undo()
+        clear_provider_pause()
 
 
 @pytest.fixture(autouse=True)

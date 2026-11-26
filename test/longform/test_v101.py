@@ -635,7 +635,26 @@ def test_v3_export_prompts_matching_import_and_post_import_survival(tmp_path: Pa
     assert reloaded.chapters[0].shots[1].asset_content_hash == orig_h2
 
     save_manifest(reloaded, proj_dir)
-    after_kw, kw_stats = svc.update_keywords_with_ai(force=True, mark_stale=True)
+    # 4b. Use deterministic offline mock LLM adapter so keyword update never calls real OpenRouter
+    from app.services.longform.llm_adapter import LLMAdapter, LLMResponse
+
+    class _MockKwAdapter(LLMAdapter):
+        def __init__(self):
+            super().__init__(provider="fake", model="mock-v1")
+
+        def generate(self, prompt: str, **_kw):
+            return LLMResponse(
+                content='{"ch01_shot003": "ancient ship sailing ocean", "ch01_shot004": "old wooden harbor waves"}',
+                provider="openrouter",
+                model="mock-v1",
+                duration_seconds=0.01,
+            )
+
+    after_kw, kw_stats = svc.update_keywords_with_ai(
+        force=True,
+        mark_stale=True,
+        llm_adapter=_MockKwAdapter(),
+    )
     assert kw_stats["skipped_locked"] >= 2
     assert after_kw.chapters[0].shots[0].actual_source == "external_image"
     assert after_kw.chapters[0].shots[0].locked is True
