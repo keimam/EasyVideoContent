@@ -177,7 +177,7 @@ def save_llm_failover_chain(
     from app.services.longform import app_paths
 
     norm = list(normalize_llm_failover_chain(chain))
-    target_path = config_path or (app_paths.get_data_dir(create=True) / "config" / "longform.toml")
+    target_path = config_path or (app_paths.get_data_dir() / "config" / "longform.toml")
     target_path = Path(target_path)
     target_path.parent.mkdir(parents=True, exist_ok=True)
 
