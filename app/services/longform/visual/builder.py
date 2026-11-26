@@ -205,6 +205,22 @@ class ShotClipBuilder:
     def _ffmpeg_thread_args(self) -> list[str]:
         return ["-threads", str(self.ffmpeg_threads)] if self.ffmpeg_threads else []
 
+    def _ffmpeg_common_h264_args(self) -> list[str]:
+        """Return shared H.264 encode arguments with bounded x264 lookahead RAM (CA1.2)."""
+        return [
+            "-c:v", "libx264",
+            "-profile:v", "high",
+            "-level:v", "4.1",
+            "-pix_fmt", "yuv420p",
+            "-x264-params", "rc-lookahead=12",
+            "-r", str(self.fps),
+            "-g", str(self.fps),
+            "-keyint_min", str(self.fps),
+            "-sc_threshold", "0",
+            "-an",
+            *self._ffmpeg_thread_args(),
+        ]
+
     def _get_motion_filter(self, motion: MotionType, target_frames: int) -> str:
         """Construct jitter-free zoompan filter expression for static images."""
         d = target_frames
@@ -272,16 +288,7 @@ class ShotClipBuilder:
             "-i", str(image_path),
             "-vf", vf,
             "-frames:v", str(target_frames),
-            "-c:v", "libx264",
-            "-profile:v", "high",
-            "-level:v", "4.1",
-            "-pix_fmt", "yuv420p",
-            "-r", str(self.fps),
-            "-g", str(self.fps),
-            "-keyint_min", str(self.fps),
-            "-sc_threshold", "0",
-            "-an",
-            *self._ffmpeg_thread_args(),
+            *self._ffmpeg_common_h264_args(),
             str(tmp_out),
         ]
 
@@ -340,16 +347,7 @@ class ShotClipBuilder:
             "-i", str(video_path),
             "-vf", vf,
             "-frames:v", str(target_frames),
-            "-c:v", "libx264",
-            "-profile:v", "high",
-            "-level:v", "4.1",
-            "-pix_fmt", "yuv420p",
-            "-r", str(self.fps),
-            "-g", str(self.fps),
-            "-keyint_min", str(self.fps),
-            "-sc_threshold", "0",
-            "-an",
-            *self._ffmpeg_thread_args(),
+            *self._ffmpeg_common_h264_args(),
             str(tmp_out),
         ]
 
@@ -424,16 +422,7 @@ class ShotClipBuilder:
             "-i", str(tmp_png),
             "-vf", "setsar=1,scale=in_range=full:out_range=tv,format=yuv420p",
             "-frames:v", str(target_frames),
-            "-c:v", "libx264",
-            "-profile:v", "high",
-            "-level:v", "4.1",
-            "-pix_fmt", "yuv420p",
-            "-r", str(self.fps),
-            "-g", str(self.fps),
-            "-keyint_min", str(self.fps),
-            "-sc_threshold", "0",
-            "-an",
-            *self._ffmpeg_thread_args(),
+            *self._ffmpeg_common_h264_args(),
             str(tmp_out),
         ]
 

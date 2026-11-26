@@ -11,6 +11,7 @@ V6: local provider is a full first-class real source (non-fake, no [FAKE] label,
 
 from __future__ import annotations
 
+import gc
 import json
 import os
 import shutil
@@ -66,6 +67,8 @@ MAX_PARALLEL_DOWNLOADS = 3
 MAX_SEARCH_PREFETCH_SHOTS = 3
 # C4: Parallel clip builds capped at 3; scales as cpu_count // 4 (e.g. 8 threads -> 2 concurrent FFmpeg workers)
 MAX_PARALLEL_BUILDS = max(1, min(3, (os.cpu_count() or 1) // 4))
+MANIFEST_SAVE_BATCH_SIZE = 5
+MANIFEST_SAVE_MIN_INTERVAL_SEC = 5.0
 
 
 def get_effective_search_prefetch_shots(profile: Optional[str] = None) -> int:
@@ -139,6 +142,8 @@ class VisualService:
         self._active_search_seconds: Optional[Dict[str, float]] = None
         self._active_manifest_save_seconds: float = 0.0
         self._active_manifest_save_count: int = 0
+        self._manifest_dirty_count: int = 0
+        self._last_manifest_save_mono: float = 0.0
         self._origin_queries_by_shot: Dict[str, Dict[Tuple[str, str], str]] = {}
 
     def _save_manifest_timed(self, manifest: ProjectManifest) -> None:
@@ -148,6 +153,44 @@ class VisualService:
         with self._telemetry_lock:
             self._active_manifest_save_seconds += dt
             self._active_manifest_save_count += 1
+
+    def _reset_manifest_batch_state(self) -> None:
+        with self._telemetry_lock:
+            self._manifest_dirty_count = 0
+            self._last_manifest_save_mono = time.monotonic()
+
+    def _save_manifest_batched(
+        self,
+        manifest: ProjectManifest,
+        *,
+        force: bool = False,
+        batch_size: int = MANIFEST_SAVE_BATCH_SIZE,
+        min_interval_sec: float = MANIFEST_SAVE_MIN_INTERVAL_SEC,
+    ) -> bool:
+        """Batch manifest writes every N updates or >=5s, or force immediate save (CA1.2)."""
+        now = time.monotonic()
+        with self._telemetry_lock:
+            self._manifest_dirty_count += 1
+            dirty = self._manifest_dirty_count
+            last_ts = self._last_manifest_save_mono
+        if not force:
+            if dirty < max(1, int(batch_size)) and (
+                last_ts > 0.0 and (now - last_ts) < float(min_interval_sec)
+            ):
+                return False
+        self._save_manifest_timed(manifest)
+        with self._telemetry_lock:
+            self._manifest_dirty_count = 0
+            self._last_manifest_save_mono = time.monotonic()
+        return True
+
+    def _flush_manifest_if_dirty(self, manifest: ProjectManifest) -> bool:
+        """Flush any unsaved manifest mutations on phase exit, stop, or error."""
+        with self._telemetry_lock:
+            has_dirty = self._manifest_dirty_count > 0
+        if not has_dirty:
+            return False
+        return self._save_manifest_batched(manifest, force=True)
 
     def _record_provider_search_time(self, prov_name: str, elapsed_sec: float) -> None:
         pk = str(prov_name or "unknown").lower().strip()
@@ -1476,6 +1519,7 @@ class VisualService:
         eff_prefetch = get_effective_search_prefetch_shots()
         search_sem = threading.BoundedSemaphore(max(1, int(MAX_PARALLEL_SOURCES) * eff_prefetch))
         searched_shot_ids: Set[str] = set()
+        self._reset_manifest_batch_state()
 
         def _mark_no_visual(sh_obj: Shot, att_log: List[Dict[str, Any]], summary_override: Optional[str] = None) -> None:
             reason_sum = summary_override or self._summarize_search_failures(att_log)
@@ -1698,6 +1742,7 @@ class VisualService:
                     if not candidates:
                         # D8 / D9.1: Mark shot cleanly as 'Belum ada visual' with structured failure reason
                         _mark_no_visual(shot, attempts_log)
+                        self._save_manifest_batched(manifest, force=False)
                         if shot.shot_id in target_fetch_ids and target_fetch_total > 0:
                             searched_count += 1
                             done_fetch_count += 1
@@ -1906,103 +1951,108 @@ class VisualService:
                 }
 
             dl_wall_t0 = time.monotonic()
-            with ThreadPoolExecutor(max_workers=max_dl_workers) as dl_pool:
-                fut_map = {dl_pool.submit(_download_worker, t): idx for idx, t in enumerate(pending_downloads)}
-                for fut in as_completed(fut_map):
-                    try:
-                        res = fut.result()
-                    except Exception as exc:
-                        task = pending_downloads[fut_map[fut]]
-                        res = {"task": task, "error": exc, "stopped": False}
-
-                    task = res["task"]
-                    shot = task["shot"]
-                    if res.get("stopped"):
-                        stop_requested = True
-                        continue
-
-                    if res.get("error") is not None:
-                        dl_err = res["error"]
-                        if isinstance(dl_err, VisualConfigurationError):
-                            raise dl_err
-                        err_txt = sanitize_source_error(str(dl_err), max_len=160) or "download failed"
-                        logger.warning(f"Asset download failed for {shot.shot_id}: {err_txt}")
-                        _mark_no_visual(shot, task["attempts_log"], summary_override=err_txt)
-                    else:
-                        asset = res["asset"]
-                        active_provider = task["active_provider"]
-                        selected_candidate = task["selected_candidate"]
-                        dest_file = task["dest_file"]
-                        rel_dest = task["rel_dest"]
-                        chosen_query = task["chosen_query"]
-                        fallback_reason = task["fallback_reason"]
-
-                        asset_local = Path(getattr(asset, "local_path", None) or dest_file)
+            try:
+                with ThreadPoolExecutor(max_workers=max_dl_workers) as dl_pool:
+                    fut_map = {dl_pool.submit(_download_worker, t): idx for idx, t in enumerate(pending_downloads)}
+                    for fut in as_completed(list(fut_map.keys())):
+                        fut_idx = fut_map.pop(fut)
                         try:
-                            rel_dest = asset_local.resolve().relative_to(self.project_dir.resolve()).as_posix()
-                        except Exception:
-                            rel_dest = f"assets/visual/shots/{asset_local.name}"
-                        invalidate_shot_thumbnail_cache(self.project_dir, shot.shot_id)
+                            res = fut.result()
+                        except Exception as exc:
+                            task = pending_downloads[fut_idx]
+                            res = {"task": task, "error": exc, "stopped": False}
 
-                        # Update shot metadata & D9.3 attribution strictly on main thread
-                        shot.asset_path = rel_dest
-                        shot.asset_content_hash = asset.content_hash
-                        shot.source_candidate_id = selected_candidate.candidate_id
-                        shot.requested_source = active_provider.name if use_waterfall else effective_provider_name
-                        shot.actual_source = active_provider.name
-                        shot.is_fake = active_provider.is_fake
-                        shot.fallback_reason = fallback_reason
-                        shot.no_visual_reason_summary = None
-                        shot.tags = selected_candidate.tags
-                        shot.relevance_score = selected_candidate.relevance_score
-                        shot.chosen_rendition = selected_candidate.rendition_name
-                        shot.is_low_res = getattr(selected_candidate, "is_low_res", False)
-                        shot.effective_query = chosen_query
-                        shot.attribution_title = getattr(selected_candidate, "title", None) or getattr(asset, "title", None)
-                        shot.attribution_author = getattr(selected_candidate, "author", None) or getattr(asset, "author", None)
-                        shot.attribution_author_url = getattr(selected_candidate, "author_url", None) or getattr(asset, "author_url", None)
-                        shot.attribution_license = getattr(selected_candidate, "license", None) or getattr(asset, "license", None)
-                        shot.attribution_url = getattr(selected_candidate, "source_url", None) or getattr(asset, "source_url", None)
-                        shot.requires_attribution = license_requires_attribution(shot.attribution_license)
-                        shot.ai_relevance_status = None
-                        shot.ai_relevance_reason = None
-                        shot.ai_relevance_asset_hash = None
-                        self.credits_manager.record_asset_credit(selected_candidate, shot_id=shot.shot_id)
-                        if req_terms:
-                            from app.services.longform.visual.stock import term_matches_tags
-                            has_subj = any(term_matches_tags(req, shot.tags or []) for req in req_terms)
-                            shot.needs_review = not has_subj
-                        elif proj_anchors and not shot.is_fake and shot.tags:
-                            from app.services.longform.visual.stock import term_matches_tags
-                            has_anchor = any(term_matches_tags(anc, shot.tags or []) for anc in proj_anchors)
-                            shot.needs_review = not has_anchor
-                        else:
-                            shot.needs_review = False
-                        has_stale_clip = bool(shot.rendered_clip and (self.project_dir / shot.rendered_clip).is_file())
-                        if has_stale_clip:
-                            shot.shot_hash = None
-                            shot.status = ItemStatus.stale
-                        else:
-                            shot.status = ItemStatus.pending
+                        task = res["task"]
+                        shot = task["shot"]
+                        if res.get("stopped"):
+                            stop_requested = True
+                            continue
 
-                    self._save_manifest_timed(manifest)
-                    dl_done += 1
-                    if shot.shot_id in target_fetch_ids and target_fetch_total > 0:
-                        done_fetch_count += 1
-                    pct = pct_mid + ((dl_done / max(1, dl_total)) * (pct_span * 0.5))
-                    update_job_phase(
-                        self.project_dir,
-                        phase=f"Mengunduh footage ({dl_done}/{dl_total} shot)…",
-                        phase_key="prog_visual_fetch",
-                        phase_args={"done": done_fetch_count, "total": target_fetch_total},
-                        percentage=pct,
-                        current_unit=done_fetch_count,
-                        total_units=target_fetch_total,
-                        skipped_units=skipped_fetch_count,
-                        unit_label="shot",
-                        is_indeterminate=False,
-                        partial=True,
-                    )
+                        if res.get("error") is not None:
+                            dl_err = res["error"]
+                            if isinstance(dl_err, VisualConfigurationError):
+                                raise dl_err
+                            err_txt = sanitize_source_error(str(dl_err), max_len=160) or "download failed"
+                            logger.warning(f"Asset download failed for {shot.shot_id}: {err_txt}")
+                            _mark_no_visual(shot, task["attempts_log"], summary_override=err_txt)
+                        else:
+                            asset = res["asset"]
+                            active_provider = task["active_provider"]
+                            selected_candidate = task["selected_candidate"]
+                            dest_file = task["dest_file"]
+                            rel_dest = task["rel_dest"]
+                            chosen_query = task["chosen_query"]
+                            fallback_reason = task["fallback_reason"]
+
+                            asset_local = Path(getattr(asset, "local_path", None) or dest_file)
+                            try:
+                                rel_dest = asset_local.resolve().relative_to(self.project_dir.resolve()).as_posix()
+                            except Exception:
+                                rel_dest = f"assets/visual/shots/{asset_local.name}"
+                            invalidate_shot_thumbnail_cache(self.project_dir, shot.shot_id)
+
+                            # Update shot metadata & D9.3 attribution strictly on main thread
+                            shot.asset_path = rel_dest
+                            shot.asset_content_hash = asset.content_hash
+                            shot.source_candidate_id = selected_candidate.candidate_id
+                            shot.requested_source = active_provider.name if use_waterfall else effective_provider_name
+                            shot.actual_source = active_provider.name
+                            shot.is_fake = active_provider.is_fake
+                            shot.fallback_reason = fallback_reason
+                            shot.no_visual_reason_summary = None
+                            shot.tags = selected_candidate.tags
+                            shot.relevance_score = selected_candidate.relevance_score
+                            shot.chosen_rendition = selected_candidate.rendition_name
+                            shot.is_low_res = getattr(selected_candidate, "is_low_res", False)
+                            shot.effective_query = chosen_query
+                            shot.attribution_title = getattr(selected_candidate, "title", None) or getattr(asset, "title", None)
+                            shot.attribution_author = getattr(selected_candidate, "author", None) or getattr(asset, "author", None)
+                            shot.attribution_author_url = getattr(selected_candidate, "author_url", None) or getattr(asset, "author_url", None)
+                            shot.attribution_license = getattr(selected_candidate, "license", None) or getattr(asset, "license", None)
+                            shot.attribution_url = getattr(selected_candidate, "source_url", None) or getattr(asset, "source_url", None)
+                            shot.requires_attribution = license_requires_attribution(shot.attribution_license)
+                            shot.ai_relevance_status = None
+                            shot.ai_relevance_reason = None
+                            shot.ai_relevance_asset_hash = None
+                            self.credits_manager.record_asset_credit(selected_candidate, shot_id=shot.shot_id)
+                            if req_terms:
+                                from app.services.longform.visual.stock import term_matches_tags
+                                has_subj = any(term_matches_tags(req, shot.tags or []) for req in req_terms)
+                                shot.needs_review = not has_subj
+                            elif proj_anchors and not shot.is_fake and shot.tags:
+                                from app.services.longform.visual.stock import term_matches_tags
+                                has_anchor = any(term_matches_tags(anc, shot.tags or []) for anc in proj_anchors)
+                                shot.needs_review = not has_anchor
+                            else:
+                                shot.needs_review = False
+                            has_stale_clip = bool(shot.rendered_clip and (self.project_dir / shot.rendered_clip).is_file())
+                            if has_stale_clip:
+                                shot.shot_hash = None
+                                shot.status = ItemStatus.stale
+                            else:
+                                shot.status = ItemStatus.pending
+
+                        self._save_manifest_batched(manifest, force=False)
+                        dl_done += 1
+                        if shot.shot_id in target_fetch_ids and target_fetch_total > 0:
+                            done_fetch_count += 1
+                        pct = pct_mid + ((dl_done / max(1, dl_total)) * (pct_span * 0.5))
+                        update_job_phase(
+                            self.project_dir,
+                            phase=f"Mengunduh footage ({dl_done}/{dl_total} shot)…",
+                            phase_key="prog_visual_fetch",
+                            phase_args={"done": done_fetch_count, "total": target_fetch_total},
+                            percentage=pct,
+                            current_unit=done_fetch_count,
+                            total_units=target_fetch_total,
+                            skipped_units=skipped_fetch_count,
+                            unit_label="shot",
+                            is_indeterminate=False,
+                            partial=True,
+                        )
+            finally:
+                pending_downloads.clear()
+                self._flush_manifest_if_dirty(manifest)
             asset_download_seconds += time.monotonic() - dl_wall_t0
 
         if translation_warnings:
@@ -2040,6 +2090,7 @@ class VisualService:
             self.credits_manager.write_credits_markdown(manifest)
         except Exception as cred_exc:
             logger.warning(f"Failed to write credits.md for '{manifest.project_id}': {cred_exc}")
+        self._flush_manifest_if_dirty(manifest)
 
         # V1: Record structured search/distribution telemetry for benchmark & UI
         dist_counts: Dict[str, int] = {}
@@ -2335,75 +2386,80 @@ class VisualService:
                 "stopped": False,
             }
 
+        self._reset_manifest_batch_state()
         if pending_builds and not stop_requested and not is_stop_requested(self.project_dir):
             done_builds = 0
-            with ThreadPoolExecutor(max_workers=eff_workers) as build_pool:
-                fut_map = {build_pool.submit(_build_worker, t): t for t in pending_builds}
-                for fut in as_completed(fut_map):
-                    task = fut_map[fut]
-                    try:
-                        res = fut.result()
-                    except Exception as exc:
-                        res = {"task": task, "error": exc, "stopped": False}
+            try:
+                with ThreadPoolExecutor(max_workers=eff_workers) as build_pool:
+                    fut_map = {build_pool.submit(_build_worker, t): t for t in pending_builds}
+                    for fut in as_completed(list(fut_map.keys())):
+                        task = fut_map.pop(fut)
+                        try:
+                            res = fut.result()
+                        except Exception as exc:
+                            res = {"task": task, "error": exc, "stopped": False}
 
-                    if res.get("stopped"):
-                        stop_requested = True
-                        continue
+                        if res.get("stopped"):
+                            stop_requested = True
+                            continue
 
-                    shot = task["shot"]
-                    if res.get("error") is not None:
-                        err = res["error"]
-                        logger.warning(f"Shot clip build failed for {shot.shot_id} (skipped): {err}")
-                        failed_count += 1
-                        skipped_count += 1
-                        failed_shot_ids.append(shot.shot_id)
-                        shot.rendered_clip = None
-                        shot.shot_hash = None
-                        shot.status = ItemStatus.failed
-                        invalidate_shot_thumbnail_cache(self.project_dir, shot.shot_id)
-                    else:
-                        if task["needs_neutral"]:
-                            neutral_built_count += 1
-                            shot.asset_path = None
-                            shot.asset_content_hash = "neutral_backdrop_v1"
-                            shot.actual_source = "neutral_backdrop"
-                            shot.is_fake = False
-                            shot.fallback_reason = "neutral_backdrop_confirmed"
+                        shot = task["shot"]
+                        if res.get("error") is not None:
+                            err = res["error"]
+                            logger.warning(f"Shot clip build failed for {shot.shot_id} (skipped): {err}")
+                            failed_count += 1
+                            skipped_count += 1
+                            failed_shot_ids.append(shot.shot_id)
+                            shot.rendered_clip = None
+                            shot.shot_hash = None
+                            shot.status = ItemStatus.failed
+                            invalidate_shot_thumbnail_cache(self.project_dir, shot.shot_id)
                         else:
-                            shot.asset_content_hash = res["updated_hash"]
-                        built_count += 1
-                        total_time += float(res.get("elapsed") or 0.0)
-                        shot.shot_hash = compute_shot_hash(
-                            shot_id=shot.shot_id,
-                            duration_seconds=shot.duration_seconds,
-                            target_frames=shot.target_frames,
-                            motion=shot.motion.value,
-                            asset_content_hash=shot.asset_content_hash,
-                            fps=fps,
-                            requested_provider=shot.requested_source or "",
-                            actual_provider=shot.actual_source or "",
-                        )
-                        shot.rendered_clip = task["clip_rel"]
-                        shot.status = ItemStatus.completed
-                        invalidate_shot_thumbnail_cache(self.project_dir, shot.shot_id)
+                            if task["needs_neutral"]:
+                                neutral_built_count += 1
+                                shot.asset_path = None
+                                shot.asset_content_hash = "neutral_backdrop_v1"
+                                shot.actual_source = "neutral_backdrop"
+                                shot.is_fake = False
+                                shot.fallback_reason = "neutral_backdrop_confirmed"
+                            else:
+                                shot.asset_content_hash = res["updated_hash"]
+                            built_count += 1
+                            total_time += float(res.get("elapsed") or 0.0)
+                            shot.shot_hash = compute_shot_hash(
+                                shot_id=shot.shot_id,
+                                duration_seconds=shot.duration_seconds,
+                                target_frames=shot.target_frames,
+                                motion=shot.motion.value,
+                                asset_content_hash=shot.asset_content_hash,
+                                fps=fps,
+                                requested_provider=shot.requested_source or "",
+                                actual_provider=shot.actual_source or "",
+                            )
+                            shot.rendered_clip = task["clip_rel"]
+                            shot.status = ItemStatus.completed
+                            invalidate_shot_thumbnail_cache(self.project_dir, shot.shot_id)
 
-                    self._save_manifest_timed(manifest)
-                    done_builds += 1
-                    if target_build_total > 0:
-                        pct = _pct_start + ((done_builds / target_build_total) * (_pct_end - _pct_start))
-                        update_job_phase(
-                            self.project_dir,
-                            phase=f"Menyusun klip ({done_builds}/{target_build_total} shot)…",
-                            phase_key="prog_visual_build",
-                            phase_args={"done": done_builds, "total": target_build_total},
-                            percentage=pct,
-                            current_unit=done_builds,
-                            total_units=target_build_total,
-                            skipped_units=skipped_build_init + failed_count,
-                            unit_label="shot",
-                            is_indeterminate=False,
-                            partial=True,
-                        )
+                        self._save_manifest_batched(manifest, force=False)
+                        done_builds += 1
+                        if target_build_total > 0:
+                            pct = _pct_start + ((done_builds / target_build_total) * (_pct_end - _pct_start))
+                            update_job_phase(
+                                self.project_dir,
+                                phase=f"Menyusun klip ({done_builds}/{target_build_total} shot)…",
+                                phase_key="prog_visual_build",
+                                phase_args={"done": done_builds, "total": target_build_total},
+                                percentage=pct,
+                                current_unit=done_builds,
+                                total_units=target_build_total,
+                                skipped_units=skipped_build_init + failed_count,
+                                unit_label="shot",
+                                is_indeterminate=False,
+                                partial=True,
+                            )
+            finally:
+                pending_builds.clear()
+                self._flush_manifest_if_dirty(manifest)
 
         # Update chapter duration & frames on main thread
         for ch in manifest.chapters:
@@ -3054,7 +3110,8 @@ class VisualService:
             _pct_end=45.0,
         )
         fetch_metrics = dict(getattr(self, "_last_fetch_metrics", {}) or {})
-        self._save_manifest_timed(manifest)
+        self._flush_manifest_if_dirty(manifest)
+        gc.collect()
 
         if is_stop_requested(self.project_dir):
             print(f"\n[Visual Pipeline] Stop requested after footage search; skipping clip building.")
@@ -3072,7 +3129,8 @@ class VisualService:
             _pct_start=build_pct_start,
             _pct_end=99.0,
         )
-        self._save_manifest_timed(manifest)
+        self._flush_manifest_if_dirty(manifest)
+        gc.collect()
         build_wall_seconds = round(time.monotonic() - build_t0, 3)
         stats.update(build_stats)
 

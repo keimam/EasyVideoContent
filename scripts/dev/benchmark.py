@@ -121,16 +121,18 @@ def _measure_phase(
 ) -> Dict[str, Any]:
     """Run `fn()` while sampling peak RAM (Python + FFmpeg children) and average system CPU%."""
     peak_proc_mb = 0.0
+    peak_ff_mb = 0.0
     peak_total_mb = 0.0
     stop_evt = threading.Event()
 
     def _sampler() -> None:
-        nonlocal peak_proc_mb, peak_total_mb
+        nonlocal peak_proc_mb, peak_ff_mb, peak_total_mb
         while not stop_evt.is_set():
             snap = platform_utils_mod.get_process_memory_snapshot_mb()
             rss = float(snap.get("rss_mb") or 0.0)
             ff_mb = _sample_ffmpeg_rss_mb()
             peak_proc_mb = max(peak_proc_mb, rss)
+            peak_ff_mb = max(peak_ff_mb, ff_mb)
             peak_total_mb = max(peak_total_mb, rss + ff_mb)
             stop_evt.wait(0.75)
 
@@ -157,6 +159,8 @@ def _measure_phase(
         "phase": phase_name,
         "duration_s": round(elapsed, 2),
         "peak_ram_mb": round(peak_total_mb, 1),
+        "peak_python_ram_mb": round(peak_proc_mb, 1),
+        "peak_ffmpeg_ram_mb": round(peak_ff_mb, 1),
         "avg_cpu_pct": _compute_avg_cpu_pct(cpu_before, cpu_after),
         "note": note,
     }
