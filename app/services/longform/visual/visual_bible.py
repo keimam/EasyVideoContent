@@ -175,24 +175,24 @@ def sanitize_visual_description_time_words(raw_desc: str) -> str:
 
 _CARRIED_PROP_NOUNS = (
     r"(?:skull\s+lantern|glowing\s+lantern|oil\s+lamp|brass\s+lamp|lantern|"
-    r"wooden\s+doll|porcelain\s+doll|rag\s+doll|doll|"
+    r"bronze\s+amulet\s+doll|amulet\s+doll|wooden\s+doll|porcelain\s+doll|rag\s+doll|doll|amulet|talisman|keepsake|"
     r"iron\s+key|rusty\s+key|golden\s+key|key|"
     r"wicker\s+basket|heavy\s+basket|basket|"
     r"candle|taper|torch|dagger|knife|sword|satchel|pouch|scroll|letter|map|goblet|chalice|bucket|pail)"
 )
 _LOCATION_HELD_PROP_RE = re.compile(
-    rf",?\s*\b(?:while\s+)?(?:holds?|holding|carries|carrying|clutching|clutches|grasping|with)\s+"
-    rf"(?:a|an|the|her|his|their)?\s*(?:[a-z]+\s+){{0,2}}{_CARRIED_PROP_NOUNS}\b[^,.;]*",
+    rf",?\s*\b(?:while\s+)?(?:holds?|holding|carries|carrying|clutching|clutches|grasping|bearing|with)\s+"
+    rf"(?:a|an|the|her|his|their)?\s*(?:[a-z]+\s+){{0,3}}{_CARRIED_PROP_NOUNS}\b[^,.;]*",
     re.IGNORECASE,
 )
 _LOCATION_LOOSE_PROP_RE = re.compile(
-    rf",?\s*\b(?:a|an|the|small|tiny|glowing|carved|wooden|iron|old|brass)?\s*{_CARRIED_PROP_NOUNS}\s+"
-    rf"(?:lies|lying|resting|rests|placed|sitting|sits|left|dropped|hanging|hangs|gleaming)\s+"
-    rf"(?:on|upon|by|near|beside|inside|at)\s+[^,.;]*",
+    rf",?\s*\b(?:a|an|the|small|tiny|glowing|carved|wooden|iron|old|brass|bronze)?\s*(?:[a-z]+\s+)?{_CARRIED_PROP_NOUNS}\s+"
+    rf"(?:lies|lying|resting|rests|placed|sitting|sits|left|dropped|hanging|hangs|gleaming|given)\s+"
+    rf"(?:on|upon|by|near|beside|inside|at|to)\s+[^,.;]*",
     re.IGNORECASE,
 )
 _LOCATION_SIMPLE_PROP_PHRASE_RE = re.compile(
-    rf",?\s*(?:with\s+)?(?:a|an|the)?\s*(?:small\s+|glowing\s+|carved\s+)?(?:skull\s+lantern|wooden\s+doll|iron\s+key)\b[^,.;]*",
+    rf",?\s*(?:with\s+)?(?:a|an|the)?\s*(?:small\s+|glowing\s+|carved\s+|bronze\s+|wooden\s+)?(?:skull\s+lantern|amulet\s+doll|wooden\s+doll|iron\s+key|amulet)\b[^,.;]*",
     re.IGNORECASE,
 )
 
@@ -283,6 +283,22 @@ def detect_script_flashback_cues(script_text: str) -> List[Dict[str, Any]]:
     return cues
 
 
+def _strip_carried_objects_from_variant_desc(raw_desc: str) -> str:
+    txt = str(raw_desc or "").strip()
+    if not txt:
+        return ""
+    out = strip_carried_objects_from_location_desc(txt)
+    out = re.sub(
+        rf",?\s*\b(?:a|an|the|her|his)?\s*(?:[a-z]+\s+){{0,2}}{_CARRIED_PROP_NOUNS}\b[^,.;]*",
+        "",
+        out,
+        flags=re.IGNORECASE,
+    )
+    out = re.sub(r"\s+,", ",", out)
+    out = re.sub(r",\s*,+", ", ", out)
+    return re.sub(r"\s{2,}", " ", out).strip(" ,;-.")
+
+
 def _derive_flashback_description(base_desc: str, age: Optional[int]) -> str:
     clean = sanitize_visual_description_time_words(base_desc) or str(base_desc or "").strip()
     low = clean.lower()
@@ -293,22 +309,37 @@ def _derive_flashback_description(base_desc: str, age: Optional[int]) -> str:
     age_phrase = f"{age}-year-old {noun}" if age else f"young {noun}"
     if not clean:
         return f"{age_phrase} in simple traditional clothing"
+
+    # GA1.3: Strip carried objects/props first (props belong in Continuity, not character variant physical traits)
+    out = _strip_carried_objects_from_variant_desc(clean) or clean
+
+    # GA1.3: Strip relative/adult age words before injecting childhood age
     out = re.sub(
-        r"\b(?:young\s+)?(?:woman|man|adult|maiden|youth|girl|boy)\b",
-        age_phrase,
-        clean,
-        count=1,
-        flags=re.IGNORECASE,
-    )
-    out = re.sub(
-        r",?\s*\b(?:late|early|mid)?[\s\-]*(?:\d{2}s|\d{2}[\-\s]+years?[\-\s]+old|teens?|twenties|thirties|forties|fifties)\b",
+        r",?\s*\b(?:in\s+(?:her|his|their)\s+)?(?:late|early|mid)?[\s\-]*"
+        r"(?:\d{2}s|\d{2}[\-\s]+years?[\-\s]+old|teens?|twenties|thirties|forties|fifties|sixties|seventies|eighties)\b",
         "",
         out,
         flags=re.IGNORECASE,
     )
-    if str(age or "") not in out and age_phrase not in out.lower():
-        out = f"{age_phrase}, {out}"
-    return re.sub(r"\s{2,}", " ", re.sub(r",\s*,+", ", ", out)).strip(" ,")
+    out = re.sub(
+        r"\b(?:teenage|teenaged|teen|adolescent|adult|grown[\-\s]+up|middle[\-\s]+aged|elderly)\b",
+        "",
+        out,
+        flags=re.IGNORECASE,
+    )
+    out = re.sub(r"\byoung\s+(?=(?:woman|man|lady|gentleman|maiden|girl|boy)\b)", "", out, flags=re.IGNORECASE)
+    out = re.sub(r"\s{2,}", " ", re.sub(r",\s*,+", ", ", out)).strip(" ,")
+
+    replaced = re.sub(
+        r"\b(?:woman|man|maiden|youth|girl|boy)\b",
+        age_phrase,
+        out,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+    if str(age or "") not in replaced and age_phrase not in replaced.lower():
+        replaced = f"{age_phrase}, {replaced}" if replaced else age_phrase
+    return re.sub(r"\s{2,}", " ", re.sub(r",\s*,+", ", ", replaced)).strip(" ,")
 
 
 def ensure_flashback_character_variants(

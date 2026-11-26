@@ -109,3 +109,56 @@ def test_ga1_2_update_keywords_degrades_gracefully_on_daily_quota_without_leakin
     assert "OpenRouter" in joined_warnings
     assert "user_secret_abc_999" not in joined_warnings
     assert "https://openrouter.ai" not in joined_warnings
+
+
+def test_ga1_3_flashback_variant_strips_relative_age_and_carried_objects():
+    """GA1.3: Derived child variant removes adult/relative age words and transient props (doll, amulet)."""
+    from app.services.longform.schema import VisualBible, VisualBibleCharacter
+    from app.services.longform.visual.visual_bible import STYLE_MODE_BASE_TEXTS, ensure_flashback_character_variants
+
+    vb = VisualBible(
+        world="16th-century Slavic Russia",
+        style_mode="realistic",
+        style=STYLE_MODE_BASE_TEXTS["realistic"],
+        palette_lighting="muted autumn tones",
+        pov_character_id="vasilisa_16",
+        characters=[
+            VisualBibleCharacter(
+                id="vasilisa_16",
+                name="Vasilisa",
+                aliases=["Vasilisa"],
+                role="protagonist",
+                description="teenage girl, dark hair in two braids, red kaftan with embroidered sash, bronze amulet doll given by her dead mother",
+            )
+        ],
+    )
+    out_vb, changed = ensure_flashback_character_variants(vb, "Your mother died when you were eight.")
+    assert changed is True
+    variants = [c for c in out_vb.characters if c.variant_of == "vasilisa_16"]
+    assert len(variants) == 1
+    assert variants[0].description == "8-year-old girl, dark hair in two braids, red kaftan with embroidered sash"
+
+    # Also test other relative-age terms ("young woman, early 20s, elderly, late teens") & carries/holds
+    vb2 = VisualBible(
+        world="19th-century village",
+        style_mode="realistic",
+        style=STYLE_MODE_BASE_TEXTS["realistic"],
+        palette_lighting="muted slate tones",
+        characters=[
+            VisualBibleCharacter(
+                id="marta",
+                name="Marta",
+                aliases=["Marta"],
+                role="protagonist",
+                description="young woman, early 20s, braided auburn hair, wool shawl, carries a wooden doll and glowing lantern",
+            )
+        ],
+    )
+    out_vb2, changed2 = ensure_flashback_character_variants(vb2, "When Marta was eight years old, she hid by the gate.")
+    assert changed2 is True
+    v2 = next(c for c in out_vb2.characters if c.variant_of == "marta")
+    low2 = v2.description.lower()
+    assert low2.startswith("8-year-old girl")
+    assert "young woman" not in low2 and "early 20s" not in low2
+    assert "doll" not in low2 and "lantern" not in low2
+    assert "braided auburn hair" in low2 and "wool shawl" in low2
