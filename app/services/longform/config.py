@@ -26,6 +26,43 @@ NETWORK_PROFILES: dict[str, dict[str, int]] = {
     "lambat": {"timeout": 15, "failure_threshold": 3, "cooldown_seconds": 60},
 }
 
+DEFAULT_FAILOVER_CANDIDATES: tuple[str, ...] = (
+    "gemini",
+    "groq",
+    "deepseek",
+    "openrouter",
+    "openai",
+    "anthropic",
+    "moonshot",
+    "qwen",
+    "grok",
+    "minimax",
+    "ollama",
+)
+
+
+def normalize_llm_failover_chain(raw_chain: Any) -> tuple[str, ...]:
+    """Normalize ordered failover provider IDs into a deduplicated lowercase tuple (G1)."""
+    if raw_chain is None:
+        return ()
+    if isinstance(raw_chain, str):
+        items = [x.strip().lower() for x in raw_chain.split(",") if x.strip()]
+    elif isinstance(raw_chain, (list, tuple)):
+        items = [str(x or "").strip().lower() for x in raw_chain if str(x or "").strip()]
+    else:
+        return ()
+    seen: set[str] = set()
+    out: list[str] = []
+    for pid in items:
+        if pid in ("fake",) or pid in seen:
+            continue
+        # Reject suspicious token strings accidentally pasted into provider list
+        if pid.startswith(("sk-", "aiza", "gsk_")) or len(pid) > 40 or " " in pid:
+            continue
+        seen.add(pid)
+        out.append(pid)
+    return tuple(out)
+
 
 def normalize_network_profile(value: Any) -> str:
     """Normalize configured network profile to 'normal' or 'lambat' (B3)."""
@@ -47,6 +84,7 @@ class LongformConfig:
     capcut_tested_versions: tuple[str, ...] = ("8.9.0", "9.7.1")
     capcut_download_url: str = "https://www.capcut.com/"
     network_profile: str = "normal"
+    llm_failover_chain: tuple[str, ...] = ()
 
 
 _CONFIG_CACHE: LongformConfig | None = None
@@ -81,6 +119,7 @@ def load_longform_config(reload: bool = False) -> LongformConfig:
         "capcut_tested_versions": ("8.9.0", "9.7.1"),
         "capcut_download_url": "https://www.capcut.com/",
         "network_profile": "normal",
+        "llm_failover_chain": (),
     }
 
     if config_path.is_file() and toml is not None:
@@ -97,13 +136,15 @@ def load_longform_config(reload: bool = False) -> LongformConfig:
                     "atomic_retry_count",
                     "atomic_retry_delay_seconds",
                     "network_profile",
+                    "llm_failover_chain",
                 ):
                     if key in section:
-                        defaults[key] = (
-                            normalize_network_profile(section[key])
-                            if key == "network_profile"
-                            else section[key]
-                        )
+                        if key == "network_profile":
+                            defaults[key] = normalize_network_profile(section[key])
+                        elif key == "llm_failover_chain":
+                            defaults[key] = normalize_llm_failover_chain(section[key])
+                        else:
+                            defaults[key] = section[key]
                 cc_section = data.get("capcut")
                 if isinstance(cc_section, dict):
                     raw_vers = cc_section.get("tested_versions")
@@ -119,6 +160,55 @@ def load_longform_config(reload: bool = False) -> LongformConfig:
 
     _CONFIG_CACHE = LongformConfig(**defaults)
     return _CONFIG_CACHE
+
+
+def get_llm_failover_chain(*, reload: bool = False) -> list[str]:
+    """Return configured backup LLM provider IDs in priority order (default `[]`) (G1)."""
+    cfg = load_longform_config(reload=reload)
+    return list(normalize_llm_failover_chain(getattr(cfg, "llm_failover_chain", ())))
+
+
+def save_llm_failover_chain(
+    chain: Any,
+    *,
+    config_path: Path | None = None,
+) -> list[str]:
+    """Persist ordered `llm_failover_chain` to user longform.toml atomically and reload cache (G1)."""
+    from app.services.longform import app_paths
+
+    norm = list(normalize_llm_failover_chain(chain))
+    target_path = config_path or (app_paths.get_data_dir(create=True) / "config" / "longform.toml")
+    target_path = Path(target_path)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+
+    base_path = app_paths.get_install_root() / "config" / "longform.toml"
+    data: dict[str, Any] = {}
+    if toml is not None:
+        for src in (target_path, base_path):
+            if src.is_file():
+                try:
+                    with open(src, "r", encoding="utf-8") as fp:
+                        loaded = toml.load(fp)
+                        if isinstance(loaded, dict):
+                            data = loaded
+                            break
+                except Exception as exc:
+                    logger.warning(f"Could not parse {src}: {exc}")
+        lf_sec = data.get("longform")
+        if not isinstance(lf_sec, dict):
+            lf_sec = {}
+            data["longform"] = lf_sec
+        lf_sec["llm_failover_chain"] = norm
+        serialized = toml.dumps(data)
+    else:
+        quoted = ", ".join(f'"{x}"' for x in norm)
+        serialized = f"[longform]\nllm_failover_chain = [{quoted}]\n"
+
+    tmp_path = target_path.with_suffix(".toml.tmp")
+    tmp_path.write_text(serialized, encoding="utf-8")
+    os.replace(tmp_path, target_path)
+    load_longform_config(reload=True)
+    return norm
 
 
 def get_network_profile_settings(

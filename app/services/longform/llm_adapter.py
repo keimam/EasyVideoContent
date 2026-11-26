@@ -40,7 +40,7 @@ _SENSITIVE_KEY_RE = re.compile(
     re.IGNORECASE,
 )
 _RAW_TOKEN_RE = re.compile(
-    r"\b(sk-(?:or-|proj-|ant-)?[a-zA-Z0-9_\-]{12,}|AIza[0-9A-Za-z_\-]{20,}|gsk_[0-9A-Za-z_\-]{16,})"
+    r"(?<![A-Za-z0-9_])(sk-(?:or-|proj-|ant-)?[a-zA-Z0-9_\-]{8,}|AIza[0-9A-Za-z_\-]{12,}|gsk_[0-9A-Za-z_\-]{12,})"
 )
 
 
@@ -1755,4 +1755,111 @@ def set_active_llm_model(model_name: str, provider_id: Optional[str] = None) -> 
     except Exception as exc:
         logger.warning(f"Failed to save config after updating {key}: {exc}")
     return cleaned
+
+
+# ---------------------------------------------------------------------------
+# Failover Chain Configuration & Readiness Inspection (V102 G1)
+# ---------------------------------------------------------------------------
+
+
+def build_provider_failover_chain(
+    primary_provider: Optional[str] = None,
+    failover_chain: Optional[Sequence[str]] = None,
+) -> List[str]:
+    """Return ordered deduplicated `[primary, *backups]` chain without altering single-provider default (G1)."""
+    from app.services.longform.config import get_llm_failover_chain, normalize_llm_failover_chain
+
+    active_id = (
+        primary_provider or config.app.get("llm_provider") or DEFAULT_LLM_PROVIDER_ID
+    ).lower().strip()
+    raw_backups = (
+        list(normalize_llm_failover_chain(failover_chain))
+        if failover_chain is not None
+        else get_llm_failover_chain()
+    )
+    ordered: List[str] = []
+    seen: set[str] = set()
+    for pid in [active_id, *raw_backups]:
+        clean_pid = str(pid or "").strip().lower()
+        if not clean_pid or clean_pid in seen:
+            continue
+        seen.add(clean_pid)
+        ordered.append(clean_pid)
+    return ordered
+
+
+def _provider_key_fingerprint(provider_id: str) -> str:
+    pid = (provider_id or "").strip().lower()
+    prov_def = get_llm_provider(pid)
+    key_name = prov_def.config_key("api_key") if prov_def else f"{pid}_api_key"
+    raw_key = str(config.app.get(key_name) or "").strip()
+    if not raw_key:
+        return ""
+    return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()[:16]
+
+
+def get_provider_chain_status(
+    chain: Optional[Sequence[str]] = None,
+    *,
+    primary_provider: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Inspect configured credentials, resolved default/custom model, and pause status for each provider (G1)."""
+    targets = (
+        list(chain)
+        if chain is not None
+        else build_provider_failover_chain(primary_provider=primary_provider)
+    )
+    results: List[Dict[str, Any]] = []
+    for raw_pid in targets:
+        pid = str(raw_pid or "").strip().lower()
+        if not pid:
+            continue
+        prov_def = get_llm_provider(pid)
+        readiness = get_llm_readiness(pid)
+        model = str(readiness.get("model") or "").strip()
+        requires_model = bool(getattr(prov_def, "requires_model_name", True)) if prov_def else True
+
+        if not bool(readiness.get("configured")):
+            if bool(readiness.get("is_invalid")):
+                status = "invalid_key"
+            else:
+                status = "no_key"
+            logger.debug(f"Failover provider '{pid}' skipped ({status}); no secret logged")
+            results.append({
+                "provider": pid,
+                "label": readiness.get("provider_label") or pid,
+                "model": model,
+                "status": status,
+                "ready": False,
+                "paused_until": None,
+                "pause_label": "",
+                "message": sanitize_error(str(readiness.get("message") or "")),
+            })
+            continue
+
+        if requires_model and not model:
+            logger.debug(f"Failover provider '{pid}' skipped (needs_model)")
+            results.append({
+                "provider": pid,
+                "label": readiness.get("provider_label") or pid,
+                "model": "",
+                "status": "needs_model",
+                "ready": False,
+                "paused_until": None,
+                "pause_label": "",
+                "message": "Perlu model",
+            })
+            continue
+
+        results.append({
+            "provider": pid,
+            "label": readiness.get("provider_label") or pid,
+            "model": model,
+            "status": "ready",
+            "ready": True,
+            "paused_until": None,
+            "pause_label": "",
+            "message": "Siap",
+        })
+    return results
 

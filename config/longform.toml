@@ -3,6 +3,8 @@
 [longform]
 # Profil timeout & pemutus sumber visual: "normal" (6s, ambang 2, jeda 120s) atau "lambat" (15s, ambang 3, jeda 60s)
 network_profile = "normal"
+# Rantai penyedia AI cadangan berurutan (default [] = satu penyedia aktif MPT)
+llm_failover_chain = []
 
 [cache]
 # Maximum cache size in gigabytes before automatic LRU eviction occurs (default 10 GB)
