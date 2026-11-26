@@ -1387,7 +1387,7 @@ def get_llm_readiness(provider_id: Optional[str] = None) -> Dict[str, Any]:
                 "configured": False,
                 "is_invalid": True,
                 "masked_key": _mask_secret(raw_key),
-                "message": "Key Gemini tidak dikenali, cek kembali di Google AI Studio",
+                "message": "Key Gemini tampaknya tidak valid (seharusnya dimulai dengan 'AIza'). Periksa kembali di Settings -> Pengaturan AI (LLM).",
                 "configured_providers": configured_tuple,
                 "requires_api_key": True,
             }
@@ -2037,6 +2037,9 @@ def get_provider_chain_status(
 
         if not bool(readiness.get("configured")):
             status = "invalid_key" if bool(readiness.get("is_invalid")) else "no_key"
+            msg_out = sanitize_error(str(readiness.get("message") or ""))
+            if status == "invalid_key" and ("gemini" in pid or "google" in pid):
+                msg_out = "Key Gemini tidak dikenali, cek kembali di Google AI Studio"
             logger.debug(f"Failover provider '{pid}' skipped ({status}); no secret logged")
             results.append({
                 "provider": pid,
@@ -2046,7 +2049,7 @@ def get_provider_chain_status(
                 "ready": False,
                 "paused_until": None,
                 "pause_label": "",
-                "message": sanitize_error(str(readiness.get("message") or "")),
+                "message": msg_out,
             })
             continue
 
@@ -2460,7 +2463,7 @@ def test_all_llm_providers(chain: Optional[Sequence[str]] = None, timeout: float
                 "status": "invalid_key_format" if is_fmt_bad else "no_key",
                 "latency": 0.0,
                 "message": (
-                    sanitize_error(str(readiness.get("message") or default_fmt_msg))
+                    default_fmt_msg
                     if is_fmt_bad
                     else "API key belum diatur"
                 ),
