@@ -251,17 +251,7 @@ def search_coverr_videos(
         with _COVERR_AUTH_LOCK:
             _sync_key_hash_locked(key_hash)
             has_succeeded = bool(_COVERR_AUTH_STATE.get("has_succeeded"))
-            if int(status_code) == 403 and _is_coverr_quota_body(raw_txt):
-                strikes = 0
-                paused_run = True
-                _COVERR_AUTH_STATE["blocked"] = False
-                _COVERR_AUTH_STATE["quota_exhausted"] = True
-                _COVERR_AUTH_STATE["rate_limited"] = False
-                _COVERR_AUTH_STATE["run_paused"] = True
-                _COVERR_AUTH_STATE["status_code"] = 403
-                _COVERR_AUTH_STATE["error"] = safe_snippet
-                outcome = "quota_exhausted"
-            elif int(status_code) == 403 and has_succeeded:
+            if int(status_code) == 403 and has_succeeded:
                 strikes = int(_COVERR_AUTH_STATE.get("consecutive_403_after_200") or 0) + 1
                 _COVERR_AUTH_STATE["consecutive_403_after_200"] = strikes
                 _COVERR_AUTH_STATE["blocked"] = False
@@ -272,6 +262,16 @@ def search_coverr_videos(
                 paused_run = strikes >= _COVERR_RATE_LIMIT_MAX_STRIKES
                 _COVERR_AUTH_STATE["run_paused"] = paused_run
                 outcome = "rate_limited"
+            elif int(status_code) == 403 and _is_coverr_quota_body(raw_txt):
+                strikes = 0
+                paused_run = True
+                _COVERR_AUTH_STATE["blocked"] = False
+                _COVERR_AUTH_STATE["quota_exhausted"] = True
+                _COVERR_AUTH_STATE["rate_limited"] = False
+                _COVERR_AUTH_STATE["run_paused"] = True
+                _COVERR_AUTH_STATE["status_code"] = 403
+                _COVERR_AUTH_STATE["error"] = safe_snippet
+                outcome = "quota_exhausted"
             else:
                 strikes = 0
                 paused_run = False
