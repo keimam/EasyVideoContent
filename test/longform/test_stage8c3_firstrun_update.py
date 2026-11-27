@@ -22,11 +22,29 @@ def get_long_video_app_file() -> str:
 # E1: First-run wizard marker, EFS_DATA_DIR isolation, starter project, UI flow
 # ---------------------------------------------------------------------------
 
+def _snapshot_repo_runtime_files(repo_root: Path) -> dict[Path, tuple[bool, bytes]]:
+    """Snapshot dev-root runtime files so tests neither depend on nor mutate user state (E0)."""
+    targets = (
+        repo_root / ".efs_setup_complete.json",
+        repo_root / ".efs_launcher.lock.json",
+        repo_root / "config.toml",
+    )
+    return {p: (p.exists(), p.read_bytes() if p.is_file() else b"") for p in targets}
+
+
+def _assert_repo_runtime_files_unchanged(before: dict[Path, tuple[bool, bytes]]) -> None:
+    for p, (existed, raw) in before.items():
+        assert p.exists() == existed, f"Test altered existence of repo-root file {p}"
+        after_bytes = p.read_bytes() if p.is_file() else b""
+        assert after_bytes == raw, f"Test modified repo-root file {p}"
+
+
 def test_e1_wizard_marker_efs_data_dir_and_sample_project(tmp_path: Path, monkeypatch):
     """E1: Empty EFS_DATA_DIR has no setup marker; skip/complete/reset + starter project isolate cleanly."""
     from app.services.longform import app_paths, first_run, store
 
     repo_root = Path(__file__).resolve().parents[2].resolve()
+    before_repo_files = _snapshot_repo_runtime_files(repo_root)
     data_dir = (tmp_path / "empty_user_data").resolve()
     monkeypatch.setenv("EFS_DATA_DIR", str(data_dir))
     monkeypatch.delenv("EFS_INSTALLED", raising=False)
@@ -34,7 +52,7 @@ def test_e1_wizard_marker_efs_data_dir_and_sample_project(tmp_path: Path, monkey
     assert app_paths.get_data_dir() == data_dir
     assert first_run.is_setup_completed() is False
     assert first_run.get_setup_marker_path() == data_dir / ".efs_setup_complete.json"
-    assert not (repo_root / ".efs_setup_complete.json").exists()
+    _assert_repo_runtime_files_unchanged(before_repo_files)
 
     # Mark skipped -> marker exists cleanly inside EFS_DATA_DIR only
     marker = first_run.mark_setup_completed(skipped=True)
@@ -43,10 +61,12 @@ def test_e1_wizard_marker_efs_data_dir_and_sample_project(tmp_path: Path, monkey
     assert first_run.is_setup_completed() is True
     meta = first_run.read_setup_marker()
     assert meta and meta.get("skipped") is True
+    _assert_repo_runtime_files_unchanged(before_repo_files)
 
     # Reset -> marker removed cleanly ("Jalankan wizard lagi")
     assert first_run.reset_setup_marker() is True
     assert first_run.is_setup_completed() is False
+    _assert_repo_runtime_files_unchanged(before_repo_files)
 
     # Starter sample project builds inside EFS_DATA_DIR projects folder
     pid, p_dir = first_run.create_starter_sample_project(lang="id")
@@ -56,6 +76,7 @@ def test_e1_wizard_marker_efs_data_dir_and_sample_project(tmp_path: Path, monkey
     assert loaded.project_id == pid
     assert len(loaded.chapters) == 2
     assert loaded.target_duration_minutes == 2
+    _assert_repo_runtime_files_unchanged(before_repo_files)
 
 
 def test_e1_wizard_auto_opens_steps_skip_and_rerun_ui(tmp_path: Path, monkeypatch):
