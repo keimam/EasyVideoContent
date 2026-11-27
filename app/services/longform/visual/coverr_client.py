@@ -25,6 +25,7 @@ _COVERR_RATE_LIMIT_MAX_STRIKES = 3
 _COVERR_AUTH_LOCK = threading.Lock()
 _COVERR_AUTH_STATE: Dict[str, Any] = {
     "blocked": False,
+    "quota_exhausted": False,
     "key_hash": "",
     "status_code": None,
     "error": None,
@@ -34,9 +35,23 @@ _COVERR_AUTH_STATE: Dict[str, Any] = {
     "run_paused": False,
 }
 
+_COVERR_QUOTA_RE = re.compile(r"\b(?:exceeded\s+query\s+limit|limit|quota)\b", re.IGNORECASE)
+
+
+def _is_coverr_quota_body(text: str) -> bool:
+    return bool(_COVERR_QUOTA_RE.search(str(text or "")))
+
 
 class CoverrAuthBlockedError(VisualError):
     """Raised when Coverr rejects requests with HTTP 401/403 until the key changes or app restarts (B1)."""
+
+    def __init__(self, message: str, *, status_code: Optional[int] = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class CoverrQuotaExhaustedError(VisualError):
+    """Raised when Coverr returns HTTP 403 due to hourly query quota limit rather than invalid key (H2)."""
 
     def __init__(self, message: str, *, status_code: Optional[int] = None) -> None:
         super().__init__(message)
@@ -71,6 +86,7 @@ def _sync_key_hash_locked(key_hash: str) -> bool:
     if prev_hash != key_hash:
         switched_from_real_key = bool(prev_hash)
         _COVERR_AUTH_STATE["blocked"] = False
+        _COVERR_AUTH_STATE["quota_exhausted"] = False
         _COVERR_AUTH_STATE["key_hash"] = key_hash
         _COVERR_AUTH_STATE["status_code"] = None
         _COVERR_AUTH_STATE["error"] = None
@@ -83,9 +99,10 @@ def _sync_key_hash_locked(key_hash: str) -> bool:
 
 
 def reset_coverr_auth_block() -> None:
-    """Clear process-level Coverr auth_blocked and rate_limited state (for tests or key reset)."""
+    """Clear process-level Coverr auth_blocked, quota_exhausted, and rate_limited state (for tests or key reset)."""
     with _COVERR_AUTH_LOCK:
         _COVERR_AUTH_STATE["blocked"] = False
+        _COVERR_AUTH_STATE["quota_exhausted"] = False
         _COVERR_AUTH_STATE["key_hash"] = ""
         _COVERR_AUTH_STATE["status_code"] = None
         _COVERR_AUTH_STATE["error"] = None
@@ -97,13 +114,14 @@ def reset_coverr_auth_block() -> None:
 
 
 def get_coverr_auth_status() -> Dict[str, Any]:
-    """Return current Coverr process-level auth/rate-limit status, auto-clearing if API key changed."""
+    """Return current Coverr process-level auth/quota/rate-limit status, auto-clearing if API key changed."""
     key_hash = _hash_key(_extract_coverr_api_key())
     switched = False
     with _COVERR_AUTH_LOCK:
         switched = _sync_key_hash_locked(key_hash)
         res = {
             "auth_blocked": bool(_COVERR_AUTH_STATE["blocked"]),
+            "quota_exhausted": bool(_COVERR_AUTH_STATE["quota_exhausted"]),
             "rate_limited": bool(_COVERR_AUTH_STATE["rate_limited"]),
             "run_paused": bool(_COVERR_AUTH_STATE["run_paused"]),
             "has_succeeded": bool(_COVERR_AUTH_STATE["has_succeeded"]),
@@ -187,6 +205,14 @@ def search_coverr_videos(
 
     key_hash = _hash_key(api_key)
     auth_st = get_coverr_auth_status()
+    if auth_st.get("quota_exhausted"):
+        code = auth_st.get("status_code") or 403
+        err_msg = auth_st.get("error") or f"HTTP {code}"
+        record_provider_status_event("coverr", "quota_exhausted", error=err_msg, max_len=200)
+        raise CoverrQuotaExhaustedError(
+            f"Coverr quota_exhausted (HTTP {code})",
+            status_code=code,
+        )
     if auth_st["auth_blocked"]:
         code = auth_st.get("status_code") or 403
         err_msg = auth_st.get("error") or f"HTTP {code}"
@@ -225,10 +251,21 @@ def search_coverr_videos(
         with _COVERR_AUTH_LOCK:
             _sync_key_hash_locked(key_hash)
             has_succeeded = bool(_COVERR_AUTH_STATE.get("has_succeeded"))
-            if int(status_code) == 403 and has_succeeded:
+            if int(status_code) == 403 and _is_coverr_quota_body(raw_txt):
+                strikes = 0
+                paused_run = True
+                _COVERR_AUTH_STATE["blocked"] = False
+                _COVERR_AUTH_STATE["quota_exhausted"] = True
+                _COVERR_AUTH_STATE["rate_limited"] = False
+                _COVERR_AUTH_STATE["run_paused"] = True
+                _COVERR_AUTH_STATE["status_code"] = 403
+                _COVERR_AUTH_STATE["error"] = safe_snippet
+                outcome = "quota_exhausted"
+            elif int(status_code) == 403 and has_succeeded:
                 strikes = int(_COVERR_AUTH_STATE.get("consecutive_403_after_200") or 0) + 1
                 _COVERR_AUTH_STATE["consecutive_403_after_200"] = strikes
                 _COVERR_AUTH_STATE["blocked"] = False
+                _COVERR_AUTH_STATE["quota_exhausted"] = False
                 _COVERR_AUTH_STATE["rate_limited"] = True
                 _COVERR_AUTH_STATE["status_code"] = 403
                 _COVERR_AUTH_STATE["error"] = safe_snippet
@@ -239,10 +276,19 @@ def search_coverr_videos(
                 strikes = 0
                 paused_run = False
                 _COVERR_AUTH_STATE["blocked"] = True
+                _COVERR_AUTH_STATE["quota_exhausted"] = False
                 _COVERR_AUTH_STATE["rate_limited"] = False
                 _COVERR_AUTH_STATE["status_code"] = int(status_code)
                 _COVERR_AUTH_STATE["error"] = safe_snippet
                 outcome = "auth_blocked"
+
+        if outcome == "quota_exhausted":
+            trip_provider_cooldown("coverr", 3600.0)
+            record_provider_status_event("coverr", "quota_exhausted", error=safe_snippet, max_len=200)
+            logger.warning(
+                f"Coverr quota_exhausted after HTTP 403; skipping Coverr until hourly quota reset ({safe_snippet})"
+            )
+            return "quota_exhausted"
 
         if outcome == "rate_limited":
             _t, _th, cooldown_s = get_active_network_circuit_params()
@@ -276,8 +322,11 @@ def search_coverr_videos(
         )
     except VisualError as exc:
         with _COVERR_AUTH_LOCK:
+            is_quota = bool(_COVERR_AUTH_STATE.get("quota_exhausted") and _COVERR_AUTH_STATE.get("key_hash") == key_hash)
             is_blocked = bool(_COVERR_AUTH_STATE.get("blocked") and _COVERR_AUTH_STATE.get("key_hash") == key_hash)
             code = _COVERR_AUTH_STATE.get("status_code")
+        if is_quota:
+            raise CoverrQuotaExhaustedError(redact_coverr_secret(str(exc), api_key), status_code=code) from exc
         if is_blocked:
             raise CoverrAuthBlockedError(redact_coverr_secret(str(exc), api_key), status_code=code) from exc
         raise VisualError(redact_coverr_secret(str(exc), api_key)) from exc
@@ -285,6 +334,7 @@ def search_coverr_videos(
     with _COVERR_AUTH_LOCK:
         _sync_key_hash_locked(key_hash)
         _COVERR_AUTH_STATE["has_succeeded"] = True
+        _COVERR_AUTH_STATE["quota_exhausted"] = False
         _COVERR_AUTH_STATE["rate_limited"] = False
         _COVERR_AUTH_STATE["consecutive_403_after_200"] = 0
         _COVERR_AUTH_STATE["run_paused"] = False

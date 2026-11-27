@@ -229,6 +229,8 @@ def resilient_http_json_get(
                 auth_outcome = None
                 if callable(on_auth_failure):
                     auth_outcome = on_auth_failure(status, body_text)
+                if auth_outcome == "quota_exhausted":
+                    raise VisualError(f"{provider_key} quota_exhausted (HTTP {status}): {body_text[:120]}")
                 if auth_outcome == "rate_limited":
                     raise VisualError(f"{provider_key} rate_limited (HTTP {status})")
                 raise VisualError(f"{provider_key} API key rejected (HTTP {status})")

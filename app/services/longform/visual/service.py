@@ -2182,6 +2182,7 @@ class VisualService:
             cd_cnt = int(ev.get("cooldown") or 0)
             to_cnt = int(ev.get("timeout") or 0)
             auth_blk = bool(ev.get("auth_blocked", False))
+            quota_exh = bool(ev.get("quota_exhausted", False))
             rate_lim = bool(ev.get("rate_limited", False))
             err_max_len = 200 if pk == "coverr" else 120
             last_err = sanitize_source_error(
@@ -2193,7 +2194,12 @@ class VisualService:
                     from app.services.longform.visual.coverr_client import get_coverr_auth_status
 
                     c_auth = get_coverr_auth_status()
-                    if c_auth.get("auth_blocked"):
+                    if c_auth.get("quota_exhausted"):
+                        quota_exh = True
+                        auth_blk = False
+                        if not last_err:
+                            last_err = sanitize_source_error(c_auth.get("error") or "HTTP 403", max_len=200)
+                    elif c_auth.get("auth_blocked"):
                         auth_blk = True
                         if not last_err:
                             last_err = sanitize_source_error(c_auth.get("error") or "HTTP 403", max_len=200)
@@ -2214,19 +2220,22 @@ class VisualService:
                             last_err = sanitize_source_error(s_auth.get("error") or "HTTP 403", max_len=200)
                 except Exception:
                     pass
-            if last_err and not auth_blk and not rate_lim and to_cnt == 0 and cd_cnt == 0:
+            if last_err and not auth_blk and not quota_exh and not rate_lim and to_cnt == 0 and cd_cnt == 0:
                 low_e = last_err.lower()
-                if "rate_limited" in low_e:
+                if "quota_exhausted" in low_e or "exceeded query limit" in low_e:
+                    quota_exh = True
+                elif "rate_limited" in low_e:
                     rate_lim = True
                 elif "auth_blocked" in low_e or "http 401" in low_e or "http 403" in low_e:
                     auth_blk = True
                 elif "timeout" in low_e or "timed out" in low_e or "504" in low_e or "503" in low_e or "502" in low_e:
                     to_cnt = max(1, int(attempt_err_counts_by_provider.get(pk, 1)))
-            is_ok = (not auth_blk) and (not rate_lim) and (cd_cnt == 0) and (to_cnt == 0) and (not last_err)
+            is_ok = (not auth_blk) and (not quota_exh) and (not rate_lim) and (cd_cnt == 0) and (to_cnt == 0) and (not last_err)
             source_status[pk] = {
                 "ok": is_ok,
                 "cooldown": cd_cnt,
                 "auth_blocked": auth_blk,
+                "quota_exhausted": quota_exh,
                 "rate_limited": rate_lim,
                 "timeout": to_cnt,
                 "last_error": last_err,

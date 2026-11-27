@@ -475,6 +475,7 @@ def _get_visual_source_warnings(project_dir: Path) -> List[str]:
         if (
             st_info.get("ok", True)
             and not st_info.get("auth_blocked")
+            and not st_info.get("quota_exhausted")
             and not st_info.get("rate_limited")
             and int(st_info.get("cooldown") or 0) == 0
             and int(st_info.get("timeout") or 0) == 0
@@ -483,7 +484,9 @@ def _get_visual_source_warnings(project_dir: Path) -> List[str]:
         label = _format_visual_source_label(pk)
         last_err = st_info.get("last_error")
         reason = _extract_short_reason_code(last_err)
-        if st_info.get("auth_blocked"):
+        if st_info.get("quota_exhausted"):
+            warnings.append(t("visual_src_warn_quota_exhausted", source=label))
+        elif st_info.get("auth_blocked"):
             code = "401" if "401" in str(last_err or "") else "403"
             warnings.append(t("visual_src_warn_auth_blocked", source=label, code=code))
         elif st_info.get("rate_limited"):
@@ -3852,7 +3855,7 @@ def render_visual_step_flow(
         else:
             needs_key_srcs.append("Pixabay")
         if has_coverr:
-            if cov_auth.get("auth_blocked") or cov_auth.get("rate_limited"):
+            if cov_auth.get("auth_blocked") or cov_auth.get("rate_limited") or cov_auth.get("quota_exhausted"):
                 paused_srcs.append("Coverr")
             else:
                 ready_srcs.insert(1, "Coverr")
