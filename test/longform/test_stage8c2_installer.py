@@ -183,6 +183,8 @@ def test_d5_verify_package_script_catches_forbidden_items_and_secrets(tmp_path: 
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text("ok", encoding="utf-8")
     (clean / "config.example.toml").write_text("[app]\nllm_provider = ''\n", encoding="utf-8")
+    (clean / "resource" / "longform" / "prompts").mkdir(parents=True, exist_ok=True)
+    (clean / "resource" / "longform" / "prompts" / "outline.md").write_text("# outline\n", encoding="utf-8")
     assert verify_staging_dir(clean) == []
 
     # Inject forbidden artifacts one by one

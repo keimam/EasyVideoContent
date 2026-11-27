@@ -35,11 +35,11 @@ FORBIDDEN_TOP_OR_NESTED_NAMES = {
     "config.toml",
     ".pytest_cache",
     "__pycache__",
-    "prompts",
-    "claude outputs",
 }
 
 FORBIDDEN_SUBPATHS = (
+    "prompts",
+    "Claude outputs",
     "docs/branding/screens",
     "docs/dev/benchmark",
     "storage/longform_projects",
