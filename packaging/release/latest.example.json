@@ -1,8 +1,8 @@
 {
-  "version": "1.0.1",
+  "version": "1.0.2",
   "released": "2026-12-01",
   "notes_id": "Perbaikan stabilitas ekspor CapCut dan dukungan sumber footage tambahan.",
   "notes_en": "CapCut export stability improvements and enhanced stock footage matching.",
-  "download_url": "https://example.com/releases/EasyFacelessStudio-Setup-1.0.1.exe",
+  "download_url": "https://example.com/releases/EasyFacelessStudio-Setup-1.0.2.exe",
   "min_supported": "1.0.0"
 }

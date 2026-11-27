@@ -2,7 +2,7 @@
 
 Seluruh rilisan versi inti EasyFaceless Studio berakar dari satu konstanta `APP_VERSION` pada `app/services/branding/constants.py`.
 
-## [Unreleased] — 1.0.2
+## [1.0.2] — 2026-11-27
 
 ### Ringkasan untuk Pengguna
 - **Baru:**

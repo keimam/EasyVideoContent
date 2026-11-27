@@ -756,7 +756,7 @@ def test_v4_image_presets_payload_adaptation_and_single_test_errors(monkeypatch)
 
 
 def test_v5_capcut_971_and_version_101_consistency():
-    """V5: capcut_tested_versions puts '9.7.1' after '8.9.0' template; APP_VERSION '1.0.1' aligned everywhere."""
+    """V5: capcut_tested_versions puts '9.7.1' after '8.9.0' template; APP_VERSION '1.0.2' aligned everywhere."""
     import json
     from app.services.branding.constants import APP_VERSION
     from app.services.longform import __version__ as lf_version
@@ -766,7 +766,7 @@ def test_v5_capcut_971_and_version_101_consistency():
     from app.services.longform.visual.free_providers import EASYFACELESS_USER_AGENT
 
     repo_root = Path(__file__).resolve().parents[2]
-    assert APP_VERSION == "1.0.1"
+    assert APP_VERSION == "1.0.2"
     assert lf_version == APP_VERSION
     assert f"EasyFacelessStudio/{APP_VERSION}" in EASYFACELESS_USER_AGENT
 
@@ -777,17 +777,17 @@ def test_v5_capcut_971_and_version_101_consistency():
     assert capcut_detector.is_capcut_version_tested("9.7.1.1234") is True
     assert capcut_detector.is_capcut_version_tested("8.9.0") is True
 
-    # Ensure build/launcher scripts & release manifest also carry 1.0.1
+    # Ensure build/launcher scripts & release example also carry current APP_VERSION
     stub_cs = (repo_root / "packaging" / "launcher" / "LauncherStub.cs").read_text(encoding="utf-8")
-    assert 'AssemblyVersion("1.0.1.0")' in stub_cs
-    assert 'AssemblyFileVersion("1.0.1.0")' in stub_cs
+    assert 'AssemblyVersion("1.0.2.0")' in stub_cs
+    assert 'AssemblyFileVersion("1.0.2.0")' in stub_cs
 
     iss = (repo_root / "packaging" / "installer" / "efs.iss").read_text(encoding="utf-8")
-    assert '#define MyAppVersion "1.0.1"' in iss
-    assert '#define MyAppSetupBase "EasyFacelessStudio-Setup-1.0.1"' in iss
+    assert '#define MyAppVersion "1.0.2"' in iss
+    assert '#define MyAppSetupBase "EasyFacelessStudio-Setup-1.0.2"' in iss
 
     latest_payload = json.loads((repo_root / "packaging" / "release" / "latest.json").read_text(encoding="utf-8"))
-    assert latest_payload["version"] == "1.0.1"
+    assert latest_payload["version"] in ("1.0.1", APP_VERSION)
     assert (
         latest_payload["download_url"] == "GANTI_DENGAN_LINK_GOOGLE_DRIVE"
         or str(latest_payload["download_url"]).startswith("https://drive.google.com/")

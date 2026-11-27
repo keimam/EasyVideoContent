@@ -13,7 +13,7 @@ from typing import Dict
 APP_NAME = "EasyFaceless Studio"
 APP_SHORT = "EasyFaceless"
 APP_TAGLINE = "STUDIO"
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.0.2"
 APP_OWNER = "Naseh Ngulik"
 APP_PUBLISHER = APP_OWNER
 APP_COPYRIGHT_YEAR = "2026"

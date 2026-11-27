@@ -36,7 +36,7 @@ def test_branding_constants():
     assert APP_NAME == "EasyFaceless Studio"
     assert APP_SHORT == "EasyFaceless"
     assert APP_TAGLINE == "STUDIO"
-    assert APP_VERSION == "1.0.1"
+    assert APP_VERSION == "1.0.2"
     assert CORE_NAME == "MoneyPrinterTurbo"
     assert CORE_VERSION == "1.3.10"
     assert "v1.0" in VERSION_STRING
@@ -599,7 +599,7 @@ def test_c3_c4_c5_help_dialog_docs_notices_and_repo_hygiene(tmp_path, monkeypatc
     repo_root = Path(__file__).resolve().parents[2]
 
     # C5: Single source of version & CHANGELOG.md present
-    assert APP_VERSION == "1.0.1"
+    assert APP_VERSION == "1.0.2"
     assert longform_pkg.__version__ == APP_VERSION
     changelog = (repo_root / "CHANGELOG.md").read_text(encoding="utf-8")
     for marker in ("8C.1", "8B.2", "C6", "C7"):

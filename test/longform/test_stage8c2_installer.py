@@ -26,7 +26,7 @@ def test_d0_license_owner_and_constants():
     assert APP_OWNER == "Naseh Ngulik"
     assert APP_PUBLISHER == "Naseh Ngulik"
     assert APP_SETUP_PREFIX == "EasyFacelessStudio-Setup"
-    assert APP_VERSION == "1.0.1"
+    assert APP_VERSION == "1.0.2"
 
 
 def test_d2_app_paths_source_vs_installed_and_efs_data_dir(tmp_path: Path, monkeypatch):

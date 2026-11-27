@@ -392,11 +392,11 @@ def _read_app_version_from_tree(root: Path) -> str:
         m = re.search(r'^\s*APP_VERSION\s*=\s*"([^"]+)"', const_py.read_text(encoding="utf-8"), re.MULTILINE)
         if m:
             return m.group(1).strip()
-    return "1.0.1"
+    return "1.0.2"
 
 
 def _next_patch_version(ver: str) -> str:
-    parts = [int(p) for p in re.findall(r"\d+", str(ver or "1.0.1"))[:3]]
+    parts = [int(p) for p in re.findall(r"\d+", str(ver or "1.0.2"))[:3]]
     while len(parts) < 3:
         parts.append(0)
     return f"{parts[0]}.{parts[1]}.{parts[2] + 1}"
