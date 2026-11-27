@@ -1969,7 +1969,7 @@ class VisualService:
                             return f"auth_blocked ({s_auth.get('error') or 'HTTP 403'})"
                     except Exception:
                         pass
-                if p_nm in ("wikimedia", "nasa", "openverse", "internet_archive", "smithsonian"):
+                if p_nm in ("pixabay", "coverr", "pexels", "wikimedia", "nasa", "openverse", "internet_archive", "smithsonian"):
                     try:
                         from app.services.longform.visual.free_providers import check_provider_cooldown
 

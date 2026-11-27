@@ -1041,36 +1041,51 @@ class StockVisualProvider(BaseVisualProvider):
                     "Please set at least one key, or use '--provider local' (visual library add) or '--provider fake'."
                 )
 
+    # Official Pixabay API rate limit is 100 requests per 60 seconds (24h cache required).
+    # 0.65s spacing bounds single-key throughput <= ~92 req/min under live misses.
+    PIXABAY_MIN_INTERVAL_SEC = 0.65
+
     def _search_pixabay_enhanced(
         self,
         query: str,
         min_duration: int,
         category: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Query Pixabay API directly to extract tags and all renditions (S1, S2, S5, S6)."""
+        """Query Pixabay API with 24h JSON search cache, per-key lock, and rate-limit throttle (H1)."""
+        self._diag_local.pixabay_api_ok = False
         api_keys = config.app.get("pixabay_api_keys")
-        api_key = api_keys[0] if isinstance(api_keys, list) and api_keys else api_keys
+        api_key = ""
+        if isinstance(api_keys, (list, tuple)):
+            api_key = next((str(k).strip() for k in api_keys if str(k or "").strip()), "")
+        elif api_keys:
+            api_key = str(api_keys).strip()
         if not api_key:
+            self._diag_local.pixabay_api_ok = True
             return []
 
-        params = {
-            "q": query,
+        cache_params: Dict[str, Any] = {
+            "q": str(query or "").strip(),
             "video_type": "all",
             "per_page": 50,
-            "key": api_key,
         }
         if category:
-            params["category"] = category
+            cache_params["category"] = category
 
-        query_url = f"https://pixabay.com/api/videos/?{urllib.parse.urlencode(params)}"
+        live_params = dict(cache_params)
+        live_params["key"] = api_key
+
         try:
-            respect_provider_rate_limit("pixabay", 0.25)
-            record_search_io("pixabay", cache_hit=False)
-            r = requests.get(query_url, proxies=config.proxy, timeout=30)
-            if r.status_code != 200:
-                logger.warning(f"Pixabay direct query returned status {r.status_code}")
-                return []
-            data = r.json()
+            from app.services.longform.visual.free_providers import cached_json_get
+
+            data = cached_json_get(
+                "pixabay",
+                "https://pixabay.com/api/videos/",
+                params=live_params,
+                cache_params=cache_params,
+                cache=self.cache,
+                min_interval_sec=self.PIXABAY_MIN_INTERVAL_SEC,
+            )
+            self._diag_local.pixabay_api_ok = True
             hits = data.get("hits", [])
             raw_candidates = []
 
@@ -1150,8 +1165,11 @@ class StockVisualProvider(BaseVisualProvider):
                 })
 
             return raw_candidates
+        except VisualError:
+            raise
         except Exception as exc:
-            logger.warning(f"Pixabay direct search error: {exc}; falling back to standard upstream")
+            safe_err = sanitize_source_error(str(exc).replace(api_key, "***")) if api_key else sanitize_source_error(str(exc))
+            logger.warning(f"Pixabay direct search error: {safe_err}; falling back to standard upstream")
             return []
 
     def search_candidates(
@@ -1189,14 +1207,11 @@ class StockVisualProvider(BaseVisualProvider):
         has_pexels = _has_non_empty_key("pexels_api_keys")
         has_coverr = _has_non_empty_key("coverr_api_keys")
 
-        # 1. Pixabay search
+        # 1. Pixabay search (1 HTTP call per uncached tier; category=None retry handled by service query ladder)
         if (self.provider_name == "pixabay" or (self.provider_name == "stock" and has_pixabay)) and len(candidates) < limit:
             try:
-                # Try enhanced direct search with category first
                 raw_items = self._search_pixabay_enhanced(query, min_sec, category=category)
-                if not raw_items and category:
-                    # Retry without category in case category was too narrow
-                    raw_items = self._search_pixabay_enhanced(query, min_sec, category=None)
+                api_succeeded = bool(getattr(self._diag_local, "pixabay_api_ok", False))
 
                 if raw_items:
                     raw_total_count += len(raw_items)
@@ -1252,8 +1267,8 @@ class StockVisualProvider(BaseVisualProvider):
                                 thumbnail_url=raw.get("thumbnail_url"),
                             )
                         )
-                else:
-                    # Upstream fallback: app/services/material.py:507
+                elif not api_succeeded:
+                    # Only fall back to upstream material.py when direct API call itself failed without circuit block
                     record_search_io("pixabay", cache_hit=False)
                     results = search_videos_pixabay(
                         search_term=query,
@@ -1317,8 +1332,9 @@ class StockVisualProvider(BaseVisualProvider):
                             )
                         )
             except Exception as exc:
-                logger.error(f"Pixabay stock video search error for query '{query}': {exc}")
-                if isinstance(exc, VisualConfigurationError):
+                safe_exc = sanitize_source_error(str(exc)) or "Pixabay error"
+                logger.error(f"Pixabay stock video search error for query '{query}': {safe_exc}")
+                if isinstance(exc, (VisualConfigurationError, VisualError)):
                     raise
 
         # 2. Pexels search

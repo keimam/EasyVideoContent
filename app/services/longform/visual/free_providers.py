@@ -235,12 +235,24 @@ def resilient_http_json_get(
             if status in (429, 403):
                 body_low = body_text[:300].lower()
                 last_err = f"HTTP {status} rate limit/challenge"
+                hdrs = getattr(resp, "headers", {}) or {}
                 if "just a moment" in body_low or status == 403 or attempt >= 2:
-                    trip_provider_cooldown(provider_key, _cooldown_s)
+                    rl_wait = _cooldown_s
+                    try:
+                        reset_hdr = float(hdrs.get("Retry-After") or hdrs.get("X-RateLimit-Reset") or 0)
+                        if reset_hdr > 0:
+                            rl_wait = max(_cooldown_s, min(reset_hdr, 120.0)) if status == 429 else _cooldown_s
+                    except (TypeError, ValueError):
+                        pass
+                    trip_provider_cooldown(provider_key, rl_wait)
                     record_provider_status_event(provider_key, "cooldown_trip", error=last_err)
                     break
-                wait_s = float((getattr(resp, "headers", {}) or {}).get("Retry-After") or 2.0)
-                time.sleep(min(wait_s, 5.0))
+                wait_s = 2.0
+                try:
+                    wait_s = float(hdrs.get("Retry-After") or hdrs.get("X-RateLimit-Reset") or 2.0)
+                except (TypeError, ValueError):
+                    wait_s = 2.0
+                time.sleep(min(max(wait_s, 0.25), 5.0))
                 continue
             if status in (500, 502, 503, 504):
                 last_err = f"HTTP {status} upstream gateway error"
@@ -250,6 +262,20 @@ def resilient_http_json_get(
             payload = resp.json()
             if not isinstance(payload, dict):
                 payload = {"items": payload}
+            # Honor X-RateLimit-Remaining / X-RateLimit-Reset headers cleanly when nearing quota window (H1)
+            try:
+                hdrs_ok = getattr(resp, "headers", {}) or {}
+                raw_rem = hdrs_ok.get("X-RateLimit-Remaining")
+                raw_rst = hdrs_ok.get("X-RateLimit-Reset")
+                if raw_rem is not None:
+                    rem_val = int(float(raw_rem))
+                    rst_val = float(raw_rst) if raw_rst is not None else 1.0
+                    if rem_val <= 0:
+                        trip_provider_cooldown(provider_key, min(max(rst_val, 1.0), 65.0))
+                    elif rem_val <= 2 and rst_val > 0:
+                        time.sleep(min(max(rst_val / max(1, rem_val), 0.25), 3.0))
+            except (TypeError, ValueError):
+                pass
             clear_provider_transient_errors(provider_key)
             record_provider_status_event(provider_key, "ok")
             return payload
@@ -291,6 +317,7 @@ def cached_json_get(
     params: Optional[Dict[str, Any]] = None,
     *,
     cache: Optional[GlobalMediaCache] = None,
+    cache_params: Optional[Dict[str, Any]] = None,
     headers: Optional[Dict[str, str]] = None,
     timeout: Optional[int] = None,
     min_interval_sec: float = 0.35,
@@ -300,7 +327,8 @@ def cached_json_get(
     """Perform HTTP GET with User-Agent, rate-limit etiquette, 429/5xx cooldown circuit breaker, and 24h JSON cache."""
     media_cache = cache or GlobalMediaCache()
     cache_dir = _get_api_search_cache_dir(media_cache)
-    key_raw = json.dumps({"p": provider_key, "u": url, "q": params or {}}, sort_keys=True)
+    key_source = cache_params if cache_params is not None else params
+    key_raw = json.dumps({"p": provider_key, "u": url, "q": key_source or {}}, sort_keys=True)
     cache_file = cache_dir / f"{provider_key}_{hashlib.sha256(key_raw.encode('utf-8')).hexdigest()[:24]}.json"
 
     with _get_search_cache_lock(str(cache_file)):

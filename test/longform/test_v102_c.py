@@ -545,6 +545,157 @@ def test_ca1_prefetch_request_count_per_source_equals_sequential(tmp_path: Path,
     assert all(cnt > 0 for cnt in pref_counts.values())
 
 
+def test_ca1_prefetch_request_count_covers_pixabay_and_coverr(tmp_path: Path, monkeypatch):
+    """CA1.4(b) + H1.5: Sequential vs prefetch HTTP counts match for real Pixabay & Coverr providers, with 24h Pixabay cache."""
+    import json
+    from types import SimpleNamespace
+    from app.config import config as _cfg
+    import app.services.longform.visual.service as vis_svc_mod
+    from app.services.longform.visual.cache import GlobalMediaCache
+    from app.services.longform.visual.coverr_client import reset_coverr_auth_block
+    from app.services.longform.visual.free_providers import reset_provider_circuit_breakers
+    from app.services.longform.visual.stock import StockVisualProvider
+
+    reset_coverr_auth_block()
+    reset_provider_circuit_breakers()
+    monkeypatch.setitem(_cfg.app, "pixabay_api_keys", ["pix-secret-test-key-1234"])
+    monkeypatch.setitem(_cfg.app, "coverr_api_keys", ["cov-secret-test-key-5678"])
+
+    def _run_real_stock_counts(sub_name: str, win_size: int) -> tuple[dict[str, int], dict[str, dict], GlobalMediaCache]:
+        reset_coverr_auth_block()
+        reset_provider_circuit_breakers()
+        p_dir, manifest = _seed_visual_project(tmp_path / sub_name, f"ca1_pixcov_{sub_name}", n_shots=4)
+        # Include 2 identical shot queries to test per-cache-key dedup lock under concurrent prefetch
+        for idx, sh in enumerate(manifest.chapters[0].shots):
+            q = "canal ship harbor" if idx < 2 else f"canal excavation {idx}"
+            sh.search_query = q
+            sh.search_query_en = q
+            sh.search_queries_en = [q]
+        manifest.visual_search_mode = "mix_best"
+        manifest.visual_source_order = ["pixabay", "coverr"]
+        save_manifest(manifest, p_dir)
+
+        cache = GlobalMediaCache(tmp_path / sub_name / "cache")
+        svc = VisualService(p_dir)
+        svc.cache = cache
+        http_counts = {"pixabay": 0, "coverr": 0}
+        cnt_lock = threading.Lock()
+
+        class _StreamResp:
+            status_code = 200
+            headers: dict = {}
+
+            def iter_content(self, chunk_size=65536):
+                yield b"\x00\x00\x00\x18ftypmp42"
+
+            def raise_for_status(self):
+                return None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        def _fake_get(url, params=None, headers=None, **kw):
+            u = str(url)
+            if "pixabay.com/api/videos" in u:
+                with cnt_lock:
+                    http_counts["pixabay"] += 1
+                q_str = str((params or {}).get("q") or "canal")
+                tag_s = ", ".join(["canal", "excavation", "ship", "harbor", q_str])
+                payload = {
+                    "hits": [
+                        {
+                            "id": abs(hash(("pix", q_str, k))) % 900000 + 1000,
+                            "duration": 8,
+                            "tags": tag_s,
+                            "user": "PixCreator",
+                            "user_id": 42,
+                            "pageURL": f"https://pixabay.com/videos/canal-{k}/",
+                            "videos": {
+                                "medium": {
+                                    "url": f"https://cdn.pixabay.test/{abs(hash((q_str, k)))}_{k}.mp4",
+                                    "width": 1920,
+                                    "height": 1080,
+                                    "size": 500000,
+                                    "thumbnail": f"https://cdn.pixabay.test/{k}.jpg",
+                                }
+                            },
+                        }
+                        for k in range(3)
+                    ]
+                }
+                return SimpleNamespace(
+                    status_code=200,
+                    headers={"X-RateLimit-Limit": "100", "X-RateLimit-Remaining": "95", "X-RateLimit-Reset": "60"},
+                    text=json.dumps(payload),
+                    json=lambda: payload,
+                    raise_for_status=lambda: None,
+                )
+            if "api.coverr.co/videos" in u:
+                with cnt_lock:
+                    http_counts["coverr"] += 1
+                q_str = str((params or {}).get("query") or "canal")
+                payload = {
+                    "hits": [
+                        {
+                            "id": f"cov_{abs(hash(('cov', q_str, k))) % 900000}",
+                            "duration": 8.0,
+                            "max_width": 1920,
+                            "max_height": 1080,
+                            "is_vertical": False,
+                            "title": f"canal excavation ship harbor {q_str}",
+                            "canonical_url": f"https://coverr.co/videos/canal-{k}",
+                            "creator": {"name": "CoverrArtist", "url": "https://coverr.co/creators/a"},
+                            "urls": {"mp4_download": f"https://cdn.coverr.test/{abs(hash((q_str, k)))}_{k}.mp4"},
+                        }
+                        for k in range(2)
+                    ]
+                }
+                return SimpleNamespace(
+                    status_code=200,
+                    headers={},
+                    text=json.dumps(payload),
+                    json=lambda: payload,
+                    raise_for_status=lambda: None,
+                )
+            if u.endswith(".mp4"):
+                return _StreamResp()
+            raise AssertionError(f"Unexpected HTTP URL: {url}")
+
+        with monkeypatch.context() as mp:
+            mp.setattr("requests.get", _fake_get)
+            mp.setattr(vis_svc_mod, "get_effective_search_prefetch_shots", lambda profile=None: win_size)
+            mp.setattr(StockVisualProvider, "PIXABAY_MIN_INTERVAL_SEC", 0.01)
+            with patch("app.services.longform.visual.service.ShotClipBuilder") as bld_cls:
+                bld_cls.return_value.build_shot_clip.side_effect = lambda asset_path, out_path, **kw: (
+                    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+                    or Path(out_path).write_bytes(b"clip")
+                    or Path(out_path)
+                )
+                svc.fetch_all(manifest=manifest, provider_name="auto", providers_order=["pixabay", "coverr"], translate_keywords=False)
+
+        metrics = dict(getattr(svc, "_last_fetch_metrics", {}) or {})
+        return http_counts, metrics.get("search_per_source", {}), cache
+
+    seq_counts, seq_metrics, seq_cache = _run_real_stock_counts("seq_pixcov", 1)
+    pref_counts, pref_metrics, _pref_cache = _run_real_stock_counts("pref_pixcov", MAX_SEARCH_PREFETCH_SHOTS)
+
+    assert pref_counts == seq_counts
+    assert pref_counts["pixabay"] > 0 and pref_counts["coverr"] > 0
+    assert seq_metrics["pixabay"]["http_requests"] <= seq_metrics["pixabay"]["tier_attempts"]
+    assert pref_metrics["pixabay"]["http_requests"] <= pref_metrics["pixabay"]["tier_attempts"]
+    assert seq_metrics["pixabay"]["cache_hits"] >= 1
+    assert pref_metrics["pixabay"]["cache_hits"] >= 1
+    # Verify Pixabay search cache never leaks API key in filename or JSON contents
+    pix_cache_files = list((seq_cache.cache_dir / "api_search").glob("pixabay_*.json"))
+    assert pix_cache_files
+    for cf in pix_cache_files:
+        assert "pix-secret-test-key-1234" not in cf.name
+        assert "pix-secret-test-key-1234" not in cf.read_text(encoding="utf-8")
+
+
 def test_ca1_cooled_down_source_gets_zero_prefetch_requests(tmp_path: Path, monkeypatch):
     """CA1.4(c): Source in cooldown (before or during prefetch window) receives 0 new prefetch calls."""
     import app.services.longform.visual.service as vis_svc_mod
