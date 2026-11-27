@@ -35,6 +35,7 @@ from app.services.longform.visual.base import (
     compute_file_content_hash,
     record_search_io,
     respect_provider_rate_limit,
+    sanitize_source_error,
 )
 from app.services.longform.visual.cache import GlobalMediaCache
 from app.services.longform.visual.credits import CreditsManager
