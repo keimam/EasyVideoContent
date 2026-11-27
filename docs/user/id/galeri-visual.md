@@ -8,9 +8,10 @@ Langkah **Visual** memecah setiap bab menjadi beberapa shot sesuai durasi audio 
 
 - **Satu Sumber Kebenaran:** Thumbnail pada galeri dan pratinjau di panel Detail sebelah kanan selalu membaca berkas klip final (`rendered_clip`) yang akan masuk ke render akhir.
 - **Badge Status:**
-  - `🔄 Perlu disusun ulang` (*Needs rebuild*): Anda sudah mengganti aset atau menjalankan *Perbarui kata kunci* / *Cari lagi*, tetapi klip final shot ini belum disusun ulang. Gunakan filter **Perlu diperbarui · N** untuk menemukannya cepat, lalu klik **Susun Klip**.
-  - `🧩 Belum disusun` (*Not built*): Aset sumber sudah ada, namun klip final belum pernah dibangun.
-  - `🔒 Terkunci` (*Locked*): Shot dikunci agar tidak tertimpa saat Anda menekan **Cari & Susun**.
+  - `🔄 Perlu dicek` / `Perlu diperbarui`: Anda sudah mengganti aset atau menjalankan *Perbarui kata kunci* / **Cari lagi**, atau shot masih membutuhkan tinjauan. Gunakan filter **Perlu dicek · N** untuk menemukannya cepat, lalu klik **Perbarui Klip yang Berubah** atau **Cari & Susun Visual**.
+  - `🧩 Belum disusun`: Aset sumber sudah ada, namun klip final belum pernah dibangun.
+  - `🔒 Terkunci`: Shot dikunci agar tidak tertimpa saat Anda menekan **Cari & Susun Visual**.
+- **Selesai sebagian vs Terhenti:** Bila proses selesai dengan beberapa shot masih tanpa visual, status tampil sebagai **Selesai sebagian** (`Visual selesai: X dari Y shot. Z shot belum menemukan visual yang cocok.`) lengkap dengan daftar shot/query serta saran perbaikan tanpa tombol **Lanjutkan**.
 
 ---
 
@@ -18,8 +19,8 @@ Langkah **Visual** memecah setiap bab menjadi beberapa shot sesuai durasi audio 
 
 Pilih salah satu kartu shot untuk membuka panel Detail di sebelah kanan, lalu pilih salah satu dari 4 tab:
 
-1. **Kandidat:** Menampilkan daftar kandidat footage hasil pencarian otomatis (sudah disaring dari istilah yang dihindari). Klik **Gunakan** untuk mengganti klip shot ke kandidat lain.
-2. **Cari lagi:** Ketik query bahasa Inggris manual Anda (mis. `night street food wok`) untuk langsung mengunduh dan mengganti klip.
+1. **Kandidat:** Menampilkan daftar kandidat footage hasil pencarian otomatis (sudah disaring dari istilah yang dihindari). Klik **Pakai ini** untuk mengganti klip shot ke kandidat lain.
+2. **Cari lagi:** Ketik kueri bahasa Inggris manual Anda (mis. `night street food wok`) lalu tekan **Cari Footage** untuk mengunduh dan mengganti klip langsung.
 3. **Unggah:** Unggah video `.mp4`/`.mov` atau gambar lokal `.jpg`/`.png` dari komputer Anda.
 4. **AI Video:** Gunakan penyedia Video AI (mis. WaveSpeed) untuk membuat klip khusus berdasarkan prompt yang bisa Anda edit terlebih dahulu. Perkiraan biaya USD dan batas anggaran selalu dikonfirmasi sebelum pembuatan dimulai.
 
@@ -27,62 +28,47 @@ Pilih salah satu kartu shot untuk membuka panel Detail di sebelah kanan, lalu pi
 
 ## 3. Memperbarui Kata Kunci AI & Cek Relevansi
 
-- **Perbarui kata kunci dengan AI:** Menghasilkan kata kunci konkret berbahasa Inggris (3–6 kata) plus query alternatif berdasarkan isi bab & jangkar visual proyek (tag manual `[search]` dan shot terkunci tetap dipertahankan).
-  Setelah itu klik **Cari & Susun** — progress bar hanya menghitung shot yang berubah dan menampilkan jumlah shot valid/terkunci yang dilewati.
+- **Perbarui kata kunci dengan AI:** Menghasilkan kata kunci konkret berbahasa Inggris (3–6 kata) plus kueri alternatif berdasarkan isi bab & jangkar visual proyek (tag manual `[search]` dan shot terkunci tetap dipertahankan).
+  Setelah itu klik **Cari & Susun Visual** — progress bar hanya menghitung shot yang berubah dan menampilkan jumlah shot valid/terkunci yang dilewati.
 - **Cek relevansi dengan AI:** Toggle opsional (memerlukan model LLM berkemampuan *vision*) untuk memberi label **Relevan**, **Ragu**, atau **Tidak relevan** pada shot terpilih.
 
 ---
 
-## 4. Sumber Footage, Pencarian Bertingkat & Atribusi (`credits.md`)
+## 4. Sumber Footage, Pustaka Lokal & Atribusi (`credits.md`)
 
-Secara default, studio mencari footage secara bertingkat per shot (**Query Utama/AI → Kata Kunci Lebih Umum → Sumber Berikutnya**) dengan urutan prioritas:
-**Pixabay → Coverr → Wikimedia Commons → NASA Library → Openverse (foto) → Internet Archive (Prelinger/Museum)** *(+ **Smithsonian Open Access** bila key opsional diisi)*.
-
-| Sumber | Kunci API | Media & Karakteristik | Aturan Lisensi & Atribusi |
-|---|---|---|---|
-| **Pixabay** | Perlu key (gratis) | Video HD/4K sinematik, variasi modern lengkap | Pixabay Content License (bebas komersial, atribusi tidak wajib) |
-| **Coverr** | Perlu key | Klip video stok sinematik bebas royalti | Coverr License (bebas komersial) |
-| **Pexels** | Perlu key (*Pendaftaran key baru ditutup*) | Didukung bagi pemilik API key lama | Pexels License |
-| **Wikimedia Commons** | **Gratis (tanpa key)** | Video (`WebM/OGV` dikonversi otomatis ke MP4) & foto dokumenter/sejarah | Hanya Domain Publik, `CC0`, `CC BY`, `CC BY-SA` (`NC`/`ND` ditolak otomatis). Item `CC BY`/`BY-SA` wajib mencantumkan kredit |
-| **NASA Image & Video Library** | **Gratis (tanpa key)** | Klip & foto resmi misi antariksa, sains, observasi Bumi | NASA Media (Public Domain / U.S. Gov). Cantumkan kredit `NASA` tanpa menyiratkan endorsement |
-| **Openverse** | **Gratis (tanpa key)** | Foto resolusi tinggi dari berbagai koleksi terbuka; dijadikan klip *Ken Burns* | Hanya lisensi komersial (`CC0`, `PDM`, `CC BY`, `CC BY-SA`; `NC`/`ND` ditolak). Item `CC BY`/`BY-SA` wajib atribusi |
-| **Internet Archive (Prelinger / Museum)** | **Gratis (tanpa key)** | Video arsip sejarah `Prelinger` (dipotong segmen langsung tanpa unduh file utuh) & lukisan/arteak CC0 `Cleveland Museum of Art` | Koleksi terkurasi + filter ketat PD / `CC0` / `CC BY` / `CC BY-SA` (`Fair Use`/`NC`/`ND` ditolak). Item `CC BY`/`BY-SA` wajib atribusi di `credits.md` |
-| **Smithsonian Open Access** | **Opsional BYOK** (`api.data.gov` gratis) | Foto JPEG resolusi tinggi koleksi museum Smithsonian (*hanya aktif bila key Anda diisi*) | Hanya media dengan status resmi `CC0` (`Limited Use`/hak cipta ditolak). Cantumkan museum kontributor di `credits.md` |
-
-> **Peringatan Footage Arsip:** Footage arsip: lisensi dari metadata pengunggah. Selalu cek kredit (`export/credits.md`) sebelum memublikasikan video. Footage domain publik maupun CC tetap bisa terkena klaim Content ID otomatis pihak lain.
-
-- **Alasan "Belum ada visual":** Bila seluruh query dan sumber gagal, shot ditandai `"Belum ada visual"` beserta ringkasan alasannya di panel Detail (mis. jumlah kandidat & alasan penolakan relevansi/lisensi).
-- **Berkas `credits.md`:** Otomatis dibuat di `export/credits.md` dan ikut disalin ke folder hasil render MP4 & draft CapCut berisi judul, pembuat, lisensi, dan tautan sumber. Shot yang memakai `CC BY` / `CC BY-SA` menampilkan tanda **Perlu atribusi** di panel Detail.
-
+- **Panduan lengkap seluruh sumber & lisensi:** Lihat [Sumber Footage, Lisensi & Atribusi](sumber-footage.md) untuk tabel lengkap **Pixabay**, **Coverr**, **Pexels**, **Wikimedia Commons**, **Openverse**, **NASA Library**, **Internet Archive (`Prelinger` & museum)**, **Smithsonian Open Access** (opsional BYOK `api.data.gov`), **Local files**, dan **Gambar Eksternal**, beserta penjelasan mode **Campur terbaik** vs **Prioritas**.
+- **Ringkasannya:** Sumber tanpa key (`Wikimedia`, `NASA`, `Openverse`, `Internet Archive`) aktif otomatis, `credits.md` ditulis otomatis di folder `export/credits.md` (buka cepat lewat **📜 Buka credits.md**), dan folder pribadi `assets/visual/library` dapat dibuka lewat **📂 Buka folder Local files** atau diisi via **Tambah media ke Local files (multi-file)** → **Simpan ke Local files** (ingat opsi **Isi shot kosong dengan file lokal acak** default nonaktif agar file tak cocok tidak terpakai acak).
 
 ---
 
-## 5. Pustaka Media Lokal (`Local files`)
+## 5. Panduan Gambar Eksternal (Flow, Zapi) — Tata Letak 3 Tab
 
-Anda bisa menyiapkan koleksi gambar atau klip video milik sendiri (arsip dokumenter, aset merek, atau rekaman Pribadi) di folder `assets/visual/library` proyek:
+Jika sebagian atau seluruh shot lebih cocok dibuat memakai generator eksternal (seperti **Google Flow**, **Zapi**, **Midjourney**, atau **ChatGPT**), gulir langkah **Visual** ke bawah daftar kartu shot lalu buka expander **🖼️ Gambar Eksternal (Flow, dll.) — Ekspor Prompt & Impor Massal** yang tersusun dalam **3 tab**:
 
-1. **Cara membuka & mengunggah:** Buka panel **Sumber Footage** di halaman **Visual**, lihat jumlah file saat ini, lalu tekan **Buka folder Local files** untuk membuka folder langsung di Windows Explorer, atau pakai pengunggah multi-file yang tersedia (bila nama file sudah ada, studio akan menanyakan **Ganti nama otomatis**, **Timpa**, atau **Lewati** agar file lama tidak tertimpa diam-diam).
-2. **Aturan penamaan agar akurat:** Studio membaca kata kunci dari nama file (pisahkan kata dengan garis bawah `_`, tanda hubung `-`, atau titik `.`) serta nama subfolder di dalamnya — contohnya `old_lighthouse_night_fog.jpg` atau subfolder `vikings/ship_storm.jpg`.
-3. **Prioritas & opsi pengisian acak:** Jika centang **Local files** aktif dan ada file lokal yang lolos skor relevansi, file tersebut selalu didahulukan baik di mode **Campur terbaik** maupun **Prioritas**. Opsi **Isi shot kosong dengan file lokal acak** nonaktif secara bawaan agar file yang tidak cocok tidak mengisi semua shot otomatis.
-4. **Format yang didukung:** Video (`.mp4`, `.mov`, `.mkv`, `.webm`, `.avi`) dan gambar (`.jpg`, `.jpeg`, `.png`, `.webp`, `.bmp`).
+### Tab 1 — `1. Konteks Visual`
+1. **Mode gaya gambar:** Pilih gaya visual utama proyek — bawaan **Realistis sinematik**, atau **Ilustrasi**, **Lukisan**, maupun **Kustom** (AI menyesuaikan detail dalam gaya pilihan Anda serta mencegah kata `Hindari` bertabrakan dengan gaya gambar).
+2. **Latar & zaman (*Setting*):** Pastikan kolom **Latar & zaman** menyebut periode/era secara jelas (mis. `19th century London` atau `1990s Jakarta`). Jika zaman belum disebut, muncul peringatan kuning agar kostum & bangunan tidak bercampur era.
+3. **Tokoh, POV & varian kilas balik (`variant_of`):** Definisikan tokoh di tabel **Tokoh (table: ID, nama, deskripsi fisik lengkap, alias, peran, variant_of)**. Jika tokoh memiliki adegan kilas balik (mis. versi anak atau lanjut usia), buat baris varian dengan mengisi kolom `variant_of` ke ID tokoh utamanya. Bila narasi memakai kata ganti orang kedua (*kamu/you*), pilih **Tokoh sudut pandang 'you/kamu'**.
+4. **Lokasi berulang:** Pisahkan lokasi yang sama menjadi `_interior` dan `_exterior` pada tabel **Lokasi berulang (pisahkan `_interior` / `_exterior`)**, dan biarkan kolom **Warna & suasana** bebas dari kata waktu/pencahayaan spesifik.
+5. **✨ Buat dengan AI & Simpan:** Klik **✨ Buat dengan AI** agar studio membaca judul, topik, preset, dan naskah untuk mengisi seluruh Konteks Visual secara otomatis. Saat dimuat/disimpan, studio membersihkan otomatis alias kata ganti/ganda & kata waktu yang terselip, lalu menyimpannya saat Anda menekan **💾 Simpan Konteks Visual**.
 
----
+### Tab 2 — `2. Ekspor Prompt`
+1. **Gunakan AI & cakupan ekspor:** Centang **Gunakan AI untuk menyusun adegan & prompt bersambung** (bila ingin kesinambungan lokasi, waktu, cuaca, cahaya, benda, dan kondisi tokoh otomatis per adegan), pilih **Cakupan shot yang diekspor** (*Shot tanpa visual*, *Shot terpilih*, atau *Semua shot*), lalu klik **Siapkan file prompt (.txt & .csv)**.
+2. **Arti peringatan `missing character lock` & tombol `🔄 Lanjutkan dengan AI`:**
+   - Pesan `⚠️ N prompt memiliki catatan validator (M prompt belum mengunci tokoh)` (*missing character lock*) menandakan ada prompt shot yang belum menyertakan blok pengunci deskripsi tokoh dari Konteks Visual — buka shot tersebut di tabel ringkas per adegan di bawahnya untuk memilih **Tokoh di shot** lalu klik **🔄 Perbarui pratinjau & file unduhan**.
+   - Jika sebagian batch AI berhenti di tengah (mis. kuota AI habis atau timeout), shot terdampak jatuh aman ke jalur non-AI dan tombol **🔄 Lanjutkan dengan AI** muncul untuk melanjutkan hanya batch yang tersisa dari cache.
+3. **Tiga file unduhan siap pakai:** Di bagian atas daftar hasil tersedia 3 tombol unduh:
+   - **⬇️ Unduh Prompt (.txt)** — daftar bernomor rapi per shot untuk ditempel manual atau dibaca langsung.
+   - **⬇️ Unduh Tabel Prompt (.csv UTF-8)** — tabel lengkap beserta kolom metadata adegan untuk Excel/Google Sheets.
+   - **⬇️ Prompt untuk bulk tool (Zapi, dll.) — satu baris per prompt** (`<project>_prompts_bulk.txt`) — format UTF-8 tanpa BOM berisi tepat **1 baris = 1 prompt** khusus antrean bulk.
 
-## 6. Jembatan Gambar Eksternal (Google Flow / Midjourney / ChatGPT)
+### Tab 3 — `3. Impor Gambar`
+1. **Impor dari folder lokal (read-only) atau unggah file:** Masukkan path folder hasil unduhan pada **Impor dari folder lokal (opsional — file asli tidak diubah)**, biarkan **Urutkan file folder** pada **Waktu dibuat (bawaan)** (atau ganti ke *Nama file*), lalu klik **📂 Baca folder** — atau unggah manual `.png`/`.jpg`/`.jpeg`/`.webp`/`.mp4`.
+2. **Pencocokan pola nama & file `(1)` browser:** Studio mencocokkan otomatis pola `shot_id` (`ch01_shot001.png`), nomor urut ekspor (`image_1.png`, `02.webp`), serta urutan duplikat browser bernama dasar sama **`nama.webp`, `nama (1).webp`, `nama (2).webp`** (→ shot 1, 2, 3). Jika berkas berakhiran `(1)` ada tetapi file pertama tanpa angka hilang, studio menampilkan peringatan kuning agar urutan tidak bergeser satu shot.
+3. **Pratinjau & tombol Terapkan:** Di bagian bawah tab tampil **Pratinjau pemetaan sebelum diterapkan** (thumbnail kecil, nama berkas, dropdown **Shot tujuan**, dan **80 karakter awal prompt shot tujuan** dalam satu baris). Klik **✅ Terapkan impor eksternal** di atas grid — aset langsung diberi animasi *Ken Burns* (atau `.mp4` dipotong sesuai durasi), dikunci (`🔒 Terkunci`), dan dicatat ke `credits.md`.
 
-Jika sebagian shot lebih cocok dibuat memakai generator eksternal seperti Google Flow, Midjourney, atau ChatGPT, buka expander **🖼️ Gambar Eksternal (Flow, dll.) — Ekspor Prompt & Impor Massal** di halaman **Visual**:
-
-### Membuat gambar di Flow dengan tokoh konsisten
-
-1. **Letak expander & tiga tab:** Buka langkah **Visual**, lalu gulir ke bawah daftar kartu shot hingga menemukan panel lipat **🖼️ Gambar Eksternal (Flow, dll.) — Ekspor Prompt & Impor Massal** yang berisi 3 tab: **1. Konteks Visual**, **2. Ekspor Prompt**, dan **3. Impor Gambar**.
-2. **Tab 1 — Mengisi Konteks Visual (Visual Bible):** Pilih **Mode gaya gambar** (*Realistis sinematik* bawaan, *Ilustrasi*, *Lukisan*, atau *Kustom* — AI hanya melengkapi detail sesuai mode pilihan Anda dan menjaga agar istilah `Avoid` tidak bertabrakan dengan `Style`), lalu klik **✨ Buat dengan AI** agar studio membaca judul, topik, preset, dan seluruh naskah untuk mengisi *Latar & zaman*, *Warna & suasana* (tanpa kata jam/cahaya spesifik), *Tokoh sudut pandang 'you/kamu'* (`pov_character_id`), tabel *Tokoh* (termasuk deskripsi fisik tetap dan entri terpisah `variant_of` bila ada kilas balik usia berbeda seperti versi anak), tabel *Lokasi berulang* (`_interior` / `_exterior`), serta *Hindari*. Saat dimuat dan sebelum disimpan, studio membersihkan otomatis alias kata ganti/ganda dan kata waktu/cahaya (sambil menampilkan peringatan kuning jika dilakukan pembersihan atau jika Setting belum menyebut zaman), lalu menyimpannya saat Anda menekan **💾 Simpan Konteks Visual**.
-3. **Arti adegan dan kesinambungan:** Saat menyiapkan ekspor, studio mengelompokkan shot berurutan menjadi adegan (`scene_id`) dan melacak status adegan efektif (`location_id`, `time_of_day` *dawn/day/dusk/night*, `weather`, `lighting`, benda aktif/`props` beserta pemiliknya, serta `character_state`). Proses AI menampilkan progres per batch beserta perkiraan sisa waktu; jika ada batch yang gagal (mis. kuota habis), shot terdampak jatuh aman ke jalur tanpa AI dengan peringatan kuning plus tombol **🔄 Lanjutkan dengan AI** agar hanya batch yang gagal yang dijalankan ulang dari cache.
-4. **Tab 2 — Mengekspor prompt:** Pilih cakupan (*Shot tanpa visual*, *Shot terpilih*, atau *Semua shot*) lalu klik **Siapkan file prompt (.txt & .csv)**. Prompt akhir disusun mulai dari `Style` → `Setting` → adegan → `Characters` → `Location` → `Continuity` → `Palette` → rasio layar → `Avoid`. Tombol unduh (`.txt`, `.csv` UTF-8, serta **Prompt untuk bulk tool (Zapi, dll.) — satu baris per prompt** `<project>_prompts_bulk.txt`) tampil di atas, diikuti tabel ringkas per adegan (hanya adegan pertama yang terbuka secara bawaan) beserta editor detail untuk adegan/shot terpilih dan pratinjau prompt lengkap berbungkus baris (*wrap*).
-5. **Tab 3 — Mengimpor hasil gambar massal:** Hasilkan gambar di Flow dari prompt tersebut, beri nama berkas sesuai `shot_id` (mis. `ch01_shot001.png`), nomor urut ekspor (`image_1.png`, `02.webp`), atau pola browser bernama dasar sama (`proyek.webp`, `proyek (1).webp`, `proyek (2).webp`), lalu unggah atau baca langsung dari folder lokal di tab **3. Impor Gambar**. Bila berkas bernomor `(n)` ditemukan tanpa berkas pertama tanpa angka, studio menampilkan peringatan pergeseran urutan. Tombol **✅ Terapkan impor eksternal** berada di bagian atas daftar grid (thumbnail, nama berkas, target shot, dan 80 karakter awal prompt dalam satu baris) — gambar otomatis diberi animasi *Ken Burns* (atau `.mp4` dipotong sesuai durasi), dikunci (`Locked`), dan dicatat di `credits.md`.
-
-### Bulk generate dengan Zapi
-
-1. **Ekspor file bulk satu baris per prompt:** Setelah menyiapkan prompt di expander **Gambar Eksternal**, unduh **⬇️ Prompt untuk bulk tool (Zapi, dll.) — satu baris per prompt** (`<project>_prompts_bulk.txt`) dan pastikan jumlah baris sesuai jumlah shot target.
-2. **Generate satu per satu di Zapi / Google Flow:** Tempel seluruh baris dari `<project>_prompts_bulk.txt` ke antrean Zapi (setiap baris otomatis diproses sebagai 1 prompt terpisah). Biarkan hasil unduhan tersimpan ke folder unduhan Anda (mis. `proyek.webp`, `proyek (1).webp`, `proyek (2).webp`, ...).
-3. **Impor dari folder lokal:** Di kolom kanan expander, masukkan path folder unduhan Anda pada **Impor dari folder lokal**, pilih urutan **Waktu dibuat (bawaan)** (atau *Nama file*), lalu klik **📂 Baca folder**. File asli di folder hanya dibaca dan tidak diubah atau dipindahkan.
-4. **Cek pratinjau sebelum menerapkan:** Pastikan tidak ada peringatan jumlah tidak sama (mis. `12 file untuk 14 prompt`), lalu cocokkan setiap **thumbnail gambar** dengan **80 karakter awal prompt shot tujuan** pada pratinjau pemetaan sebelum menekan **✅ Terapkan impor eksternal**.
+### Alur Singkat Bulk Generate dengan Zapi
+1. Pada tab **2. Ekspor Prompt**, klik **Siapkan file prompt (.txt & .csv)** lalu unduh **⬇️ Prompt untuk bulk tool (Zapi, dll.) — satu baris per prompt** (`<project>_prompts_bulk.txt`).
+2. Tempel seluruh baris berkas tersebut ke antrean **Zapi** (*1 baris diproses menjadi 1 prompt terpisah*), lalu jalankan pembuatan **satu per satu** hingga semua hasil terunduh ke satu folder (mis. `nama.webp`, `nama (1).webp`, `nama (2).webp`, ...).
+3. Buka tab **3. Impor Gambar**, isi path folder unduhan di **Impor dari folder lokal**, biarkan urutan **Waktu dibuat (bawaan)**, lalu klik **📂 Baca folder**.
+4. Cocokkan thumbnail terhadap 80 karakter prompt di pratinjau pemetaan, lalu tekan **✅ Terapkan impor eksternal**.
