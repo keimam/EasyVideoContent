@@ -1051,17 +1051,22 @@ def test_r1_release_url_friendly_404_make_latest_json_and_process_leak_guard(tmp
         srv.shutdown()
         srv.server_close()
 
-    # R1.2 & R1.7: Member notes separation + valid latest.json + rejection of invalid/BOM/internal patterns
+    # R1.2 & R1.7: Member notes separation + valid latest.json (live or prior pre-publish) + rejection of BOM/internal patterns
     repo_root = Path(__file__).resolve().parents[2]
     committed_latest = repo_root / "packaging" / "release" / "latest.json"
-    committed_data = make_latest_json.validate_latest_json_file(committed_latest, expected_version=APP_VERSION)
+    committed_raw = json.loads(committed_latest.read_text(encoding="utf-8"))
+    committed_ver = str(committed_raw.get("version") or "").strip()
+    assert committed_ver == APP_VERSION or update_checker.is_newer_version(APP_VERSION, committed_ver)
+    committed_data = make_latest_json.validate_latest_json_file(committed_latest, expected_version=committed_ver)
     assert (
         committed_data["download_url"] == "GANTI_DENGAN_LINK_GOOGLE_DRIVE"
         or str(committed_data["download_url"]).startswith("https://drive.google.com/")
     )
     assert (repo_root / "packaging" / "release" / "notes" / f"{APP_VERSION}.id.md").is_file()
     assert (repo_root / "packaging" / "release" / "notes" / f"{APP_VERSION}.en.md").is_file()
-    assert "EasyFaceless Studio" in committed_data["notes_id"] and len(committed_data["notes_id"]) >= 30
+    cur_notes_id, cur_notes_en = make_latest_json.load_member_release_notes(APP_VERSION)
+    assert "EasyFaceless Studio" in cur_notes_id and len(cur_notes_id) >= 30
+    assert "EasyFaceless Studio" in cur_notes_en and len(cur_notes_en) >= 30
 
     # Missing notes files for a version must fail cleanly
     with pytest.raises(FileNotFoundError):
@@ -1077,7 +1082,10 @@ def test_r1_release_url_friendly_404_make_latest_json_and_process_leak_guard(tmp
         with pytest.raises(ValueError, match="internal reference"):
             make_latest_json.validate_member_release_note(bad_note, label="notes_id")
         out_bad_internal = tmp_path / "latest_internal.json"
-        out_bad_internal.write_text(json.dumps({**committed_data, "notes_id": bad_note}), encoding="utf-8")
+        out_bad_internal.write_text(
+            json.dumps({**committed_data, "version": APP_VERSION, "notes_id": bad_note}),
+            encoding="utf-8",
+        )
         with pytest.raises(ValueError, match="internal reference"):
             make_latest_json.validate_latest_json_file(out_bad_internal, expected_version=APP_VERSION)
 
