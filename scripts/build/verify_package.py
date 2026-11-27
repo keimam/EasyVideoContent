@@ -35,10 +35,13 @@ FORBIDDEN_TOP_OR_NESTED_NAMES = {
     "config.toml",
     ".pytest_cache",
     "__pycache__",
+    "prompts",
+    "claude outputs",
 }
 
 FORBIDDEN_SUBPATHS = (
     "docs/branding/screens",
+    "docs/dev/benchmark",
     "storage/longform_projects",
     "storage/longform_cache",
     "storage/presets",
@@ -51,6 +54,7 @@ FORBIDDEN_FILE_PATTERNS = (
     "*.pyc",
     "*.pyo",
     "*_editable*.pth",
+    ".efs_*.json",
 )
 
 SECRET_TOKEN_RE = re.compile(

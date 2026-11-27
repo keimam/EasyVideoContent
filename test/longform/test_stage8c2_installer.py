@@ -195,6 +195,10 @@ def test_d5_verify_package_script_catches_forbidden_items_and_secrets(tmp_path: 
         clean / ".git" / "HEAD",
         clean / "test" / "test_foo.py",
         clean / "docs" / "branding" / "screens" / "home.png",
+        clean / "docs" / "dev" / "benchmark" / "sample.json",
+        clean / "prompts" / "v102" / "spec.md",
+        clean / "Claude outputs" / "note.txt",
+        clean / ".efs_setup_complete.json",
         clean / "cache" / "item.bin",
         clean / "runtime" / "python" / "Lib" / "site-packages" / "leak.pth",
         clean / "app" / "leak_key.py",
@@ -209,7 +213,7 @@ def test_d5_verify_package_script_catches_forbidden_items_and_secrets(tmp_path: 
             fp.write_text("bad", encoding="utf-8")
 
     errs = verify_staging_dir(clean)
-    assert len(errs) >= 10, f"Expected all forbidden cases caught, got: {errs}"
+    assert len(errs) >= 14, f"Expected all forbidden cases caught, got: {errs}"
 
 
 def test_d6_no_scattered_platform_checks_and_platform_utils_os_coverage(monkeypatch):
