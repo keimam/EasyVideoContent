@@ -237,9 +237,19 @@ def _render_llm_friendly_error_box(
             st.code(raw_err, language="text")
 
 
-def _get_step_subtitle(step_key: str, status: str, is_job_running: bool = False) -> str:
+def _get_step_subtitle(
+    step_key: str,
+    status: str,
+    is_job_running: bool = False,
+    *,
+    built_shots: int = 0,
+    total_shots: int = 0,
+) -> str:
     """Return status-aware localized subtitle for the given workflow step."""
     eff = "berjalan" if is_job_running else (status or "belum")
+    if eff == "selesai_sebagian" and step_key == "visual":
+        missing = max(0, int(total_shots) - int(built_shots))
+        return t("visual_subtitle_selesai_sebagian", built=int(built_shots), total=int(total_shots), missing=missing)
     if eff not in {"belum", "berjalan", "terhenti", "perlu_diperbarui", "selesai"}:
         eff = "belum"
     return t(f"{step_key}_subtitle_{eff}")
@@ -1622,6 +1632,7 @@ def render_project_page(project_id: str):
     }
     step_status_badges = {
         "selesai": "✅ " + t("status_done"),
+        "selesai_sebagian": "✅ " + t("status_partial_done"),
         "berjalan": "⏳ " + t("status_in_progress"),
         "terhenti": "⚠️ " + t("status_interrupted"),
         "perlu_diperbarui": "🔄 " + t("status_needs_update"),
@@ -3613,17 +3624,30 @@ def render_visual_step_flow(
     providers_csv = ",".join(selected_sources) if selected_sources else ""
 
     # --- Clean Header (Mockup 2 V3) ---
+    total_shots_hdr = sum(len(ch.shots) for ch in manifest.chapters)
+    built_shots_hdr = sum(
+        1 for ch in manifest.chapters for s in ch.shots
+        if s.rendered_clip and (p_dir / s.rendered_clip).is_file()
+    )
     col_hdr, col_act = st.columns([3, 1])
     with col_hdr:
         st.markdown(f"### {t('visual_step_title')}")
-        st.caption(_get_step_subtitle("visual", step_info["status"], is_job_running))
+        st.caption(
+            _get_step_subtitle(
+                "visual",
+                step_info["status"],
+                is_job_running,
+                built_shots=built_shots_hdr,
+                total_shots=total_shots_hdr,
+            )
+        )
     with col_act:
         st.write("")
         if is_job_running:
             st.button(t("visual_btn_running"), disabled=True, type="primary", key=f"btn_running_vis_{project_id}", width="stretch")
         else:
             st_val = step_info["status"]
-            if st_val == "selesai":
+            if st_val in ("selesai", "selesai_sebagian"):
                 if st.button(t("visual_btn_proceed_render"), type="primary", key=f"btn_next_render_{project_id}", width="stretch"):
                     st.session_state[f"active_step_{project_id}"] = "render"
                     st.rerun()
@@ -3752,7 +3776,27 @@ def render_visual_step_flow(
             st.warning("\n".join(f"- {w}" for w in src_warnings) if len(src_warnings) > 1 else src_warnings[0])
 
     if unready_vis_info["missing_count"] > 0:
-        st.warning(t("vis_missing_summary_warn", missing=unready_vis_info["missing_count"]))
+        missing_id_set = {e["shot_id"] for e in unready_vis_info.get("missing_shots", [])}
+        missing_rows = [
+            sh
+            for ch in manifest.chapters
+            for sh in ch.shots
+            if sh.shot_id in missing_id_set
+        ]
+        detail_lines = [
+            f"- `{sh.shot_id}` — query: `{sh.search_query_en or sh.search_query or '-'}`"
+            for sh in missing_rows[:12]
+        ]
+        if step_info["status"] == "selesai_sebagian":
+            msg_parts = [
+                f"**{t('vis_partial_summary_title', built=built_shots, total=total_shots, missing=unready_vis_info['missing_count'])}**",
+                *detail_lines,
+                t("vis_partial_suggestions"),
+            ]
+            st.warning("\n".join(msg_parts))
+        else:
+            msg_parts = [t("vis_missing_summary_warn", missing=unready_vis_info["missing_count"]), *detail_lines]
+            st.warning("\n".join(msg_parts))
     if unready_vis_info["legacy_fake_count"] > 0:
         st.warning(t("vis_legacy_fake_summary_warn", fake=unready_vis_info["legacy_fake_count"]))
     if unready_vis_info["unready_count"] > 0:

@@ -929,6 +929,123 @@ def build_generalized_visual_queries(
     return out
 
 
+_NARRATION_CONCRETE_BILINGUAL_MAP: Dict[str, str] = {
+    "wabah": "plague",
+    "penyakit": "illness",
+    "kota": "city",
+    "jalan": "street",
+    "jalanan": "street",
+    "pasar": "market",
+    "pelabuhan": "harbor",
+    "kapal": "ship",
+    "desa": "village",
+    "rumah": "house",
+    "bangunan": "building",
+    "jendela": "window",
+    "pintu": "door",
+    "orang": "crowd",
+    "kerumunan": "crowd",
+    "warga": "people",
+    "penduduk": "crowd",
+    "malam": "night",
+    "api": "fire",
+    "asap": "smoke",
+    "hutan": "forest",
+    "sungai": "river",
+    "laut": "sea",
+    "raja": "king",
+    "istana": "palace",
+    "kuil": "temple",
+    "gereja": "church",
+    "kuda": "horse",
+    "tentara": "soldiers",
+    "pasukan": "army",
+    "peta": "map",
+    "surat": "letter",
+    "lilin": "candle",
+    "lentera": "lantern",
+}
+
+
+def build_zero_candidate_concrete_query(
+    search_query: str,
+    narration_text: Optional[str] = None,
+    anchor_terms: Optional[List[str]] = None,
+    *,
+    extra_queries: Optional[List[str]] = None,
+) -> List[str]:
+    """Build 1-2 grounded concrete fallback queries when ALL sources return 0 candidates (H3.2).
+
+    Only extracts concrete nouns/places literally present in shot queries, narration text, or
+    project anchors (never invents subjects outside narration/anchors).
+    """
+    nar_low = str(narration_text or "").lower()
+    nar_tokens = re.findall(r"[A-Za-z0-9-]+", nar_low)
+    q_sources = [str(search_query or "")] + [str(q or "") for q in (extra_queries or [])]
+    q_tokens = re.findall(r"[A-Za-z0-9-]+", " ".join(q_sources).lower())
+
+    concrete_nouns: List[str] = []
+    seen_nouns: set[str] = set()
+
+    def _push_noun(tok: str) -> None:
+        t_clean = tok.strip().lower()
+        if (
+            len(t_clean) < 3
+            or t_clean in STOP_WORDS
+            or t_clean in GENERIC_WORDS
+            or t_clean in ABSTRACT_WORDS
+            or t_clean in NUMBER_WORDS
+            or t_clean in {"daily", "toll", "death", "deaths", "panic", "screams", "screaming", "noise", "sound", "sounds", "terrible", "countless", "even"}
+        ):
+            return
+        if t_clean not in seen_nouns:
+            seen_nouns.add(t_clean)
+            concrete_nouns.append(t_clean)
+
+    # 1. Translate concrete nouns literally present in narration tokens first
+    for tok in nar_tokens:
+        if tok in _NARRATION_CONCRETE_BILINGUAL_MAP:
+            _push_noun(_NARRATION_CONCRETE_BILINGUAL_MAP[tok])
+
+    # 2. Keep concrete visual nouns & proper place names from English shot queries / narration
+    for tok in q_tokens + nar_tokens:
+        if tok in PRIORITY_NOUNS or tok.isalpha() and len(tok) >= 4:
+            # Skip obvious untranslated Indonesian filler words unless already mapped
+            if tok in nar_tokens and tok not in q_tokens and tok not in PRIORITY_NOUNS:
+                continue
+            _push_noun(tok)
+
+    # 3. Ground project anchor tokens (mapping 'wabah' -> 'plague' only when present in anchors)
+    anchor_nouns: List[str] = []
+    for anc in (anchor_terms or []):
+        for tok in re.findall(r"[A-Za-z0-9-]+", str(anc or "").lower()):
+            mapped = _NARRATION_CONCRETE_BILINGUAL_MAP.get(tok, tok)
+            if len(mapped) >= 3 and mapped not in STOP_WORDS and mapped not in ABSTRACT_WORDS and mapped not in anchor_nouns:
+                anchor_nouns.append(mapped)
+
+    out: List[str] = []
+    seen_q: set[str] = {re.sub(r"\s+", " ", q.strip().lower()) for q in q_sources if str(q or "").strip()}
+
+    def _add_q(parts: List[str]) -> None:
+        phrase = " ".join(dict.fromkeys(p for p in parts if p)).strip()
+        if phrase and len(phrase) >= 3 and phrase not in seen_q:
+            seen_q.add(phrase)
+            out.append(phrase)
+
+    if anchor_nouns and concrete_nouns:
+        _add_q([anchor_nouns[0], concrete_nouns[0], concrete_nouns[1]] if len(concrete_nouns) > 1 else [anchor_nouns[0], concrete_nouns[0]])
+        if len(out) < 2 and len(concrete_nouns) > 1:
+            _add_q([anchor_nouns[0], concrete_nouns[1]])
+    elif len(concrete_nouns) >= 2:
+        _add_q(concrete_nouns[:2])
+    elif concrete_nouns:
+        _add_q([concrete_nouns[0]])
+    elif anchor_nouns:
+        _add_q([anchor_nouns[0]])
+
+    return out[:2]
+
+
 def filter_candidates_by_anchors_and_avoids(
     candidates: List[Dict[str, Any]],
     *,

@@ -301,11 +301,22 @@ def compute_project_step_status(project_dir: str | Path) -> Dict[str, Any]:
         visual_status = "selesai"
         visual_label = f"Selesai ({total_shots}/{total_shots} klip)"
     elif built_shots > 0 or fetched_shots > 0:
-        visual_status = "terhenti"
-        if fetched_shots < total_shots:
-            visual_label = f"Terhenti di {fetched_shots} dari {total_shots} (fase: Mencari footage)"
+        job_completed_partial = bool(
+            job_state
+            and job_state.get("status") == "completed"
+            and int(job_state.get("exit_code") or 0) == 0
+            and job_state.get("step") in ("visual_pipeline", "visual_fetch", "visual_build", "visual_generate", "visual", "pipeline_auto")
+        )
+        if job_completed_partial and built_shots < total_shots:
+            visual_status = "selesai_sebagian"
+            missing_n = max(0, total_shots - built_shots)
+            visual_label = f"Selesai: {built_shots} dari {total_shots} shot ({missing_n} belum cocok)"
         else:
-            visual_label = f"Terhenti di {built_shots} dari {total_shots} (fase: Menyusun klip)"
+            visual_status = "terhenti"
+            if fetched_shots < total_shots:
+                visual_label = f"Terhenti di {fetched_shots} dari {total_shots} (fase: Mencari footage)"
+            else:
+                visual_label = f"Terhenti di {built_shots} dari {total_shots} (fase: Menyusun klip)"
     else:
         visual_status = "belum"
         visual_label = f"Belum dibuat ({total_shots} shot)"

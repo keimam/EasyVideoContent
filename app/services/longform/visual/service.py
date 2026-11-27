@@ -1327,6 +1327,60 @@ class VisualService:
                     if eff_mode == "priority":
                         break
 
+        # Pass 3 (H3.2): If ALL active sources returned 0 candidates, run one grounded concrete fallback
+        # combining project anchor(s) + concrete visual nouns present in shot narration/queries.
+        if not candidates:
+            from app.services.longform.visual.stock import build_zero_candidate_concrete_query
+
+            tried_lower = {str(a.get("query") or "").strip().lower() for a in attempts_log if a.get("query")}
+            fb_queries = [
+                q for q in build_zero_candidate_concrete_query(
+                    raw_query,
+                    narration_text=narration_txt,
+                    anchor_terms=proj_anchors,
+                    extra_queries=list(getattr(shot, "search_queries_en", None) or []),
+                )
+                if q.lower() not in tried_lower
+            ]
+            if fb_queries:
+                fb_tiers = [(fb_queries[0], None)]
+                for prov_name, fb_prov, _pt in resolved_provs:
+                    if is_stop_requested(self.project_dir):
+                        break
+                    fb_best, fb_origin, fb_att = self._search_single_provider_tiers(
+                        fb_prov,
+                        prov_name,
+                        shot,
+                        fb_tiers,
+                        limit=limit,
+                        excluded_ids=excluded_ids,
+                        req_terms=req_terms,
+                        block_terms=block_terms,
+                        neg_terms=neg_terms,
+                        proj_anchors=None,
+                        proj_avoids=proj_avoids,
+                        min_rel_score=min_rel_score,
+                        visual_kws=visual_kws,
+                        narration_txt=narration_txt,
+                        strict_ai_relevance=strict_ai_relevance,
+                        stop_on_first_hit=True,
+                        recommended_visual_sources=rec_sources,
+                        search_semaphore=search_semaphore,
+                    )
+                    attempts_log.extend(fb_att)
+                    origin_map.update(fb_origin)
+                    if fb_best:
+                        fb_best.sort(key=lambda c: c.relevance_score, reverse=True)
+                        candidates = fb_best[:limit]
+                        chosen_provider = fb_prov
+                        chosen_query = origin_map.get((candidates[0].provider, candidates[0].candidate_id), fb_queries[0])
+                        logger.info(
+                            f"Shot {shot.shot_id}: concrete 0-hit fallback selected '{candidates[0].candidate_id}' "
+                            f"from {prov_name} (score={candidates[0].relevance_score:.3f}) via query '{chosen_query}'"
+                        )
+                        if eff_mode == "priority":
+                            break
+
         candidates = deduplicate_candidates(candidates)
         self._last_shot_origin_queries = origin_map
         with self._telemetry_lock:
